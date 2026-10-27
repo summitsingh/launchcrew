@@ -1,0 +1,20 @@
+{
+  "approved_claims": [
+    "100% vegan PU leather",
+    "Designed in Texas",
+    "$49",
+    "Vegan leather wallet",
+    "For Austin commuters"
+  ],
+  "audience": "Austin commuters",
+  "brand_voice": "Warm, plain, no hype",
+  "channel": "Instagram",
+  "design": "Designed in Texas",
+  "material": "100% vegan PU leather",
+  "price": "$49",
+  "product": "Vegan leather wallet",
+  "sources": [
+    "demo_facts.json",
+    "demo brand brief"
+  ]
+}

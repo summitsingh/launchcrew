@@ -1,0 +1,198 @@
+{
+  "agents_used": [
+    "Scout",
+    "Maker",
+    "Checker",
+    "Maker",
+    "Checker"
+  ],
+  "approval_state": "approved_for_export",
+  "approvals": [
+    {
+      "action": "approved_for_export",
+      "approved_by": "demo_human",
+      "timestamp": "2026-10-27T22:54:24.409304+00:00"
+    }
+  ],
+  "audit": {
+    "duplicate_submit_prevented": true,
+    "event_log": [
+      {
+        "action": "Checked facts file before optional synthesis",
+        "agent": "Scout",
+        "step": "deterministic_checks",
+        "timestamp": "2026-10-27T22:54:24.407480+00:00"
+      },
+      {
+        "action": "Produced sourced facts and demo risks; filtered optional model facts",
+        "agent": "Scout",
+        "step": "scout",
+        "timestamp": "2026-10-27T22:54:24.407541+00:00"
+      },
+      {
+        "action": "Prepared local post and email drafts",
+        "agent": "Maker",
+        "step": "maker_draft_v1",
+        "timestamp": "2026-10-27T22:54:24.407549+00:00"
+      },
+      {
+        "action": "Checked explicit claims and draft text; blocked_count=1",
+        "agent": "Checker",
+        "step": "checker_v1",
+        "timestamp": "2026-10-27T22:54:24.408539+00:00"
+      },
+      {
+        "action": "Revised using approved facts file claims",
+        "agent": "Maker",
+        "step": "maker_draft_v2",
+        "timestamp": "2026-10-27T22:54:24.408544+00:00"
+      },
+      {
+        "action": "Rechecked revised drafts; blocked_count=0",
+        "agent": "Checker",
+        "step": "checker_v2",
+        "timestamp": "2026-10-27T22:54:24.409280+00:00"
+      },
+      {
+        "action": "Simulated approval for local export",
+        "agent": "demo_human",
+        "step": "approval",
+        "timestamp": "2026-10-27T22:54:24.409283+00:00"
+      },
+      {
+        "action": "Stored local JSON pack; no submission attempted",
+        "agent": "LaunchCrew",
+        "step": "receipt",
+        "timestamp": "2026-10-27T22:54:24.409284+00:00"
+      }
+    ],
+    "stopped_reason": null
+  },
+  "brand": "LaunchCrew",
+  "checker_v1": {
+    "blocked_claims": [
+      {
+        "claim": "best in Texas",
+        "reason": "Claim not found in facts file"
+      }
+    ],
+    "blocked_count": 1,
+    "revision_instructions": [
+      "Remove best in Texas; replace with an approved facts file claim."
+    ],
+    "verified_count": 5
+  },
+  "checker_v2": {
+    "blocked_claims": [],
+    "blocked_count": 0,
+    "revision_instructions": [],
+    "verified_count": 5
+  },
+  "generated_at": "2026-10-27T22:54:24.409304+00:00",
+  "idea": "Vegan leather wallet, $49, for Austin commuters, launch on Instagram",
+  "maker_draft_v1": {
+    "claims": [
+      "100% vegan PU leather",
+      "Designed in Texas",
+      "$49",
+      "Vegan leather wallet",
+      "For Austin commuters",
+      "best in Texas"
+    ],
+    "email": "100% vegan PU leather. Designed in Texas. $49. Vegan leather wallet. For Austin commuters. best in Texas.",
+    "post": "100% vegan PU leather. Designed in Texas. $49. Vegan leather wallet. For Austin commuters. best in Texas."
+  },
+  "maker_draft_v2": {
+    "claims": [
+      "100% vegan PU leather",
+      "Designed in Texas",
+      "$49",
+      "Vegan leather wallet",
+      "For Austin commuters"
+    ],
+    "email": "100% vegan PU leather. Designed in Texas. $49. Vegan leather wallet. For Austin commuters.",
+    "post": "100% vegan PU leather. Designed in Texas. $49. Vegan leather wallet. For Austin commuters."
+  },
+  "mode": "demo_no_submit",
+  "model_usage": {
+    "data_mode": "standard_no_train",
+    "data_mode_note": "Stated intent for user data, not a verified API setting.",
+    "spark_calls": 0,
+    "spark_mode": "deterministic_fallback",
+    "wonder_used": false
+  },
+  "receipt_version": "1.0",
+  "run_id": "demo_002",
+  "scout": {
+    "facts_used": [
+      {
+        "claim": "100% vegan PU leather",
+        "evidence": "100% vegan PU leather",
+        "sources": [
+          "demo_facts.json",
+          "demo brand brief"
+        ],
+        "verified": true
+      },
+      {
+        "claim": "Designed in Texas",
+        "evidence": "Designed in Texas",
+        "sources": [
+          "demo_facts.json",
+          "demo brand brief"
+        ],
+        "verified": true
+      },
+      {
+        "claim": "$49",
+        "evidence": "$49",
+        "sources": [
+          "demo_facts.json",
+          "demo brand brief"
+        ],
+        "verified": true
+      },
+      {
+        "claim": "Vegan leather wallet",
+        "evidence": "Vegan leather wallet",
+        "sources": [
+          "demo_facts.json",
+          "demo brand brief"
+        ],
+        "verified": true
+      },
+      {
+        "claim": "For Austin commuters",
+        "evidence": "For Austin commuters",
+        "sources": [
+          "demo_facts.json",
+          "demo brand brief"
+        ],
+        "verified": true
+      }
+    ],
+    "model_mode": "deterministic_fallback",
+    "model_note": "Spark was not called because no key was present.",
+    "risks": [
+      "Demo risk: unsupported product claims require revision.",
+      "Demo risk: channel suitability is unverified by this facts file."
+    ],
+    "sources": [
+      "demo_facts.json",
+      "demo brand brief"
+    ]
+  },
+  "summary": {
+    "blocked_count": 1,
+    "revised": true,
+    "submit_attempted": false,
+    "submit_completed": false,
+    "total_claims_checked": 11,
+    "verified_count": 10
+  },
+  "visual_verification": {
+    "checked": false,
+    "method": "not_run",
+    "notes": "SAM photo check is Nov 1 work, not in Oct 28-29 milestone"
+  }
+}
