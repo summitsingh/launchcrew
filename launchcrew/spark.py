@@ -20,7 +20,7 @@ def _call(system_prompt, user_prompt, schema_hint, model):
         raw = json.loads(body['choices'][0]['message']['content'])
         if not isinstance(raw, dict):
             raise ValueError('Expected JSON object')
-        return {'mode': 'spark', 'model_used': model, 'attempted': True, 'raw_json': raw}
+        return {'mode': 'spark', 'model_used': model, 'attempted': True, 'raw_json': raw, 'usage': body.get('usage', {})}
     except Exception as error:
         # Never include exception text, response bodies, or authorization headers.
         return {'mode': 'deterministic_fallback', 'model_used': 'none', 'attempted': True,

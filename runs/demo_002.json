@@ -11,7 +11,7 @@
     {
       "action": "approved_for_export",
       "approved_by": "demo_human",
-      "timestamp": "2026-10-27T22:54:24.409304+00:00"
+      "timestamp": "2026-10-27T23:04:39.301128+00:00"
     }
   ],
   "audit": {
@@ -21,49 +21,49 @@
         "action": "Checked facts file before optional synthesis",
         "agent": "Scout",
         "step": "deterministic_checks",
-        "timestamp": "2026-10-27T22:54:24.407480+00:00"
+        "timestamp": "2026-10-27T23:04:39.298545+00:00"
       },
       {
         "action": "Produced sourced facts and demo risks; filtered optional model facts",
         "agent": "Scout",
         "step": "scout",
-        "timestamp": "2026-10-27T22:54:24.407541+00:00"
+        "timestamp": "2026-10-27T23:04:39.298625+00:00"
       },
       {
         "action": "Prepared local post and email drafts",
         "agent": "Maker",
         "step": "maker_draft_v1",
-        "timestamp": "2026-10-27T22:54:24.407549+00:00"
+        "timestamp": "2026-10-27T23:04:39.298635+00:00"
       },
       {
         "action": "Checked explicit claims and draft text; blocked_count=1",
         "agent": "Checker",
         "step": "checker_v1",
-        "timestamp": "2026-10-27T22:54:24.408539+00:00"
+        "timestamp": "2026-10-27T23:04:39.300058+00:00"
       },
       {
         "action": "Revised using approved facts file claims",
         "agent": "Maker",
         "step": "maker_draft_v2",
-        "timestamp": "2026-10-27T22:54:24.408544+00:00"
+        "timestamp": "2026-10-27T23:04:39.300064+00:00"
       },
       {
         "action": "Rechecked revised drafts; blocked_count=0",
         "agent": "Checker",
         "step": "checker_v2",
-        "timestamp": "2026-10-27T22:54:24.409280+00:00"
+        "timestamp": "2026-10-27T23:04:39.301101+00:00"
       },
       {
         "action": "Simulated approval for local export",
         "agent": "demo_human",
         "step": "approval",
-        "timestamp": "2026-10-27T22:54:24.409283+00:00"
+        "timestamp": "2026-10-27T23:04:39.301104+00:00"
       },
       {
         "action": "Stored local JSON pack; no submission attempted",
         "agent": "LaunchCrew",
         "step": "receipt",
-        "timestamp": "2026-10-27T22:54:24.409284+00:00"
+        "timestamp": "2026-10-27T23:04:39.301106+00:00"
       }
     ],
     "stopped_reason": null
@@ -88,7 +88,7 @@
     "revision_instructions": [],
     "verified_count": 5
   },
-  "generated_at": "2026-10-27T22:54:24.409304+00:00",
+  "generated_at": "2026-10-27T23:04:39.301128+00:00",
   "idea": "Vegan leather wallet, $49, for Austin commuters, launch on Instagram",
   "maker_draft_v1": {
     "claims": [
@@ -182,6 +182,7 @@
       "demo brand brief"
     ]
   },
+  "status": "completed",
   "summary": {
     "blocked_count": 1,
     "revised": true,
@@ -193,6 +194,6 @@
   "visual_verification": {
     "checked": false,
     "method": "not_run",
-    "notes": "SAM photo check is Nov 1 work, not in Oct 28-29 milestone"
+    "notes": "SAM photo check is Nov 1 work, not in Oct 30-31 milestone"
   }
 }

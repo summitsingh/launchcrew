@@ -49,9 +49,39 @@ def check_claims(claims_list, facts):
     return {'results': results, 'verified_count': verified, 'blocked_count': len(results) - verified}
 
 
+# Values keep punctuation: $49, 49%, and 49 are different assertions.
+VALUE_PATTERN = re.compile(
+    r'(?P<date>\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b|'
+    r'\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|'
+    r'Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)'
+    r'\s+\d{1,2}(?:,?\s+\d{4})?\b)|'
+    r'(?P<price>[$£€]\d+(?:[,.]\d+)*)|'
+    r'(?P<percentage>\d+(?:\.\d+)?%)|(?P<number>\b\d+(?:\.\d+)?\b)', re.I)
+SUPERLATIVES = re.compile(r'\b(?:best|number\s+1|only|guaranteed|perfect|unbeatable|'
+                          r'greatest|fastest|cheapest|always|never|100\s*percent)\b', re.I)
+
+
+def check_sentence(sentence, facts):
+    result = check_claim(sentence, facts)
+    blob = ' '.join(_values(facts)).lower()
+    for match in VALUE_PATTERN.finditer(sentence):
+        if not any(m.group().lower() == match.group().lower() and m.lastgroup == match.lastgroup
+                   for m in VALUE_PATTERN.finditer(blob)):
+            return {**result, 'verified': False, 'evidence': None,
+                    'reason': 'Unmatched ' + match.lastgroup + ' value'}
+    if 'best in texas' in sentence.lower():
+        return {**result, 'verified': False, 'evidence': None, 'reason': 'Claim not found in facts file'}
+    if any(not re.search(r'\b' + re.escape(m.group()) + r'\b', blob, re.I)
+           for m in SUPERLATIVES.finditer(sentence)):
+        return {**result, 'verified': False, 'evidence': None, 'reason': 'Unapproved superlative or absolute'}
+    # Full allowlist sentence equality blocks mixed claims and unrecognized paraphrases.
+    # Preserve price, percentage, and date punctuation before normalization.
+    approved = any(normalize(sentence) == normalize(c) for c in facts['approved_claims'])
+    return {**result, 'verified': approved, 'evidence': result['evidence'] if approved else None,
+            'reason': 'Matched approved claim' if approved else 'Sentence not in approved claims'}
+
+
 def check_draft(draft_text, facts):
-    sentences = [s.strip() for s in re.split(r'[.!?\n]+', draft_text) if s.strip()]
-    blocked = [r for r in check_claims(sentences, facts)['results'] if not r['verified']]
-    if 'best in texas' in draft_text.lower() and not any(r['claim'].lower() == 'best in texas' for r in blocked):
-        blocked.append(check_claim('best in Texas', facts))
-    return blocked
+    # Do not split decimal prices, percentages, or numbered dates at their dots.
+    sentences = [s.strip() for s in re.split(r'(?<!\d)[.!?]+|[.!?]+(?!\d)|\n+', draft_text) if s.strip()]
+    return [r for r in (check_sentence(s, facts) for s in sentences) if not r['verified']]
