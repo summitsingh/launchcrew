@@ -1,0 +1,1 @@
+"""LaunchCrew HTTP adapter."""

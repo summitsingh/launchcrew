@@ -27,12 +27,11 @@ def make_draft(claims):
     return {'post': text, 'email': text, 'claims': list(claims)}
 
 
-def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverified_claim=False):
+def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverified_claim=False, receipt_writer=save_receipt, model_enabled=True):
     events = []
     step = 'load_agents'
     try:
-        agents.AGENTS_DIR = Path(agents_path)
-        profiles = {name: agents.load_agent(name) for name in ('Scout', 'Maker', 'Checker')}
+        profiles = {name: agents.load_agent(name, agents_path) for name in ('Scout', 'Maker', 'Checker')}
         step = 'load_facts'
         facts, _ = load_facts(facts_path)
         claims = list(facts['approved_claims'])
@@ -48,8 +47,9 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
         event('deterministic_checks', 'Scout', 'Checked facts file before optional synthesis')
         task = json.dumps({'idea': idea, 'approved_claims': claims, 'sources': facts['sources']})
         step = 'scout'
-        wonder = wonder_synthesize_for_scout(task, lambda: spark_for_agent(profiles['Scout'], task))
-        model = wonder if wonder is not None else spark_for_agent(profiles['Scout'], task)
+        wonder = wonder_synthesize_for_scout(task, lambda: spark_for_agent(profiles['Scout'], task)) if model_enabled else None
+        model = (wonder if wonder is not None else spark_for_agent(profiles['Scout'], task)) if model_enabled else {
+            'mode': 'deterministic_fallback', 'attempted': False, 'note': 'Demo adapter disables model calls.'}
         scout = {'facts_used': [{'claim': c, 'verified': True, 'evidence': c, 'sources': facts['sources']} for c in claims],
                  'risks': ['Demo risk: unsupported product claims require revision.',
                            'Demo risk: channel suitability is unverified by this facts file.'],
@@ -97,10 +97,10 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
                  'data_mode_note': 'Stated intent for user data, not a verified API setting.'}
         step = 'receipt'
         receipt = create_receipt(Path(out).stem, idea, scout, v1, c1, v2, c2, events, usage, approve)
-        save_receipt(receipt, out)
+        receipt_writer(receipt, out)
         return receipt
     except Exception as error:
-        save_receipt(failed_receipt(Path(out).stem,
+        receipt_writer(failed_receipt(Path(out).stem,
                                     [e for e in events if e['step'] != 'receipt'], step, error), out)
         raise
 

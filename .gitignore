@@ -2,3 +2,8 @@ __pycache__/
 *.py[cod]
 .env
 .env.*
+.venv/
+node_modules/
+.next/
+.local/
+web/test-results/
