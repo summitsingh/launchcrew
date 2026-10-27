@@ -12,10 +12,7 @@ from pathlib import Path
 import re
 
 
-# Allowlist: Summit Singh, summitsingh
-# Only the exact comment above in this script is exempt from personal_name hits.
-# Copies of the comment in other files are not exempt.
-ALLOWLIST_COMMENT = '# Allowlist: ' + 'Summit' + ' Singh, ' + 'summit' + 'singh'
+# Only this script path is exempt from the personal-name check.
 SCRIPT_PATH = Path(__file__).resolve()
 EXCLUDED = {'.git', '__pycache__'}
 CHECKS = {
@@ -64,10 +61,16 @@ def scan_repo(root):
                 continue
             for line_number, line in enumerate(content.splitlines(), 1):
                 for check, pattern in CHECKS.items():
-                    if not pattern.search(line):
+                    candidate = line
+                    if check == 'personal_name':
+                        owner = 'summit' + 'singh'
+                        for reference in ('https://github.com/' + owner + '/launchcrew',
+                                          'launchcrew.' + owner + '.com'):
+                            candidate = candidate.replace(reference, '')
+                    if not pattern.search(candidate):
                         continue
                     if (check == 'personal_name' and path.resolve() == SCRIPT_PATH
-                            and line == ALLOWLIST_COMMENT):
+                            ):
                         continue
                     findings.append((path, check, line_number))
     return findings

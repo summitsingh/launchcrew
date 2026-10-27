@@ -83,3 +83,13 @@ class ScanTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             findings = scan_repo(Path(directory) / 'missing')
             self.assertEqual([hit[1] for hit in findings], ['read_error'])
+
+    def test_scan_script_path_exemption(self):
+        script = SCRIPT
+        self.assertNotIn('summit' + 'singh', script.read_text().lower())
+        self.assertNotIn('summit' + ' singh', script.read_text().lower())
+        self.assertEqual(scan_repo(script.parent), [])
+        with tempfile.TemporaryDirectory() as directory:
+            copied = Path(directory) / 'scan_repo.py'
+            copied.write_text('summit' + 'singh')
+            self.assertEqual([r[1] for r in scan_repo(directory)], ['personal_name'])
