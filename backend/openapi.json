@@ -1,0 +1,1043 @@
+{
+  "components": {
+    "schemas": {
+      "Approval": {
+        "properties": {
+          "action": {
+            "title": "Action",
+            "type": "string"
+          },
+          "approved_by": {
+            "title": "Approved By",
+            "type": "string"
+          },
+          "timestamp": {
+            "title": "Timestamp",
+            "type": "string"
+          }
+        },
+        "required": [
+          "approved_by",
+          "action",
+          "timestamp"
+        ],
+        "title": "Approval",
+        "type": "object"
+      },
+      "Check": {
+        "properties": {
+          "blocked_claims": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "title": "Blocked Claims",
+            "type": "array"
+          },
+          "blocked_count": {
+            "title": "Blocked Count",
+            "type": "integer"
+          },
+          "revision_instructions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Revision Instructions",
+            "type": "array"
+          },
+          "verified_count": {
+            "title": "Verified Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "blocked_count",
+          "verified_count",
+          "blocked_claims",
+          "revision_instructions"
+        ],
+        "title": "Check",
+        "type": "object"
+      },
+      "Clone": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "Clone",
+        "type": "object"
+      },
+      "Draft": {
+        "properties": {
+          "claims": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Claims",
+            "type": "array"
+          },
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "post": {
+            "title": "Post",
+            "type": "string"
+          }
+        },
+        "required": [
+          "post",
+          "email",
+          "claims"
+        ],
+        "title": "Draft",
+        "type": "object"
+      },
+      "Empty": {
+        "additionalProperties": false,
+        "properties": {},
+        "title": "Empty",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "Idea": {
+        "additionalProperties": false,
+        "properties": {
+          "idea": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Idea",
+            "type": "string"
+          }
+        },
+        "required": [
+          "idea"
+        ],
+        "title": "Idea",
+        "type": "object"
+      },
+      "Preview": {
+        "properties": {
+          "dry_run": {
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "first_action": {
+            "title": "First Action",
+            "type": "string"
+          },
+          "model_called": {
+            "title": "Model Called",
+            "type": "boolean"
+          },
+          "profile": {
+            "$ref": "#/components/schemas/Profile"
+          },
+          "sample_idea": {
+            "title": "Sample Idea",
+            "type": "string"
+          },
+          "side_effects": {
+            "title": "Side Effects",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "dry_run",
+          "profile",
+          "sample_idea",
+          "first_action",
+          "model_called",
+          "side_effects"
+        ],
+        "title": "Preview",
+        "type": "object"
+      },
+      "Profile": {
+        "additionalProperties": false,
+        "properties": {
+          "approval_level": {
+            "const": "approve_each",
+            "default": "approve_each",
+            "title": "Approval Level",
+            "type": "string"
+          },
+          "decision_rules": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Decision Rules",
+            "type": "array"
+          },
+          "department": {
+            "title": "Department",
+            "type": "string"
+          },
+          "examples": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "title": "Examples",
+            "type": "array"
+          },
+          "expertise": {
+            "title": "Expertise",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "personality": {
+            "title": "Personality",
+            "type": "string"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          },
+          "spend_limit": {
+            "const": 0,
+            "default": 0,
+            "title": "Spend Limit",
+            "type": "integer"
+          },
+          "tools_allowed": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tools Allowed",
+            "type": "array"
+          },
+          "veto_scope": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Veto Scope",
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "role",
+          "department",
+          "personality",
+          "expertise",
+          "decision_rules",
+          "veto_scope",
+          "tools_allowed",
+          "examples"
+        ],
+        "title": "Profile",
+        "type": "object"
+      },
+      "Receipt": {
+        "additionalProperties": true,
+        "properties": {
+          "approval_state": {
+            "enum": [
+              "pending_approval",
+              "approved_for_export"
+            ],
+            "title": "Approval State",
+            "type": "string"
+          },
+          "approvals": {
+            "items": {
+              "$ref": "#/components/schemas/Approval"
+            },
+            "title": "Approvals",
+            "type": "array"
+          },
+          "audit": {
+            "additionalProperties": true,
+            "title": "Audit",
+            "type": "object"
+          },
+          "checker_v1": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Check"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "checker_v2": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Check"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "idea": {
+            "default": "",
+            "title": "Idea",
+            "type": "string"
+          },
+          "maker_draft_v1": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Draft"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "maker_draft_v2": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Draft"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "summary": {
+            "additionalProperties": true,
+            "title": "Summary",
+            "type": "object"
+          }
+        },
+        "required": [
+          "run_id",
+          "status",
+          "approval_state",
+          "approvals",
+          "summary",
+          "audit"
+        ],
+        "title": "Receipt",
+        "type": "object"
+      },
+      "RunInput": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_name": {
+            "title": "Agent Name",
+            "type": "string"
+          },
+          "idea": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Idea",
+            "type": "string"
+          },
+          "seed_unverified_claim": {
+            "default": false,
+            "title": "Seed Unverified Claim",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "idea",
+          "agent_name"
+        ],
+        "title": "RunInput",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "LaunchCrew",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/agents": {
+      "get": {
+        "operationId": "list_agents_api_agents_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Profile"
+                  },
+                  "title": "Response List Agents Api Agents Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Agents"
+      },
+      "post": {
+        "operationId": "create_agent_api_agents_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Profile"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Profile"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Agent"
+      }
+    },
+    "/api/agents/{name}": {
+      "get": {
+        "operationId": "get_agent_api_agents__name__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Profile"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Agent"
+      },
+      "put": {
+        "operationId": "edit_agent_api_agents__name__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Profile"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Profile"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit Agent"
+      }
+    },
+    "/api/agents/{name}/clone": {
+      "post": {
+        "operationId": "clone_agent_api_agents__name__clone_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Clone"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Profile"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Clone Agent"
+      }
+    },
+    "/api/agents/{name}/preview": {
+      "post": {
+        "operationId": "preview_agent_api_agents__name__preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Idea"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Preview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Agent"
+      }
+    },
+    "/api/auth/logout": {
+      "post": {
+        "operationId": "logout_api_auth_logout_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "boolean"
+                  },
+                  "title": "Response Logout Api Auth Logout Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Logout"
+      }
+    },
+    "/api/auth/status": {
+      "get": {
+        "operationId": "status_api_auth_status_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "boolean"
+                      }
+                    ]
+                  },
+                  "title": "Response Status Api Auth Status Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Status"
+      }
+    },
+    "/api/auth/{provider}/callback": {
+      "get": {
+        "operationId": "callback_api_auth__provider__callback_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "provider",
+            "required": true,
+            "schema": {
+              "title": "Provider",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Callback"
+      }
+    },
+    "/api/auth/{provider}/login": {
+      "get": {
+        "operationId": "login_api_auth__provider__login_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "provider",
+            "required": true,
+            "schema": {
+              "title": "Provider",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Login"
+      }
+    },
+    "/api/health": {
+      "get": {
+        "operationId": "health_api_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Health Api Health Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health"
+      }
+    },
+    "/api/queue": {
+      "get": {
+        "operationId": "queue_api_queue_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Receipt"
+                  },
+                  "title": "Response Queue Api Queue Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Queue"
+      }
+    },
+    "/api/runs": {
+      "post": {
+        "operationId": "create_run_api_runs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Receipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Run"
+      }
+    },
+    "/api/runs/{run_id}": {
+      "get": {
+        "operationId": "get_run_api_runs__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Receipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Run"
+      }
+    },
+    "/api/runs/{run_id}/approve": {
+      "post": {
+        "operationId": "approve_api_runs__run_id__approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Empty"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Receipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Approve"
+      }
+    },
+    "/api/runs/{run_id}/export": {
+      "post": {
+        "operationId": "export_api_runs__run_id__export_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Empty"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Receipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Export"
+      }
+    },
+    "/api/runs/{run_id}/receipt": {
+      "get": {
+        "operationId": "get_run_api_runs__run_id__receipt_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Receipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Run"
+      }
+    }
+  }
+}

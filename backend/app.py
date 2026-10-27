@@ -1,15 +1,14 @@
-"""Typed local demo API. No provider auth or outbound action endpoints."""
+"""Typed FastAPI demo API over the preserved Python pipeline."""
 from contextlib import asynccontextmanager
-import copy
 import json
-from typing import Literal
+from typing import Literal, Any
 from uuid import uuid4
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
-from psycopg.errors import UniqueViolation
-from psycopg.types.json import Jsonb
-from backend import adapter, store
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
+from backend import adapter, store, auth
 from launchcrew import agents, receipts
 
 
@@ -48,21 +47,69 @@ class Empty(Strict):
     pass
 
 
+class Check(BaseModel):
+    blocked_count: int
+    verified_count: int
+    blocked_claims: list[dict[str, str]]
+    revision_instructions: list[str]
+
+
+class Draft(BaseModel):
+    post: str
+    email: str
+    claims: list[str]
+
+
+class Approval(BaseModel):
+    approved_by: str
+    action: str
+    timestamp: str
+
+
+class Receipt(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    run_id: str
+    idea: str = ''
+    status: str
+    approval_state: Literal['pending_approval', 'approved_for_export']
+    approvals: list[Approval]
+    maker_draft_v1: Draft | None = None
+    maker_draft_v2: Draft | None = None
+    checker_v1: Check | None = None
+    checker_v2: Check | None = None
+    summary: dict[str, Any]
+    audit: dict[str, Any]
+
+
+class Preview(BaseModel):
+    dry_run: bool
+    profile: Profile
+    sample_idea: str
+    first_action: str
+    model_called: bool
+    side_effects: bool
+
+
 @asynccontextmanager
 async def lifespan(app):
+    auth.validate_config()
     store.initialize()
     yield
 
 
-app = FastAPI(title='LaunchCrew', lifespan=lifespan)
+app = FastAPI(title='LaunchCrew', version='0.1.0', lifespan=lifespan)
+app.include_router(auth.router)
 
 
 @app.middleware('http')
 async def local_requests(request: Request, call_next):
+    from urllib.parse import urlsplit
     origin = request.headers.get('origin')
     if request.method not in ('GET', 'HEAD', 'OPTIONS') and origin:
-        from urllib.parse import urlsplit
-        if urlsplit(origin).netloc != request.headers.get('host'):
+        # PUBLIC_BASE_URL is the trusted frontend origin behind the Next proxy.
+        expected = __import__('os').environ.get('PUBLIC_BASE_URL')
+        same_host = urlsplit(origin).netloc == request.headers.get('host')
+        if not same_host and origin.rstrip('/') != (expected or '').rstrip('/'):
             return JSONResponse({'detail': 'Cross-origin mutation refused'}, status_code=403)
     response = await call_next(request)
     response.headers['Cache-Control'] = 'no-store'
@@ -75,121 +122,120 @@ async def invalid(request, error):
     return JSONResponse({'detail': 'Validation failed'}, status_code=422)
 
 
-@app.exception_handler(UniqueViolation)
+@app.exception_handler(IntegrityError)
 async def conflict(request, error):
-    return JSONResponse({'detail': 'Already exists'}, status_code=409)
+    return JSONResponse({'detail': 'Conflict'}, status_code=409)
 
 
 @app.get('/api/health')
-def health() -> dict:
+def health() -> dict[str, str]:
     with store.connect() as db:
-        db.execute('SELECT 1')
-    return {'status': 'ok', 'auth': 'disabled_demo', 'approval_by': 'demo_placeholder'}
+        db.execute(text('SELECT 1'))
+    return {'status': 'ok', 'auth': 'enabled_unverified' if auth.enabled() else 'disabled_demo', 'approval_by': 'signed_in_user' if auth.enabled() else 'demo_placeholder'}
 
 
 @app.get('/api/agents', response_model=list[Profile])
-def list_agents():
+def list_agents(actor: str = Depends(auth.actor)):
     with store.connect() as db:
-        return [r[0] for r in db.execute('SELECT profile FROM agents ORDER BY name')]
+        return [r[0] for r in db.execute(text('SELECT profile FROM agents ORDER BY name'))]
 
 
 def get_profile(db, name):
-    row = db.execute('SELECT profile FROM agents WHERE name=%s', (name.lower(),)).fetchone()
+    row = db.execute(text('SELECT profile FROM agents WHERE name=:name'), {'name': name.lower()}).fetchone()
     if not row:
         raise HTTPException(404, 'Agent not found')
     return row[0]
 
 
 @app.get('/api/agents/{name}', response_model=Profile)
-def get_agent(name: str):
+def get_agent(name: str, actor: str = Depends(auth.actor)):
     with store.connect() as db:
         return get_profile(db, name)
 
 
 @app.post('/api/agents', response_model=Profile, status_code=201)
-def create_agent(profile: Profile):
+def create_agent(profile: Profile, actor: str = Depends(auth.actor)):
     value = agents.validate(profile.model_dump())
     with store.connect() as db:
-        db.execute('INSERT INTO agents(name,profile) VALUES (%s,%s)', (value['name'].lower(), Jsonb(value)))
-        store.audit(db, None, 'agent_created')
+        db.execute(text('INSERT INTO agents(name,profile) VALUES (:name,CAST(:profile AS jsonb))'), {'name': value['name'].lower(), 'profile': json.dumps(value)})
+        store.audit(db, None, 'agent_created', actor)
     return value
 
 
 @app.put('/api/agents/{name}', response_model=Profile)
-def edit_agent(name: str, profile: Profile):
+def edit_agent(name: str, profile: Profile, actor: str = Depends(auth.actor)):
     value = agents.validate(profile.model_dump())
     with store.connect() as db:
         old = get_profile(db, name)
         if old['name'] != value['name']:
             raise ValueError('Clone to rename')
-        db.execute('UPDATE agents SET profile=%s, updated_at=now() WHERE name=%s', (Jsonb(value), name.lower()))
-        store.audit(db, None, 'agent_edited')
+        db.execute(text('UPDATE agents SET profile=CAST(:profile AS jsonb),updated_at=now() WHERE name=:name'), {'profile': json.dumps(value), 'name': name.lower()})
+        store.audit(db, None, 'agent_edited', actor)
     return value
 
 
 @app.post('/api/agents/{name}/clone', response_model=Profile, status_code=201)
-def clone_agent(name: str, body: Clone):
+def clone_agent(name: str, body: Clone, actor: str = Depends(auth.actor)):
     with store.connect() as db:
         profile = get_profile(db, name)
     profile['name'] = body.name
-    return create_agent(Profile(**profile))
+    return create_agent(Profile(**profile), actor)
 
 
-@app.post('/api/agents/{name}/preview')
-def preview_agent(name: str, body: Idea) -> dict:
+@app.post('/api/agents/{name}/preview', response_model=Preview)
+def preview_agent(name: str, body: Idea, actor: str = Depends(auth.actor)):
     with store.connect() as db:
         return adapter.preview(get_profile(db, name), body.idea)
 
 
-@app.post('/api/runs', status_code=201)
-def create_run(body: RunInput) -> dict:
+@app.post('/api/runs', response_model=Receipt, status_code=201)
+def create_run(body: RunInput, actor: str = Depends(auth.actor)):
     with store.connect() as db:
         profile = get_profile(db, body.agent_name)
     run_id = 'run_' + uuid4().hex
     receipt = adapter.execute(run_id, body.idea, profile, body.seed_unverified_claim)
     with store.connect() as db:
-        db.execute('INSERT INTO runs(id,receipt,agent_name,state) VALUES (%s,%s,%s,%s)',
-                   (run_id, Jsonb(receipt), body.agent_name.lower(), receipt['approval_state']))
-        db.execute('INSERT INTO memory(run_id,facts) VALUES (%s,%s)',
-                   (run_id, Jsonb(receipt.get('scout', {}).get('facts_used', []))))
-        store.audit(db, run_id, 'run_created')
+        db.execute(text('INSERT INTO runs(id,receipt,agent_name,state) VALUES (:id,CAST(:receipt AS jsonb),:agent,:state)'),
+                   {'id': run_id, 'receipt': json.dumps(receipt), 'agent': body.agent_name.lower(), 'state': receipt['approval_state']})
+        db.execute(text('INSERT INTO memory(run_id,facts) VALUES (:id,CAST(:facts AS jsonb))'), {'id': run_id, 'facts': json.dumps(receipt.get('scout', {}).get('facts_used', []))})
+        store.audit(db, run_id, 'run_created', actor)
     return receipt
 
 
-@app.get('/api/queue')
-def queue() -> list[dict]:
+@app.get('/api/queue', response_model=list[Receipt])
+def queue(actor: str = Depends(auth.actor)):
     with store.connect() as db:
-        return [r[0] for r in db.execute("SELECT receipt FROM runs ORDER BY (state='pending_approval') DESC, created_at, id")]
+        return [r[0] for r in db.execute(text("SELECT receipt FROM runs ORDER BY (state='pending_approval') DESC, created_at, id"))]
 
 
 def get_receipt(db, run_id, lock=False):
-    row = db.execute('SELECT receipt FROM runs WHERE id=%s' + (' FOR UPDATE' if lock else ''), (run_id,)).fetchone()
+    row = db.execute(text('SELECT receipt FROM runs WHERE id=:id' + (' FOR UPDATE' if lock else '')), {'id': run_id}).fetchone()
     if not row:
         raise HTTPException(404, 'Run not found')
     return row[0]
 
 
-@app.get('/api/runs/{run_id}')
-@app.get('/api/runs/{run_id}/receipt')
-def get_run(run_id: str) -> dict:
+@app.get('/api/runs/{run_id}', response_model=Receipt)
+@app.get('/api/runs/{run_id}/receipt', response_model=Receipt)
+def get_run(run_id: str, actor: str = Depends(auth.actor)):
     with store.connect() as db:
         return get_receipt(db, run_id)
 
 
-@app.post('/api/runs/{run_id}/approve')
-def approve(run_id: str, body: Empty) -> dict:
+@app.post('/api/runs/{run_id}/approve', response_model=Receipt)
+def approve(run_id: str, body: Empty, actor: str = Depends(auth.actor)):
     with store.connect() as db:
         receipt = get_receipt(db, run_id, True)
-        receipts.approve_receipt(receipt, 'demo_placeholder')
-        db.execute('UPDATE runs SET receipt=%s,state=%s WHERE id=%s', (Jsonb(receipt), receipt['approval_state'], run_id))
-        db.execute('INSERT INTO approvals(run_id,approved_by) VALUES (%s,%s)', (run_id, 'demo_placeholder'))
-        store.audit(db, run_id, 'approved_for_export')
+        receipts.approve_receipt(receipt, actor)
+        db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id'), {'receipt': json.dumps(receipt), 'state': receipt['approval_state'], 'id': run_id})
+        db.execute(text('INSERT INTO approvals(run_id,approved_by) VALUES (:id,:actor)'), {'id': run_id, 'actor': actor})
+        store.audit(db, run_id, 'approved_for_export', actor)
     return receipt
 
 
-@app.post('/api/runs/{run_id}/export')
-def export(run_id: str, body: Empty):
+@app.post('/api/runs/{run_id}/export', response_model=Receipt)
+def export(run_id: str, body: Empty, actor: str = Depends(auth.actor)):
     with store.connect() as db:
-        data = adapter.export_pack(get_receipt(db, run_id, True))
-        store.audit(db, run_id, 'exported')
-    return Response(data, media_type='application/json', headers={'Content-Disposition': 'attachment; filename="launchcrew-pack.json"'})
+        data = json.loads(adapter.export_pack(get_receipt(db, run_id, True)))
+        store.audit(db, run_id, 'exported', actor)
+    return JSONResponse(data, headers={'Content-Disposition': 'attachment; filename="launchcrew-pack.json"'})

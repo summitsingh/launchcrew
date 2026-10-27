@@ -17,7 +17,8 @@ def preview(profile, idea):
 
 def execute(run_id, idea, profile, seed):
     captured = []
-    with TemporaryDirectory() as directory:
+    (ROOT / '.local').mkdir(exist_ok=True)
+    with TemporaryDirectory(dir=ROOT / '.local') as directory:
         for name in ('Scout', 'Maker', 'Checker'):
             agents.save_agent(agents.load_agent(name, ROOT / 'agents'), directory)
         maker = copy.deepcopy(profile)
@@ -35,6 +36,7 @@ def execute(run_id, idea, profile, seed):
 
 def export_pack(receipt):
     # Keep v1 export validation and serialization semantics.
-    with TemporaryDirectory() as directory:
+    (ROOT / '.local').mkdir(exist_ok=True)
+    with TemporaryDirectory(dir=ROOT / '.local') as directory:
         path = receipts.export_receipt(receipt, Path(directory) / 'pack.json')
         return path.read_bytes()

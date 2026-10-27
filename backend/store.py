@@ -1,24 +1,34 @@
-"""Postgres system of record. Each mutation and its audit commit together."""
+"""One SQLAlchemy Postgres layer; migrations run through Alembic only."""
 import os
-from pathlib import Path
-import psycopg
-from psycopg.types.json import Jsonb
+from functools import lru_cache
+from sqlalchemy import create_engine, text
 from launchcrew import agents
 from backend.adapter import ROOT
 
 
+@lru_cache
+def engine():
+    url = os.environ['DATABASE_URL']
+    if url.startswith('postgresql://'):
+        url = url.replace('postgresql://', 'postgresql+psycopg://', 1)
+    if not url.startswith('postgresql+psycopg://'):
+        raise ValueError('Postgres required')
+    return create_engine(url, pool_pre_ping=True)
+
+
 def connect():
-    return psycopg.connect(os.environ['DATABASE_URL'])
+    return engine().begin()
 
 
 def initialize():
+    # No implicit DDL: alembic upgrade head must precede API startup.
     with connect() as db:
-        db.execute((ROOT / 'db/001_init.sql').read_text())
         for profile in agents.list_agents(ROOT / 'agents'):
-            db.execute('INSERT INTO agents(name,profile) VALUES (%s,%s) ON CONFLICT DO NOTHING',
-                       (profile['name'].lower(), Jsonb(profile)))
+            import json
+            db.execute(text('INSERT INTO agents(name,profile) VALUES (:name,CAST(:profile AS jsonb)) ON CONFLICT DO NOTHING'),
+                       {'name': profile['name'].lower(), 'profile': json.dumps(profile)})
 
 
-def audit(db, run_id, action):
-    db.execute('INSERT INTO audit(run_id,action,actor) VALUES (%s,%s,%s)',
-               (run_id, action, 'demo_placeholder'))
+def audit(db, run_id, action, actor='demo_placeholder'):
+    db.execute(text('INSERT INTO audit(run_id,action,actor) VALUES (:run_id,:action,:actor)'),
+               {'run_id': run_id, 'action': action, 'actor': actor})

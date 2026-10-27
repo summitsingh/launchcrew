@@ -1,3 +1,5 @@
+-- Historical partial schema only. Superseded by Alembic revision 001.
+-- Do not execute this file for new databases. See docs/postgres-migration.md.
 CREATE TABLE IF NOT EXISTS agents (
  name text PRIMARY KEY, profile jsonb NOT NULL,
  updated_at timestamptz NOT NULL DEFAULT now()
