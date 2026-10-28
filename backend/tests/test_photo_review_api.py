@@ -123,6 +123,10 @@ def test_keyless_check_returns_not_run_with_zero_http(client):
     assert receipt['photo_status']['revision'] == 1
     assert receipt['approvals'] == [] and receipt['approval_state'] == 'pending_approval'
     assert receipt['photo_transport']['last_handling'] == 'not_run'
+    note = receipt['photo_transport']['note']
+    assert 'validation server' in note
+    assert 'not forwarded to any segmentation provider' in note
+    assert 'not sent anywhere' not in note
     _assert_clean(receipt)
 
 

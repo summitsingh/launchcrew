@@ -254,7 +254,7 @@ def attach_verdict(receipt, *, label, reason, actor, uploads=0, segmentations=0,
 
 
 def record_unattempted_transport(receipt, *, handling, note):
-    """Note a photo attempt that sent nothing, separately from text usage."""
+    """Note a photo attempt that reached no provider, separately from text usage."""
     revised = copy.deepcopy(receipt)
     transport = dict(revised.get('photo_transport') or {})
     transport.update({'attempts': int(transport.get('attempts', 0)),

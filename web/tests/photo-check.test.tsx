@@ -171,6 +171,31 @@ describe('photo check review copy', () => {
     expect(html).toContain('Duplicate checks are disabled until it settles');
   });
 
+  it('reports delivery pending while the check POST is in flight, never not-sent', () => {
+    // Before the ack, the sent selection must not read as unsent pixels.
+    const inFlight = selectionPhotoCopy(null, 0, false, true);
+    expect(inFlight.caption).toContain('Sent: these current pixels were sent');
+    expect(inFlight.caption).toContain('result is pending');
+    expect(inFlight.caption).not.toContain('were not sent');
+    expect(inFlight.alt).toBe('Selected photo preview (check sent, result pending)');
+    // Same while the server admission poll has already landed check_requested.
+    const admitted = selectionPhotoCopy(
+      { ...detected, state: 'check_requested', label: null, revision: 1 }, 1, false, true);
+    expect(admitted.caption).toContain('result is pending');
+    expect(admitted.caption).not.toContain('were not sent');
+    // The acknowledged selection keeps its checked copy, not the pending one.
+    const acked = selectionPhotoCopy(detected, 1, true, true);
+    expect(acked.caption).toContain('Checked: these current pixels passed the size and edge gates');
+    expect(acked.caption).not.toContain('were not sent');
+    // The panel renders the pending copy for the in-flight selection.
+    const html = panel({ selectionName: 'a.png', previewUrl: 'blob:a', hasPayload: true, pending: true });
+    expect(html).toContain('result is pending');
+    expect(html).not.toContain('were not sent');
+    // A fresh selection with no check in flight still reads unsent.
+    const htmlIdle = panel({ selectionName: 'b.png', previewUrl: 'blob:b', hasPayload: true });
+    expect(htmlIdle).toContain('were not sent');
+  });
+
   it('reports unknown, not_detected, and clipping honestly with no override', () => {
     for (const label of ['not_detected', 'possible_clipping', 'unknown'] as const) {
       const stored: StoredPhoto = { ...detected, label, reason: label === 'unknown' ? 'needs_review' : 'gate' };

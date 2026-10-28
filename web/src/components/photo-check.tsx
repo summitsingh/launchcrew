@@ -103,12 +103,15 @@ export function photoStatusCopy(stored: StoredPhoto | null, currentRevision: num
  * current revision already has a detected check, a stale check, or an
  * unconfirmed state. A checked selection is the local generation whose
  * check response already succeeded for the current revision, so its copy
- * never claims the pixels were not sent. Plain product copy, no
- * implementation noise. */
+ * never claims the pixels were not sent. While its own check POST is in
+ * flight before the ack (sentPending), the copy reports delivery pending
+ * instead of claiming the pixels were not sent: the bytes already left.
+ * Plain product copy, no implementation noise. */
 export function selectionPhotoCopy(
   stored: StoredPhoto | null,
   currentRevision: number,
   checkedCurrent = false,
+  sentPending = false,
 ): { caption: string; alt: string } {
   if (checkedCurrent && stored && stored.revision === currentRevision) {
     if (stored.state === 'checked' && stored.label === 'detected') {
@@ -141,6 +144,12 @@ export function selectionPhotoCopy(
     return {
       caption: `Checked: these current pixels were sent on this revision and the photo state is ${stored.state}: ${stored.reason || 'unavailable'}. They are not approved and not exportable.`,
       alt: 'Selected photo preview (checked on this revision, result unconfirmed)',
+    };
+  }
+  if (sentPending) {
+    return {
+      caption: 'Sent: these current pixels were sent for a photo check on this revision and the result is pending. They are not approved and not exportable until it passes.',
+      alt: 'Selected photo preview (check sent, result pending)',
     };
   }
   const base = 'These local pixels were not sent, and they are not approved and not exportable until an explicit check passes.';
@@ -358,7 +367,7 @@ export function PhotoCheckPanel(props: PhotoPanelProps) {
             />
           </div>
           {props.selectionName && (() => {
-            const selection = selectionPhotoCopy(props.stored, props.revision, props.selectionChecked === true);
+            const selection = selectionPhotoCopy(props.stored, props.revision, props.selectionChecked === true, props.pending === true);
             return (
               <div>
                 <p role="status">

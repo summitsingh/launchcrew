@@ -730,7 +730,8 @@ def photo_check(run_id: str, body: PhotoCheckIn, actor: str = Depends(auth.actor
             revised = apply_photo_event(receipt, event=PHOTO_EVENT_CHECKED, actor=actor, status=status)
             revised = record_unattempted_transport(
                 revised, handling='not_run',
-                note=('SAM is not configured, so the photo bytes were not sent anywhere. '
+                note=('SAM is not configured, so the photo bytes stayed on the LaunchCrew validation '
+                      'server for this check and were not forwarded to any segmentation provider. '
                       'Text-model usage above is unchanged and covers text models only.'))
             db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id'),
                        {'receipt': json.dumps(revised), 'state': revised['approval_state'], 'id': run_id})
