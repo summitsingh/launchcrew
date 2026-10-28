@@ -106,7 +106,10 @@ FOUNDATION_TEMPLATE_FILE=""
 PREREQS_TEMPLATE_FILE=""
 FOUNDATION_PARAMETERS_FILE=""
 DNS_RECEIPT_FILE=""
-LAUNCH_JOURNAL_DIR="${LAUNCH_JOURNAL_DIR:-/tmp}"
+LAUNCH_JOURNAL_DIR="${LAUNCH_JOURNAL_DIR:-}"
+# Empty default resolves inside run_one_off_task to a dedicated persistent
+# private directory under the ignored .local tree derived from the script
+# root, never shared /tmp. An explicit --launch-journal-dir still overrides.
 
 usage() {
   echo "Usage: $0 [--confirm --stack-name NAME --expected-account ID --expected-region REGION ...] [--phase infra|images|init|material|dbroles|migrate|enable|all|foundation|prereqs]"
@@ -346,10 +349,95 @@ case "$AWS_BIN" in
 esac
 command -v python3 >/dev/null 2>&1 || { echo "refused: python3 is required to merge parameters and verify JSON proof" >&2; exit 1; }
 
+OPERATION_LOCK_DIR=""
+OPERATION_LOCK_OWNER_FILE=""
+OPERATION_LOCK_OWNED=0
+
+release_operation_lock() {
+  if [ "${OPERATION_LOCK_OWNED:-0}" -eq 1 ] && [ -n "${OPERATION_LOCK_DIR:-}" ] && [ -n "${OPERATION_LOCK_OWNER_FILE:-}" ]; then
+    if [ -f "$OPERATION_LOCK_OWNER_FILE" ]; then
+      OWNER_PID="$(cat "$OPERATION_LOCK_OWNER_FILE" 2>/dev/null | tr -d '[:space:]' || echo "")"
+      if [ "$OWNER_PID" = "$$" ]; then
+        rm -f "$OPERATION_LOCK_OWNER_FILE" 2>/dev/null || true
+        rmdir "$OPERATION_LOCK_DIR" 2>/dev/null || true
+      fi
+    fi
+  fi
+  OPERATION_LOCK_DIR=""
+  OPERATION_LOCK_OWNER_FILE=""
+  OPERATION_LOCK_OWNED=0
+}
+
+bootstrap_cleanup() {
+  release_operation_lock 2>/dev/null || true
+  rm -f "$TMP_ERR" "$TMP_JSON" "$TMP_PARAMS" 2>/dev/null || true
+}
+
+acquire_operation_lock() {
+  OPERATION_LOCK_DIR="$ACTIVE_FILE.lock"
+  OPERATION_LOCK_OWNER_FILE="$OPERATION_LOCK_DIR/owner"
+  OPERATION_LOCK_OWNED=0
+  if [ -L "$OPERATION_LOCK_DIR" ]; then
+    echo "$TASK_LABEL operation lock is a symlink, no launch attempted. Inspect $OPERATION_LOCK_DIR." >&2
+    phase_failed "$TASK_PHASE"
+  fi
+  if [ -e "$OPERATION_LOCK_DIR" ] && [ ! -d "$OPERATION_LOCK_DIR" ]; then
+    echo "$TASK_LABEL operation lock path exists as a file, no launch attempted. Inspect $OPERATION_LOCK_DIR." >&2
+    phase_failed "$TASK_PHASE"
+  fi
+  LOCK_ATTEMPTS=0
+  while [ "$LOCK_ATTEMPTS" -lt 30 ]; do
+    if mkdir "$OPERATION_LOCK_DIR" 2>/dev/null; then
+      if ! (umask 077; printf '%s' "$$" >"$OPERATION_LOCK_OWNER_FILE" 2>/dev/null); then
+        rmdir "$OPERATION_LOCK_DIR" 2>/dev/null || true
+        echo "$TASK_LABEL operation lock owner write failed, no launch attempted." >&2
+        phase_failed "$TASK_PHASE"
+      fi
+      chmod 600 "$OPERATION_LOCK_OWNER_FILE" 2>/dev/null || true
+      OPERATION_LOCK_OWNED=1
+      return 0
+    fi
+    if [ -d "$OPERATION_LOCK_DIR" ]; then
+      if [ -f "$OPERATION_LOCK_OWNER_FILE" ]; then
+        LOCK_PID="$(cat "$OPERATION_LOCK_OWNER_FILE" 2>/dev/null | tr -d '[:space:]' || echo "")"
+        case "$LOCK_PID" in
+          ''|*[!0-9]*) LOCK_PID="" ;;
+        esac
+        if [ -n "$LOCK_PID" ]; then
+          if kill -0 "$LOCK_PID" 2>/dev/null; then
+            LOCK_ATTEMPTS=$((LOCK_ATTEMPTS + 1))
+            sleep 1 2>/dev/null || sleep 1
+            continue
+          else
+            if [ -f "$ACTIVE_FILE" ] && [ ! -L "$ACTIVE_FILE" ]; then
+              echo "$TASK_LABEL operation lock is stale (owner $LOCK_PID dead), prior record exists, manual reconciliation required with no new launch. Inspect $ACTIVE_FILE and $OPERATION_LOCK_DIR." >&2
+            else
+              echo "$TASK_LABEL operation lock is stale (owner $LOCK_PID dead) with no prior record, launch is ambiguous with no new run. Manual cleanup required. Inspect $OPERATION_LOCK_DIR." >&2
+            fi
+            phase_failed "$TASK_PHASE"
+          fi
+        else
+          echo "$TASK_LABEL operation lock owner unreadable, no launch attempted. Inspect $OPERATION_LOCK_DIR." >&2
+          phase_failed "$TASK_PHASE"
+        fi
+      else
+        LOCK_ATTEMPTS=$((LOCK_ATTEMPTS + 1))
+        sleep 1 2>/dev/null || sleep 1
+        continue
+      fi
+    else
+      LOCK_ATTEMPTS=$((LOCK_ATTEMPTS + 1))
+      continue
+    fi
+  done
+  echo "$TASK_LABEL operation lock held after bounded wait, no new launch to avoid duplicate run-task. Rerun after holder completes. Inspect $OPERATION_LOCK_DIR." >&2
+  phase_failed "$TASK_PHASE"
+}
+
 TMP_ERR="$(mktemp /tmp/launchcrew-bootstrap-err-XXXXXX)"
 TMP_JSON="$(mktemp /tmp/launchcrew-bootstrap-json-XXXXXX)"
 TMP_PARAMS="$(mktemp /tmp/launchcrew-bootstrap-params-XXXXXX)"
-trap 'rm -f "$TMP_ERR" "$TMP_JSON" "$TMP_PARAMS"' EXIT INT TERM
+trap bootstrap_cleanup EXIT INT TERM
 
 is_auth_error() {
   case "$1" in
@@ -1049,9 +1137,15 @@ PYEOF
 # Foundation budget alert readback, read-only and fail-closed. It uses the
 # actual Budgets APIs: DescribeNotificationsForBudget returns a Notifications
 # array, then DescribeSubscribersForNotification returns a Subscribers array
-# for each validated notification. It requires exactly ACTUAL GREATER_THAN 80
-# PERCENTAGE and FORECASTED GREATER_THAN 100 PERCENTAGE, each subscribed once
-# to the owned foundation topic via SNS. Missing, extra, duplicate,
+# for each validated notification. Pagination is raw API with --no-paginate
+# plus --cli-input-json carrying exact UpperCamel members AccountId,
+# BudgetName, Notification, MaxResults, NextToken; each call is one API call
+# so the outer page bound is honest. It requires exactly ACTUAL GREATER_THAN
+# 80 and FORECASTED GREATER_THAN 100 with ThresholdType PERCENTAGE or omitted
+# (optional omitted means implicit percentage for a healthy budget), each
+# subscribed once to the owned foundation topic via SNS. Subscriber lookup
+# always uses explicit PERCENTAGE. Explicit null, ABSOLUTE, ABSOLUTE_VALUE,
+# empty, or unknown ThresholdType refuses. Missing, extra, duplicate,
 # retargeted, paginated overflow, or unreadable notifications or subscribers
 # refuse. Alerts are notifications only, never a hard cap. No budget change.
 check_foundation_notifications() {
@@ -1060,31 +1154,34 @@ check_foundation_notifications() {
   [ -n "$NOTIF_TOPIC" ] && [ "$NOTIF_TOPIC" != "None" ] || { echo "refused: foundation topic ARN missing, project spend monitoring UNVERIFIED." >&2; phase_failed "$PHASE"; }
   NOTIF_PAGE="$(mktemp /tmp/launchcrew-fnotif-XXXXXX)"
   NOTIF_COLLECTED="$(mktemp /tmp/launchcrew-fnotif-all-XXXXXX)"
+  NOTIF_INPUT="$(mktemp /tmp/launchcrew-fnotif-in-XXXXXX)"
   printf '[]' >"$NOTIF_COLLECTED"
   NOTIF_NEXT=""
   NOTIF_PAGES=0
   while [ "$NOTIF_PAGES" -lt 5 ]; do
     NOTIF_PAGES=$((NOTIF_PAGES + 1))
-    if [ -z "$NOTIF_NEXT" ]; then
-      if ! "$AWS_BIN" budgets describe-notifications-for-budget --account-id "$EXPECTED_ACCOUNT" --budget-name launchcrew-demo --output json >"$NOTIF_PAGE" 2>"$TMP_ERR"; then
-        rm -f "$NOTIF_PAGE" "$NOTIF_COLLECTED"
-        ERR="$(cat "$TMP_ERR" 2>/dev/null || true)"
-        echo "foundation budget notifications unreadable, project spend monitoring UNVERIFIED, no claim made." >&2
-        if is_auth_error "$ERR"; then
-          echo "authorization or API failure, not absence: budgets:DescribeNotificationsForBudget read permission is required." >&2
-        fi
-        phase_failed "$PHASE"
+    if ! python3 - "$NOTIF_INPUT" "$EXPECTED_ACCOUNT" "$NOTIF_NEXT" 2>/dev/null <<'PYEOF'
+import json, sys
+path, account, token = sys.argv[1:4]
+doc = {"AccountId": account, "BudgetName": "launchcrew-demo", "MaxResults": 10}
+if token and token != "END" and token != "None":
+    doc["NextToken"] = token
+with open(path, "w", encoding="utf-8") as out:
+    json.dump(doc, out)
+PYEOF
+    then
+      rm -f "$NOTIF_PAGE" "$NOTIF_COLLECTED" "$NOTIF_INPUT"
+      echo "foundation budget notifications input unreadable, project spend monitoring UNVERIFIED, no claim made." >&2
+      phase_failed "$PHASE"
+    fi
+    if ! "$AWS_BIN" budgets describe-notifications-for-budget --cli-input-json "file://$NOTIF_INPUT" --no-paginate --output json >"$NOTIF_PAGE" 2>"$TMP_ERR"; then
+      rm -f "$NOTIF_PAGE" "$NOTIF_COLLECTED" "$NOTIF_INPUT"
+      ERR="$(cat "$TMP_ERR" 2>/dev/null || true)"
+      echo "foundation budget notifications unreadable, project spend monitoring UNVERIFIED, no claim made." >&2
+      if is_auth_error "$ERR"; then
+        echo "authorization or API failure, not absence: budgets:DescribeNotificationsForBudget read permission is required." >&2
       fi
-    else
-      if ! "$AWS_BIN" budgets describe-notifications-for-budget --account-id "$EXPECTED_ACCOUNT" --budget-name launchcrew-demo --next-token "$NOTIF_NEXT" --output json >"$NOTIF_PAGE" 2>"$TMP_ERR"; then
-        rm -f "$NOTIF_PAGE" "$NOTIF_COLLECTED"
-        ERR="$(cat "$TMP_ERR" 2>/dev/null || true)"
-        echo "foundation budget notifications unreadable, project spend monitoring UNVERIFIED, no claim made." >&2
-        if is_auth_error "$ERR"; then
-          echo "authorization or API failure, not absence: budgets:DescribeNotificationsForBudget read permission is required." >&2
-        fi
-        phase_failed "$PHASE"
-      fi
+      phase_failed "$PHASE"
     fi
     NOTIF_NEXT="$(python3 - "$NOTIF_PAGE" "$NOTIF_COLLECTED" 2>/dev/null <<'PYEOF'
 import json, sys
@@ -1116,6 +1213,9 @@ try:
 except Exception:
     print("MALFORMED")
     sys.exit(0)
+if "nextToken" in page:
+    print("MALFORMED")
+    sys.exit(0)
 nxt = page.get("NextToken", "")
 if nxt is None or nxt == "None":
     nxt = ""
@@ -1128,12 +1228,12 @@ PYEOF
 )" || NOTIF_NEXT="MALFORMED"
     NOTIF_NEXT="$(printf '%s' "$NOTIF_NEXT" | tr -d '[:space:]')"
     if [ "$NOTIF_NEXT" = "MALFORMED" ]; then
-      rm -f "$NOTIF_PAGE" "$NOTIF_COLLECTED"
+      rm -f "$NOTIF_PAGE" "$NOTIF_COLLECTED" "$NOTIF_INPUT"
       echo "foundation budget notifications unreadable, project spend monitoring UNVERIFIED, no claim made." >&2
       phase_failed "$PHASE"
     fi
     if [ "$NOTIF_NEXT" = "TOO_MANY" ]; then
-      rm -f "$NOTIF_PAGE" "$NOTIF_COLLECTED"
+      rm -f "$NOTIF_PAGE" "$NOTIF_COLLECTED" "$NOTIF_INPUT"
       echo "refused: foundation budget notifications exceed bounded count, expected ACTUAL 80 plus FORECASTED 100 to the owned topic, project spend monitoring UNVERIFIED." >&2
       phase_failed "$PHASE"
     fi
@@ -1142,11 +1242,11 @@ PYEOF
     fi
   done
   if [ -n "$NOTIF_NEXT" ] && [ "$NOTIF_NEXT" != "END" ] && [ "$NOTIF_NEXT" != "None" ]; then
-    rm -f "$NOTIF_PAGE" "$NOTIF_COLLECTED"
+    rm -f "$NOTIF_PAGE" "$NOTIF_COLLECTED" "$NOTIF_INPUT"
     echo "refused: foundation budget notifications exceed bounded pages, expected ACTUAL 80 plus FORECASTED 100 to the owned topic, project spend monitoring UNVERIFIED." >&2
     phase_failed "$PHASE"
   fi
-  rm -f "$NOTIF_PAGE"
+  rm -f "$NOTIF_PAGE" "$NOTIF_INPUT"
   NOTIF_PROOF="$(python3 - "$NOTIF_COLLECTED" 2>/dev/null <<'PYEOF'
 import json, sys
 try:
@@ -1170,8 +1270,17 @@ for note in entries:
         threshold = note.get("Threshold", None)
         if isinstance(threshold, float) and threshold.is_integer():
             threshold = int(threshold)
+        if "ThresholdType" not in note:
+            ttype = "PERCENTAGE"
+        else:
+            ttype = note.get("ThresholdType", None)
+            if ttype is None or not isinstance(ttype, str) or ttype != "PERCENTAGE":
+                print("NOTIFICATION_MISMATCH")
+                sys.exit(0)
         key = (note.get("NotificationType", ""), note.get("ComparisonOperator", ""),
-               threshold, note.get("ThresholdType", ""))
+               threshold, ttype)
+    except SystemExit:
+        raise
     except Exception:
         print("MALFORMED")
         sys.exit(0)
@@ -1198,31 +1307,38 @@ PYEOF
     fi
     SUB_PAGE="$(mktemp /tmp/launchcrew-fsub-XXXXXX)"
     SUB_COLLECTED="$(mktemp /tmp/launchcrew-fsub-all-XXXXXX)"
+    SUB_INPUT="$(mktemp /tmp/launchcrew-fsub-in-XXXXXX)"
     printf '[]' >"$SUB_COLLECTED"
     SUB_NEXT=""
     SUB_PAGES=0
     while [ "$SUB_PAGES" -lt 5 ]; do
       SUB_PAGES=$((SUB_PAGES + 1))
-      if [ -z "$SUB_NEXT" ]; then
-        if ! "$AWS_BIN" budgets describe-subscribers-for-notification --account-id "$EXPECTED_ACCOUNT" --budget-name launchcrew-demo --notification "$NOTIF_ARG" --output json >"$SUB_PAGE" 2>"$TMP_ERR"; then
-          rm -f "$SUB_PAGE" "$SUB_COLLECTED"
-          ERR="$(cat "$TMP_ERR" 2>/dev/null || true)"
-          echo "foundation budget $NOTIF_LABEL subscribers unreadable, project spend monitoring UNVERIFIED, no claim made." >&2
-          if is_auth_error "$ERR"; then
-            echo "authorization or API failure, not absence: budgets:DescribeSubscribersForNotification read permission is required." >&2
-          fi
-          phase_failed "$PHASE"
+      if ! python3 - "$SUB_INPUT" "$EXPECTED_ACCOUNT" "$NOTIF_ARG" "$SUB_NEXT" 2>/dev/null <<'PYEOF'
+import json, sys
+path, account, notif_arg, token = sys.argv[1:5]
+try:
+    notif = json.loads(notif_arg)
+except Exception:
+    sys.exit(1)
+doc = {"AccountId": account, "BudgetName": "launchcrew-demo", "Notification": notif, "MaxResults": 10}
+if token and token != "END" and token != "None":
+    doc["NextToken"] = token
+with open(path, "w", encoding="utf-8") as out:
+    json.dump(doc, out)
+PYEOF
+      then
+        rm -f "$SUB_PAGE" "$SUB_COLLECTED" "$SUB_INPUT"
+        echo "foundation budget $NOTIF_LABEL subscribers input unreadable, project spend monitoring UNVERIFIED, no claim made." >&2
+        phase_failed "$PHASE"
+      fi
+      if ! "$AWS_BIN" budgets describe-subscribers-for-notification --cli-input-json "file://$SUB_INPUT" --no-paginate --output json >"$SUB_PAGE" 2>"$TMP_ERR"; then
+        rm -f "$SUB_PAGE" "$SUB_COLLECTED" "$SUB_INPUT"
+        ERR="$(cat "$TMP_ERR" 2>/dev/null || true)"
+        echo "foundation budget $NOTIF_LABEL subscribers unreadable, project spend monitoring UNVERIFIED, no claim made." >&2
+        if is_auth_error "$ERR"; then
+          echo "authorization or API failure, not absence: budgets:DescribeSubscribersForNotification read permission is required." >&2
         fi
-      else
-        if ! "$AWS_BIN" budgets describe-subscribers-for-notification --account-id "$EXPECTED_ACCOUNT" --budget-name launchcrew-demo --notification "$NOTIF_ARG" --next-token "$SUB_NEXT" --output json >"$SUB_PAGE" 2>"$TMP_ERR"; then
-          rm -f "$SUB_PAGE" "$SUB_COLLECTED"
-          ERR="$(cat "$TMP_ERR" 2>/dev/null || true)"
-          echo "foundation budget $NOTIF_LABEL subscribers unreadable, project spend monitoring UNVERIFIED, no claim made." >&2
-          if is_auth_error "$ERR"; then
-            echo "authorization or API failure, not absence: budgets:DescribeSubscribersForNotification read permission is required." >&2
-          fi
-          phase_failed "$PHASE"
-        fi
+        phase_failed "$PHASE"
       fi
       SUB_NEXT="$(python3 - "$SUB_PAGE" "$SUB_COLLECTED" 2>/dev/null <<'PYEOF'
 import json, sys
@@ -1254,6 +1370,9 @@ try:
 except Exception:
     print("MALFORMED")
     sys.exit(0)
+if "nextToken" in page:
+    print("MALFORMED")
+    sys.exit(0)
 nxt = page.get("NextToken", "")
 if nxt is None or nxt == "None":
     nxt = ""
@@ -1266,12 +1385,12 @@ PYEOF
 )" || SUB_NEXT="MALFORMED"
       SUB_NEXT="$(printf '%s' "$SUB_NEXT" | tr -d '[:space:]')"
       if [ "$SUB_NEXT" = "MALFORMED" ]; then
-        rm -f "$SUB_PAGE" "$SUB_COLLECTED"
+        rm -f "$SUB_PAGE" "$SUB_COLLECTED" "$SUB_INPUT"
         echo "foundation budget $NOTIF_LABEL subscribers unreadable, project spend monitoring UNVERIFIED, no claim made." >&2
         phase_failed "$PHASE"
       fi
       if [ "$SUB_NEXT" = "TOO_MANY" ]; then
-        rm -f "$SUB_PAGE" "$SUB_COLLECTED"
+        rm -f "$SUB_PAGE" "$SUB_COLLECTED" "$SUB_INPUT"
         echo "refused: foundation budget $NOTIF_LABEL has too many subscribers, expected ACTUAL 80 plus FORECASTED 100 to the owned topic, project spend monitoring UNVERIFIED." >&2
         phase_failed "$PHASE"
       fi
@@ -1280,11 +1399,11 @@ PYEOF
       fi
     done
     if [ -n "$SUB_NEXT" ] && [ "$SUB_NEXT" != "END" ] && [ "$SUB_NEXT" != "None" ]; then
-      rm -f "$SUB_PAGE" "$SUB_COLLECTED"
+      rm -f "$SUB_PAGE" "$SUB_COLLECTED" "$SUB_INPUT"
       echo "refused: foundation budget $NOTIF_LABEL subscribers exceed bounded pages, expected ACTUAL 80 plus FORECASTED 100 to the owned topic, project spend monitoring UNVERIFIED." >&2
       phase_failed "$PHASE"
     fi
-    rm -f "$SUB_PAGE"
+    rm -f "$SUB_PAGE" "$SUB_INPUT"
     SUB_PROOF="$(python3 - "$SUB_COLLECTED" "$NOTIF_TOPIC" 2>/dev/null <<'PYEOF'
 import json, sys
 collected_file, expected_topic = sys.argv[1:3]
@@ -2477,6 +2596,9 @@ PYEOF
 # started: STOPPED or eventual consistency can hide an accepted task. There
 # is no confirmed none state and no absence based new token recommendation.
 # startedBy is a filter only and is never combined with desired status.
+# Pagination is raw API with --no-paginate plus --cli-input-json carrying
+# exact lowerCamel members cluster, startedBy or desiredStatus, maxResults,
+# nextToken; each call is one API call so the outer page bound is honest.
 # Recovery reconciles a known recorded ARN via Describe first when present.
 # For an unrecorded launch it runs bounded read only queries scoped to the
 # exact owned cluster only: one RUNNING query by token via startedBy alone,
@@ -2565,24 +2687,31 @@ PYEOF
   RUNNING_COLLECTED="$(mktemp /tmp/launchcrew-recover-run-XXXXXX)"
   printf '[]' >"$RUNNING_COLLECTED"
   RUNNING_PAGE="$(mktemp /tmp/launchcrew-recover-page-XXXXXX)"
+  RUNNING_INPUT="$(mktemp /tmp/launchcrew-recover-rin-XXXXXX)"
   RUNNING_NEXT=""
   RUNNING_PAGES=0
   while [ "$RUNNING_PAGES" -lt 3 ]; do
     RUNNING_PAGES=$((RUNNING_PAGES + 1))
-    if [ -z "$RUNNING_NEXT" ]; then
-      if ! "$AWS_BIN" ecs list-tasks --cluster "$CLUSTER_NAME" --started-by "$CLIENT_TOKEN" --region "$EXPECTED_REGION" --output json >"$RUNNING_PAGE" 2>"$TMP_ERR"; then
-        rm -f "$RUNNING_PAGE" "$RUNNING_COLLECTED"
-        write_launch_journal "$JOURNAL_FILE" "ambiguous_list_failed" ""
-        echo "refused: $TASK_LABEL launch ambiguous and RUNNING recovery list failed; a task may have started. No automatic resend. Inspect journal $JOURNAL_FILE." >&2
-        phase_failed "$TASK_PHASE"
-      fi
-    else
-      if ! "$AWS_BIN" ecs list-tasks --cluster "$CLUSTER_NAME" --started-by "$CLIENT_TOKEN" --next-token "$RUNNING_NEXT" --region "$EXPECTED_REGION" --output json >"$RUNNING_PAGE" 2>"$TMP_ERR"; then
-        rm -f "$RUNNING_PAGE" "$RUNNING_COLLECTED"
-        write_launch_journal "$JOURNAL_FILE" "ambiguous_list_failed" ""
-        echo "refused: $TASK_LABEL launch ambiguous and RUNNING recovery list failed; a task may have started. No automatic resend. Inspect journal $JOURNAL_FILE." >&2
-        phase_failed "$TASK_PHASE"
-      fi
+    if ! python3 - "$RUNNING_INPUT" "$CLUSTER_NAME" "$CLIENT_TOKEN" "$RUNNING_NEXT" 2>/dev/null <<'PYEOF'
+import json, sys
+path, cluster, token_filter, token = sys.argv[1:5]
+doc = {"cluster": cluster, "startedBy": token_filter, "maxResults": 10}
+if token and token != "END" and token != "None":
+    doc["nextToken"] = token
+with open(path, "w", encoding="utf-8") as out:
+    json.dump(doc, out)
+PYEOF
+    then
+      rm -f "$RUNNING_PAGE" "$RUNNING_COLLECTED" "$RUNNING_INPUT"
+      write_launch_journal "$JOURNAL_FILE" "ambiguous_list_failed" ""
+      echo "refused: $TASK_LABEL launch ambiguous and RUNNING recovery input failed; a task may have started. No automatic resend. Inspect journal $JOURNAL_FILE." >&2
+      phase_failed "$TASK_PHASE"
+    fi
+    if ! "$AWS_BIN" ecs list-tasks --cli-input-json "file://$RUNNING_INPUT" --region "$EXPECTED_REGION" --no-paginate --output json >"$RUNNING_PAGE" 2>"$TMP_ERR"; then
+      rm -f "$RUNNING_PAGE" "$RUNNING_COLLECTED" "$RUNNING_INPUT"
+      write_launch_journal "$JOURNAL_FILE" "ambiguous_list_failed" ""
+      echo "refused: $TASK_LABEL launch ambiguous and RUNNING recovery list failed; a task may have started. No automatic resend. Inspect journal $JOURNAL_FILE." >&2
+      phase_failed "$TASK_PHASE"
     fi
     RUNNING_NEXT="$(python3 - "$RUNNING_PAGE" "$RUNNING_COLLECTED" 2>/dev/null <<'PYEOF'
 import json, sys
@@ -2613,7 +2742,10 @@ try:
 except Exception:
     print("MALFORMED")
     sys.exit(0)
-nxt = page.get("nextToken", page.get("NextToken", ""))
+if "NextToken" in page:
+    print("MALFORMED")
+    sys.exit(0)
+nxt = page.get("nextToken", "")
 if nxt is None or nxt == "None":
     nxt = ""
 if not isinstance(nxt, str):
@@ -2625,13 +2757,13 @@ PYEOF
 )" || RUNNING_NEXT="MALFORMED"
     RUNNING_NEXT="$(printf '%s' "$RUNNING_NEXT" | tr -d '[:space:]')"
     if [ "$RUNNING_NEXT" = "MALFORMED" ]; then
-      rm -f "$RUNNING_PAGE" "$RUNNING_COLLECTED"
+      rm -f "$RUNNING_PAGE" "$RUNNING_COLLECTED" "$RUNNING_INPUT"
       write_launch_journal "$JOURNAL_FILE" "ambiguous_list_unreadable" ""
       echo "refused: $TASK_LABEL launch ambiguous and RUNNING recovery list malformed; a task may have started. No automatic resend. Inspect journal $JOURNAL_FILE." >&2
       phase_failed "$TASK_PHASE"
     fi
     if [ "$RUNNING_NEXT" = "TOO_MANY" ]; then
-      rm -f "$RUNNING_PAGE" "$RUNNING_COLLECTED"
+      rm -f "$RUNNING_PAGE" "$RUNNING_COLLECTED" "$RUNNING_INPUT"
       write_launch_journal "$JOURNAL_FILE" "ambiguous_multiple" ""
       echo "refused: $TASK_LABEL launch ambiguous with too many RUNNING candidates for this token; manual review required. No automatic resend. Inspect journal $JOURNAL_FILE." >&2
       phase_failed "$TASK_PHASE"
@@ -2641,33 +2773,40 @@ PYEOF
     fi
   done
   if [ -n "$RUNNING_NEXT" ] && [ "$RUNNING_NEXT" != "END" ] && [ "$RUNNING_NEXT" != "None" ]; then
-    rm -f "$RUNNING_PAGE" "$RUNNING_COLLECTED"
+    rm -f "$RUNNING_PAGE" "$RUNNING_COLLECTED" "$RUNNING_INPUT"
     write_launch_journal "$JOURNAL_FILE" "ambiguous_multiple" ""
     echo "refused: $TASK_LABEL launch ambiguous with truncated RUNNING recovery pages; manual review required. No automatic resend. Inspect journal $JOURNAL_FILE." >&2
     phase_failed "$TASK_PHASE"
   fi
-  rm -f "$RUNNING_PAGE"
+  rm -f "$RUNNING_PAGE" "$RUNNING_INPUT"
   STOPPED_COLLECTED="$(mktemp /tmp/launchcrew-recover-stop-XXXXXX)"
   printf '[]' >"$STOPPED_COLLECTED"
   STOPPED_PAGE="$(mktemp /tmp/launchcrew-recover-spage-XXXXXX)"
+  STOPPED_INPUT="$(mktemp /tmp/launchcrew-recover-sin-XXXXXX)"
   STOPPED_NEXT=""
   STOPPED_PAGES=0
   while [ "$STOPPED_PAGES" -lt 3 ]; do
     STOPPED_PAGES=$((STOPPED_PAGES + 1))
-    if [ -z "$STOPPED_NEXT" ]; then
-      if ! "$AWS_BIN" ecs list-tasks --cluster "$CLUSTER_NAME" --desired-status STOPPED --region "$EXPECTED_REGION" --output json >"$STOPPED_PAGE" 2>"$TMP_ERR"; then
-        rm -f "$STOPPED_PAGE" "$STOPPED_COLLECTED" "$RUNNING_COLLECTED"
-        write_launch_journal "$JOURNAL_FILE" "ambiguous_list_failed" ""
-        echo "refused: $TASK_LABEL launch ambiguous and STOPPED recovery list failed; a task may have started. No automatic resend. Inspect journal $JOURNAL_FILE." >&2
-        phase_failed "$TASK_PHASE"
-      fi
-    else
-      if ! "$AWS_BIN" ecs list-tasks --cluster "$CLUSTER_NAME" --desired-status STOPPED --next-token "$STOPPED_NEXT" --region "$EXPECTED_REGION" --output json >"$STOPPED_PAGE" 2>"$TMP_ERR"; then
-        rm -f "$STOPPED_PAGE" "$STOPPED_COLLECTED" "$RUNNING_COLLECTED"
-        write_launch_journal "$JOURNAL_FILE" "ambiguous_list_failed" ""
-        echo "refused: $TASK_LABEL launch ambiguous and STOPPED recovery list failed; a task may have started. No automatic resend. Inspect journal $JOURNAL_FILE." >&2
-        phase_failed "$TASK_PHASE"
-      fi
+    if ! python3 - "$STOPPED_INPUT" "$CLUSTER_NAME" "$STOPPED_NEXT" 2>/dev/null <<'PYEOF'
+import json, sys
+path, cluster, token = sys.argv[1:4]
+doc = {"cluster": cluster, "desiredStatus": "STOPPED", "maxResults": 10}
+if token and token != "END" and token != "None":
+    doc["nextToken"] = token
+with open(path, "w", encoding="utf-8") as out:
+    json.dump(doc, out)
+PYEOF
+    then
+      rm -f "$STOPPED_PAGE" "$STOPPED_COLLECTED" "$RUNNING_COLLECTED" "$STOPPED_INPUT"
+      write_launch_journal "$JOURNAL_FILE" "ambiguous_list_failed" ""
+      echo "refused: $TASK_LABEL launch ambiguous and STOPPED recovery input failed; a task may have started. No automatic resend. Inspect journal $JOURNAL_FILE." >&2
+      phase_failed "$TASK_PHASE"
+    fi
+    if ! "$AWS_BIN" ecs list-tasks --cli-input-json "file://$STOPPED_INPUT" --region "$EXPECTED_REGION" --no-paginate --output json >"$STOPPED_PAGE" 2>"$TMP_ERR"; then
+      rm -f "$STOPPED_PAGE" "$STOPPED_COLLECTED" "$RUNNING_COLLECTED" "$STOPPED_INPUT"
+      write_launch_journal "$JOURNAL_FILE" "ambiguous_list_failed" ""
+      echo "refused: $TASK_LABEL launch ambiguous and STOPPED recovery list failed; a task may have started. No automatic resend. Inspect journal $JOURNAL_FILE." >&2
+      phase_failed "$TASK_PHASE"
     fi
     STOPPED_NEXT="$(python3 - "$STOPPED_PAGE" "$STOPPED_COLLECTED" 2>/dev/null <<'PYEOF'
 import json, sys
@@ -2698,7 +2837,10 @@ try:
 except Exception:
     print("MALFORMED")
     sys.exit(0)
-nxt = page.get("nextToken", page.get("NextToken", ""))
+if "NextToken" in page:
+    print("MALFORMED")
+    sys.exit(0)
+nxt = page.get("nextToken", "")
 if nxt is None or nxt == "None":
     nxt = ""
 if not isinstance(nxt, str):
@@ -2710,13 +2852,13 @@ PYEOF
 )" || STOPPED_NEXT="MALFORMED"
     STOPPED_NEXT="$(printf '%s' "$STOPPED_NEXT" | tr -d '[:space:]')"
     if [ "$STOPPED_NEXT" = "MALFORMED" ]; then
-      rm -f "$STOPPED_PAGE" "$STOPPED_COLLECTED" "$RUNNING_COLLECTED"
+      rm -f "$STOPPED_PAGE" "$STOPPED_COLLECTED" "$RUNNING_COLLECTED" "$STOPPED_INPUT"
       write_launch_journal "$JOURNAL_FILE" "ambiguous_list_unreadable" ""
       echo "refused: $TASK_LABEL launch ambiguous and STOPPED recovery list malformed; a task may have started. No automatic resend. Inspect journal $JOURNAL_FILE." >&2
       phase_failed "$TASK_PHASE"
     fi
     if [ "$STOPPED_NEXT" = "TOO_MANY" ]; then
-      rm -f "$STOPPED_PAGE" "$STOPPED_COLLECTED" "$RUNNING_COLLECTED"
+      rm -f "$STOPPED_PAGE" "$STOPPED_COLLECTED" "$RUNNING_COLLECTED" "$STOPPED_INPUT"
       write_launch_journal "$JOURNAL_FILE" "ambiguous_multiple" ""
       echo "refused: $TASK_LABEL launch ambiguous with too many STOPPED candidates in the owned cluster; manual review required. No automatic resend. Inspect journal $JOURNAL_FILE." >&2
       phase_failed "$TASK_PHASE"
@@ -2726,12 +2868,12 @@ PYEOF
     fi
   done
   if [ -n "$STOPPED_NEXT" ] && [ "$STOPPED_NEXT" != "END" ] && [ "$STOPPED_NEXT" != "None" ]; then
-    rm -f "$STOPPED_PAGE" "$STOPPED_COLLECTED" "$RUNNING_COLLECTED"
+    rm -f "$STOPPED_PAGE" "$STOPPED_COLLECTED" "$RUNNING_COLLECTED" "$STOPPED_INPUT"
     write_launch_journal "$JOURNAL_FILE" "ambiguous_multiple" ""
     echo "refused: $TASK_LABEL launch ambiguous with truncated STOPPED recovery pages; manual review required. No automatic resend. Inspect journal $JOURNAL_FILE." >&2
     phase_failed "$TASK_PHASE"
   fi
-  rm -f "$STOPPED_PAGE"
+  rm -f "$STOPPED_PAGE" "$STOPPED_INPUT"
   RUNNING_LIST="$(mktemp /tmp/launchcrew-recover-runlist-XXXXXX)"
   STOPPED_LIST="$(mktemp /tmp/launchcrew-recover-stoplist-XXXXXX)"
   if ! python3 - "$RUNNING_COLLECTED" "$STOPPED_COLLECTED" "$RUNNING_LIST" "$STOPPED_LIST" 2>/dev/null <<'PYEOF'
@@ -3018,20 +3160,28 @@ is_mutating_label() {
 # and Logs. Operation lifecycle: pending then started then complete is the
 # only terminal success; pending, started, adopted, and every ambiguous
 # outcome are non-terminal and block any new launch. A stable active
-# operation record in mode 700 dir with mode 600 file carries the exact
-# account, region, stack, cluster, phase, label, taskdef, and config digest.
-# Genuine crash resume reads and validates that record before any new token:
-# it adopts and reconciles the prior task, and unresolved blocks new launch.
-# A successful mutating init, bind, or migrate never resends from the same
-# operation after restart. Same operation with changed taskdef or config
-# fails explicit, never auto fresh. Read-only material and verify may fresh
-# recheck only after prior terminal complete, never by duplicating an
-# unresolved attempt. No fabricated terminal and no review bypass. The
-# run-task call carries a bounded client token as both client-token and
-# startedBy with no automatic resend. Ambiguous responses use read-only
-# recovery with empty remaining AMBIGUOUS. Terminal proof is STOPPED with
-# every expected essential container exit 0. No secret value in argv, files,
-# logs, or journal.
+# operation record in a dedicated persistent private mode 700 dir with mode
+# 600 file carries the exact account, region, stack, cluster, phase, label,
+# taskdef, and config digest. The default dir is under the ignored .local
+# tree derived from the script root, never shared /tmp, and repeated
+# invocation reuses the same record for crash resume. Whole lookup, claim,
+# recovery, and launch serialize under an atomic exclusive operation lock
+# scoped to the exact active record path; account, region, taskdef, and
+# config are validated inside the lock. Two controllers sharing a directory
+# never run twice for the same unresolved operation. Trap releases only the
+# owned lock; stale lock fails closed with read-only reconciliation and no
+# fresh launch. Genuine crash resume reads and validates that record before
+# any new token: it adopts and reconciles the prior task, and unresolved
+# blocks new launch. A successful mutating init, bind, or migrate never
+# resends from the same operation after restart. Same operation with changed
+# taskdef or config fails explicit, never auto fresh. Read-only material and
+# verify may fresh recheck only after prior terminal complete, never by
+# duplicating an unresolved attempt. No fabricated terminal and no review
+# bypass. The run-task call carries a bounded client token as both
+# client-token and startedBy with no automatic resend. Ambiguous responses
+# use read-only recovery with empty remaining AMBIGUOUS. Terminal proof is
+# STOPPED with every expected essential container exit 0. No secret value in
+# argv, files, logs, or journal.
 run_one_off_task() {
   TASKDEF_LOGICAL="$1"
   TASK_LABEL="$2"
@@ -3045,24 +3195,44 @@ run_one_off_task() {
   SUBNET_A="$(printf '%s' "$SUBNET_A" | tr -d '[:space:]')"
   SUBNET_B="$(printf '%s' "$SUBNET_B" | tr -d '[:space:]')"
   JOB_SG="$(printf '%s' "$JOB_SG" | tr -d '[:space:]')"
-  [ -n "$LAUNCH_JOURNAL_DIR" ] || { echo "$TASK_LABEL journal directory missing, no launch attempted." >&2; phase_failed "$TASK_PHASE"; }
+  if [ -z "$LAUNCH_JOURNAL_DIR" ]; then
+    case "$0" in
+      */*) BOOTSTRAP_SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd 2>/dev/null || echo "")" ;;
+      *) BOOTSTRAP_SCRIPT_DIR="" ;;
+    esac
+    if [ -n "$BOOTSTRAP_SCRIPT_DIR" ] && [ -d "$BOOTSTRAP_SCRIPT_DIR" ]; then
+      LAUNCH_JOURNAL_DIR="$BOOTSTRAP_SCRIPT_DIR/../../.local/launch-journals"
+    else
+      echo "$TASK_LABEL journal directory missing and script root unreadable, no launch attempted. Pass --launch-journal-dir with a private directory." >&2; phase_failed "$TASK_PHASE"
+    fi
+  fi
   if [ -L "$LAUNCH_JOURNAL_DIR" ]; then echo "$TASK_LABEL journal directory is a symlink, no launch attempted." >&2; phase_failed "$TASK_PHASE"; fi
+  case "$LAUNCH_JOURNAL_DIR" in
+    /|/tmp|/tmp/|/var/tmp|/var/tmp/|/var|/var/|/etc|/etc/|/usr|/usr/) echo "$TASK_LABEL journal directory is a shared root, no launch attempted. Use a dedicated private directory." >&2; phase_failed "$TASK_PHASE" ;;
+  esac
+  JOURNAL_CREATED=0
   if [ ! -d "$LAUNCH_JOURNAL_DIR" ]; then
     if ! (umask 077; mkdir -p "$LAUNCH_JOURNAL_DIR" 2>/dev/null); then echo "$TASK_LABEL journal directory unwritable, no launch attempted." >&2; phase_failed "$TASK_PHASE"; fi
+    JOURNAL_CREATED=1
   fi
-  chmod 700 "$LAUNCH_JOURNAL_DIR" 2>/dev/null || { echo "$TASK_LABEL journal directory mode failed, no launch attempted." >&2; phase_failed "$TASK_PHASE"; }
+  if [ "$JOURNAL_CREATED" -eq 1 ]; then
+    chmod 700 "$LAUNCH_JOURNAL_DIR" 2>/dev/null || { echo "$TASK_LABEL journal directory mode failed, no launch attempted." >&2; phase_failed "$TASK_PHASE"; }
+  fi
   if ! python3 - "$LAUNCH_JOURNAL_DIR" 2>/dev/null <<'PYEOF'
 import os, sys
 path = sys.argv[1]
 if os.path.islink(path):
     sys.exit(1)
 try:
-    mode = os.stat(path).st_mode & 0o777
+    info = os.stat(path)
+    mode = info.st_mode & 0o777
+    if info.st_uid != os.getuid():
+        sys.exit(1)
 except Exception:
     sys.exit(1)
 sys.exit(0 if mode == 0o700 else 1)
 PYEOF
-  then echo "$TASK_LABEL journal directory is not private mode 700, no launch attempted." >&2; phase_failed "$TASK_PHASE"; fi
+  then echo "$TASK_LABEL journal directory is not private mode 700 owned, no launch attempted." >&2; phase_failed "$TASK_PHASE"; fi
   if ! CONFIG_DIGEST="$(python3 - "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$STACK_NAME" "$CLUSTER_NAME" "$TASK_PHASE" "$TASK_LABEL" "$TASKDEF_LOGICAL" "$TASKDEF_ARN" 2>/dev/null <<'PYEOF'
 import hashlib, sys
 raw = "|".join(sys.argv[1:9])
@@ -3073,6 +3243,7 @@ PYEOF
   [ -n "$CONFIG_DIGEST" ] || { echo "$TASK_LABEL config digest empty, no launch attempted." >&2; phase_failed "$TASK_PHASE"; }
   ACTIVE_FILE="$LAUNCH_JOURNAL_DIR/launchcrew-$STACK_NAME-$TASK_PHASE-$TASK_LABEL-active.json"
   if [ -L "$ACTIVE_FILE" ]; then echo "$TASK_LABEL active operation record is a symlink, no launch attempted." >&2; phase_failed "$TASK_PHASE"; fi
+  acquire_operation_lock
   if [ -f "$ACTIVE_FILE" ]; then
     PRIOR_PARSED="$(python3 - "$ACTIVE_FILE" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$STACK_NAME" "$CLUSTER_NAME" "$TASK_PHASE" "$TASK_LABEL" "$TASKDEF_LOGICAL" "$TASKDEF_ARN" "$CONFIG_DIGEST" 2>/dev/null <<'PYEOF'
 import json, os, sys
@@ -3082,11 +3253,11 @@ try:
     if os.path.islink(path):
         print("PROOF\tSYMLINK")
         sys.exit(0)
-    st = os.stat(path)
-    if (st.st_mode & 0o777) != 0o600:
+    finfo = os.stat(path)
+    if (finfo.st_mode & 0o777) != 0o600:
         print("PROOF\tMODE")
         sys.exit(0)
-    if st.st_size <= 0 or st.st_size > 10240:
+    if finfo.st_size <= 0 or finfo.st_size > 10240:
         print("PROOF\tSIZE")
         sys.exit(0)
     with open(path, encoding="utf-8") as handle:
@@ -3182,6 +3353,7 @@ PYEOF
         echo "$TASK_LABEL prior mutating operation already complete, re-proving terminal state with no resend."
         prove_terminal_task
         echo "$TASK_LABEL already complete, one-shot preserved with no new run-task."
+        release_operation_lock
         return 0
       else
         ARCHIVE_FILE="$LAUNCH_JOURNAL_DIR/launchcrew-$STACK_NAME-$TASK_PHASE-$TASK_LABEL-complete-$PRIOR_TOKEN.json"
@@ -3206,12 +3378,14 @@ PYEOF
       if [ -n "$PRIOR_TASK" ] && [ "$PRIOR_TASK" != "None" ]; then
         TASK_ARN="$PRIOR_TASK"
         prove_terminal_task
+        release_operation_lock
         return 0
       fi
       RECOVERED_ARN=""
       recover_ambiguous_launch
       TASK_ARN="$RECOVERED_ARN"
       prove_terminal_task
+      release_operation_lock
       return 0
     fi
   fi
@@ -3275,6 +3449,7 @@ PYEOF
     esac
   fi
   prove_terminal_task
+  release_operation_lock
 }
 
 if wants_phase init; then

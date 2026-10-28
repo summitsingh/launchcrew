@@ -189,12 +189,45 @@ if [ "$1" = "budgets" ] && [ "$2" = "describe-notifications-for-budget" ]; then
     exit 254
   fi
   if [ "$NOTIF_MODE" = "malformed" ]; then printf 'not-json{{{\\n'; exit 0; fi
-  NOTIF_NEXT=""
-  NOTIF_PREV=""
+  case "$*" in
+    *"--next-token"*) echo "fake-aws: unsupported --next-token rejected, use --cli-input-json NextToken" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"--starting-token"*|*"--max-items"*) echo "fake-aws: high level pagination args rejected with --no-paginate" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"--no-paginate"*) ;;
+    *) echo "fake-aws: unbounded autopagination rejected, --no-paginate required" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"--cli-input-json"*) ;;
+    *) echo "fake-aws: --cli-input-json required" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"--account-id"*|*"--budget-name"*) echo "fake-aws: raw JSON required, flag pagination refused" >&2; exit 2 ;;
+  esac
+  NOTIF_INPUT_PATH=""
+  NOTIF_INPUT_PREV=""
   for NOTIF_ARG in "$@"; do
-    if [ "$NOTIF_PREV" = "--next-token" ]; then NOTIF_NEXT="$NOTIF_ARG"; fi
-    NOTIF_PREV="$NOTIF_ARG"
+    if [ "$NOTIF_INPUT_PREV" = "--cli-input-json" ]; then NOTIF_INPUT_PATH="$NOTIF_ARG"; fi
+    NOTIF_INPUT_PREV="$NOTIF_ARG"
   done
+  case "$NOTIF_INPUT_PATH" in
+    file://*) NOTIF_INPUT_PATH="${NOTIF_INPUT_PATH#file://}" ;;
+    *) echo "fake-aws: --cli-input-json must be file:// path" >&2; exit 2 ;;
+  esac
+  echo "INPUT_JSON_NOTIF $(cat "$NOTIF_INPUT_PATH" 2>/dev/null || echo MALFORMED)" >>"$LOG" 2>/dev/null || true
+  NOTIF_NEXT="$(python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); a=d.get("AccountId",""); b=d.get("BudgetName",""); m=d.get("MaxResults",None); n=d.get("NextToken",""); nn=d.get("nextToken","__absent__"); bad=""; 
+if a!="111122223333": bad="BAD_ACCOUNT"; 
+elif b!="launchcrew-demo": bad="BAD_BUDGET"; 
+elif not isinstance(m,int) or m<=0 or m>10: bad="BAD_MAXRESULTS"; 
+elif nn!="__absent__": bad="BAD_CASE"; 
+elif n is None: n=""; 
+elif not isinstance(n,str): bad="MALFORMED_INPUT"; 
+print(bad if bad else n)' "$NOTIF_INPUT_PATH" 2>/dev/null || echo MALFORMED_INPUT)"
+  case "$NOTIF_NEXT" in
+    MALFORMED_INPUT|BAD_ACCOUNT|BAD_BUDGET|BAD_MAXRESULTS|BAD_CASE) echo "fake-aws: invalid cli-input-json $NOTIF_NEXT" >&2; exit 2 ;;
+  esac
   if [ "$NOTIF_MODE" = "paginated_ok" ]; then
     if [ -z "$NOTIF_NEXT" ]; then
       printf '{"Notifications":[{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"PERCENTAGE"}],"NextToken":"page2"}\\n'
@@ -227,6 +260,30 @@ if [ "$1" = "budgets" ] && [ "$2" = "describe-notifications-for-budget" ]; then
     printf '{"Notifications":[{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"PERCENTAGE"},{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"PERCENTAGE"},{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100,"ThresholdType":"PERCENTAGE"}]}\\n'
     exit 0
   fi
+  if [ "$NOTIF_MODE" = "missing_type" ]; then
+    printf '%s' '{"Notifications":[{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80},{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100}]}'
+    exit 0
+  fi
+  if [ "$NOTIF_MODE" = "absolute" ]; then
+    printf '%s' '{"Notifications":[{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"ABSOLUTE_VALUE"},{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100,"ThresholdType":"PERCENTAGE"}]}'
+    exit 0
+  fi
+  if [ "$NOTIF_MODE" = "absolute_short" ]; then
+    printf '%s' '{"Notifications":[{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"ABSOLUTE"},{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100,"ThresholdType":"PERCENTAGE"}]}'
+    exit 0
+  fi
+  if [ "$NOTIF_MODE" = "null_type" ]; then
+    printf '%s' '{"Notifications":[{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":null},{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100,"ThresholdType":"PERCENTAGE"}]}'
+    exit 0
+  fi
+  if [ "$NOTIF_MODE" = "unknown_type" ]; then
+    printf '%s' '{"Notifications":[{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"UNKNOWN"},{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100,"ThresholdType":"PERCENTAGE"}]}'
+    exit 0
+  fi
+  if [ "$NOTIF_MODE" = "empty_type" ]; then
+    printf '%s' '{"Notifications":[{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":""},{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100,"ThresholdType":"PERCENTAGE"}]}'
+    exit 0
+  fi
   if [ "$NOTIF_MODE" = "extra" ]; then
     printf '{"Notifications":[{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"PERCENTAGE"},{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100,"ThresholdType":"PERCENTAGE"},{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":90,"ThresholdType":"PERCENTAGE"}]}\\n'
     exit 0
@@ -241,11 +298,58 @@ if [ "$1" = "budgets" ] && [ "$2" = "describe-subscribers-for-notification" ]; t
     exit 254
   fi
   if [ "$SUB_MODE" = "malformed" ]; then printf 'not-json{{{\\n'; exit 0; fi
-  SUB_TOPIC="${FAKE_TOPIC_ARN:-arn:aws:sns:us-east-1:111122223333:launchcrew-foundation-BudgetTopic-ABC123}"
-  SUB_IS_ACTUAL=0
   case "$*" in
-    *ACTUAL*) SUB_IS_ACTUAL=1 ;;
+    *"--next-token"*) echo "fake-aws: unsupported --next-token rejected, use --cli-input-json NextToken" >&2; exit 2 ;;
   esac
+  case "$*" in
+    *"--starting-token"*|*"--max-items"*) echo "fake-aws: high level pagination args rejected with --no-paginate" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"--no-paginate"*) ;;
+    *) echo "fake-aws: unbounded autopagination rejected, --no-paginate required" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"--cli-input-json"*) ;;
+    *) echo "fake-aws: --cli-input-json required" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"--account-id"*|*"--budget-name"*|*"--notification"*) echo "fake-aws: raw JSON required, flag pagination refused" >&2; exit 2 ;;
+  esac
+  SUB_TOPIC="${FAKE_TOPIC_ARN:-arn:aws:sns:us-east-1:111122223333:launchcrew-foundation-BudgetTopic-ABC123}"
+  SUB_INPUT_PATH=""
+  SUB_INPUT_PREV=""
+  for SUB_ARG in "$@"; do
+    if [ "$SUB_INPUT_PREV" = "--cli-input-json" ]; then SUB_INPUT_PATH="$SUB_ARG"; fi
+    SUB_INPUT_PREV="$SUB_ARG"
+  done
+  case "$SUB_INPUT_PATH" in
+    file://*) SUB_INPUT_PATH="${SUB_INPUT_PATH#file://}" ;;
+    *) echo "fake-aws: --cli-input-json must be file:// path" >&2; exit 2 ;;
+  esac
+  echo "INPUT_JSON_SUB $(cat "$SUB_INPUT_PATH" 2>/dev/null || echo MALFORMED)" >>"$LOG" 2>/dev/null || true
+  SUB_DECODED="$(python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); a=d.get("AccountId",""); b=d.get("BudgetName",""); m=d.get("MaxResults",None); n=d.get("NextToken",""); nn=d.get("nextToken","__absent__"); nt=d.get("Notification",None); bad=""; typ=""; 
+if a!="111122223333": bad="BAD_ACCOUNT"; 
+elif b!="launchcrew-demo": bad="BAD_BUDGET"; 
+elif not isinstance(m,int) or m<=0 or m>10: bad="BAD_MAXRESULTS"; 
+elif nn!="__absent__": bad="BAD_CASE"; 
+elif not isinstance(nt,dict): bad="BAD_NOTIFICATION"; 
+elif nt.get("ThresholdType","")!="PERCENTAGE": bad="BAD_THRESHOLD_TYPE"; 
+elif n is None: n=""; 
+elif not isinstance(n,str): bad="MALFORMED_INPUT"; 
+else: typ=nt.get("NotificationType",""); 
+print(bad if bad else (typ+"|"+n))' "$SUB_INPUT_PATH" 2>/dev/null || echo MALFORMED_INPUT)"
+  case "$SUB_DECODED" in
+    MALFORMED_INPUT|BAD_ACCOUNT|BAD_BUDGET|BAD_MAXRESULTS|BAD_CASE|BAD_NOTIFICATION|BAD_THRESHOLD_TYPE) echo "fake-aws: invalid cli-input-json $SUB_DECODED" >&2; exit 2 ;;
+  esac
+  SUB_IS_ACTUAL=0
+  case "$SUB_DECODED" in
+    ACTUAL\|*) SUB_IS_ACTUAL=1 ;;
+  esac
+  SUB_NEXT_TOKEN="${SUB_DECODED#*|}"
+  if [ -n "$SUB_NEXT_TOKEN" ]; then
+    printf '%s' '{"Subscribers":[]}'
+    exit 0
+  fi
   if [ "$SUB_MODE" = "mismatch_actual" ] && [ "$SUB_IS_ACTUAL" -eq 1 ]; then
     printf '{"Subscribers":[{"SubscriptionType":"SNS","Address":"arn:aws:sns:us-east-1:111122223333:other-topic"}]}\\n'
     exit 0
@@ -295,20 +399,52 @@ if [ "$1" = "acm" ] && [ "$2" = "describe-certificate" ]; then
   exit 0
 fi
 if [ "$1" = "ecs" ] && [ "$2" = "list-tasks" ]; then
-  LIST_TOKEN=""
-  LIST_DESIRED=""
-  LIST_PREV=""
+  case "$*" in
+    *"--next-token"*) echo "fake-aws: unsupported --next-token rejected, use --cli-input-json nextToken" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"--starting-token"*|*"--max-items"*) echo "fake-aws: high level pagination args rejected with --no-paginate" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"--no-paginate"*) ;;
+    *) echo "fake-aws: unbounded autopagination rejected, --no-paginate required" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"--cli-input-json"*) ;;
+    *) echo "fake-aws: --cli-input-json required" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"--cluster "*|*"--cluster="*|*"--started-by"*|*"--desired-status"*) echo "fake-aws: raw JSON required, flag filters refused" >&2; exit 2 ;;
+  esac
+  LIST_INPUT_PATH=""
+  LIST_INPUT_PREV=""
   for LIST_ARG in "$@"; do
-    if [ "$LIST_PREV" = "--started-by" ]; then LIST_TOKEN="$LIST_ARG"; fi
-    if [ "$LIST_PREV" = "--desired-status" ]; then LIST_DESIRED="$LIST_ARG"; fi
-    LIST_PREV="$LIST_ARG"
+    if [ "$LIST_INPUT_PREV" = "--cli-input-json" ]; then LIST_INPUT_PATH="$LIST_ARG"; fi
+    LIST_INPUT_PREV="$LIST_ARG"
   done
-  if [ -n "$LIST_TOKEN" ] && [ -n "$LIST_DESIRED" ]; then
-    echo "An error occurred (InvalidParameterException) when calling the ListTasks operation: startedBy and desiredStatus cannot be combined" >&2
-    exit 254
-  fi
+  case "$LIST_INPUT_PATH" in
+    file://*) LIST_INPUT_PATH="${LIST_INPUT_PATH#file://}" ;;
+    *) echo "fake-aws: --cli-input-json must be file:// path" >&2; exit 2 ;;
+  esac
+  echo "INPUT_JSON_LIST $(cat "$LIST_INPUT_PATH" 2>/dev/null || echo MALFORMED)" >>"$LOG" 2>/dev/null || true
+  LIST_DECODED="$(python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); c=d.get("cluster",""); s=d.get("startedBy",""); w=d.get("desiredStatus",""); m=d.get("maxResults",None); n=d.get("nextToken",""); nn=d.get("NextToken","__absent__"); bad=""; 
+if c!="launchcrew-demo": bad="BAD_CLUSTER"; 
+elif s and w: bad="COMBINED"; 
+elif not isinstance(m,int) or m<=0 or m>10: bad="BAD_MAXRESULTS"; 
+elif nn!="__absent__": bad="BAD_CASE"; 
+elif n is None: n=""; 
+elif not isinstance(n,str): bad="MALFORMED_INPUT"; 
+print(bad if bad else (s+"|"+w+"|"+n))' "$LIST_INPUT_PATH" 2>/dev/null || echo MALFORMED_INPUT)"
+  case "$LIST_DECODED" in
+    MALFORMED_INPUT|BAD_CLUSTER|BAD_MAXRESULTS|BAD_CASE) echo "fake-aws: invalid cli-input-json $LIST_DECODED" >&2; exit 2 ;;
+    COMBINED) echo "An error occurred (InvalidParameterException) when calling the ListTasks operation: startedBy and desiredStatus cannot be combined" >&2; exit 254 ;;
+  esac
+  LIST_TOKEN="$(printf '%s' "$LIST_DECODED" | cut -d'|' -f1)"
+  LIST_DESIRED="$(printf '%s' "$LIST_DECODED" | cut -d'|' -f2)"
+  LIST_NEXT="$(printf '%s' "$LIST_DECODED" | cut -d'|' -f3)"
   if [ -n "$LIST_TOKEN" ]; then printf '%s' "$LIST_TOKEN" >"${FAKE_TOKEN_FILE:-/dev/null}" 2>/dev/null || true; fi
-  printf '{"taskArns":[]}\\n'
+  if [ -n "$LIST_NEXT" ]; then printf '%s' '{"taskArns":[]}'; exit 0; fi
+  printf '%s' '{"taskArns":[]}'
   exit 0
 fi
 if [ "$1" = "cloudformation" ] && [ "$2" = "deploy" ]; then
@@ -897,8 +1033,16 @@ class PhaseOrderingTests(BootstrapHarness):
         self.assertIn("No automatic resend", combined)
         self.assertIn("no new token from absence", combined)
         self.assertTrue(any("list-tasks" in call for call in calls))
-        self.assertTrue(any("--desired-status STOPPED" in call for call in calls))
-        self.assertFalse(any("--started-by" in call and "--desired-status" in call for call in calls))
+        self.assertTrue(any("--no-paginate" in call and "list-tasks" in call for call in calls))
+        self.assertTrue(any("--cli-input-json" in call and "list-tasks" in call for call in calls))
+        self.assertFalse(any("--next-token" in call for call in calls))
+        self.assertFalse(any("--starting-token" in call for call in calls))
+        self.assertFalse(any("--started-by" in call for call in calls if "list-tasks" in call))
+        self.assertFalse(any("--desired-status" in call for call in calls if "list-tasks" in call))
+        decoded = [call for call in calls if "INPUT_JSON_LIST" in call]
+        self.assertTrue(any("desiredStatus" in call and "STOPPED" in call for call in decoded))
+        self.assertTrue(any("startedBy" in call for call in decoded))
+        self.assertFalse(any("startedBy" in call and "desiredStatus" in call for call in decoded))
         runs = [call for call in calls if "run-task" in call]
         self.assertEqual(len(runs), 1)
         self.assertFalse(any("EnableServices=true" in call for call in calls))
@@ -1443,6 +1587,97 @@ class BudgetSubscriberProofTests(BootstrapHarness):
         self.assertIn("subscribers unreadable", combined)
         self.assertIn("DescribeSubscribersForNotification", combined)
         self.assertFalse(any("run-task" in call for call in calls))
+
+
+class JournalPrivateDirTests(BootstrapHarness):
+    def test_tmp_mode_unchanged_after_private_run(self):
+        before = stat.S_IMODE(os.stat("/tmp").st_mode)
+        result, calls = self.run_bootstrap([*self.base_args(), "--phase", "init"])
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        after = stat.S_IMODE(os.stat("/tmp").st_mode)
+        self.assertEqual(before, after)
+        self.assertFalse(any("--launch-journal-dir /tmp" in call for call in calls))
+
+    def test_default_journal_is_persistent_private_not_tmp(self):
+        code = BOOTSTRAP.read_text(encoding="utf-8")
+        self.assertNotIn('LAUNCH_JOURNAL_DIR:-/tmp', code)
+        self.assertIn('.local/launch-journals', code)
+        self.assertIn('BOOTSTRAP_SCRIPT_DIR', code)
+        self.assertIn('shared root', code)
+        self.assertIn('JOURNAL_CREATED', code)
+        self.assertIn('st_uid', code)
+
+    def test_shared_tmp_journal_refused_without_chmod(self):
+        code = BOOTSTRAP.read_text(encoding="utf-8")
+        self.assertIn('/tmp|/tmp/', code)
+        self.assertIn('dedicated private directory', code)
+
+
+class BudgetPaginationTests(BootstrapHarness):
+    def test_notifications_paginate_two_pages_with_raw_json(self):
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "init"],
+            extra_env={"FAKE_NOTIF": "paginated_ok"})
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        notif_calls = [call for call in calls if "describe-notifications-for-budget" in call]
+        self.assertEqual(len(notif_calls), 2)
+        for call in notif_calls:
+            self.assertIn("--no-paginate", call)
+            self.assertIn("--cli-input-json", call)
+            self.assertNotIn("--next-token", call)
+            self.assertNotIn("--starting-token", call)
+            self.assertNotIn("--account-id", call)
+        decoded = [call for call in calls if "INPUT_JSON_NOTIF" in call]
+        self.assertEqual(len(decoded), 2)
+        self.assertIn("AccountId", decoded[0])
+        self.assertIn("launchcrew-demo", decoded[0])
+        self.assertIn("MaxResults", decoded[0])
+        self.assertNotIn("NextToken", decoded[0])
+        self.assertIn("page2", decoded[1])
+        self.assertIn("MaxResults", decoded[1])
+        sub_calls = [call for call in calls if "describe-subscribers-for-notification" in call]
+        self.assertEqual(len(sub_calls), 2)
+        for call in sub_calls:
+            self.assertIn("--no-paginate", call)
+            self.assertIn("--cli-input-json", call)
+            self.assertNotIn("--next-token", call)
+        sub_decoded = [call for call in calls if "INPUT_JSON_SUB" in call]
+        self.assertEqual(len(sub_decoded), 2)
+        for entry in sub_decoded:
+            self.assertIn("PERCENTAGE", entry)
+            self.assertIn("AccountId", entry)
+
+    def test_controller_rejects_unsupported_next_token_surface(self):
+        code = BOOTSTRAP.read_text(encoding="utf-8")
+        self.assertNotIn("--next-token", code)
+        self.assertNotIn("--starting-token", code)
+        self.assertIn("--no-paginate", code)
+        self.assertIn("--cli-input-json", code)
+        self.assertIn('"NextToken"', code)
+        self.assertIn('"nextToken"', code)
+        self.assertIn('"MaxResults"', code)
+        self.assertIn('"maxResults"', code)
+
+
+class OptionalThresholdTypeTests(BootstrapHarness):
+    def test_missing_threshold_type_allowed(self):
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "enable"],
+            extra_env={"FAKE_NOTIF": "missing_type"})
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertIn("BOOTSTRAP COMPLETE", result.stdout)
+
+    def test_explicit_bad_threshold_types_refused(self):
+        for mode in ("absolute", "absolute_short", "null_type", "unknown_type", "empty_type"):
+            with self.subTest(mode=mode):
+                result, calls = self.run_bootstrap(
+                    [*self.base_args(), "--phase", "enable"],
+                    extra_env={"FAKE_NOTIF": mode})
+                self.assertNotEqual(result.returncode, 0, msg=mode)
+                combined = result.stdout + result.stderr
+                self.assertIn("UNVERIFIED", combined, msg=mode)
+                self.assertFalse(any("EnableServices=true" in call for call in calls), msg=mode)
+                self.assertFalse(any("run-task" in call for call in calls), msg=mode)
 
 
 if __name__ == "__main__":
