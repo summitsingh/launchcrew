@@ -13,12 +13,17 @@ this job, so operators keep it off for secret-bearing statements.
 Modes, selected by argv flag only (no secret ever appears in argv):
   --bind    create exact owned roles if missing (stamped with an ownership
             comment), bind each role password to the matching injected
-            secret URL password, then apply the privilege split from
-            deploy/aws/db-roles.sql (runtime DML-only, migration DDL,
-            default privileges for migration-created tables). Existing roles
-            are rebound only with the ownership stamp and no superuser,
-            create, replication, or membership takeover risk.
-            Idempotent: safe to rerun; reports each completed phase.
+            secret URL password, then apply the privilege split in two
+            connections. The RDS master is NOSUPERUSER CREATEROLE, not a
+            true postgres superuser, so it creates, stamps, and password
+            binds roles plus schema ACLs only. A direct migration
+            connection then applies runtime DML-only object grants plus
+            its own default privileges on migration-owned objects.
+            Existing roles are rebound only with the ownership stamp and
+            no superuser, bypassrls, create, replication, or membership
+            takeover risk. The only permitted membership is the exact
+            native Postgres 16 creator administration row. Idempotent:
+            safe to rerun; reports each completed phase.
   --verify  read-only proof with the runtime URL only: SELECT works, the
             alembic schema version equals the expected head revision, the
             connected identity equals the runtime role, a rolled-back write
@@ -47,7 +52,7 @@ IDENT = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 HOST = re.compile(r"^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$")
 DBNAME = re.compile(r"^[A-Za-z0-9_.-]{1,63}$")
 MANAGED_COMMENT = "launchcrew-managed"
-PHASES_BIND = ("password-binding", "runtime-grants", "migration-grants",
+PHASES_BIND = ("password-binding", "schema-acls", "runtime-grants",
                "default-privileges")
 ROOTCERT_ENV = "DATABASE_SSL_ROOTCERT"
 EXPECTED_HEAD = "004"
@@ -212,7 +217,7 @@ def _quote_ident(name):
 def _role_row(cur, name):
     cur.execute(
         "SELECT rolname, rolsuper, rolcanlogin, rolcreaterole, rolcreatedb, "
-        "rolreplication FROM pg_roles WHERE rolname = %s",
+        "rolreplication, rolbypassrls FROM pg_roles WHERE rolname = %s",
         (name,))
     return cur.fetchone()
 
@@ -226,16 +231,27 @@ def _role_comment(cur, name):
     return row[0] if row else None
 
 
-def _role_has_memberships(cur, name):
+def _role_memberships(cur, name):
+    # Every membership row touching the managed role in either direction,
+    # with grantor identity plus superuser flag plus all three options.
+    # Postgres 16 carries admin, inherit, and set options; the automatic
+    # creator row is ADMIN TRUE, INHERIT FALSE, SET FALSE with the
+    # native bootstrap superuser as grantor.
     cur.execute(
-        "SELECT 1 FROM pg_auth_members WHERE roleid = "
-        "(SELECT oid FROM pg_roles WHERE rolname = %s) OR member = "
-        "(SELECT oid FROM pg_roles WHERE rolname = %s) LIMIT 1",
+        "SELECT target.rolname, member.rolname, grantor.rolname, "
+        "grantor.rolsuper, m.admin_option, m.inherit_option, "
+        "m.set_option FROM pg_auth_members m "
+        "JOIN pg_roles target ON target.oid = m.roleid "
+        "JOIN pg_roles member ON member.oid = m.member "
+        "JOIN pg_roles grantor ON grantor.oid = m.grantor "
+        "WHERE m.roleid = (SELECT oid FROM pg_roles WHERE rolname = %s) "
+        "OR m.member = (SELECT oid FROM pg_roles WHERE rolname = %s) "
+        "ORDER BY target.rolname, member.rolname",
         (name, name))
-    return cur.fetchone() is not None
+    return cur.fetchall()
 
 
-def _managed_verdict(cur, name, row):
+def _managed_verdict(cur, name, row, master_user):
     """Refuse existing roles this job does not own. Returns None when safe."""
     if len(row) > 1 and row[1]:
         return "existing superuser role refused: %s" % name
@@ -246,11 +262,50 @@ def _managed_verdict(cur, name, row):
             return "existing role with CREATEDB refused: %s" % name
         if row[5]:
             return "existing role with REPLICATION refused: %s" % name
+    if len(row) > 6 and row[6]:
+        return "existing role with BYPASSRLS refused: %s" % name
     if _role_comment(cur, name) != MANAGED_COMMENT:
         return "existing role without ownership marker refused: %s" % name
-    if _role_has_memberships(cur, name):
-        return "existing role with memberships refused: %s" % name
+    memberships = _role_memberships(cur, name)
+    if not memberships:
+        return None
+    if len(memberships) > 1:
+        return ("existing role with memberships refused: %s "
+                "has %d membership rows" % (name, len(memberships)))
+    target, member, grantor, grantor_super, admin, inherit_opt, set_opt = (
+        memberships[0])
+    if target != name or member != master_user:
+        return ("existing role with memberships refused: %s "
+                "is not the exact creator row" % name)
+    if not admin or inherit_opt or set_opt:
+        return ("existing role with memberships refused: %s "
+                "has changed membership options" % name)
+    if not grantor_super or grantor == master_user or grantor == name:
+        return ("existing role with memberships refused: %s "
+                "has a foreign grantor" % name)
     return None
+
+
+def _connection_identity(cur):
+    cur.execute("SELECT session_user, current_user")
+    row = cur.fetchone()
+    if not row or len(row) < 2:
+        raise ValueError("identity lookup failed")
+    return {"session_user": row[0], "current_user": row[1]}
+
+
+def _schema_object_owners(cur, schema):
+    # Regular tables, partitioned tables, and sequences in the isolated
+    # app schema with their owner names. Views and indexes are out of
+    # scope for the runtime grant split.
+    cur.execute(
+        "SELECT c.relname, c.relkind, owner.rolname FROM pg_class c "
+        "JOIN pg_namespace n ON n.oid = c.relnamespace "
+        "JOIN pg_roles owner ON owner.oid = c.relowner "
+        "WHERE n.nspname = %s AND c.relkind IN ('r', 'p', 'S') "
+        "ORDER BY c.relname",
+        (schema,))
+    return cur.fetchall()
 
 
 def do_bind():
@@ -283,6 +338,9 @@ def do_bind():
         raise ValueError("invalid DB_HOST")
 
     done = []
+    qi_runtime = _quote_ident(runtime_user)
+    qi_migration = _quote_ident(migration_user)
+    qi_schema = _quote_ident(schema)
     try:
         conn = psycopg.connect(host=host, port=port, dbname=dbname,
                                user=master_user, password=master_password,
@@ -290,7 +348,7 @@ def do_bind():
     except Exception:
         return _fail("connect")
     try:
-        conn.autocommit = True
+        conn.autocommit = False
         cur = conn.cursor()
         # DDL statements cannot take server-side bound parameters, so the
         # password binds below use a client-side binding cursor: the password
@@ -299,75 +357,146 @@ def do_bind():
         # the statement text over TLS. Server-side statement logging is
         # outside this job, so it stays off for secret-bearing statements.
         bind_cur = psycopg.ClientCursor(conn)
-        qi_runtime = _quote_ident(runtime_user)
-        qi_migration = _quote_ident(migration_user)
-        qi_schema = _quote_ident(schema)
         try:
-            # Phase 1: exact owned roles exist, passwords bound in memory.
-            for user, password in ((runtime_user, runtime["password"]),
-                                   (migration_user, migration["password"])):
+            identity = _connection_identity(cur)
+        except Exception:
+            conn.rollback()
+            return _fail("connect", "master identity lookup failed")
+        if (identity["session_user"] != master_user
+                or identity["current_user"] != master_user):
+            conn.rollback()
+            return _fail("connect", "master identity mismatch")
+        # Validate both managed roles before mutating either, so a bad
+        # second role never leaves a half rebound first role behind.
+        try:
+            plans = []
+            for user in (runtime_user, migration_user):
                 row = _role_row(cur, user)
                 if row is None:
+                    plans.append(("create", user, None))
+                else:
+                    verdict = _managed_verdict(cur, user, row, master_user)
+                    if verdict is not None:
+                        conn.rollback()
+                        return _fail("role-safety", verdict)
+                    plans.append(("rebind", user, row))
+        except ValueError as exc:
+            conn.rollback()
+            return _fail("role-safety", str(exc))
+        except Exception:
+            conn.rollback()
+            return _fail("role-safety", "catalog check failed")
+        try:
+            # Phase 1: exact owned roles exist, passwords bound in memory.
+            # One transaction for create plus marker plus password, so a
+            # failure never leaves an unmarked role behind.
+            passwords = {runtime_user: runtime["password"],
+                         migration_user: migration["password"]}
+            for action, user, row in plans:
+                if action == "create":
                     cur.execute("CREATE ROLE %s WITH LOGIN"
                                 % _quote_ident(user))
                     cur.execute("COMMENT ON ROLE %s IS '%s'"
                                 % (_quote_ident(user), MANAGED_COMMENT))
                 else:
-                    verdict = _managed_verdict(cur, user, row)
-                    if verdict is not None:
-                        return _fail("role-safety", verdict)
                     if len(row) > 2 and not row[2]:
                         cur.execute("ALTER ROLE %s WITH LOGIN"
                                     % _quote_ident(user))
                 bind_cur.execute("ALTER ROLE %s WITH PASSWORD %%s"
-                                 % _quote_ident(user), (password,))
+                                 % _quote_ident(user), (passwords[user],))
+            conn.commit()
             done.append("password-binding")
             _ok("password-binding")
         except Exception:
-            conn.rollback() if hasattr(conn, "rollback") else None
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             return _fail("password-binding",
                          "completed: %s" % ",".join(done))
-        # Phase 2: runtime DML-only split, mirrors db-roles.sql exactly.
+        # Phase 2: schema ACLs only. The NOSUPERUSER master keeps database
+        # and schema ownership; object grants move to the migration
+        # connection below because the master cannot grant on objects it
+        # does not own and cannot set another role's default privileges.
         try:
             cur.execute("REVOKE CREATE ON SCHEMA %s FROM PUBLIC" % qi_schema)
             cur.execute("GRANT USAGE ON SCHEMA %s TO %s"
                         % (qi_schema, qi_runtime))
             cur.execute("REVOKE CREATE ON SCHEMA %s FROM %s"
                         % (qi_schema, qi_runtime))
-            cur.execute("REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA %s "
-                        "FROM %s" % (qi_schema, qi_runtime))
-            cur.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES "
-                        "IN SCHEMA %s TO %s" % (qi_schema, qi_runtime))
-            cur.execute("REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA %s "
-                        "FROM %s" % (qi_schema, qi_runtime))
-            cur.execute("GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA %s "
-                        "TO %s" % (qi_schema, qi_runtime))
+            cur.execute("GRANT USAGE, CREATE ON SCHEMA %s TO %s"
+                        % (qi_schema, qi_migration))
+            conn.commit()
+            done.append("schema-acls")
+            _ok("schema-acls")
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return _fail("schema-acls",
+                         "completed: %s" % ",".join(done))
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    # Migration connection over the validated private URL fields in RAM,
+    # never the raw URL string, with the same pinned TLS bundle.
+    try:
+        mconn = psycopg.connect(host=migration["host"], port=migration["port"],
+                                dbname=migration["dbname"],
+                                user=migration["user"],
+                                password=migration["password"],
+                                sslmode="verify-full", sslrootcert=bundle)
+    except Exception:
+        return _fail("migration-connect",
+                     "completed: %s" % ",".join(done))
+    try:
+        mconn.autocommit = True
+        mcur = mconn.cursor()
+        try:
+            identity = _connection_identity(mcur)
+        except Exception:
+            return _fail("migration-identity",
+                         "completed: %s" % ",".join(done))
+        if (identity["session_user"] != migration_user
+                or identity["current_user"] != migration_user):
+            return _fail("migration-identity",
+                         "completed: %s" % ",".join(done))
+        # Phase 3: runtime DML-only object split on migration-owned
+        # objects. Inventory first; unexpected owners are refused and
+        # never transferred.
+        try:
+            for relname, _relkind, owner in _schema_object_owners(mcur,
+                                                                 schema):
+                if owner != migration_user:
+                    return _fail("runtime-grants",
+                                 "unexpected owner %s on %s" % (owner,
+                                                               relname))
+            mcur.execute("REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA %s "
+                         "FROM %s" % (qi_schema, qi_runtime))
+            mcur.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES "
+                         "IN SCHEMA %s TO %s" % (qi_schema, qi_runtime))
+            mcur.execute("REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA %s "
+                         "FROM %s" % (qi_schema, qi_runtime))
+            mcur.execute("GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA %s "
+                         "TO %s" % (qi_schema, qi_runtime))
             done.append("runtime-grants")
             _ok("runtime-grants")
         except Exception:
             return _fail("runtime-grants",
                          "completed: %s" % ",".join(done))
-        # Phase 3: migration DDL split, the only schema change path.
-        try:
-            cur.execute("GRANT USAGE, CREATE ON SCHEMA %s TO %s"
-                        % (qi_schema, qi_migration))
-            cur.execute("GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA %s "
-                        "TO %s" % (qi_schema, qi_migration))
-            cur.execute("GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA %s "
-                        "TO %s" % (qi_schema, qi_migration))
-            done.append("migration-grants")
-            _ok("migration-grants")
-        except Exception:
-            return _fail("migration-grants",
-                         "completed: %s" % ",".join(done))
         # Phase 4: later migration-created tables keep the runtime split.
+        # Executed as migration for its own role, which a NOSUPERUSER
+        # master could never set for another role.
         try:
-            cur.execute("ALTER DEFAULT PRIVILEGES FOR ROLE %s IN SCHEMA %s "
-                        "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %s"
-                        % (qi_migration, qi_schema, qi_runtime))
-            cur.execute("ALTER DEFAULT PRIVILEGES FOR ROLE %s IN SCHEMA %s "
-                        "GRANT USAGE, SELECT ON SEQUENCES TO %s"
-                        % (qi_migration, qi_schema, qi_runtime))
+            mcur.execute("ALTER DEFAULT PRIVILEGES FOR ROLE %s IN SCHEMA %s "
+                         "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %s"
+                         % (qi_migration, qi_schema, qi_runtime))
+            mcur.execute("ALTER DEFAULT PRIVILEGES FOR ROLE %s IN SCHEMA %s "
+                         "GRANT USAGE, SELECT ON SEQUENCES TO %s"
+                         % (qi_migration, qi_schema, qi_runtime))
             done.append("default-privileges")
             _ok("default-privileges")
         except Exception:
@@ -375,7 +504,7 @@ def do_bind():
                          "completed: %s" % ",".join(done))
     finally:
         try:
-            conn.close()
+            mconn.close()
         except Exception:
             pass
     print("bootstrap-db-roles: BIND COMPLETE phases=%s" % ",".join(done),

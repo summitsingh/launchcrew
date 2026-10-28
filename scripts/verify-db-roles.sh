@@ -346,9 +346,11 @@ bind_verify_live() {
   [ "$head_expected" = "$head_script" ] || fail "EXPECTED_HEAD $head_script does not match migration head $head_expected"
 
   BIND_DB="lc_bind_db"
+  BIND_ADMIN="lc_bind_admin"
   BIND_RT="lc_bind_runtime"
   BIND_MG="lc_bind_migration"
-  log "create disposable bind database $BIND_DB"
+  log "create RDS-like fixture admin plus isolated database $BIND_DB"
+  log "local admin logic proof only, NOT RDS identity proof"
   "$PG_BIN_DIR/createdb" -h 127.0.0.1 -p "$PORT" -U "$SUPERUSER" "$BIND_DB"
 
   # Fresh bind identities stay absent here on purpose. The actual
@@ -358,6 +360,42 @@ bind_verify_live() {
   # without the ownership marker, and the hardened bind correctly
   # refuses such unowned roles, so no precreate or blind takeover
   # happens in this stage. Stage 1 above already proves db-roles.sql.
+
+  ADMIN_PW="$(python3 -c 'import secrets; print(secrets.token_hex(18))')"
+  [ "${#ADMIN_PW}" -ge 32 ] || fail "synthetic admin password failed"
+  BIND_ADMIN_NAME="$BIND_ADMIN" BIND_ADMIN_PW="$ADMIN_PW" \
+  BIND_PORT="$PORT" BIND_DBNAME="$BIND_DB" python3 -c '
+import os
+import psycopg
+admin = os.environ["BIND_ADMIN_NAME"]
+pw = os.environ["BIND_ADMIN_PW"]
+port = int(os.environ["BIND_PORT"])
+dbname = os.environ["BIND_DBNAME"]
+if admin != "lc_bind_admin":
+    raise SystemExit("unexpected admin name")
+conn = psycopg.connect(host="127.0.0.1", port=port, dbname="postgres",
+                       user="postgres", autocommit=True)
+cur = conn.cursor()
+cur.execute("CREATE ROLE lc_bind_admin WITH LOGIN NOSUPERUSER "
+            "CREATEROLE NOCREATEDB NOREPLICATION NOBYPASSRLS")
+cc = psycopg.ClientCursor(conn)
+cc.execute("ALTER ROLE lc_bind_admin WITH PASSWORD %s", (pw,))
+cur.execute("ALTER DATABASE lc_bind_db OWNER TO lc_bind_admin")
+conn.close()
+admin_conn = psycopg.connect(host="127.0.0.1", port=port, dbname=dbname,
+                             user="postgres", autocommit=True)
+admin_cur = admin_conn.cursor()
+admin_cur.execute("ALTER SCHEMA public OWNER TO lc_bind_admin")
+admin_conn.close()
+' || fail "fixture admin creation failed"
+  log "fixture admin is LOGIN NOSUPERUSER CREATEROLE and owns DB and schema"
+  admin_flags="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=postgres user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT rolsuper::text || \",\" || rolcreaterole::text || \",\" || rolcanlogin::text FROM pg_roles WHERE rolname='"$BIND_ADMIN"';" | tr -d '[:space:]')" || true
+  [ "$admin_flags" = "False,True,True" ] || fail "fixture admin flags are $admin_flags, expected False,True,True"
+  db_owner="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=postgres user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname='"$BIND_DB"';" | tr -d '[:space:]')" || true
+  [ "$db_owner" = "$BIND_ADMIN" ] || fail "bind DB owner is $db_owner, expected $BIND_ADMIN"
+  schema_owner="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname='public';" | tr -d '[:space:]')" || true
+  [ "$schema_owner" = "$BIND_ADMIN" ] || fail "bind schema owner is $schema_owner, expected $BIND_ADMIN"
+  log "pass: admin owns the isolated DB and schema"
 
   CERTDIR="$PGDATA/certs"
   mkdir -p "$CERTDIR"
@@ -381,17 +419,17 @@ bind_verify_live() {
 
   HBA="$PGDATA/pg_hba.conf"
   {
+    echo "host $BIND_DB $BIND_ADMIN 127.0.0.1/32 scram-sha-256"
     echo "host $BIND_DB $BIND_RT 127.0.0.1/32 scram-sha-256"
     echo "host $BIND_DB $BIND_MG 127.0.0.1/32 scram-sha-256"
     cat "$HBA"
   } >"$HBA.new" || fail "could not stage password-auth pg_hba"
   mv "$HBA.new" "$HBA" || fail "could not install password-auth pg_hba"
   "$PG_BIN_DIR/pg_ctl" -D "$PGDATA" -w reload
-  log "bind roles use password auth, everything else keeps trust auth"
+  log "admin plus bind roles use password auth, superuser keeps trust"
 
   BIND_RT_PW="$(python3 -c 'import secrets; print(secrets.token_hex(18))')"
   BIND_MG_PW="$(python3 -c 'import secrets; print(secrets.token_hex(18))')"
-  MASTER_PW="$(python3 -c 'import secrets; print(secrets.token_hex(18))')"
   INTR_PW="$(python3 -c 'import secrets; print(secrets.token_hex(18))')"
   [ "${#BIND_RT_PW}" -ge 32 ] || fail "synthetic password generation failed"
   RT_URL="postgresql://${BIND_RT}:${BIND_RT_PW}@127.0.0.1:${PORT}/${BIND_DB}?sslmode=verify-full"
@@ -402,7 +440,7 @@ bind_verify_live() {
     # Bounded redacted error output for stage 2 failures. Secrets arrive
     # via env and text arrives via stdin, so no secret value ever appears
     # in argv. Output is truncated to 2000 bytes. Harness only, no values.
-    REDACT_A="$BIND_RT_PW" REDACT_B="$BIND_MG_PW" REDACT_C="$MASTER_PW" REDACT_D="$INTR_PW" \
+    REDACT_A="$BIND_RT_PW" REDACT_B="$BIND_MG_PW" REDACT_C="$ADMIN_PW" REDACT_D="$INTR_PW" \
     REDACT_E="$RT_URL" REDACT_F="$MG_URL" python3 -c '
 import os, sys
 text = sys.stdin.read()
@@ -417,20 +455,21 @@ sys.stdout.write(text[:2000])
   bind_job() {
     LAUNCHCREW_DB_TLS_MODE=verify-full DATABASE_SSL_ROOTCERT="$CERTDIR/server.crt" \
       DB_HOST=127.0.0.1 DB_PORT="$PORT" DB_NAME="$BIND_DB" \
-      DB_MASTER_USER="$SUPERUSER" MASTER_DB_PASSWORD="$MASTER_PW" \
+      DB_MASTER_USER="$BIND_ADMIN" MASTER_DB_PASSWORD="$ADMIN_PW" \
       RUNTIME_DB_URL="$RT_URL" MIGRATION_DB_URL="$MG_URL" \
       RUNTIME_USER="$1" MIGRATION_USER="$BIND_MG" APP_SCHEMA="$APP_SCHEMA" \
       python3 "$REPO_ROOT/scripts/bootstrap_db_roles.py" --bind 2>&1
   }
 
-  log "run actual scripts/bootstrap_db_roles.py --bind"
+  log "run actual scripts/bootstrap_db_roles.py --bind as the admin"
   set +e
   BIND_OUT="$(bind_job "$BIND_RT")"
   BIND_CODE=$?
   set -e
   [ "$BIND_CODE" -eq 0 ] || { printf '%s' "$BIND_OUT" | safe_emit >&2; fail "actual --bind failed"; }
   case "$BIND_OUT" in *"BIND COMPLETE"*) ;; *) printf '%s' "$BIND_OUT" | safe_emit >&2; fail "actual --bind missed BIND COMPLETE" ;; esac
-  case "$BIND_OUT" in *"$BIND_RT_PW"*|*"$BIND_MG_PW"*|*"$MASTER_PW"*) fail "bind output leaked a synthetic password" ;; esac
+  case "$BIND_OUT" in *"password-binding"*|*"schema-acls"*|*"runtime-grants"*|*"default-privileges"*) ;; *) printf '%s' "$BIND_OUT" | safe_emit >&2; fail "actual --bind missed phase markers" ;; esac
+  case "$BIND_OUT" in *"$BIND_RT_PW"*|*"$BIND_MG_PW"*|*"$ADMIN_PW"*) fail "bind output leaked a synthetic password" ;; esac
   log "pass: actual --bind complete with no password in output"
 
   log "repeat actual --bind for idempotence proof"
@@ -440,8 +479,16 @@ sys.stdout.write(text[:2000])
   set -e
   [ "$REBIND_CODE" -eq 0 ] || { printf '%s' "$REBIND_OUT" | safe_emit >&2; fail "actual --bind rerun failed"; }
   case "$REBIND_OUT" in *"BIND COMPLETE"*) ;; *) printf '%s' "$REBIND_OUT" | safe_emit >&2; fail "actual --bind rerun missed BIND COMPLETE" ;; esac
-  case "$REBIND_OUT" in *"$BIND_RT_PW"*|*"$BIND_MG_PW"*|*"$MASTER_PW"*) fail "rebind output leaked a synthetic password" ;; esac
+  case "$REBIND_OUT" in *"$BIND_RT_PW"*|*"$BIND_MG_PW"*|*"$ADMIN_PW"*) fail "rebind output leaked a synthetic password" ;; esac
   log "pass: actual --bind is idempotent"
+
+  log "inspect the automatic native admin membership rows"
+  for managed in "$BIND_RT" "$BIND_MG"; do
+    native_row="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT target.rolname || ',' || member.rolname || ',' || grantor.rolname || ',' || grantor.rolsuper::text || ',' || m.admin_option::text || ',' || m.inherit_option::text || ',' || m.set_option::text FROM pg_auth_members m JOIN pg_roles target ON target.oid = m.roleid JOIN pg_roles member ON member.oid = m.member JOIN pg_roles grantor ON grantor.oid = m.grantor WHERE m.roleid = (SELECT oid FROM pg_roles WHERE rolname = '$managed') OR m.member = (SELECT oid FROM pg_roles WHERE rolname = '$managed');" | tr -d '[:space:]')" || true
+    expected_row="$managed,$BIND_ADMIN,$SUPERUSER,True,True,False,False"
+    [ "$native_row" = "$expected_row" ] || fail "native membership for $managed is [$native_row], expected [$expected_row]"
+  done
+  log "pass: native rows are roleid managed, member admin, grantor $SUPERUSER, ADMIN TRUE SET FALSE INHERIT FALSE"
 
   pwset="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT count(*) FROM pg_authid WHERE rolname IN ('$BIND_RT','$BIND_MG') AND rolpassword IS NOT NULL;" | tr -d '[:space:]')" || true
   [ "$pwset" = "2" ] || fail "bind did not set both role passwords"
@@ -465,7 +512,7 @@ sys.stdout.write(text[:2000])
   [ "$auth_bad" -ne 0 ] || fail "password auth accepted a wrong password"
   log "pass: bound password authenticates, wrong password is refused"
 
-  log "alembic upgrade head via the migration role"
+  log "alembic upgrade head via the migration role on the admin-owned DB"
   set +e
   MIG_OUT="$(cd "$REPO_ROOT" && DATABASE_URL="$MG_URL" LAUNCHCREW_DB_TLS_MODE=verify-full DATABASE_SSL_ROOTCERT="$CERTDIR/server.crt" python3 -m alembic upgrade head 2>&1)"
   MIG_CODE=$?
@@ -473,7 +520,19 @@ sys.stdout.write(text[:2000])
   [ "$MIG_CODE" -eq 0 ] || { printf '%s' "$MIG_OUT" | safe_emit >&2; fail "alembic upgrade head failed"; }
   ver="$(bind_as "$BIND_MG" "$BIND_MG_PW" "SELECT version_num FROM alembic_version;" | tr -d '[:space:]')" || true
   [ "$ver" = "004" ] || fail "alembic head is $ver, expected 004"
-  log "pass: alembic head 004 applied via the migration role"
+  alembic_owner="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT pg_get_userbyid(c.relowner) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = '$APP_SCHEMA' AND c.relname = 'alembic_version';" | tr -d '[:space:]')" || true
+  [ "$alembic_owner" = "$BIND_MG" ] || fail "alembic owner is $alembic_owner, expected $BIND_MG"
+  log "pass: alembic head 004 applied via the migration role and owned by it"
+
+  log "bind again after migration for post-object idempotence proof"
+  set +e
+  POSTMIG_OUT="$(bind_job "$BIND_RT")"
+  POSTMIG_CODE=$?
+  set -e
+  [ "$POSTMIG_CODE" -eq 0 ] || { printf '%s' "$POSTMIG_OUT" | safe_emit >&2; fail "actual --bind after migration failed"; }
+  case "$POSTMIG_OUT" in *"BIND COMPLETE"*) ;; *) printf '%s' "$POSTMIG_OUT" | safe_emit >&2; fail "post-migration --bind missed BIND COMPLETE" ;; esac
+  case "$POSTMIG_OUT" in *"$BIND_RT_PW"*|*"$BIND_MG_PW"*|*"$ADMIN_PW"*) fail "post-migration output leaked a synthetic password" ;; esac
+  log "pass: post-migration rebind succeeds with migration-owned objects present"
 
   verify_job() {
     LAUNCHCREW_DB_TLS_MODE=verify-full DATABASE_SSL_ROOTCERT="$CERTDIR/server.crt" \
@@ -492,23 +551,59 @@ sys.stdout.write(text[:2000])
   case "$VERIFY_OUT" in *"$BIND_RT_PW"*|*"$RT_URL"*) fail "verify output leaked a synthetic secret" ;; esac
   log "pass: actual --verify proves 004, identity, rolled-back write, DDL refusal"
 
-  log "bind roles repeat the CRUD and DDL split directly"
+  log "bind roles repeat the CRUD and sequence split directly"
   bind_as "$BIND_MG" "$BIND_MG_PW" "CREATE TABLE $APP_SCHEMA.bind_items (id SERIAL PRIMARY KEY, note TEXT);" >/dev/null || fail "migration role cannot create"
   bind_as "$BIND_RT" "$BIND_RT_PW" "INSERT INTO $APP_SCHEMA.bind_items(note) VALUES ('bind-row-1') RETURNING id;" >/dev/null || fail "runtime role cannot insert"
   bind_as "$BIND_RT" "$BIND_RT_PW" "SELECT count(*) FROM $APP_SCHEMA.bind_items;" >/dev/null || fail "runtime role cannot select"
+  bind_as "$BIND_RT" "$BIND_RT_PW" "UPDATE $APP_SCHEMA.bind_items SET note='bind-row-2' WHERE note='bind-row-1';" >/dev/null || fail "runtime role cannot update"
+  bind_as "$BIND_RT" "$BIND_RT_PW" "SELECT nextval('$APP_SCHEMA.bind_items_id_seq');" >/dev/null || fail "runtime role cannot use sequences"
+  bind_as "$BIND_RT" "$BIND_RT_PW" "DELETE FROM $APP_SCHEMA.bind_items WHERE note='bind-row-2';" >/dev/null || fail "runtime role cannot delete"
   set +e
   bind_as "$BIND_RT" "$BIND_RT_PW" "CREATE TABLE $APP_SCHEMA.bind_nope (id integer);" >/dev/null 2>&1
   rt_ddl=$?
   set -e
   [ "$rt_ddl" -ne 0 ] || fail "runtime role created a table, split broken"
-  log "pass: runtime CRUD works and runtime DDL is refused"
+  log "pass: runtime CRUD plus sequence use works and runtime DDL is refused"
+
+  log "default privilege proof: late migration objects need no rebind"
+  bind_as "$BIND_MG" "$BIND_MG_PW" "CREATE TABLE $APP_SCHEMA.late_items (id SERIAL PRIMARY KEY, note TEXT);" >/dev/null || fail "migration role cannot create late table"
+  bind_as "$BIND_RT" "$BIND_RT_PW" "INSERT INTO $APP_SCHEMA.late_items(note) VALUES ('late-1') RETURNING id;" >/dev/null || fail "runtime role cannot use late table without rebind"
+  bind_as "$BIND_RT" "$BIND_RT_PW" "SELECT nextval('$APP_SCHEMA.late_items_id_seq');" >/dev/null || fail "runtime role cannot use late sequence without rebind"
+  bind_as "$BIND_MG" "$BIND_MG_PW" "DROP TABLE $APP_SCHEMA.late_items;" >/dev/null || fail "owned late table cleanup failed"
+  log "pass: late objects work without rebind, then owned cleanup drops them"
+
+  log "runtime CREATE, ALTER, and DROP each fail with exact SQLSTATE 42501"
+  RT_URL="$RT_URL" CERT_FILE="$CERTDIR/server.crt" python3 -c '
+import os
+import psycopg
+url = os.environ["RT_URL"]
+cert = os.environ["CERT_FILE"]
+conn = psycopg.connect(url, sslrootcert=cert, autocommit=True)
+cur = conn.cursor()
+checks = [
+    "CREATE TABLE public.rt_42501_nope (id integer)",
+    "ALTER TABLE public.bind_items ADD COLUMN rt_42501_nope integer",
+    "DROP TABLE public.bind_items",
+]
+for stmt in checks:
+    try:
+        cur.execute(stmt)
+    except Exception as exc:
+        if getattr(exc, "sqlstate", None) != "42501":
+            raise SystemExit("expected 42501, got %r" % (getattr(exc, "sqlstate", None),))
+    else:
+        raise SystemExit("DDL unexpectedly succeeded: %s" % stmt.split()[0])
+conn.close()
+print("42501 ok")
+' >/dev/null || fail "runtime DDL did not fail with exact 42501"
+  log "pass: runtime DDL fails with exact 42501"
 
   log "negative: unowned superuser role is refused, never taken over"
   "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "CREATE ROLE lc_intruder_demo SUPERUSER LOGIN;" >/dev/null
   set +e
   INTR_OUT="$(RUNTIME_DB_URL="$INTR_URL" RUNTIME_USER=lc_intruder_demo LAUNCHCREW_DB_TLS_MODE=verify-full DATABASE_SSL_ROOTCERT="$CERTDIR/server.crt" \
     DB_HOST=127.0.0.1 DB_PORT="$PORT" DB_NAME="$BIND_DB" \
-    DB_MASTER_USER="$SUPERUSER" MASTER_DB_PASSWORD="$MASTER_PW" \
+    DB_MASTER_USER="$BIND_ADMIN" MASTER_DB_PASSWORD="$ADMIN_PW" \
     MIGRATION_DB_URL="$MG_URL" \
     MIGRATION_USER="$BIND_MG" APP_SCHEMA="$APP_SCHEMA" \
     python3 "$REPO_ROOT/scripts/bootstrap_db_roles.py" --bind 2>&1)"
@@ -519,7 +614,48 @@ sys.stdout.write(text[:2000])
   case "$INTR_OUT" in *"role-safety"*) ;; *) printf '%s' "$INTR_OUT" | safe_emit >&2; fail "superuser refusal missed the role-safety marker" ;; esac
   log "pass: unowned superuser refused with role-safety"
 
-  log "negative: membership takeover is refused"
+  log "negative: BYPASSRLS role is refused"
+  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "CREATE ROLE lc_bypass_demo LOGIN BYPASSRLS;" >/dev/null
+  BYPASS_URL="postgresql://lc_bypass_demo:${INTR_PW}@127.0.0.1:${PORT}/${BIND_DB}?sslmode=verify-full"
+  set +e
+  BYPASS_OUT="$(RUNTIME_DB_URL="$BYPASS_URL" RUNTIME_USER=lc_bypass_demo LAUNCHCREW_DB_TLS_MODE=verify-full DATABASE_SSL_ROOTCERT="$CERTDIR/server.crt" \
+    DB_HOST=127.0.0.1 DB_PORT="$PORT" DB_NAME="$BIND_DB" \
+    DB_MASTER_USER="$BIND_ADMIN" MASTER_DB_PASSWORD="$ADMIN_PW" \
+    MIGRATION_DB_URL="$MG_URL" \
+    MIGRATION_USER="$BIND_MG" APP_SCHEMA="$APP_SCHEMA" \
+    python3 "$REPO_ROOT/scripts/bootstrap_db_roles.py" --bind 2>&1)"
+  BYPASS_CODE=$?
+  set -e
+  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "DROP ROLE lc_bypass_demo;" >/dev/null
+  unset BYPASS_URL
+  [ "$BYPASS_CODE" -ne 0 ] || fail "bind took over a BYPASSRLS role"
+  case "$BYPASS_OUT" in *"BYPASSRLS"*) ;; *) printf '%s' "$BYPASS_OUT" | safe_emit >&2; fail "BYPASSRLS refusal missed the marker" ;; esac
+  log "pass: BYPASSRLS refused"
+
+  log "negative: foreign member is refused before password mutation"
+  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "CREATE ROLE lc_intruder_member NOLOGIN; GRANT $BIND_RT TO lc_intruder_member;" >/dev/null
+  pw_before_rt="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT rolpassword FROM pg_authid WHERE rolname='$BIND_RT';" | tr -d '[:space:]')" || true
+  pw_before_mg="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT rolpassword FROM pg_authid WHERE rolname='$BIND_MG';" | tr -d '[:space:]')" || true
+  set +e
+  FOREIGN_OUT="$(bind_job "$BIND_RT" 2>&1)"
+  FOREIGN_CODE=$?
+  set -e
+  pw_after_rt="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT rolpassword FROM pg_authid WHERE rolname='$BIND_RT';" | tr -d '[:space:]')" || true
+  pw_after_mg="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT rolpassword FROM pg_authid WHERE rolname='$BIND_MG';" | tr -d '[:space:]')" || true
+  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "REVOKE $BIND_RT FROM lc_intruder_member; DROP ROLE lc_intruder_member;" >/dev/null
+  [ "$FOREIGN_CODE" -ne 0 ] || fail "bind took over a role with a foreign member"
+  case "$FOREIGN_OUT" in *"memberships"*) ;; *) printf '%s' "$FOREIGN_OUT" | safe_emit >&2; fail "foreign membership refusal missed the marker" ;; esac
+  [ "$pw_before_rt" = "$pw_after_rt" ] || fail "refused bind mutated the runtime password"
+  [ "$pw_before_mg" = "$pw_after_mg" ] || fail "refused bind mutated the migration password"
+  unset pw_before_rt pw_before_mg pw_after_rt pw_after_mg
+  set +e
+  FOREIGN_FIX_OUT="$(bind_job "$BIND_RT" 2>&1)"
+  FOREIGN_FIX_CODE=$?
+  set -e
+  [ "$FOREIGN_FIX_CODE" -eq 0 ] || { printf '%s' "$FOREIGN_FIX_OUT" | safe_emit >&2; fail "rebind failed after foreign cleanup"; }
+  log "pass: foreign member refused with passwords unchanged, recovery rebind ok"
+
+  log "negative: reverse and group memberships are refused"
   "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "CREATE ROLE lc_group_demo NOLOGIN; GRANT lc_group_demo TO $BIND_RT;" >/dev/null
   set +e
   GRP_OUT="$(bind_job "$BIND_RT" 2>&1)"
@@ -528,7 +664,44 @@ sys.stdout.write(text[:2000])
   "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "REVOKE lc_group_demo FROM $BIND_RT; DROP ROLE lc_group_demo;" >/dev/null
   [ "$GRP_CODE" -ne 0 ] || fail "bind took over a role with memberships"
   case "$GRP_OUT" in *"memberships"*) ;; *) printf '%s' "$GRP_OUT" | safe_emit >&2; fail "membership refusal missed the marker" ;; esac
-  log "pass: membership takeover refused"
+  set +e
+  GRP_FIX_OUT="$(bind_job "$BIND_RT" 2>&1)"
+  GRP_FIX_CODE=$?
+  set -e
+  [ "$GRP_FIX_CODE" -eq 0 ] || { printf '%s' "$GRP_FIX_OUT" | safe_emit >&2; fail "rebind failed after group cleanup"; }
+  log "pass: reverse and group memberships refused, recovery rebind ok"
+
+  log "negative: changed membership options are refused"
+  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "REVOKE $BIND_RT FROM $BIND_ADMIN; GRANT $BIND_RT TO $BIND_ADMIN;" >/dev/null
+  set +e
+  OPTS_OUT="$(bind_job "$BIND_RT" 2>&1)"
+  OPTS_CODE=$?
+  set -e
+  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "REVOKE $BIND_RT FROM $BIND_ADMIN;" >/dev/null
+  [ "$OPTS_CODE" -ne 0 ] || fail "bind accepted changed membership options"
+  case "$OPTS_OUT" in *"memberships"*) ;; *) printf '%s' "$OPTS_OUT" | safe_emit >&2; fail "options refusal missed the marker" ;; esac
+  set +e
+  OPTS_FIX_OUT="$(bind_job "$BIND_RT" 2>&1)"
+  OPTS_FIX_CODE=$?
+  set -e
+  [ "$OPTS_FIX_CODE" -eq 0 ] || { printf '%s' "$OPTS_FIX_OUT" | safe_emit >&2; fail "rebind failed after options cleanup"; }
+  log "pass: changed options refused, zero-row recovery rebind ok"
+
+  log "negative: foreign-owned object is refused and never transferred"
+  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "CREATE TABLE $APP_SCHEMA.foreign_owned_demo (id integer);" >/dev/null
+  set +e
+  OWN_OUT="$(bind_job "$BIND_RT" 2>&1)"
+  OWN_CODE=$?
+  set -e
+  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "DROP TABLE $APP_SCHEMA.foreign_owned_demo;" >/dev/null
+  [ "$OWN_CODE" -ne 0 ] || fail "bind granted over a foreign-owned object"
+  case "$OWN_OUT" in *"unexpected owner"*) ;; *) printf '%s' "$OWN_OUT" | safe_emit >&2; fail "foreign owner refusal missed the marker" ;; esac
+  set +e
+  OWN_FIX_OUT="$(bind_job "$BIND_RT" 2>&1)"
+  OWN_FIX_CODE=$?
+  set -e
+  [ "$OWN_FIX_CODE" -eq 0 ] || { printf '%s' "$OWN_FIX_OUT" | safe_emit >&2; fail "rebind failed after foreign object cleanup"; }
+  log "pass: foreign-owned object refused, recovery rebind ok"
 
   log "negative: wrong head is refused by verify"
   "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "UPDATE alembic_version SET version_num='003';" >/dev/null
@@ -546,10 +719,12 @@ sys.stdout.write(text[:2000])
   [ "$AGAIN_CODE" -eq 0 ] || { printf '%s' "$AGAIN_OUT" | safe_emit >&2; fail "verify failed after restoring head 004"; }
   log "pass: old head refused, restored head proves again"
 
-  unset BIND_RT_PW BIND_MG_PW MASTER_PW INTR_PW RT_URL MG_URL INTR_URL
-  unset BIND_OUT VERIFY_OUT MIG_OUT INTR_OUT GRP_OUT OLD_OUT AGAIN_OUT REBIND_OUT
+  bind_as "$BIND_MG" "$BIND_MG_PW" "DROP TABLE $APP_SCHEMA.bind_items;" >/dev/null || fail "owned bind table cleanup failed"
+  unset ADMIN_PW BIND_RT_PW BIND_MG_PW INTR_PW RT_URL MG_URL INTR_URL
+  unset BIND_OUT VERIFY_OUT MIG_OUT INTR_OUT BYPASS_OUT FOREIGN_OUT FOREIGN_FIX_OUT GRP_OUT GRP_FIX_OUT OPTS_OUT OPTS_FIX_OUT OWN_OUT OWN_FIX_OUT OLD_OUT AGAIN_OUT REBIND_OUT POSTMIG_OUT
   log "PASS: bind and verify job proof complete on disposable 127.0.0.1:$PORT"
   log "loopback self-signed CA only, NOT live RDS TLS proof"
+  log "admin fixture proves binder logic only, NOT RDS identity proof"
 }
 
 bind_verify_live

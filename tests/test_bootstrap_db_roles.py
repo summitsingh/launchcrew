@@ -35,13 +35,16 @@ class FakeError(Exception):
 
 
 class FakeCursor:
-    def __init__(self, state):
+    def __init__(self, state, user=None):
         self.state = state
+        self.user = user
         self.rowcount = 0
 
     def execute(self, sql, params=None):
         self.state.statements.append((sql, params))
         lowered = sql.strip().lower()
+        if self.state.fail_on_password and "with password" in lowered:
+            raise FakeError("simulated password bind failure")
         if lowered.startswith("create table") and self.state.refuse_ddl:
             raise FakeError("permission denied for schema public",
                             sqlstate=self.state.ddl_sqlstate)
@@ -57,38 +60,63 @@ class FakeCursor:
         return None
 
     def fetchone(self):
-        sql = self.state.statements[-1][0].strip().lower()
-        if "pg_auth_members" in sql:
+        sql, params = self.state.statements[-1]
+        lowered = sql.strip().lower()
+        if "pg_auth_members" in lowered:
             return (1,) if self.state.role_memberships else None
-        if "pg_shdescription" in sql:
+        if "pg_shdescription" in lowered:
             if self.state.role_comment is None:
                 return None
             return (self.state.role_comment,)
-        if "pg_roles" in sql:
+        if "pg_roles" in lowered and "rolname" in lowered:
+            queried = params[0] if params else None
+            if queried in self.state.role_rows:
+                return self.state.role_rows[queried]
             if self.state.roles_exist:
                 return ("launchcrew_role", self.state.roles_superuser,
                         self.state.roles_login, self.state.role_createrole,
-                        self.state.role_createdb, self.state.role_replication)
+                        self.state.role_createdb, self.state.role_replication,
+                        self.state.role_bypassrls)
             return None
-        if sql == "select 1":
+        if lowered == "select session_user, current_user":
+            if self.user in self.state.spoof_identity:
+                return self.state.spoof_identity[self.user]
+            return (self.user, self.user)
+        if lowered == "select 1":
             return (1,)
-        if "alembic_version" in sql:
+        if "alembic_version" in lowered:
             if self.state.schema_present:
                 return (self.state.schema_version,)
             return None
-        if sql == "select current_user":
+        if lowered == "select current_user":
             return (self.state.current_identity,)
         return None
 
+    def fetchall(self):
+        sql, params = self.state.statements[-1]
+        lowered = sql.strip().lower()
+        if "pg_auth_members" in lowered:
+            queried = params[0] if params else None
+            if queried in self.state.membership_map:
+                return list(self.state.membership_map[queried])
+            if self.state.role_memberships:
+                return [("foreign_group", queried, "someone_else",
+                         False, True, False, False)]
+            return []
+        if "pg_class" in lowered:
+            return list(self.state.inventory)
+        return []
+
 
 class FakeConn:
-    def __init__(self, state):
+    def __init__(self, state, user=None):
         self.state = state
+        self.user = user
         self.autocommit = False
         self.closed = False
 
     def cursor(self):
-        return FakeCursor(self.state)
+        return FakeCursor(self.state, self.user)
 
     def rollback(self):
         self.state.rollbacks += 1
@@ -111,14 +139,21 @@ class FakeDriverState:
         self.role_createrole = False
         self.role_createdb = False
         self.role_replication = False
+        self.role_bypassrls = False
         self.role_comment = "launchcrew-managed"
         self.role_memberships = False
+        self.role_rows = {}
+        self.membership_map = {}
+        self.inventory = []
+        self.spoof_identity = {}
+        self.fail_on_password = False
         self.refuse_ddl = True
         self.ddl_sqlstate = "42501"
         self.schema_present = True
         self.schema_version = "004"
         self.current_identity = "launchcrew_runtime"
         self.connect_count = 0
+        self.connects = []
         self.fail_connect = False
         self.rollbacks = 0
         self.commits = 0
@@ -133,13 +168,14 @@ class FakePsycopg:
         self.state.connect_count += 1
         self.state.connect_kwargs = kwargs
         self.state.connect_args = args
+        self.state.connects.append(dict(kwargs))
         if self.state.fail_connect:
             raise FakeError("could not connect")
-        return FakeConn(self.state)
+        return FakeConn(self.state, kwargs.get("user"))
 
     def ClientCursor(self, conn):
         self.state.used_client_cursor = True
-        return FakeCursor(self.state)
+        return FakeCursor(self.state, conn.user)
 
 
 class BindJobTests(unittest.TestCase):
@@ -191,7 +227,7 @@ class BindJobTests(unittest.TestCase):
     def test_bind_success_reports_all_phases(self):
         code, out = self.run_main("--bind")
         self.assertEqual(code, 0, msg=out)
-        for phase in ("password-binding", "runtime-grants", "migration-grants",
+        for phase in ("password-binding", "schema-acls", "runtime-grants",
                       "default-privileges", "BIND COMPLETE"):
             self.assertIn(phase, out)
 
@@ -238,15 +274,30 @@ class BindJobTests(unittest.TestCase):
                 "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES",
                 "GRANT USAGE, SELECT ON ALL SEQUENCES",
                 "GRANT USAGE, CREATE ON SCHEMA",
-                "GRANT ALL PRIVILEGES ON ALL TABLES",
-                "GRANT ALL PRIVILEGES ON ALL SEQUENCES",
                 "ALTER DEFAULT PRIVILEGES FOR ROLE"):
             self.assertIn(stmt, joined)
+        self.assertNotIn("GRANT ALL PRIVILEGES ON ALL TABLES", joined)
+        self.assertNotIn("GRANT ALL PRIVILEGES ON ALL SEQUENCES", joined)
         sql_text = SQL_FILE.read_text(encoding="utf-8")
         for stmt in (
                 "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES",
                 "ALTER DEFAULT PRIVILEGES FOR ROLE :migration_user"):
             self.assertIn(stmt, sql_text)
+
+    def test_bind_uses_master_then_migration_connections(self):
+        code, out = self.run_main("--bind")
+        self.assertEqual(code, 0, msg=out)
+        self.assertEqual(self.state.connect_count, 2)
+        first, second = self.state.connects
+        self.assertEqual(first.get("user"), "launchcrew_master")
+        self.assertEqual(first.get("sslmode"), "verify-full")
+        self.assertEqual(first.get("sslrootcert"), str(self.bundle))
+        self.assertEqual(second.get("user"), "launchcrew_migration")
+        self.assertEqual(second.get("host"), "dbhost")
+        self.assertEqual(second.get("port"), 5432)
+        self.assertEqual(second.get("dbname"), "launchcrew")
+        self.assertEqual(second.get("sslmode"), "verify-full")
+        self.assertEqual(second.get("sslrootcert"), str(self.bundle))
 
     def test_runtime_never_gets_ddl(self):
         code, _ = self.run_main("--bind")
@@ -310,6 +361,119 @@ class BindJobTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertIn("role-safety", out)
         self.assertIn("memberships", out)
+
+    def test_native_creator_membership_is_allowed(self):
+        self.state.roles_exist = True
+        native_runtime = [("launchcrew_runtime", "launchcrew_master",
+                           "postgres", True, True, False, False)]
+        native_migration = [("launchcrew_migration", "launchcrew_master",
+                             "postgres", True, True, False, False)]
+        self.state.membership_map = {
+            "launchcrew_runtime": native_runtime,
+            "launchcrew_migration": native_migration,
+        }
+        code, out = self.run_main("--bind")
+        self.assertEqual(code, 0, msg=out)
+        alters = [(sql, params) for sql, params in self.state.statements
+                  if sql.startswith("ALTER ROLE")]
+        self.assertEqual(len(alters), 2)
+
+    def test_changed_membership_options_are_refused(self):
+        self.state.roles_exist = True
+        variants = [
+            ("launchcrew_runtime", "launchcrew_master", "postgres",
+             True, False, False, False),
+            ("launchcrew_runtime", "launchcrew_master", "postgres",
+             True, True, True, False),
+            ("launchcrew_runtime", "launchcrew_master", "postgres",
+             True, True, False, True),
+        ]
+        for row in variants:
+            self.state.membership_map = {"launchcrew_runtime": [row],
+                                         "launchcrew_migration": []}
+            self.state.statements = []
+            code, out = self.run_main("--bind")
+            self.assertNotEqual(code, 0)
+            self.assertIn("memberships", out)
+            mutating = [sql for sql in self.sql_texts()
+                        if sql.startswith(("CREATE ROLE", "ALTER ROLE",
+                                           "COMMENT ON ROLE", "GRANT",
+                                           "REVOKE"))]
+            self.assertEqual(mutating, [])
+
+    def test_foreign_grantor_and_reverse_memberships_refused(self):
+        self.state.roles_exist = True
+        variants = [
+            [("launchcrew_runtime", "launchcrew_master", "intruder",
+              False, True, False, False)],
+            [("launchcrew_runtime", "launchcrew_master", "launchcrew_master",
+              False, True, False, False)],
+            [("other_group", "launchcrew_runtime", "postgres",
+              True, True, False, False)],
+            [("launchcrew_runtime", "someone_else", "postgres",
+              True, True, False, False)],
+        ]
+        for rows in variants:
+            self.state.membership_map = {"launchcrew_runtime": rows,
+                                         "launchcrew_migration": []}
+            self.state.statements = []
+            code, out = self.run_main("--bind")
+            self.assertNotEqual(code, 0)
+            self.assertIn("memberships", out)
+
+    def test_second_bad_role_blocks_first_mutation(self):
+        self.state.role_rows = {
+            "launchcrew_runtime": None,
+            "launchcrew_migration": ("launchcrew_migration", True, True,
+                                     False, False, False, False),
+        }
+        code, out = self.run_main("--bind")
+        self.assertNotEqual(code, 0)
+        self.assertIn("role-safety", out)
+        creates = [sql for sql in self.sql_texts()
+                   if sql.startswith("CREATE ROLE")]
+        self.assertEqual(creates, [])
+
+    def test_existing_role_with_bypassrls_refused(self):
+        self.state.roles_exist = True
+        self.state.role_bypassrls = True
+        code, out = self.run_main("--bind")
+        self.assertNotEqual(code, 0)
+        self.assertIn("role-safety", out)
+        self.assertIn("BYPASSRLS", out)
+
+    def test_password_failure_rolls_back_without_commit(self):
+        self.state.fail_on_password = True
+        code, out = self.run_main("--bind")
+        self.assertNotEqual(code, 0)
+        self.assertIn("password-binding", out)
+        self.assertEqual(self.state.commits, 0)
+        self.assertGreater(self.state.rollbacks, 0)
+
+    def test_migration_identity_mismatch_refused(self):
+        self.state.spoof_identity = {
+            "launchcrew_migration": ("postgres", "postgres")}
+        code, out = self.run_main("--bind")
+        self.assertNotEqual(code, 0)
+        self.assertIn("migration-identity", out)
+        self.assertIn("password-binding,schema-acls", out)
+
+    def test_unexpected_owner_refused_before_object_grants(self):
+        self.state.inventory = [("evil_table", "r", "someone_else")]
+        code, out = self.run_main("--bind")
+        self.assertNotEqual(code, 0)
+        self.assertIn("unexpected owner", out)
+        joined = "\n".join(self.sql_texts())
+        self.assertNotIn("ON ALL TABLES", joined)
+        self.assertNotIn("ON ALL SEQUENCES", joined)
+
+    def test_migration_owned_objects_allow_grants(self):
+        self.state.inventory = [("alembic_version", "r",
+                                 "launchcrew_migration"),
+                                ("items_id_seq", "S",
+                                 "launchcrew_migration")]
+        code, out = self.run_main("--bind")
+        self.assertEqual(code, 0, msg=out)
 
     def test_existing_role_with_createrole_refused(self):
         self.state.roles_exist = True
@@ -470,6 +634,9 @@ class StaticBoundaryTests(unittest.TestCase):
         self.assertIn("pg_shdescription", self.text)
         self.assertIn("pg_auth_members", self.text)
         self.assertIn("rolcreaterole", self.text)
+        self.assertIn("rolbypassrls", self.text)
+        self.assertIn("inherit_option", self.text)
+        self.assertIn("set_option", self.text)
         self.assertIn("ownership marker", self.text)
 
     def test_verify_mode_never_commits(self):
