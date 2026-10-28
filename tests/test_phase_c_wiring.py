@@ -170,7 +170,16 @@ if [ "$1" = "ecr" ] && [ "$2" = "batch-get-image" ]; then
   exit 0
 fi
 if [ "$1" = "ecs" ] && [ "$2" = "run-task" ]; then
-  if [ -n "${FAKE_RUN_DELAY:-}" ]; then sleep "$FAKE_RUN_DELAY" 2>/dev/null || true; fi
+  if [ -n "${FAKE_RUN_READY_FILE:-}" ]; then : >"$FAKE_RUN_READY_FILE" 2>/dev/null || true; fi
+  if [ -n "${FAKE_RUN_RELEASE_FILE:-}" ]; then
+    _max="${FAKE_RUN_DELAY:-10}"
+    _i=0
+    _limit=$((_max * 10))
+    while [ ! -e "$FAKE_RUN_RELEASE_FILE" ] && [ "$_i" -lt "$_limit" ]; do
+      sleep 0.1 2>/dev/null || sleep 1 2>/dev/null || true
+      _i=$((_i + 1))
+    done
+  elif [ -n "${FAKE_RUN_DELAY:-}" ]; then sleep "$FAKE_RUN_DELAY" 2>/dev/null || true; fi
   COUNT_FILE="${FAKE_COUNT_FILE:-/dev/null}"
   n=0
   if [ -f "$COUNT_FILE" ]; then n="$(cat "$COUNT_FILE" 2>/dev/null || echo 0)"; fi
@@ -1404,19 +1413,58 @@ class ConcurrentOperationLockTests(PhaseCHarness):
                     "--foundation-parameters-file", str(foundation_params),
                     "--prereqs-stack-name", PREREQS_STACK,
                     "--launch-journal-dir", str(journals)]
-            proc1 = subprocess.Popen(
-                [str(BOOTSTRAP), *full], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, env=dict(env_base))
-            proc2 = subprocess.Popen(
-                [str(BOOTSTRAP), *full], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, env=dict(env_base))
-            try:
-                out1, err1 = proc1.communicate(timeout=90)
-                out2, err2 = proc2.communicate(timeout=90)
-            except subprocess.TimeoutExpired:
-                proc1.kill()
-                proc2.kill()
-                raise
+            out1_path = Path(tmp) / "conc1.out"
+            err1_path = Path(tmp) / "conc1.err"
+            out2_path = Path(tmp) / "conc2.out"
+            err2_path = Path(tmp) / "conc2.err"
+            for _p in (out1_path, err1_path, out2_path, err2_path):
+                _p.write_text("", encoding="utf-8")
+
+            def _conc_tail(path, limit=4000):
+                try:
+                    _t = Path(path).read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    return "<unreadable>"
+                return _t[-limit:] if len(_t) > limit else _t
+
+            with open(out1_path, "w", encoding="utf-8") as out1_f, open(
+                err1_path, "w", encoding="utf-8"
+            ) as err1_f, open(out2_path, "w", encoding="utf-8") as out2_f, open(
+                err2_path, "w", encoding="utf-8"
+            ) as err2_f:
+                proc1 = subprocess.Popen(
+                    [str(BOOTSTRAP), *full], stdout=out1_f, stderr=err1_f,
+                    text=True, env=dict(env_base))
+                proc2 = subprocess.Popen(
+                    [str(BOOTSTRAP), *full], stdout=out2_f, stderr=err2_f,
+                    text=True, env=dict(env_base))
+                try:
+                    deadline = time.monotonic() + 90
+                    while time.monotonic() < deadline:
+                        if proc1.poll() is not None and proc2.poll() is not None:
+                            break
+                        time.sleep(0.1)
+                    if proc1.poll() is None or proc2.poll() is None:
+                        self.fail(
+                            "concurrent owned procs timeout "
+                            f"rc1={proc1.poll()} rc2={proc2.poll()} "
+                            f"out1={_conc_tail(out1_path)!r} "
+                            f"err1={_conc_tail(err1_path)!r} "
+                            f"out2={_conc_tail(out2_path)!r} "
+                            f"err2={_conc_tail(err2_path)!r}"
+                        )
+                finally:
+                    for _proc in (proc1, proc2):
+                        if _proc.poll() is None:
+                            try:
+                                _proc.kill()
+                            except OSError:
+                                pass
+                    for _proc in (proc1, proc2):
+                        try:
+                            _proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            pass
             calls = [line for line in log.read_text(encoding="utf-8").splitlines() if line.strip()]
             runs = [call for call in calls if "run-task" in call]
             self.assertEqual(len(runs), 1)
@@ -1488,7 +1536,11 @@ class SignalTrapTests(PhaseCHarness):
             env["FAKE_TOPIC_ARN"] = TOPIC_ARN
             env["FAKE_NOTIFY_EMAIL"] = NOTIFY_EMAIL
             env["FAKE_RUN"] = "ok"
-            env["FAKE_RUN_DELAY"] = "3"
+            env["FAKE_RUN_DELAY"] = "15"
+            ready_file = Path(tmp) / "run-ready"
+            release_file = Path(tmp) / "run-release"
+            env["FAKE_RUN_READY_FILE"] = str(ready_file)
+            env["FAKE_RUN_RELEASE_FILE"] = str(release_file)
             for table in (self.IMAGE_ENV, self.SECRET_ENV):
                 for flag, name in table.items():
                     for pos, item in enumerate(base):
@@ -1500,58 +1552,121 @@ class SignalTrapTests(PhaseCHarness):
                     "--foundation-parameters-file", str(foundation_params),
                     "--prereqs-stack-name", PREREQS_STACK,
                     "--launch-journal-dir", str(journals)]
-            proc = subprocess.Popen(
-                [str(BOOTSTRAP), *full], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, env=env)
-            try:
-                barrier_ok = False
-                deadline = time.monotonic() + 20
-                while time.monotonic() < deadline:
-                    if proc.poll() is not None:
-                        break
-                    pending = [e for e in journals.iterdir()
-                               if e.is_file() and e.name.endswith("-active.json")]
-                    logged = ""
-                    try:
-                        logged = log.read_text(encoding="utf-8")
-                    except OSError:
-                        logged = ""
-                    if pending and "run-task" in logged:
-                        barrier_ok = True
-                        break
-                    time.sleep(0.1)
-                self.assertTrue(barrier_ok, msg="prelaunch barrier not reached")
-                self.assertIsNone(proc.poll(), msg="exited before signal")
-                proc.send_signal(sig)
+            out_path = Path(tmp) / "signal.out"
+            err_path = Path(tmp) / "signal.err"
+            out_path.write_text("", encoding="utf-8")
+            err_path.write_text("", encoding="utf-8")
+
+            def _sig_tail(path, limit=4000):
                 try:
-                    out, err = proc.communicate(timeout=20)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    out, err = proc.communicate(timeout=10)
-                    self.fail("signal did not terminate owned bootstrap")
-                self.assertEqual(proc.returncode, expected_code)
-                combined = (out or "") + (err or "")
-                self.assertNotIn("Phase init complete", combined)
-                self.assertNotIn("already complete", combined)
-                docs = {}
-                for entry in sorted(journals.iterdir()):
-                    if entry.is_file() and entry.suffix == ".json":
-                        docs[entry.name] = json.loads(entry.read_text(encoding="utf-8"))
-                for doc in docs.values():
-                    self.assertNotEqual(doc.get("outcome"), "complete")
-                locks = [e for e in journals.iterdir() if e.name.endswith(".lock")]
-                self.assertEqual(locks, [])
-                calls = [line for line in log.read_text(encoding="utf-8").splitlines()
-                         if line.strip()]
-                runs = [call for call in calls if "run-task" in call]
-                self.assertEqual(len(runs), 1)
-            finally:
-                if proc.poll() is None:
-                    proc.kill()
+                    _t = Path(path).read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    return "<unreadable>"
+                return _t[-limit:] if len(_t) > limit else _t
+
+            def _sig_diag(reason):
+                try:
+                    _journals = sorted(e.name for e in journals.iterdir())
+                except OSError:
+                    _journals = ["<unreadable>"]
+                try:
+                    _logged = log.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    _logged = "<unreadable>"
+                _log_tail = _logged[-2000:] if len(_logged) > 2000 else _logged
+                try:
+                    _rc = proc.poll()
+                except NameError:
+                    _rc = "<no proc>"
+                return (
+                    f"{reason} rc={_rc} "
+                    f"ready={ready_file.exists()} release={release_file.exists()} "
+                    f"journals={_journals} log_tail={_log_tail!r} "
+                    f"out_tail={_sig_tail(out_path)!r} err_tail={_sig_tail(err_path)!r}"
+                )
+
+            with open(out_path, "w", encoding="utf-8") as out_f, open(
+                err_path, "w", encoding="utf-8"
+            ) as err_f:
+                proc = subprocess.Popen(
+                    [str(BOOTSTRAP), *full], stdout=out_f, stderr=err_f,
+                    text=True, env=env)
+                try:
+                    barrier_ok = False
+                    early_rc = None
+                    deadline = time.monotonic() + 20
+                    while time.monotonic() < deadline:
+                        early_rc = proc.poll()
+                        if early_rc is not None:
+                            break
+                        pending = [e for e in journals.iterdir()
+                                   if e.is_file() and e.name.endswith("-active.json")]
+                        try:
+                            logged = log.read_text(encoding="utf-8")
+                        except OSError:
+                            logged = ""
+                        if pending and "run-task" in logged and ready_file.exists():
+                            barrier_ok = True
+                            break
+                        time.sleep(0.1)
+                    if not barrier_ok:
+                        if early_rc is not None:
+                            self.fail(_sig_diag("early exit before barrier"))
+                        self.fail(_sig_diag("prelaunch barrier not reached (timeout)"))
+                    self.assertIsNone(proc.poll(), msg=_sig_diag("exited before signal"))
+                    proc.send_signal(sig)
                     try:
-                        proc.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
+                        release_file.touch(exist_ok=True)
+                    except OSError:
                         pass
+                    try:
+                        proc.wait(timeout=20)
+                    except subprocess.TimeoutExpired:
+                        try:
+                            proc.kill()
+                        except OSError:
+                            pass
+                        try:
+                            proc.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            pass
+                        self.fail(_sig_diag("signal did not terminate owned bootstrap"))
+                    self.assertEqual(proc.returncode, expected_code, msg=_sig_diag("wrong exit"))
+                    out_f.flush()
+                    err_f.flush()
+                    try:
+                        out_text = out_path.read_text(encoding="utf-8", errors="replace")
+                    except OSError:
+                        out_text = ""
+                    try:
+                        err_text = err_path.read_text(encoding="utf-8", errors="replace")
+                    except OSError:
+                        err_text = ""
+                    combined = out_text + err_text
+                    self.assertNotIn("Phase init complete", combined, msg=_sig_diag("unexpected complete"))
+                    self.assertNotIn("already complete", combined, msg=_sig_diag("unexpected complete"))
+                    docs = {}
+                    for entry in sorted(journals.iterdir()):
+                        if entry.is_file() and entry.suffix == ".json":
+                            docs[entry.name] = json.loads(entry.read_text(encoding="utf-8"))
+                    for doc in docs.values():
+                        self.assertNotEqual(doc.get("outcome"), "complete", msg=_sig_diag("unexpected journal complete"))
+                    locks = [e for e in journals.iterdir() if e.name.endswith(".lock")]
+                    self.assertEqual(locks, [], msg=_sig_diag("owned lock not released"))
+                    calls = [line for line in log.read_text(encoding="utf-8").splitlines()
+                             if line.strip()]
+                    runs = [call for call in calls if "run-task" in call]
+                    self.assertEqual(len(runs), 1, msg=_sig_diag("wrong run-task count"))
+                finally:
+                    if proc.poll() is None:
+                        try:
+                            proc.kill()
+                        except OSError:
+                            pass
+                        try:
+                            proc.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            pass
 
     def test_term_exits_143_without_completion(self):
         self.run_signal_case(signal.SIGTERM, 143)
