@@ -22,4 +22,4 @@ There are no decorative animations or motion effects. The reduced-motion media q
 
 ## Visual review notes
 
-Initial implementation review removed generic hero artwork, large summary counters, and a redundant primary action from the queue concept. Source inspection also changed fixed-width content columns to shrinkable grids, made action groups wrap, and made long receipt content wrap. Screenshot review results and any further fixes are recorded in docs/verification.md. These are implementation observations, not user research.
+Design choices avoided generic hero artwork, large summary counters, and redundant queue actions. Source inspection also changed fixed-width content columns to shrinkable grids, made action groups wrap, and made long receipt content wrap. Screenshot review results and any further fixes are recorded in docs/verification.md. These are implementation observations, not user research.

@@ -12,6 +12,8 @@ for (const width of [375, 768, 1024, 1440]) {
     const agentName = `Wallet${suffix}`;
     test.beforeEach(async ({ page }) => { await page.setViewportSize({ width, height: 1000 }); await page.goto('/'); });
     test('agent builder', async ({ page }) => {
+      await noOverflow(page);
+      await page.screenshot({ path: `${local}/idea-${width}.png`, fullPage: true });
       await page.getByRole('button', { name: 'Agent builder', exact: false }).click();
       await page.getByRole('button', { name: 'New agent', exact: true }).click();
       await page.getByLabel('Name', { exact: true }).fill(agentName);
