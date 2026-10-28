@@ -25,7 +25,9 @@
 -- generated ids, it cannot change the schema, and it cannot create
 -- objects in the schema.
 REVOKE CREATE ON SCHEMA :app_schema FROM PUBLIC;
+-- Both roles exist before any ALTER DEFAULT PRIVILEGES line references them.
 CREATE ROLE :runtime_user LOGIN;
+CREATE ROLE :migration_user LOGIN;
 GRANT USAGE ON SCHEMA :app_schema TO :runtime_user;
 REVOKE CREATE ON SCHEMA :app_schema FROM :runtime_user;
 REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA :app_schema FROM :runtime_user;
@@ -39,7 +41,6 @@ ALTER DEFAULT PRIVILEGES FOR ROLE :migration_user IN SCHEMA :app_schema GRANT US
 -- alembic, which is the only schema change path. It is used only by
 -- the separate migration task, never by runtime tasks, and runtime
 -- tasks must not use this identity or its secret.
-CREATE ROLE :migration_user LOGIN;
 GRANT USAGE, CREATE ON SCHEMA :app_schema TO :migration_user;
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA :app_schema TO :migration_user;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA :app_schema TO :migration_user;
