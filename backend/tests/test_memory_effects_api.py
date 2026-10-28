@@ -119,10 +119,32 @@ def test_absent_blocked_claim_never_manufactured(client):
 
 
 def test_unsupported_brand_fact_is_refused_not_approved(client):
-    # An unsupported memory claim refuses the run instead of entering facts.
+    # Documented partial failure boundary: the core pipeline raises before
+    # any model call, the adapter captures the failed receipt, and the API
+    # persists and returns it with HTTP 201 instead of raising or returning 500.
     bad = memory(client, 'brand_fact', 'Bad', {'claim': 'best in Texas'})
-    with pytest.raises(ValueError, match='Approved facts failed deterministic checks'):
-        client.post('/api/runs', json={'idea': IDEA, 'agent_name': 'Maker', 'memory_ids': [bad['id']]})
+    response = client.post('/api/runs', json={'idea': IDEA, 'agent_name': 'Maker', 'memory_ids': [bad['id']]})
+    assert response.status_code == 201, response.text
+    receipt = response.json()
+    assert receipt['status'] == 'failed'
+    assert receipt['approval_state'] == 'pending_approval'
+    assert receipt['approvals'] == []
+    assert receipt.get('maker_draft_v2') is None
+    assert receipt.get('checker_v2') is None
+    # Unsupported claim never becomes a verified or approved fact.
+    facts_used = (receipt.get('scout') or {}).get('facts_used', [])
+    assert all(entry.get('claim') != 'best in Texas' or not entry.get('verified') for entry in facts_used)
+    assert receipt.get('memory_claims') == ['best in Texas']
+    # Failed run cannot be approved or exported through the normal gates.
+    assert client.post('/api/runs/' + receipt['run_id'] + '/approve', json={}).status_code == 422
+    assert client.post('/api/runs/' + receipt['run_id'] + '/export', json={}).status_code == 422
+    reread = client.get('/api/runs/' + receipt['run_id']).json()
+    assert reread['status'] == 'failed'
+    assert reread['approval_state'] == 'pending_approval'
+    # Deterministic refusal happens before any model call.
+    usage = receipt.get('model_usage', {})
+    assert usage.get('spark_calls', 0) == 0
+    assert usage.get('model_used', 'none') == 'none'
 
 
 def test_learned_example_from_approved_run_is_style_only_and_snapshot_stable(client):
