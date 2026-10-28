@@ -350,6 +350,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/async": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Run Async
+         * @description Accept a run and execute the real pipeline in a background worker.
+         *
+         *     Returns a pending receipt immediately. Stage receipts arrive
+         *     incrementally through GET /api/runs/{run_id}/steps as the worker
+         *     reaches each real pipeline boundary. Polling never starts work.
+         */
+        post: operations["create_run_async_api_runs_async_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_a}/diff/{run_b}": {
         parameters: {
             query?: never;
@@ -486,6 +510,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/steps": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Run Steps
+         * @description Stored stage receipts for a run, in pipeline order.
+         *
+         *     Each row corresponds to pipeline work that already happened. Polling
+         *     this route never starts, restarts, or duplicates pipeline work.
+         */
+        get: operations["get_run_steps_api_runs__run_id__steps_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -507,6 +554,16 @@ export interface components {
         ApproveIn: {
             /** Expected Revision */
             expected_revision?: number | null;
+        };
+        /** AsyncRunCreated */
+        AsyncRunCreated: {
+            receipt: components["schemas"]["Receipt"];
+            /** Run Id */
+            run_id: string;
+            /** Status */
+            status: string;
+        } & {
+            [key: string]: unknown;
         };
         /** CampaignDay */
         CampaignDay: {
@@ -1292,6 +1349,40 @@ export interface components {
              * @default false
              */
             seed_unverified_claim: boolean;
+        };
+        /** RunStep */
+        RunStep: {
+            /**
+             * Evidence
+             * @default {}
+             */
+            evidence: {
+                [key: string]: unknown;
+            };
+            /** Observed At */
+            observed_at?: string | null;
+            /**
+             * Profile
+             * @default
+             */
+            profile: string;
+            /** Seq */
+            seq: number;
+            /** Stage */
+            stage: string;
+            /** State */
+            state: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** RunStepsOut */
+        RunStepsOut: {
+            /** Run Id */
+            run_id: string;
+            /** Steps */
+            steps: components["schemas"]["RunStep"][];
+            /** Worker Live */
+            worker_live: boolean;
         };
         /** ScoutFact */
         ScoutFact: {
@@ -2110,6 +2201,39 @@ export interface operations {
             };
         };
     };
+    create_run_async_api_runs_async_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunInput"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AsyncRunCreated"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     replay_diff_api_runs__run_a__diff__run_b__get: {
         parameters: {
             query?: never;
@@ -2366,6 +2490,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Receipt"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_run_steps_api_runs__run_id__steps_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunStepsOut"];
                 };
             };
             /** @description Validation Error */

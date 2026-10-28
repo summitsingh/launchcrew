@@ -86,7 +86,7 @@ def _memory_effects(memory_items):
     return claims, blocked, blocked_rules, expertise, approval_examples, used
 
 
-def execute(run_id, idea, profile, seed, memory_items=None, checker_profile='standard', brief=None, campaign_day=None, extra_claims=None, profile_expertise=None, scout_profile=None, maker_profile=None, checker_agent=None):
+def execute(run_id, idea, profile, seed, memory_items=None, checker_profile='standard', brief=None, campaign_day=None, extra_claims=None, profile_expertise=None, scout_profile=None, maker_profile=None, checker_agent=None, progress_sink=None, stage_gate=None):
     captured = []
     (ROOT / '.local').mkdir(exist_ok=True)
     claims, blocked, blocked_rules, expertise, approval_examples, used = _memory_effects(memory_items)
@@ -125,7 +125,8 @@ def execute(run_id, idea, profile, seed, memory_items=None, checker_profile='sta
                              seed_unverified_claim=seed, model_enabled=True,
                              receipt_writer=lambda receipt, path: captured.append(receipt),
                              memory_claims=claims, blocked_claims=blocked,
-                             checker_profile=checker_profile, brief=brief, campaign_day=campaign_day)
+                             checker_profile=checker_profile, brief=brief, campaign_day=campaign_day,
+                             progress=progress_sink, stage_gate=stage_gate)
         except Exception:
             if not captured:
                 raise

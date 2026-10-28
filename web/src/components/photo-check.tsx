@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState, type RefObject } from 'react';
 import { Button } from '@/components/ui/button';
 import { api } from '@/lib/api';
+import type { QueryClient } from '@tanstack/react-query';
 import type { components } from '@/lib/schema';
 
 type Receipt = components['schemas']['Receipt'];
@@ -176,6 +177,38 @@ export function revokePreviewUrl(url: string | null): void {
   URL.revokeObjectURL(url);
 }
 
+/** True when an acknowledged mutation receipt may replace the cached one.
+ * An already in-flight older GET poll must never overwrite a newer
+ * revision that a mutation already acknowledged. Equal revisions are
+ * accepted: photo and text mutations always bump the revision, so an
+ * equal revision is the same generation, never older. */
+export function shouldApplyReceipt(cachedRevision: number | null, nextRevision: number): boolean {
+  if (cachedRevision === null) return true;
+  return nextRevision >= cachedRevision;
+}
+
+function receiptRevision(receipt: unknown): number | null {
+  if (!receipt || typeof receipt !== 'object') return null;
+  const revision = (receipt as { revision?: unknown }).revision;
+  return typeof revision === 'number' ? revision : null;
+}
+
+/** Apply an acknowledged mutation receipt without letting a stale in-flight
+ * GET poll overwrite it afterwards. Cancels the in-flight receipt poll,
+ * then applies only when the acknowledged revision is not older than the
+ * cached one. The caller still invalidates the queue separately; receipt
+ * polling stays on its regular interval and is never disabled. */
+export async function applyAcknowledgedReceipt(
+  client: QueryClient,
+  runId: string,
+  next: components['schemas']['Receipt'],
+): Promise<void> {
+  await client.cancelQueries({ queryKey: ['run', runId] });
+  const cached = client.getQueryData<unknown>(['run', runId]);
+  if (cached !== undefined && !shouldApplyReceipt(receiptRevision(cached), receiptRevision(next) ?? 0)) return;
+  client.setQueryData(['run', runId], next);
+}
+
 export type PhotoPanelProps = {
   runId: string;
   revision: number;
@@ -249,7 +282,7 @@ export function PhotoCheckPanel(props: PhotoPanelProps) {
             <div>
               <p role="status">
                 Selected {props.selectionName}{props.selectionMeta ? ` (${props.selectionMeta})` : ''}. Unchecked:
-                not approved and not exportable until an explicit check passes.
+                these local pixels were not sent, and they are not approved and not exportable until an explicit check passes.
               </p>
               {props.previewUrl && (
                 <img className="photo-preview-img" src={props.previewUrl} alt="Selected photo preview (local only, not yet checked)" />
@@ -285,7 +318,7 @@ export function PhotoCheckPanel(props: PhotoPanelProps) {
           {showCropOffer && (
             <div>
               <p role="status">
-                Crop suggestion subsets existing pixels only (server pad and clamp). The original file is preserved.
+                Crop suggestion uses only existing pixels. The original file is preserved.
               </p>
               <canvas
                 ref={props.cropCanvasRef}

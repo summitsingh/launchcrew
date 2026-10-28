@@ -1,6 +1,16 @@
-# Local verification, Oct 27, 2026
+# Local verification
 
-## Update, Oct 27 evening, superseding stale CI and live-model statements
+## Current state, Oct 28, 2026: incremental stage receipts
+
+Published main `9809b4a` carries the host full pass (172 backend pytest, 109 core, 63 Vitest, scans plus typecheck plus build, 22 browser in 37.4s: 16 original plus 1 real keyless photo plus 5 clearly labelled synthetic interaction proofs; CI `40665386053` read at terminal by the orchestrator; prior CI `40659590053` was terminal success including containers).
+
+On top of that base, this clone adds incremental stage receipts (`POST /api/runs/async`, `GET /api/runs/{run_id}/steps`, migration `004_run_steps`, `backend/run_jobs.py`). What the CLI author verified offline in this session, with no live model calls: 113 unittest (including 4 new core progress proofs: real stage order, barrier-held later stage after earlier completion, gate failure writes a failed receipt, pending receipt shape), 67 Vitest (including 4 new proofs: stage ordering, evidence copy, pending and unconfirmed rendering, stale-GET versus acknowledged-mutation ordering), `tsc --noEmit`, production `next build`, `scripts/scan_repo.py` pass, `scripts/check-repo-text.py` zero counts, and exact OpenAPI plus TypeScript client regeneration with no diff beyond the new routes.
+
+Restart limitation, by design: async workers are in-process threads with no supervisor, so a host restart loses in-flight pipeline work. What remains is the pending receipt plus the stored completed steps: evidence of accepted-but-unfinished work, never success. The Desk reports the result as unconfirmed, approval stays locked, and nothing is retried automatically; the founder creates a new pack instead. No database row lock is ever held across remote inference: every step write and the final receipt-plus-terminal-step commit are separate short transactions.
+
+Explicitly not run by the CLI author in this session and left to the host after this checkpoint: Postgres pytest (including the 4 new `backend/tests/test_run_progress.py` barrier, failure-retention, no-duplicate-work, and guard tests plus migration `004`), and headless Chromium (including the new `web/tests/e2e/run-progress.spec.ts` real keyless flow through the pending view, the step view, and final review with no route interception). The three `tests/test_stage_b.py` WebTests socket errors seen here are sandbox loopback denials on the untouched stdlib UI server path, not product failures; they pass where loopback binding is allowed. Sections below dated Oct 27 are retained history, not current claims.
+
+## Update, Oct 27 evening, history retained (see current state above)
 
 Remote GitHub Actions execution is no longer unverified. Completed Verify LaunchCrew runs, with links:
 - Main: run 40618077504, commit 4bb295d, Status Success, 5m 5s, https://github.com/summitsingh/launchcrew/actions/runs/40618077504

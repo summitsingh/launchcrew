@@ -71,6 +71,30 @@ def failed_receipt(run_id, events, step, error):
             'audit': {'event_log': events, 'stopped_reason': step}}
 
 
+def pending_receipt(run_id, idea, stage_bindings=None):
+    """Honest pending receipt for an accepted but unfinished run.
+
+    Status is running, drafts and checks are absent, and no approval or
+    export gate accepts it. It is evidence of accepted work, never of
+    success, and a later completed or failed receipt replaces it."""
+    now = timestamp()
+    return {'receipt_version': '1.0', 'run_id': run_id, 'generated_at': now,
+            'status': 'running', 'brand': 'LaunchCrew', 'mode': 'demo_no_submit',
+            'idea': idea, 'agents_used': ['Scout', 'Maker', 'Checker', 'Maker', 'Checker'],
+            'scout': None, 'maker_draft_v1': None, 'checker_v1': None,
+            'maker_draft_v2': None, 'checker_v2': None,
+            'summary': {'submit_attempted': False, 'submit_completed': False},
+            'approvals': [], 'approval_state': 'pending_approval',
+            'visual_verification': {'checked': False, 'method': 'not_run'},
+            'audit': {'event_log': [{'step': 'accepted', 'agent': 'LaunchCrew',
+                                     'profile': 'LaunchCrew',
+                                     'action': 'Run accepted; pipeline work has not completed',
+                                     'timestamp': now}],
+                      'duplicate_submit_prevented': True, 'stopped_reason': None},
+            'model_usage': None,
+            'stage_bindings': dict(stage_bindings or {})}
+
+
 def approve_receipt(receipt, approved_by, expected_revision=None):
     from .human_review import approve_current
     revised = approve_current(receipt, approved_by, expected_revision)

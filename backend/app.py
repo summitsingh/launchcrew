@@ -402,6 +402,29 @@ def load_stage_profiles(db, body):
     return legacy, scout, maker, checker
 
 
+class AsyncRunCreated(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    run_id: str
+    status: str
+    receipt: Receipt
+
+
+class RunStep(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    seq: int
+    stage: str
+    state: str
+    observed_at: str | None = None
+    profile: str = ''
+    evidence: dict[str, Any] = {}
+
+
+class RunStepsOut(BaseModel):
+    run_id: str
+    worker_live: bool
+    steps: list[RunStep]
+
+
 @app.post('/api/runs', response_model=Receipt, status_code=201)
 def create_run(body: RunInput, actor: str = Depends(auth.actor)):
     with store.connect() as db:
@@ -415,6 +438,37 @@ def create_run(body: RunInput, actor: str = Depends(auth.actor)):
     with store.connect() as db:
         save_run(db, receipt, maker_name, actor)
     return receipt
+
+
+@app.post('/api/runs/async', response_model=AsyncRunCreated, status_code=202)
+def create_run_async(body: RunInput, actor: str = Depends(auth.actor)):
+    """Accept a run and execute the real pipeline in a background worker.
+
+    Returns a pending receipt immediately. Stage receipts arrive
+    incrementally through GET /api/runs/{run_id}/steps as the worker
+    reaches each real pipeline boundary. Polling never starts work.
+    """
+    from launchcrew import receipts as receipt_mod
+    from backend import run_jobs
+    with store.connect() as db:
+        legacy, scout, maker, checker = load_stage_profiles(db, body)
+        items = load_memory_selection(db, body.memory_ids)
+        scout_name, maker_name, checker_name = stage_names(body)
+        run_id = 'run_' + uuid4().hex
+        pending = receipt_mod.pending_receipt(run_id, body.idea,
+                                              {'scout': scout_name, 'maker': maker_name, 'checker': checker_name})
+        db.execute(text('INSERT INTO runs(id,receipt,agent_name,state) VALUES (:id,CAST(:receipt AS jsonb),:agent,:state)'),
+                   {'id': run_id, 'receipt': json.dumps(pending), 'agent': maker_name.lower(), 'state': pending['approval_state']})
+        db.execute(text('INSERT INTO memory(run_id,facts) VALUES (:id,CAST(:facts AS jsonb))'),
+                   {'id': run_id, 'facts': json.dumps([])})
+        store.audit(db, run_id, 'run_created', actor)
+    # The run row is committed above, so the step row can reference it.
+    run_jobs.record_step(run_id, 'accepted', 'completed', 'LaunchCrew', {'idea_chars': len(body.idea)})
+    started = run_jobs.start_async_run(run_id, body.idea, legacy, body.seed_unverified_claim, items,
+                                       body.checker_profile, scout, maker, checker, maker_name, actor)
+    if not started:
+        raise HTTPException(409, 'Run worker already active for this run')
+    return {'run_id': run_id, 'status': 'running', 'receipt': pending}
 
 
 def save_run(db, receipt, agent_name, actor):
@@ -444,6 +498,27 @@ def get_receipt(db, run_id, lock=False):
 def get_run(run_id: str, actor: str = Depends(auth.actor)):
     with store.connect() as db:
         return get_receipt(db, run_id)
+
+
+@app.get('/api/runs/{run_id}/steps', response_model=RunStepsOut)
+def get_run_steps(run_id: str, actor: str = Depends(auth.actor)):
+    """Stored stage receipts for a run, in pipeline order.
+
+    Each row corresponds to pipeline work that already happened. Polling
+    this route never starts, restarts, or duplicates pipeline work.
+    """
+    from backend import run_jobs
+    with store.connect() as db:
+        exists = db.execute(text('SELECT 1 FROM runs WHERE id=:id'), {'id': run_id}).fetchone()
+        if not exists:
+            raise HTTPException(404, 'Run not found')
+        rows = db.execute(text('SELECT seq,stage,state,observed_at,profile,evidence'
+                               ' FROM run_steps WHERE run_id=:id ORDER BY seq,id'),
+                          {'id': run_id}).mappings().all()
+    steps = [{'seq': row['seq'], 'stage': row['stage'], 'state': row['state'],
+              'observed_at': row['observed_at'].isoformat() if row['observed_at'] is not None else None,
+              'profile': row['profile'] or '', 'evidence': row['evidence'] or {}} for row in rows]
+    return {'run_id': run_id, 'worker_live': run_jobs.is_worker_live(run_id), 'steps': steps}
 
 
 class ReviseIn(Strict):
@@ -504,11 +579,17 @@ class PhotoRemoveOut(BaseModel):
     approval_state: Literal['pending_approval']
 
 
+def _reject_when_running(receipt):
+    if receipt.get('status') == 'running':
+        raise HTTPException(409, 'Run is still running; reload the receipt and retry after it completes')
+
+
 @app.post('/api/runs/{run_id}/revise', response_model=Receipt)
 def revise(run_id: str, body: ReviseIn, actor: str = Depends(auth.actor)):
     from launchcrew import human_review
     with store.connect() as db:
         receipt = get_receipt(db, run_id, True)
+        _reject_when_running(receipt)
         try:
             revised = human_review.apply_revision(receipt, body.post.strip(), body.email.strip(), actor, body.base_revision)
         except human_review.NeedsRevision as error:
@@ -538,6 +619,7 @@ def approve(run_id: str, body: ApproveIn, actor: str = Depends(auth.actor)):
     from launchcrew import human_review
     with store.connect() as db:
         receipt = get_receipt(db, run_id, True)
+        _reject_when_running(receipt)
         expected = body.expected_revision
         if human_review.current_revision(receipt) > 0 and expected is None:
             raise HTTPException(409, 'Approval is stale; expected_revision is required for edited revisions')
@@ -568,6 +650,7 @@ def export(run_id: str, body: ExportIn, actor: str = Depends(auth.actor)):
         from backend.photo_review import photo_block_reason
         from launchcrew import human_review
         receipt = get_receipt(db, run_id, True)
+        _reject_when_running(receipt)
         expected = body.expected_revision
         if human_review.current_revision(receipt) > 0 and expected is None:
             raise HTTPException(409, 'Export is stale; expected_revision is required for edited revisions')
@@ -588,6 +671,8 @@ def export(run_id: str, body: ExportIn, actor: str = Depends(auth.actor)):
 
 @app.post('/api/runs/{run_id}/photo-check', response_model=PhotoCheckResponse)
 def photo_check(run_id: str, body: PhotoCheckIn, actor: str = Depends(auth.actor)):
+    with store.connect() as db:
+        _reject_when_running(get_receipt(db, run_id))
     from backend import photo_admission, sam
     from backend.photo_admission import AdmissionConflict, AdmissionRejected, AdmissionStale
     from backend.photo_input import PhotoInputError, parse_photo_data_uri
@@ -654,6 +739,7 @@ def photo_remove(run_id: str, body: PhotoRemoveIn, actor: str = Depends(auth.act
     from launchcrew import human_review
     with store.connect() as db:
         receipt = get_receipt(db, run_id, True)
+        _reject_when_running(receipt)
         ok, context_reason = human_review.valid_revision_context(receipt)
         if not ok:
             raise HTTPException(422, context_reason)

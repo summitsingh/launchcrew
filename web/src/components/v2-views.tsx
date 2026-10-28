@@ -243,3 +243,121 @@ export function HumanRevisionEditor({ receipt }: { receipt: Receipt }) {
   const saved = !dirty && !save.isPending && savedAtRevision === base.revision && base.revision > 0;
   return <section className="panel" aria-label="Edit drafts"><p className="eyebrow">HUMAN REVIEW</p><h2>Edit post and email</h2><p className="hint">Rechecking compares your edited text against the same verified facts, blocked rules, and Checker policies saved on this run. Unsupported text is rejected and not saved. Saved text clears the prior export approval until you approve the latest revision.</p><p className="hint">Current revision: {base.revision}{base.human ? ' (human revision)' : ' (Maker draft)'} · Status: {revisionStatusOf(receipt)}</p><form onSubmit={e => { e.preventDefault(); save.reset(); save.mutate(); }}><label htmlFor={`human-post-${receipt.run_id}`}>Post text</label><textarea id={`human-post-${receipt.run_id}`} rows={4} required maxLength={2000} value={post} onChange={e => { setPost(e.target.value); }} disabled={failed || save.isPending} /><label htmlFor={`human-email-${receipt.run_id}`}>Email text</label><textarea id={`human-email-${receipt.run_id}`} rows={4} required maxLength={2000} value={email} onChange={e => { setEmail(e.target.value); }} disabled={failed || save.isPending} /><div className="queue-actions"><Button type="submit" disabled={failed || save.isPending || !dirty || !post.trim() || !email.trim()}>{save.isPending ? 'Rechecking...' : 'Save human revision'}</Button></div></form>{dirty && <p role="status">Unsaved changes. Save runs the deterministic recheck.</p>}{saved && <p role="status">Saved revision {base.revision}. This pack needs fresh approval before export.</p>}{save.error && <p role="alert">Needs revision: {needsRevision}. The invalid text was not saved.</p>}</section>;
 }
+
+export const RUN_STAGE_ORDER = ['accepted', 'deterministic_checks', 'scout', 'maker_draft_v1', 'checker_v1', 'maker_draft_v2', 'checker_v2', 'receipt'];
+
+const RUN_STAGE_LABELS: Record<string, string> = {
+  accepted: 'Accepted',
+  deterministic_checks: 'Deterministic checks',
+  scout: 'Scout facts',
+  maker_draft_v1: 'Maker first draft',
+  checker_v1: 'Checker first check',
+  maker_draft_v2: 'Maker revision',
+  checker_v2: 'Checker recheck',
+  receipt: 'Final receipt',
+};
+
+export type StageProgressState = 'completed' | 'started' | 'pending' | 'failed';
+
+export type StageProgress = {
+  stage: string;
+  label: string;
+  state: StageProgressState;
+  observedAt: string | null;
+  profile: string;
+  evidence: Record<string, unknown>;
+};
+
+export type StoredStep = {
+  stage: string;
+  state: string;
+  observed_at?: string | null;
+  profile?: string | null;
+  evidence?: Record<string, unknown> | null;
+};
+
+/** Latest stored state per pipeline stage, in pipeline order. Pure and total: unknown stages are ignored. */
+export function describeStageProgress(steps: StoredStep[]): StageProgress[] {
+  const latest = new Map<string, StoredStep>();
+  for (const row of steps) {
+    if (typeof row.stage === 'string' && RUN_STAGE_ORDER.includes(row.stage)) latest.set(row.stage, row);
+  }
+  return RUN_STAGE_ORDER.map(stage => {
+    const row = latest.get(stage);
+    const raw = row?.state;
+    const state: StageProgressState = raw === 'completed' || raw === 'started' || raw === 'failed' ? raw : 'pending';
+    return {
+      stage,
+      label: RUN_STAGE_LABELS[stage],
+      state,
+      observedAt: typeof row?.observed_at === 'string' ? row.observed_at : null,
+      profile: typeof row?.profile === 'string' ? row.profile : '',
+      evidence: row?.evidence && typeof row.evidence === 'object' ? row.evidence : {},
+    };
+  });
+}
+
+function evidenceValue(evidence: Record<string, unknown>, key: string): string | null {
+  const value = evidence[key];
+  return typeof value === 'number' || typeof value === 'string' ? String(value) : null;
+}
+
+/** One honest line drawn only from stored step evidence. Never predicts. */
+export function stageEvidenceCopy(stage: string, evidence: Record<string, unknown>): string {
+  if (stage === 'accepted') {
+    const chars = evidenceValue(evidence, 'idea_chars');
+    return chars === null ? 'run accepted' : `run accepted · idea ${chars} chars`;
+  }
+  if (stage === 'deterministic_checks') {
+    const facts = evidenceValue(evidence, 'facts');
+    return facts === null ? 'facts file checked' : `${facts} approved facts checked`;
+  }
+  if (stage === 'scout') {
+    const facts = evidenceValue(evidence, 'facts_used');
+    const risks = evidenceValue(evidence, 'risks');
+    const mode = evidenceValue(evidence, 'model_mode');
+    return `${facts ?? '?'} facts sourced · ${risks ?? '?'} risks${mode ? ` · synthesis ${mode}` : ''}`;
+  }
+  if (stage === 'maker_draft_v1' || stage === 'maker_draft_v2') {
+    const claims = evidenceValue(evidence, 'claims');
+    return claims === null ? 'draft written' : `${claims} claims drafted`;
+  }
+  if (stage === 'checker_v1' || stage === 'checker_v2') {
+    const blocked = evidenceValue(evidence, 'blocked_count');
+    const verified = evidenceValue(evidence, 'verified_count');
+    return `blocked ${blocked ?? '?'} · verified ${verified ?? '?'}`;
+  }
+  if (stage === 'receipt') {
+    const blocked = evidenceValue(evidence, 'blocked_count');
+    return evidence['stored'] === true
+      ? `receipt stored${blocked === null ? '' : ` · final blocked ${blocked}`}`
+      : 'receipt prepared';
+  }
+  return 'recorded';
+}
+
+export function RunProgressList({ stages, workerLive, running }: { stages: StageProgress[]; workerLive: boolean; running: boolean }) {
+  const unconfirmed = running && !workerLive && stages.some(stage => stage.state === 'completed' || stage.state === 'started');
+  return <section className="panel" aria-label="Run progress">
+    <p className="eyebrow">LIVE STAGE RECEIPTS</p>
+    <h2>{running ? 'Pack in progress.' : 'Pack finished.'}</h2>
+    <p className="hint">Each row below was stored when the pipeline actually reached that stage, with the server time. Nothing here is predicted and no per-stage timing is estimated. Approval, editing, photo checks, and export unlock only after the final receipt lands.</p>
+    {unconfirmed && <p role="alert">Pipeline worker not observed. Completed rows below are stored evidence, but the result is unconfirmed: nothing restarts automatically. Reload, or create a new pack.</p>}
+    <ol>{stages.map(stage => <li key={stage.stage}><strong>{stage.label}</strong><span> · {stage.state === 'completed' ? 'completed' : stage.state === 'started' ? 'in progress' : stage.state === 'failed' ? 'failed' : 'pending'}</span>{stage.profile && <span> · {stage.profile}</span>}<br /><small>{stage.state === 'pending' ? 'not yet reached' : stageEvidenceCopy(stage.stage, stage.evidence)}</small>{stage.observedAt && <><br /><small className="run-id">{stage.observedAt}</small></>}</li>)}</ol>
+  </section>;
+}
+
+export function RunProgressSection({ runId, receipt }: { runId: string; receipt: Receipt }) {
+  const steps = useQuery({
+    queryKey: ['run-steps', runId],
+    queryFn: () => unwrap(api.GET('/api/runs/{run_id}/steps', { params: { path: { run_id: runId } } })),
+    refetchInterval: 2000,
+  });
+  const running = receipt.status === 'running';
+  const stages = describeStageProgress((steps.data?.steps ?? []) as StoredStep[]);
+  return <>
+    {steps.isPending && <p>Loading stage receipts...</p>}
+    {steps.error && <p role="alert">{(steps.error as Error).message}</p>}
+    {steps.data && <RunProgressList stages={stages} workerLive={steps.data.worker_live} running={running} />}
+  </>;
+}

@@ -55,6 +55,29 @@
         "title": "ApproveIn",
         "type": "object"
       },
+      "AsyncRunCreated": {
+        "additionalProperties": true,
+        "properties": {
+          "receipt": {
+            "$ref": "#/components/schemas/Receipt"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "status",
+          "receipt"
+        ],
+        "title": "AsyncRunCreated",
+        "type": "object"
+      },
       "CampaignDay": {
         "additionalProperties": false,
         "properties": {
@@ -2112,6 +2135,78 @@
         "title": "RunInput",
         "type": "object"
       },
+      "RunStep": {
+        "additionalProperties": true,
+        "properties": {
+          "evidence": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Evidence",
+            "type": "object"
+          },
+          "observed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Observed At"
+          },
+          "profile": {
+            "default": "",
+            "title": "Profile",
+            "type": "string"
+          },
+          "seq": {
+            "title": "Seq",
+            "type": "integer"
+          },
+          "stage": {
+            "title": "Stage",
+            "type": "string"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "seq",
+          "stage",
+          "state"
+        ],
+        "title": "RunStep",
+        "type": "object"
+      },
+      "RunStepsOut": {
+        "properties": {
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/RunStep"
+            },
+            "title": "Steps",
+            "type": "array"
+          },
+          "worker_live": {
+            "title": "Worker Live",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "run_id",
+          "worker_live",
+          "steps"
+        ],
+        "title": "RunStepsOut",
+        "type": "object"
+      },
       "ScoutFact": {
         "additionalProperties": true,
         "properties": {
@@ -3170,6 +3265,45 @@
         "summary": "Create Run"
       }
     },
+    "/api/runs/async": {
+      "post": {
+        "description": "Accept a run and execute the real pipeline in a background worker.\n\nReturns a pending receipt immediately. Stage receipts arrive\nincrementally through GET /api/runs/{run_id}/steps as the worker\nreaches each real pipeline boundary. Polling never starts work.",
+        "operationId": "create_run_async_api_runs_async_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AsyncRunCreated"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Run Async"
+      }
+    },
     "/api/runs/{run_a}/diff/{run_b}": {
       "get": {
         "operationId": "replay_diff_api_runs__run_a__diff__run_b__get",
@@ -3539,6 +3673,46 @@
           }
         },
         "summary": "Revise"
+      }
+    },
+    "/api/runs/{run_id}/steps": {
+      "get": {
+        "description": "Stored stage receipts for a run, in pipeline order.\n\nEach row corresponds to pipeline work that already happened. Polling\nthis route never starts, restarts, or duplicates pipeline work.",
+        "operationId": "get_run_steps_api_runs__run_id__steps_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunStepsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Run Steps"
       }
     }
   }

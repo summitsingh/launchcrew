@@ -11,19 +11,20 @@ The initial sandbox curl failed with `curl exit 6`. With network access enabled 
 - [Muse Code authentication](https://dev.meta.ai/docs/muse-code/auth): documents browser authentication or an API key, and environment `META_API_KEY` taking priority over stored credentials and browser sessions. Muse Code is a CLI using Model API, not a separate product API endpoint. LaunchCrew never invokes its CLI or reads its credential storage.
 - [Structured output](https://dev.meta.ai/docs/structured-output): documents Chat Completions `response_format.type=json_schema`, `json_schema.schema`, and `json_schema.strict=true`. Strict schemas require every property and disallow extra properties. The transport now uses these settings rather than the previous `json_object` format, and validates returned string-array objects locally too.
 - [File handling](https://dev.meta.ai/docs/file-handling): documents multipart `POST /v1/files`, purpose `user_data`, and referencing uploads using typed `input_image` with `file_id`. Uploaded files do not expire automatically. Only approved demo photos may be uploaded; no production photo storage or retention workflow is implemented.
-- [SAM prompts](https://dev.meta.ai/docs/sam/segmenting): documents `sam-3.1`, `POST /v1/responses`, a user message with text and media, `stream=true`, and top-level `metadata.mask_encoding=lossless`. Concept prompts use lossless masks with a tilde marker. Box and point prompts can instead return one-bit masks; this implementation sends only the fixed demo concept prompt `jacket`. Summit approved changing `wallet` to `jacket` on Oct 27, 2026, for the SAM demo only. The Spark demo remains unchanged: Vegan leather wallet, $49, for Austin commuters.
+- [SAM prompts](https://dev.meta.ai/docs/sam/segmenting): documents `sam-3.1`, `POST /v1/responses`, a user message with text and media, `stream=true`, and top-level `metadata.mask_encoding=lossless`. Concept prompts use lossless masks with a tilde marker. Box and point prompts can instead return one-bit masks. The product photo path (`upload_and_segment`) defaults to concept `product`; the fixed `jacket` prompt lives only in the diagnostic demo verification (`verify_demo_photo`), which is not the product path. No live SAM call is made in this state. The Spark demo remains unchanged: Vegan leather wallet, $49, for Austin commuters.
 - [SAM output](https://dev.meta.ai/docs/sam/reading-segmentation): documents `response.output_text.delta`, frame markers, object IDs, paired box/mask tags, and `response.completed`. Empty output is a valid zero-match result. The new parser accumulates split deltas, parses boxes and lossless mask dimensions/payloads in memory, rejects malformed or incomplete streams, and discards geometry before returning receipt metadata. It does not decode or persist mask rasters.
 
 `curl -L --max-time 30 https://api.meta.ai/docs` returned HTTP 404. That URL is not a usable documentation page. Verification above comes from fetched public dev.meta.ai pages, including their explicit api.meta.ai request examples. No authenticated endpoint or model compatibility is claimed from documentation alone. Local ignored evidence is `.local/meta-*.html`; no doc HTML is committed.
 
 ## Routes and deterministic boundaries
 
-Two FastAPI routes can call Meta Model API, each under explicit gates:
+Three FastAPI creation paths can call Meta Model API text synthesis, each under explicit gates, all through `backend/adapter.py` `execute`:
 
-- `POST /api/runs`
-- `POST /api/runs/{run_id}/photo-check`
+- `POST /api/runs`: runs the pipeline synchronously and returns the completed receipt.
+- `POST /api/runs/async`: stores a pending receipt, then runs the same pipeline in one background worker per run id, writing one stored step row per real stage. Polling the steps never starts model work.
+- `POST /api/campaigns`: runs the same pipeline seven times, once per day brief, each with its own run id and receipt.
 
-With a key present, `POST /api/runs` runs deterministic facts checks first, optional configured Wonder Scout synthesis with Spark fallback, and Spark Scout synthesis when Wonder is disabled. Maker and Checker each have one strict-JSON Spark candidate call. Scout candidates are independently checked against `facts/demo_facts.json`, with unverified entries explicitly marked and excluded from Maker. Maker accepts only independently checked allowlist sentences whose assembled draft also passes the deterministic Checker. Checker candidate claims are rechecked and discarded; they never determine the draft verdict. Final revision and both actual Checker verdicts remain deterministic. No model can approve, unblock, or verify a claim by suggestion.
+With a key present, each pipeline run does deterministic facts checks first, optional configured Wonder Scout synthesis with Spark fallback, and Spark Scout synthesis when Wonder is disabled. Maker and Checker each have one strict-JSON Spark candidate call. Scout candidates are independently checked against `facts/demo_facts.json`, with unverified entries explicitly marked and excluded from Maker. Maker accepts only independently checked allowlist sentences whose assembled draft also passes the deterministic Checker. Checker candidate claims are rechecked and discarded; they never determine the draft verdict. Final revision and both actual Checker verdicts remain deterministic. No model can approve, unblock, or verify a claim by suggestion. No invocation of SAM happens on any run, progress, or campaign path; SAM is reachable only from the explicit admitted photo check below.
 
 `POST /api/runs/{run_id}/photo-check` runs paid SAM segmentation only after an explicit Check click passes every photo gate in the paid photo check section below. Run creation never segments; nothing is sent automatically.
 
@@ -39,21 +40,29 @@ These FastAPI business routes never call the model API:
 - `GET /api/queue`
 - `GET /api/runs/{run_id}`
 - `GET /api/runs/{run_id}/receipt`
+- `GET /api/runs/{run_id}/steps`
+- `GET /api/runs/{run_a}/diff/{run_b}`
+- `POST /api/runs/{run_id}/revise`
 - `POST /api/runs/{run_id}/approve`
 - `POST /api/runs/{run_id}/export`
+- `POST /api/runs/{run_id}/photo-check` without all gates passing (returns `not_run`, sends nothing)
 - `DELETE /api/runs/{run_id}/photo`
+- `GET /api/memory`, `POST /api/memory`, `GET /api/memory/{item_id}`, `PUT /api/memory/{item_id}`, `DELETE /api/memory/{item_id}`, `POST /api/memory/from-run/{run_id}`
+- `GET /api/campaigns`, `GET /api/campaigns/{campaign_id}`, `POST /api/campaigns/{campaign_id}/days/{day}/approve`, `POST /api/campaigns/{campaign_id}/days/{day}/export`
+- `GET /api/checker-policies`
+- `GET /api/model-capabilities`
 - `GET /api/auth/status`
 - `GET /api/auth/{provider}/login`
 - `GET /api/auth/{provider}/callback`
 - `POST /api/auth/logout`
 
-The provider routes support google and facebook. Framework endpoints `GET /openapi.json`, `GET /docs`, `GET /docs/oauth2-redirect`, and `GET /redoc` also never call models. Auth, connectors, database operations, individual approval and export gates remain deterministic. OAuth identity provider exchanges are unrelated to model transport. `DELETE /api/runs/{run_id}/photo` only detaches the photo at a new revision and never segments. Next.js has no provider client, endpoint secret, or key; the PhotoCheck UI sends photo bytes to the backend check route only on an explicit Check click, never on select, preview, crop, or remove.
+The provider routes support google and facebook. Framework endpoints `GET /openapi.json`, `GET /docs`, `GET /docs/oauth2-redirect`, and `GET /redoc` also never call models. Auth, connectors, database operations, individual approval and export gates remain deterministic. OAuth identity provider exchanges are unrelated to model transport. `DELETE /api/runs/{run_id}/photo` only detaches the photo at a new revision and never segments. Next.js has no provider client, endpoint secret, or key; the PhotoCheck UI sends photo bytes to the backend check route only on an explicit Check click, never on select, preview, crop, or remove. No new model call is made to render progress, to poll status, or to run tests; model calls happen only for an explicit user run under the existing configuration.
 
 Without the key, no model network call occurs; drafts and Checker behavior retain deterministic fallback, with `model_used=none`. Runtime errors fall back with exception type only, never exception messages, response bodies or headers. Receipts record mode, models used, Spark attempt count, Wonder attempts and success flag, allowlisted numeric token counts and whether counts are known. Zero totals with unknown counts do not imply free provider usage. Failed pipeline receipts retain safe usage metadata too. Raw model candidate drafts and Checker suggestions are not persisted. Scout rejected claims remain explicitly unverified audit entries, never verified facts.
 
 ## Paid photo check
 
-On Oct 27, 2026, with Summit approval, the fixed SAM demo concept changed from `wallet` to `jacket`. This change applies to the SAM demo only. The Spark idea demo remains unchanged: Vegan leather wallet, $49, for Austin commuters.
+Concept reconciliation, Oct 28, 2026: the product photo path defaults to concept `product`. The `jacket` string from Oct 27 SAM diagnostics applies only to the diagnostic demo verification, never to an admitted photo check. A future bounded live SAM preflight will name its exact concept, file, budget, and operator approval before any call, and no call is made now. The Spark idea demo remains unchanged: Vegan leather wallet, $49, for Austin commuters.
 
 The paid photo check is explicit, off by default, and single-owner. The enable flag is unset by default, the global one-shot budget starts at 0 images, and only exact operator-approved bytes are admitted (the photo sha256 must be allowlisted, with a runtime key present). Operator preflight checks key presence, pricing, and balance against the existing max-$1 envelope for the one approved file before any paid call. With the flag off or keyless, the check returns `method: not_run` over HTTP 200, sends no bytes, and the UI states SAM is not configured. No client path is accepted; only the bytes the operator explicitly approved can pass admission.
 
@@ -69,7 +78,7 @@ Live Spark: **BLOCKED**, error type `EnvironmentVariableAbsent`; model used `non
 
 Live SAM: attempted Oct 27, 2026, against commit `77f6730` plus the jacket concept change, with the reviewed demo file; model `sam-3.1`, method `sam-3.1`, checked `false`, error type `HTTPError`. No box or mask geometry and no key material appeared in any receipt. The backend returns only the error type, so provider file upload success or failure is unknown. Approval and export were verified separately on a keyless demo run. This stays history: a Files-only success plus an attempted SAM is not new live SAM and not current paid proof, and the keyless approval path above predates the paid photo gates (a photo-bearing pack now needs a current-revision `detected` check plus fresh approval).
 
-Live Spark and live SAM remain separate unverified gates. Prior baseline is published `6e2b7ef` with CI run `40659590053` (host 162 backend, 109 core, 44 Vitest, 16 browser plus the real keyless proof); newer photo UI counts stay pending until the host supplies them. Still open: live SAM balance and operator cap, deployment, demo video, and final submission gates. Mocked tests validate wiring, filtering, telemetry and SSE parsing, not live service compatibility. AWS, DNS, v2, submission and live sign-in were not performed. No new product features are added here.
+Live Spark and live SAM remain separate unverified gates. Published proof on main is `9809b4a` (host full pass: 172 backend pytest, 109 core, 63 Vitest, scans plus typecheck plus build, 22 browser: 16 original plus 1 real keyless photo plus 5 clearly labelled synthetic interaction proofs; CI `40665386053` read at terminal by the orchestrator). Still open: live SAM balance and operator cap (no automated balance verification exists; only the operator preflight gate is configured), deployment, demo video, and final submission gates. Mocked tests validate wiring, filtering, telemetry and SSE parsing, not live service compatibility. AWS, DNS, v2, submission and live sign-in were not performed. Historical Oct 27 Spark backend pass (muse-spark-1.3, 3 calls, 5,401 total tokens) stays history, separate from the current keyless and offline proof.
 
 ## Truth and transport pass, Oct 28, 2026
 
