@@ -4,6 +4,7 @@ import json
 from typing import Literal, Any
 from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import text
@@ -115,6 +116,17 @@ async def local_requests(request: Request, call_next):
     response.headers['Cache-Control'] = 'no-store'
     response.headers['X-Content-Type-Options'] = 'nosniff'
     return response
+
+
+@app.exception_handler(RequestValidationError)
+async def sanitized_validation_error(request, error):
+    # Never echo raw user input, secrets, ctx, or input in validation responses.
+    # Return only loc, msg, and type, all as plain strings or integers.
+    detail = []
+    for item in error.errors():
+        loc = [part for part in item.get("loc", []) if isinstance(part, (str, int))]
+        detail.append({"loc": loc, "msg": str(item.get("msg", "")), "type": str(item.get("type", ""))})
+    return JSONResponse({"detail": detail}, status_code=422)
 
 
 @app.exception_handler(ValueError)
