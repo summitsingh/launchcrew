@@ -21,7 +21,7 @@ test('learned memory rules and multiline crew survive the desk', async ({ page, 
   const agentName = `MemMaker${suffix}`;
   const guardName = `MemPriceGuard${suffix}`;
   await page.goto('/');
-  await expect(page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
   // Multiline personality and expertise through accessible textarea controls.
   await page.getByRole('button', { name: 'Agent builder', exact: false }).click();
@@ -190,5 +190,5 @@ test('learned memory rules and multiline crew survive the desk', async ({ page, 
     memory_blocked_rules: { claim: string }[];
   };
   expect(reread.memory_blocked_rules[0].claim).toBe('$49');
-  await expect(page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });
