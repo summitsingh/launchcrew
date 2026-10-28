@@ -1,12 +1,21 @@
 #!/usr/bin/env bash
-# Podman only. All application storage and runtime paths remain in this checkout.
+# Podman only. Keep image storage in the checkout, but runroot under 50 chars:
+# .local/run/containers is 45 chars locally and 61 on the GitHub runner.
+# A stable per-user /tmp path stays short across build/up/check/down calls.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p .local/run
 chmod 700 .local/run
 export XDG_RUNTIME_DIR="$PWD/.local/run"
 export CONTAINERS_CONF="$PWD/containers/podman.conf"
-podman_args=(--root "$PWD/.local/podman" --runroot "$PWD/.local/run/containers" --storage-driver vfs)
+runroot="/tmp/launchcrew-run-$(id -u)"
+if [[ -L "$runroot" || ( -e "$runroot" && ! -O "$runroot" ) ]]; then
+  echo 'Podman runroot must be owned by the current user and not a symlink' >&2
+  exit 1
+fi
+mkdir -p -m 700 "$runroot"
+chmod 700 "$runroot"
+podman_args=(--root "$PWD/.local/podman" --runroot "$runroot" --storage-driver vfs)
 p() { podman "${podman_args[@]}" "$@"; }
 case "${1:-up}" in
   build)
