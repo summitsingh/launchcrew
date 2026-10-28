@@ -207,21 +207,25 @@ tag-filtered coverage, so a manual billing guard stays on the operator and
 no broad cloud platform monitoring is added here. There is no hard cap
 anywhere in this design.
 
-Budget tag readiness is UNVERIFIED in source. Resource tags alone do not
-scope a budget: the Project key must also be activated as a user defined
-resource cost allocation tag in Billing, and activation needs a separate
-billing approval that is never done by this template or by
+Budget tag readiness was observed INACTIVE through a read-only Billing
+console check on Oct 28, 2026: the Project key exists as a user defined
+resource cost allocation tag with Status Inactive. No activation was made,
+no screenshot or account, production, or cost data is published here, and
+this observed state must be rechecked live with ce
+list-cost-allocation-tags before any future mutation. Activation needs a
+separate billing approval that is never done by this template or by
 deploy/aws/bootstrap.sh. Allow about 24 hours for a new tag key to appear
-plus about 24 hours for activation. Until then the filter can return no
-data, and a filter with no data or 0 is NOT proof of zero spend and NOT a
-hard cap. Source and bootstrap fail closed on this point: an unfiltered
-budget refuses enable, and monitoring is never claimed working before the
-operator preflight in deploy/aws/bootstrap.sh passes. Resource billing
-begins at infra, RDS, and ALB creation even with both ECS services at
-DesiredCount 0. If activation needs the tag key to appear first, the only
-honest path is staged infra under manual control with a controlled stop,
-the cached cost estimate above, and billing lag noted, never a promise of
-a cap.
+plus about 24 hours for activation. Until the key reads back Active the
+filter can return no data, and a filter with no data or 0 is NOT proof of
+zero spend and NOT a hard cap. Source and bootstrap fail closed on this
+point: an Inactive, absent, ambiguous, or unreadable Project key refuses
+every paid phase before any CloudFormation deploy or one-off task, and an
+unfiltered or inexact budget refuses enable. Monitoring is never claimed
+working before the operator preflight in deploy/aws/bootstrap.sh passes.
+Resource billing begins at infra, RDS, and ALB creation even with both ECS
+services at DesiredCount 0, and activating the shared PROJECT key changes
+global billing reporting, so that approval stays gated with no resources
+changed by it.
 
 ## Explicit expiration, teardown, and access boundary
 
@@ -283,9 +287,10 @@ owner and evidence, for approval only after this pack is reviewed.
    bootstrap role binding STOPPED exit 0, migration
    STOPPED exit 0 with verify-mode proof from the separate verify task
    definition, then enable runs the budget readiness preflight (refuses an
-   unfiltered budget, reports tag activation as UNVERIFIED until Billing
-   shows it, never activates tags, never claims no data or 0 as zero
-   spend) and re-proves images, bindings, and the verify
+   unfiltered or inexact budget, requires the Project key to read back
+   Active after the earlier paid-phase admission gate, never activates
+   tags, never claims no data or 0 as zero spend) and re-proves images,
+   bindings, and the verify
    proof from live state before updating to fixed 1 each with desired and
    running counts read back (configuration check; serving health needs
    ALB targets after DNS, which this script never claims).
@@ -293,16 +298,24 @@ owner and evidence, for approval only after this pack is reviewed.
    public base, HTTPS chain and container TLS hop, database verify-full,
    and keyless synthetic behavior with no paid inference reachable.
 
-## Tests still needed, not run in this source pass
+## Offline checks added in this source pass, not run here
 
 No test, build, network, or cloud call was run to prepare this source
-change. A later verifier must add and run focused offline checks that do
-not mirror implementation strings and never fake provider proof: VPC CIDR
-nonoverlap with the existing 10.0.0.0/16 range plus all four demo subnets
-inside 10.42.0.0/16 with preserved AZ order, masks, and public IP policy;
-DemoBudget FilterExpression Tags Project LaunchCrew EQUALS present with
-no legacy CostFilters; priced resources carrying Project LaunchCrew tags
-with ECS PropagateTags SERVICE and ECR, RDS, ALB, and log coverage where
-supported; and budget readiness failing closed on an unfiltered budget and
-on UNVERIFIED tag activation without claiming zero spend. No AWS API is
-used by those checks.
+change; the host runs verification after exit. This pass adds focused
+offline checks that prove behavior through the fake-AWS harness and real
+ipaddress arithmetic instead of mirroring implementation strings:
+tests/test_vpc_cidr.py proves the demo VPC is exactly 10.42.0.0/16, all
+four demo subnets sit inside it, demo ranges never overlap, none collides
+with the observed generic 10.0.0.0/16 or 172.31.0.0/16 ranges, AZ order
+pairs public with private, public IP policy matches subnet role, and the
+DB subnet group uses private subnets only; tests/test_bootstrap.py gains
+CostTagAdmissionTests (Inactive, absent, failed, duplicate, wrong-type,
+and malformed CE states refuse every paid phase before any deploy or
+one-off task, Active continues, the CE query is scoped to
+Project/UserDefined in-region, and no call activates tags or carries
+secret values) and BudgetFilterTests (only the exact Project LaunchCrew
+EQUALS-only FilterExpression passes enable; unfiltered, wrong-tag,
+multi-valued, broadened, Or-wrapped, legacy, malformed, and failed
+readbacks refuse with no EnableServices deploy). No AWS API is used by
+those checks. The shared PROJECT key activation stays a gated Billing
+approval with no resources changed by it.

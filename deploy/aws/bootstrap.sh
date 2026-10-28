@@ -32,9 +32,13 @@
 # identifiers and are reported as remaining work. Teardown stays separate in
 # deploy/aws/teardown.sh. An AWS Budget is an alert and estimate mechanism,
 # not an enforced hard spend cap. A budget filter with no data or 0 is not
-# proof of zero spend. Cost allocation tag activation is never done here:
-# the Project key must be activated in Billing under a separate approval,
-# which can take 24h for the key to appear plus 24h for activation.
+# proof of zero spend. Cost allocation tag activation is never done here and
+# is verified read-only before any paid phase: the Project key must already
+# be Active as a user defined resource cost allocation tag in Billing under
+# a separate approval, which can take 24h for the key to appear plus 24h for
+# activation. Inactive, absent, ambiguous, or unreadable activation refuses
+# before any CloudFormation deploy or one-off task, because spend starts at
+# infra, RDS, and ALB creation even at DesiredCount 0.
 # One-off jobs run in the public subnets with a public IP and a security
 # group that allows no inbound traffic at all. That is the honest minimal
 # egress path: private subnets here have no NAT gateway and no VPC endpoints,
@@ -123,8 +127,9 @@ phase_plan() {
   echo "     after the bootstrap task definition secrets and execution role are proven owned"
   echo "  5. migrate: isolated migration task STOPPED exit 0, then separate verify task proof of"
   echo "     expected head revision, runtime identity, rolled-back write, and DDL refusal"
-  echo "  6. enable: budget readiness preflight (filter present, tag activation reported,"
-  echo "     never activated here), then re-prove images, bindings, and the runtime-only"
+  echo "  6. enable: budget readiness preflight (exact Project filter read back,"
+  echo "     Project activation verified Active read-only, never activated here),"
+  echo "     then re-prove images, bindings, and the runtime-only"
   echo "     verify proof from live state, then update stack with EnableServices=true,"
   echo "     verify desired 1 and running 1 each (configuration check only; serving"
   echo "     health is proven by ALB targets after DNS)"
@@ -139,7 +144,7 @@ phase_plan() {
   echo "- Secrets Manager secret values, ACM certificate, Cloudflare DNS, manual snapshots: separate approval with exact identifiers."
   echo "- Teardown: deploy/aws/teardown.sh after Nov 4 and no later than Nov 9, 2026."
   echo "- Budget alerts are notifications only, not an enforced hard spend cap."
-  echo "- Cost allocation tag activation: Billing console approval only, never this script; allow 24h for the key plus 24h for activation."
+  echo "- Cost allocation tag activation: Billing console approval only, never this script; allow 24h for the key plus 24h for activation. Paid phases refuse unless the Project key reads back Active."
 }
 
 if [ "$CONFIRM" -ne 1 ]; then
@@ -466,6 +471,87 @@ PYEOF
 if [ "$PHASE" = "infra" ] || [ "$PHASE" = "enable" ] || [ "$PHASE" = "all" ]; then
   check_params_match
 fi
+
+# Cost allocation tag admission, read-only and fail-closed. It runs before
+# any phase that can cause spend (infra deploy, one-off tasks, enable
+# deploy), because spend starts at infra, RDS, and ALB creation even at
+# DesiredCount 0. It reads only the Project user defined resource cost
+# allocation tag status via ce list-cost-allocation-tags metadata and never
+# activates or updates a tag. Only an unambiguous single Project/UserDefined
+# entry with Status Active passes. Inactive, absent, duplicate, wrong type,
+# unknown status, malformed, and API or authorization failures all refuse
+# with bounded messages and no raw error, secret, or account detail.
+# Activating a RESOURCE cost allocation tag key (all values, global to
+# billing reports) is not the same as tagging the Budget resource: the
+# Budget resource tag does not scope spend, and activation here is only the
+# reporting precondition, never proof of cost data and never a hard cap.
+check_cost_tag_activation() {
+  TAG_JSON="$(mktemp /tmp/launchcrew-cetag-XXXXXX)"
+  if ! "$AWS_BIN" ce list-cost-allocation-tags --tag-keys Project --type UserDefined --region "$EXPECTED_REGION" --output json >"$TAG_JSON" 2>"$TMP_ERR"; then
+    rm -f "$TAG_JSON"
+    ERR="$(cat "$TMP_ERR" 2>/dev/null || true)"
+    echo "cost tag activation unreadable, project spend attribution UNVERIFIED, no change made." >&2
+    if is_auth_error "$ERR"; then
+      echo "authorization or API failure, not absence: ce:ListCostAllocationTags read permission is required." >&2
+    fi
+    phase_failed "$PHASE"
+  fi
+  TAG_PROOF="$(python3 - "$TAG_JSON" 2>/dev/null <<'PYEOF'
+import json, sys
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    print("MALFORMED")
+    sys.exit(0)
+entries = doc.get("CostAllocationTags", None)
+if not isinstance(entries, list):
+    print("MALFORMED")
+    sys.exit(0)
+project_entries = [e for e in entries
+                   if isinstance(e, dict) and e.get("TagKey") == "Project"]
+user_entries = [e for e in project_entries if e.get("Type") == "UserDefined"]
+if not project_entries:
+    print("ABSENT")
+elif not user_entries:
+    print("WRONGTYPE")
+elif len(user_entries) > 1:
+    print("AMBIGUOUS")
+else:
+    status = user_entries[0].get("Status", "")
+    if status == "Active":
+        print("TAG_ACTIVE")
+    elif status == "Inactive":
+        print("TAG_INACTIVE")
+    else:
+        print("UNKNOWN")
+PYEOF
+)"
+  rm -f "$TAG_JSON"
+  TAG_PROOF="$(printf '%s' "$TAG_PROOF" | tr -d '[:space:]')"
+  case "$TAG_PROOF" in
+    TAG_ACTIVE)
+      echo "Verified Project user defined resource cost allocation tag status Active (read-only metadata, no values read)." ;;
+    TAG_INACTIVE)
+      echo "refused: Project cost allocation tag is Inactive; get Billing activation approved and confirm Active before any paid phase, no change made." >&2
+      phase_failed "$PHASE" ;;
+    TAG_ABSENT)
+      echo "refused: no Project user defined cost allocation tag found; activation approval and Active status are required before any paid phase, no change made." >&2
+      phase_failed "$PHASE" ;;
+    TAG_WRONGTYPE)
+      echo "refused: Project tag entry is not UserDefined type; the user defined resource key must be activated, no change made." >&2
+      phase_failed "$PHASE" ;;
+    TAG_AMBIGUOUS)
+      echo "refused: duplicate Project cost allocation tag entries, status ambiguous, no change made." >&2
+      phase_failed "$PHASE" ;;
+    *)
+      echo "refused: Project cost allocation tag status unreadable or unknown, treated as not Active, no change made." >&2
+      phase_failed "$PHASE" ;;
+  esac
+}
+
+case "$PHASE" in
+  infra|dbroles|migrate|enable|all) check_cost_tag_activation ;;
+esac
 
 # cloudformation deploy has no --parameter-file option. Overrides travel as
 # one argv item per Key=Value pair built by python, never through shell word
@@ -917,23 +1003,28 @@ if wants_phase migrate; then
   echo "Phase migrate complete: migration STOPPED exit 0 with schema and runtime read-only proof"
 fi
 
-# Budget readiness preflight, read-only and fail-closed. It never activates
-# a cost allocation tag and never changes billing. It refuses enable when
-# the owned DemoBudget lacks the Project=LaunchCrew EQUALS filter, because
-# an unfiltered budget would count the whole account. It then reports tag
-# activation and filtered spend state without claiming proof: resource tags
-# alone do not scope a budget, the Project key must be activated as a user
-# defined resource cost allocation tag in Billing (24h for the key to
-# appear plus 24h for activation), a filter with no data or 0 is not proof
-# of zero spend, spend starts at infra, RDS, and ALB creation even at
-# DesiredCount 0, and there is no hard cap. If activation needs the tag key
-# to appear first, the operator may proceed with staged infra only under a
-# controlled stop, cost estimate, and billing lag note, then rerun this gate.
+# Budget filter readback on enable, read-only and fail-closed. It never
+# activates a cost allocation tag and never changes billing. It requires the
+# owned DemoBudget FilterExpression to be exactly the template shape, Tags
+# Key Project with the single value LaunchCrew and the single MatchOption
+# EQUALS, because an unfiltered budget would count the whole account, extra
+# values would count other projects, and broader match options would widen
+# the scope. Legacy CostFilters or BudgetFilters entries are refused without
+# verified semantics, as are Or/And/Not wrappers and ambiguous responses.
+# Activation is a separate gate that already passed before any paid phase;
+# this readback only proves the filter, never cost data, never a hard cap:
+# filtered spend with no data or 0 is not proof of zero spend, spend starts
+# at infra, RDS, and ALB creation even at DesiredCount 0, and the manual
+# billing guard stays on the operator.
 check_budget_readiness() {
   BUDGET_JSON="$(mktemp /tmp/launchcrew-budget-XXXXXX)"
   if ! "$AWS_BIN" budgets describe-budget --account-id "$EXPECTED_ACCOUNT" --budget-name launchcrew-demo --output json >"$BUDGET_JSON" 2>"$TMP_ERR"; then
     rm -f "$BUDGET_JSON"
+    ERR="$(cat "$TMP_ERR" 2>/dev/null || true)"
     echo "budget readiness unreadable, project spend monitoring UNVERIFIED, no claim made." >&2
+    if is_auth_error "$ERR"; then
+      echo "authorization or API failure, not absence: budgets:DescribeBudget read permission is required." >&2
+    fi
     phase_failed enable
   fi
   BUDGET_PROOF="$(python3 - "$BUDGET_JSON" 2>/dev/null <<'PYEOF'
@@ -941,14 +1032,26 @@ import json, sys
 try:
     doc = json.load(open(sys.argv[1]))
 except Exception:
-    sys.exit(1)
-budget = (doc.get("Budget") or {})
-expr = (budget.get("BudgetFilters") or budget.get("FilterExpression") or budget.get("CostFilters") or {})
-tags = (expr.get("Tags") or {})
-key = tags.get("Key", "") or ""
-values = tags.get("Values", []) or []
-match = tags.get("MatchOptions", []) or []
-if key == "Project" and "LaunchCrew" in values and "EQUALS" in match:
+    print("MALFORMED")
+    sys.exit(0)
+budget = doc.get("Budget", None)
+if not isinstance(budget, dict):
+    print("MALFORMED")
+    sys.exit(0)
+if "CostFilters" in budget or "BudgetFilters" in budget:
+    print("LEGACY")
+    sys.exit(0)
+expr = budget.get("FilterExpression", None)
+if not isinstance(expr, dict) or set(expr.keys()) != {"Tags"}:
+    print("FILTER_MISSING")
+    sys.exit(0)
+tags = expr.get("Tags", None)
+if not isinstance(tags, dict):
+    print("FILTER_MISSING")
+    sys.exit(0)
+if (tags.get("Key", "") == "Project"
+        and tags.get("Values", None) == ["LaunchCrew"]
+        and tags.get("MatchOptions", None) == ["EQUALS"]):
     print("FILTER_OK")
 else:
     print("FILTER_MISSING")
@@ -956,9 +1059,9 @@ PYEOF
 )" || { rm -f "$BUDGET_JSON"; echo "budget filter unreadable, project spend monitoring UNVERIFIED." >&2; phase_failed enable; }
   rm -f "$BUDGET_JSON"
   BUDGET_PROOF="$(printf '%s' "$BUDGET_PROOF" | tr -d '[:space:]')"
-  [ "$BUDGET_PROOF" = "FILTER_OK" ] || { echo "refused: DemoBudget lacks the Project=LaunchCrew EQUALS filter, project spend monitoring UNVERIFIED." >&2; phase_failed enable; }
-  echo "Verified DemoBudget filter: Tags Project=LaunchCrew EQUALS present."
-  echo "Budget readiness: Project tag activation UNVERIFIED in this run. Activate the Project key as a user defined resource cost allocation tag in Billing under separate approval (24h key appearance plus 24h activation). This script never activates tags."
+  [ "$BUDGET_PROOF" = "FILTER_OK" ] || { echo "refused: DemoBudget lacks the exact Project=LaunchCrew EQUALS-only filter, project spend monitoring UNVERIFIED." >&2; phase_failed enable; }
+  echo "Verified DemoBudget filter: Tags Project=LaunchCrew EQUALS only, read back from live state."
+  echo "Budget readiness: activation already verified Active before paid phases; this script never activates tags."
   echo "Budget readiness: filtered spend with no data or 0 is NOT proof of zero spend and NOT a hard cap. Spend starts at infra, RDS, and ALB creation even at DesiredCount 0. Manual billing guard stays on the operator."
 }
 

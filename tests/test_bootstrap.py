@@ -247,6 +247,52 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-services" ]; then
   if [ "$MODE" = "enable_wrong" ]; then printf '2\\t0\\n'; exit 0; fi
   printf '1\\t1\\n'; exit 0
 fi
+if [ "$1" = "budgets" ] && [ "$2" = "describe-budget" ]; then
+  BUDGET_MODE="${FAKE_BUDGET:-exact}"
+  if [ "$BUDGET_MODE" = "auth" ]; then
+    echo "An error occurred (AccessDenied) when calling the DescribeBudget operation: not authorized" >&2
+    exit 254
+  fi
+  if [ "$BUDGET_MODE" = "error" ]; then
+    echo "An error occurred (ThrottlingException) when calling the DescribeBudget operation: Rate exceeded" >&2
+    exit 254
+  fi
+  if [ "$BUDGET_MODE" = "malformed" ]; then printf 'not-json{{{\\n'; exit 0; fi
+  FILTER='{"Tags":{"Key":"Project","Values":["LaunchCrew"],"MatchOptions":["EQUALS"]}}'
+  case "$BUDGET_MODE" in
+    exact) ;;
+    unfiltered) FILTER='{"Dimensions":{"Key":"SERVICE","Values":["Amazon Elastic Compute Cloud"]}}' ;;
+    wrongtag) FILTER='{"Tags":{"Key":"Project","Values":["Prod"],"MatchOptions":["EQUALS"]}}' ;;
+    multi) FILTER='{"Tags":{"Key":"Project","Values":["LaunchCrew","Prod"],"MatchOptions":["EQUALS"]}}' ;;
+    broad) FILTER='{"Tags":{"Key":"Project","Values":["LaunchCrew"],"MatchOptions":["EQUALS","CONTAINS"]}}' ;;
+    orexpr) FILTER='{"Or":[{"Tags":{"Key":"Project","Values":["LaunchCrew"],"MatchOptions":["EQUALS"]}},{"Tags":{"Key":"Project","Values":["Prod"],"MatchOptions":["EQUALS"]}}]}' ;;
+    legacy) printf '{"Budget":{"BudgetName":"launchcrew-demo","CostFilters":{"TagKeyValue":["user:Project$LaunchCrew"]},"FilterExpression":%s}}\\n' "$FILTER"; exit 0 ;;
+    *) echo "fake-aws: unknown FAKE_BUDGET: $BUDGET_MODE" >&2; exit 2 ;;
+  esac
+  printf '{"Budget":{"BudgetName":"launchcrew-demo","BudgetType":"COST","TimeUnit":"MONTHLY","FilterExpression":%s}}\\n' "$FILTER"
+  exit 0
+fi
+if [ "$1" = "ce" ] && [ "$2" = "list-cost-allocation-tags" ]; then
+  CE_MODE="${FAKE_CE:-active}"
+  if [ "$CE_MODE" = "auth" ]; then
+    echo "An error occurred (AccessDenied) when calling the ListCostAllocationTags operation: not authorized" >&2
+    exit 254
+  fi
+  if [ "$CE_MODE" = "error" ]; then
+    echo "An error occurred (ThrottlingException) when calling the ListCostAllocationTags operation: Rate exceeded" >&2
+    exit 254
+  fi
+  if [ "$CE_MODE" = "malformed" ]; then printf 'not-json{{{\\n'; exit 0; fi
+  case "$CE_MODE" in
+    active) printf '{"CostAllocationTags":[{"TagKey":"Project","Type":"UserDefined","Status":"Active"}]}\\n'; exit 0 ;;
+    inactive) printf '{"CostAllocationTags":[{"TagKey":"Project","Type":"UserDefined","Status":"Inactive"},{"TagKey":"Status","Type":"AWSGenerated","Status":"Active"}]}\\n'; exit 0 ;;
+    absent) printf '{"CostAllocationTags":[{"TagKey":"Status","Type":"AWSGenerated","Status":"Active"}]}\\n'; exit 0 ;;
+    duplicate) printf '{"CostAllocationTags":[{"TagKey":"Project","Type":"UserDefined","Status":"Active"},{"TagKey":"Project","Type":"UserDefined","Status":"Inactive"}]}\\n'; exit 0 ;;
+    wrongtype) printf '{"CostAllocationTags":[{"TagKey":"Project","Type":"AWSGenerated","Status":"Active"}]}\\n'; exit 0 ;;
+    unknown) printf '{"CostAllocationTags":[{"TagKey":"Project","Type":"UserDefined","Status":"Pending"}]}\\n'; exit 0 ;;
+    *) echo "fake-aws: unknown FAKE_CE: $CE_MODE" >&2; exit 2 ;;
+  esac
+fi
 echo "fake-aws: unexpected call: $*" >&2
 exit 2
 """
@@ -714,6 +760,141 @@ class PhaseOrderingTests(BootstrapHarness):
                 index += 1
         return [{"ParameterKey": key, "ParameterValue": value}
                 for key, value in sorted(items.items())]
+
+
+class CostTagAdmissionTests(BootstrapHarness):
+    REFUSAL_TOKENS = {
+        "inactive": "Inactive",
+        "absent": "no Project",
+        "error": "UNVERIFIED",
+        "auth": "ce:ListCostAllocationTags",
+        "duplicate": "duplicate",
+        "wrongtype": "not UserDefined",
+        "malformed": "not Active",
+        "unknown": "not Active",
+    }
+
+    def test_active_ce_passes_infra_with_scoped_query(self):
+        result, calls = self.run_bootstrap(
+            [*self.minimal_infra_args(), "--phase", "infra"])
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        ce_calls = [call for call in calls if "list-cost-allocation-tags" in call]
+        self.assertEqual(len(ce_calls), 1)
+        self.assertIn("--tag-keys Project", ce_calls[0])
+        self.assertIn("--type UserDefined", ce_calls[0])
+        self.assertIn(REGION, ce_calls[0])
+        self.assertIn("status Active", result.stdout)
+        self.assertTrue(any("deploy " in call for call in calls))
+
+    def test_inactive_ce_refuses_full_run_before_any_paid_call(self):
+        result, calls = self.run_bootstrap(
+            self.base_args(), extra_env={"FAKE_CE": "inactive"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Inactive", result.stdout + result.stderr)
+        self.assertTrue(any("list-cost-allocation-tags" in call for call in calls))
+        self.assertFalse(any("deploy " in call for call in calls))
+        self.assertFalse(any("run-task" in call for call in calls))
+        self.assertNotIn("BOOTSTRAP COMPLETE", result.stdout)
+
+    def test_bad_ce_modes_all_refuse_infra_without_deploy(self):
+        for ce_mode, token in self.REFUSAL_TOKENS.items():
+            with self.subTest(ce_mode=ce_mode):
+                result, calls = self.run_bootstrap(
+                    [*self.minimal_infra_args(), "--phase", "infra"],
+                    extra_env={"FAKE_CE": ce_mode})
+                self.assertNotEqual(result.returncode, 0, msg=ce_mode)
+                self.assertIn(token, result.stdout + result.stderr, msg=ce_mode)
+                self.assertTrue(
+                    any("list-cost-allocation-tags" in call for call in calls),
+                    msg=ce_mode)
+                self.assertFalse(
+                    any("deploy " in call for call in calls), msg=ce_mode)
+                self.assertFalse(
+                    any("run-task" in call for call in calls), msg=ce_mode)
+
+    def test_inactive_ce_refuses_each_paid_phase(self):
+        paid = [
+            [*self.minimal_infra_args(), "--phase", "infra"],
+            [*self.base_args(), "--phase", "dbroles"],
+            [*self.base_args(), "--phase", "migrate"],
+            [*self.base_args(), "--phase", "enable"],
+        ]
+        for argv in paid:
+            with self.subTest(phase=argv[-1]):
+                result, calls = self.run_bootstrap(
+                    argv, extra_env={"FAKE_CE": "inactive"})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Inactive", result.stdout + result.stderr)
+                self.assertFalse(any("deploy " in call for call in calls))
+                self.assertFalse(any("run-task" in call for call in calls))
+
+    def test_inactive_ce_blocks_budget_readback_on_enable(self):
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "enable"],
+            extra_env={"FAKE_CE": "inactive"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any("describe-budget" in call for call in calls))
+        self.assertFalse(any("EnableServices=true" in call for call in calls))
+
+    def test_ce_never_activates_and_reads_no_values(self):
+        root = BOOTSTRAP.parent.parent
+        code = (root / "deploy" / "aws" / "bootstrap.sh").read_text(encoding="utf-8")
+        self.assertIn("ce list-cost-allocation-tags", code)
+        self.assertNotIn("update-cost-allocation-tags", code.lower())
+        self.assertNotIn("UpdateCostAllocationTags", code)
+
+    def test_readonly_calls_carry_no_secret_values(self):
+        result, calls = self.run_bootstrap(self.base_args())
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        for call in calls:
+            if "list-cost-allocation-tags" in call or "describe-budget" in call:
+                self.assertNotIn(":secret:", call)
+                self.assertNotIn("get-secret-value", call.lower())
+
+
+class BudgetFilterTests(BootstrapHarness):
+    REFUSAL_MODES = ("unfiltered", "wrongtag", "multi", "broad",
+                     "orexpr", "legacy", "malformed", "error", "auth")
+
+    def test_exact_filter_passes_enable_readback(self):
+        result, calls = self.run_bootstrap([*self.base_args(), "--phase", "enable"])
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertTrue(any("describe-budget" in call for call in calls))
+        self.assertIn("EQUALS only", result.stdout)
+        self.assertTrue(any("EnableServices=true" in call for call in calls))
+
+    def test_inexact_filters_all_refuse_enable(self):
+        for budget_mode in self.REFUSAL_MODES:
+            with self.subTest(budget_mode=budget_mode):
+                result, calls = self.run_bootstrap(
+                    [*self.base_args(), "--phase", "enable"],
+                    extra_env={"FAKE_BUDGET": budget_mode})
+                self.assertNotEqual(result.returncode, 0, msg=budget_mode)
+                combined = result.stdout + result.stderr
+                self.assertIn("UNVERIFIED", combined, msg=budget_mode)
+                self.assertTrue(
+                    any("describe-budget" in call for call in calls),
+                    msg=budget_mode)
+                self.assertFalse(
+                    any("EnableServices=true" in call for call in calls),
+                    msg=budget_mode)
+                self.assertFalse(
+                    any("run-task" in call for call in calls), msg=budget_mode)
+
+    def test_budget_auth_reports_permission_not_absence(self):
+        result, _ = self.run_bootstrap(
+            [*self.base_args(), "--phase", "enable"],
+            extra_env={"FAKE_BUDGET": "auth"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("budgets:DescribeBudget", result.stdout + result.stderr)
+
+    def test_budget_refusal_carries_no_secret_or_account_detail(self):
+        result, _ = self.run_bootstrap(
+            [*self.base_args(), "--phase", "enable"],
+            extra_env={"FAKE_BUDGET": "multi"})
+        combined = result.stdout + result.stderr
+        self.assertNotIn(":secret:", combined)
+        self.assertNotIn("Prod", combined)
 
 
 class FixtureJsonTests(BootstrapHarness):
