@@ -91,7 +91,7 @@ def suggest_crop(box: tuple[int, int, int, int, int, int], frame: tuple[int, int
 
 Rules owned by this task: `frame` may be `None` only when `records` is empty (result `not_detected`); any record requires a valid positive frame with consistent `(w,h)` across records matching the passed frame, `frame == 0` everywhere, inclusive area math, 2 px edge rule, 2%/98% area gates, multi-match `unknown:needs_review`. Mask metadata is validated from the actual source record: origin `(0,0)` with positive mask dims bounded by the frame, never required to equal the frame size; opaque `payload` is never decoded. `suggest_crop` pads EACH side by `pad_ratio` times the OBJECT BOX width/height (basis is box dims, not frame dims), rounds to nearest int with Python `round`, clamps to frame inclusive bounds, and is called only for single `detected`. Stdlib only, no I/O, no assets.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```python
 def test_single_clear_box_is_detected():
@@ -132,19 +132,19 @@ def test_crop_pads_box_basis_and_clamps():
     assert crop == {"x1": 84, "y1": 76, "x2": 316, "y2": 424}
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd "$REPO_ROOT" && "$REPO_ROOT/.venv/bin/python" -m pytest tests/test_photo_policy.py -v`
-Expected: FAIL with "module not found / function not defined".
+Expected: FAIL with "module not found / function not defined". Proven: ModuleNotFoundError on `launchcrew.photo_policy`.
 
-- [ ] **Step 3: Implement `classify_photo_geometry` and `suggest_crop` in `launchcrew/photo_policy.py`**
+- [x] **Step 3: Implement `classify_photo_geometry` and `suggest_crop` in `launchcrew/photo_policy.py`**
 
 Inclusive-`x2/y2` math as specced; fail-closed branches return `unknown` with reasons `fix_photo` or `needs_review`; zero-match returns `not_detected` with reason `no_match`. No I/O, no assets.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd "$REPO_ROOT" && "$REPO_ROOT/.venv/bin/python" -m pytest tests/test_photo_policy.py -v`
-Expected: PASS.
+Expected: PASS. Proven: 19 passed.
 
 - [ ] **Step 5: Commit**
 
