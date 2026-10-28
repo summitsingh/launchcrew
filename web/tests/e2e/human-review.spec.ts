@@ -32,7 +32,7 @@ test('human revision editing and failed run review', async ({ page, request }) =
   await queueNav().click();
   const makerCard = page.locator(`[data-run-id="${runId}"]`);
   await expect(makerCard.getByText(/Revision 0 \(Maker\)/)).toBeVisible();
-  await expect(makerCard.getByText(/pending approval/i)).toBeVisible();
+  await expect(makerCard.getByText('Pending approval', { exact: true })).toBeVisible();
   await makerCard.getByRole('button', { name: 'Approve for export', exact: true }).click();
   await expect(makerCard.getByText('Approved for export', { exact: true })).toBeVisible();
 
