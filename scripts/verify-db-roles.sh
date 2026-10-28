@@ -775,7 +775,7 @@ print("42501 ok")
   set -e
   # Grantor-aware cleanup in valid dependency order: dependent first, then
   # prerequisite, then drop, then restore the exact native row. No SET/INHERIT.
-  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "REVOKE $BIND_RT FROM $BIND_ADMIN; REVOKE $BIND_RT FROM lc_foreign_grantor; DROP ROLE lc_foreign_grantor; GRANT $BIND_RT TO $BIND_ADMIN WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;" >/dev/null
+  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "REVOKE $BIND_RT FROM $BIND_ADMIN GRANTED BY lc_foreign_grantor; REVOKE $BIND_RT FROM lc_foreign_grantor; DROP ROLE lc_foreign_grantor; GRANT $BIND_RT TO $BIND_ADMIN WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;" >/dev/null
   unset chain_main
   [ "$EVIL_CODE" -ne 0 ] || fail "bind accepted a foreign grant chain"
   case "$EVIL_OUT" in *"memberships"*) ;; *) printf '%s' "$EVIL_OUT" | safe_emit >&2; fail "foreign chain refusal missed the marker" ;; esac
