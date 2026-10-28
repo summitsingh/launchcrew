@@ -29,8 +29,8 @@ test('learned memory rules and multiline crew survive the desk', async ({ page, 
   await page.getByLabel('Name', { exact: true }).fill(agentName);
   await page.getByRole('button', { name: 'Save agent', exact: true }).click();
   await expect(page.getByRole('status')).toContainText(`Saved agent ${agentName}`);
-  await expect(page.getByLabel('Personality', { exact: true }).evaluate((node) => node.tagName)).toBe('TEXTAREA');
-  await expect(page.getByLabel('Expertise', { exact: true }).evaluate((node) => node.tagName)).toBe('TEXTAREA');
+  await expect(await page.getByLabel('Personality', { exact: true }).evaluate((node) => node.tagName)).toBe('TEXTAREA');
+  await expect(await page.getByLabel('Expertise', { exact: true }).evaluate((node) => node.tagName)).toBe('TEXTAREA');
   await page.getByLabel('Personality', { exact: true }).fill('Grounded editor\nSecond line of judgment');
   await page.getByLabel('Expertise', { exact: true }).fill('Austin commuter voice\nPlain words only');
   await page.getByRole('button', { name: 'Save agent', exact: true }).click();
