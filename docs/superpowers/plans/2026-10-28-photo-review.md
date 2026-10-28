@@ -1,6 +1,6 @@
 # Photo Review Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan one task at a time. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add the optional SAM photo geometry check to Run review per the design spec. Source-only plan: no implementation, no dependency installs, no live calls in this turn.
 
@@ -146,7 +146,9 @@ Inclusive-`x2/y2` math as specced; fail-closed branches return `unknown` with re
 Run: `cd "$REPO_ROOT" && "$REPO_ROOT/.venv/bin/python" -m pytest tests/test_photo_policy.py -v`
 Expected: PASS. Proven: 19 passed.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
+
+Done in MAIN `26fda67` (`feat: add photo geometry policy v1`). Independent proof: 109 core unit tests PASS and 23 focused checks PASS (19 policy plus 4 SAM transport), with no API/UI built or claimed in this foundation pass.
 
 ```bash
 cd "$REPO_ROOT" && git add tests/test_photo_policy.py launchcrew/photo_policy.py && git commit -m "feat: add photo geometry policy v1"
@@ -268,7 +270,7 @@ cd "$REPO_ROOT" && git add backend/migrations/versions/003_photo_sam_calls.py ba
 - Consumes: `admit_photo_check`, `finalize_photo_check`, `run_photo_check` from Task 2.
 - Produces: `POST /api/runs/{id}/photo-check` (JSON body only), `DELETE /api/runs/{id}/photo` (body `PhotoRemoveIn`); receipt field `photo_status`; export gate 422 on unchecked/unknown; regen artifacts committed in the same commit.
 
-DTOs are the spec section 5 names (`PhotoCheckIn`, `PhotoCheckOut`, `PhotoRemoveIn`, `PhotoRemoveOut`, `PhotoCheckResponse` with volatile `preview`). The preview object carries only `{frame_w, frame_h, crop, label}` for client canvas use and is never stored. Finalization checks `expected_revision` plus the `(run_id, revision)` idempotency key under row lock; a concurrent clear or text edit that moved the revision first forces 409 and `failed_terminal` with nothing attached. Client-supplied geometry, verdict, actor, or budget is ignored; actor and time come from `auth.actor` server side. Revision history keeps both `source` (`Maker`/`human`, text truth unchanged) and `photo_event` kind; `human_draft` post/email/claims are untouched by photo-only events.
+DTOs are the spec section 5 names (`PhotoCheckIn`, `PhotoCheckOut`, `PhotoRemoveIn`, `PhotoRemoveOut`, `PhotoCheckResponse` with volatile `preview`). The preview object carries only `{frame_w, frame_h, crop, label}` for client canvas use and is never stored. Finalization checks `expected_revision` plus the `(run_id, revision)` idempotency key under row lock; a concurrent clear or text edit that moved the revision first forces 409 and `failed_terminal` with nothing attached. Client-supplied geometry, verdict, actor, or budget is strictly rejected with 422 (extra=forbid); actor and time come from `auth.actor` server side. Missing/invalid `expected_revision` (bool, float, string) or unknown fields return 422; stale but valid `expected_revision` returns 409. Revision history keeps both `source` (`Maker`/`human`, text truth unchanged) and `photo_event` kind; `human_draft` post/email/claims are untouched by photo-only events.
 
 - [ ] **Step 1: Write the failing test (uses only `client`; helpers defined inline)**
 

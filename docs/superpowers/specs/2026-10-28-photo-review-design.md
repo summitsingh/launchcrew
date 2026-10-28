@@ -66,11 +66,11 @@ PhotoPreview: {frame_w: int, frame_h: int,
 PhotoCheckResponse: {receipt: Receipt, preview: PhotoPreview | None}
 ```
 
-Status codes: invalid body/empty/oversize/bad magic returns 422; stale or missing `expected_revision` returns 409; exhausted budget or non-approved bytes returns 422 with a `reason` naming the cause; keyless/unconfigured SAM returns 200 with `method: "not_run"` and honest copy; duplicate concurrent same-key check returns 200 with the winner's persisted summary (pending while in flight, never a faked finished summary); parallel different-image same-revision check returns 409; stale-revision finalization returns 409 and never attaches.
+Status codes: invalid body/empty/oversize/bad magic returns 422; missing `expected_revision`, invalid `expected_revision` type (bool, float, string), or unknown/forged body fields return 422; stale `expected_revision` with an otherwise valid version returns 409; exhausted budget or non-approved bytes returns 422 with a `reason` naming the cause; keyless/unconfigured SAM returns 200 with `method: "not_run"` and honest copy; duplicate concurrent same-key check returns 200 with the winner's persisted summary (pending while in flight, never a faked finished summary); parallel different-image same-revision check returns 409; stale-revision finalization returns 409 and never attaches.
 
 Server holds the image in memory only for the duration of the Files-to-Responses sequence, then drops it. No disk write, no DB bytea, no log of bytes, no receipt/export inclusion, no preview endpoint.
 
-Client keeps the file in an `objectURL`/canvas only, revokes on change/unmount. Client never sends geometry, verdict, source, actor, or budget; the server recomputes verdict from its own parse plus policy and stamps actor/time from existing auth (`auth.actor`).
+Client keeps the file in an `objectURL`/canvas only, revokes on change/unmount. Client never sends geometry, verdict, source, actor, or budget; if sent, the strict DTO rejects the body with 422 and the server recomputes verdict from its own parse plus policy and stamps actor/time from existing auth (`auth.actor`).
 
 History: superseded photo decisions are immutable (`revision_history` entries plus `audit` rows append-only); a new photo event never mutates a prior entry.
 
