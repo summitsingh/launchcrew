@@ -1,19 +1,22 @@
 # LaunchCrew Item A acceptance audit
 
-Status: follow-up audit, not a completion claim. This file lives in the v2
-worktree only. It does not replace README.md or docs/verification.md, which
-are owned by a separate docs reconciliation worker in its own worktree.
-Reconcile README and verification docs at integration time, not by
-overwriting either branch now.
+Status: follow-up audit, not a completion claim, refreshed Oct 28, 2026 on
+main only. This file lives on main. It does not replace README.md or
+docs/verification.md. No separate worktree and no separate worker branch
+remain in the current status; worktree and branch names below are dated
+history only. V2 Memory, Replay, and Campaign Week are integrated on this
+main line and covered by the current passes (see docs/verification.md).
 
 ## Audit method
 
-Actual code was read in /home/summit/launchcrew-v2, branch
-feature/v2-memory-replay-campaign, head 3d878c4 before this follow-up:
+Dated history: actual code was read in a v2 worktree at
+branch feature/v2-memory-replay-campaign, head 3d878c4:
 backend/app.py, backend/adapter.py, backend/tests/test_v2.py,
 launchcrew/run.py, launchcrew/facts.py, launchcrew/receipts.py,
 web/src/components/v2-views.tsx, web/src/lib/v2.ts, and
-backend/migrations/versions/002_v2_memory_campaign.py.
+backend/migrations/versions/002_v2_memory_campaign.py. That work is now
+merged to main; the method below is retained as the record of what was
+checked.
 
 ## Verdicts before this follow-up
 
@@ -58,7 +61,7 @@ briefs.
 
 ## What this follow-up implemented
 
-All changes are local to the v2 worktree, deterministic, demo data only,
+All changes described here are on main, deterministic, demo data only,
 no live model calls, no credentials, no auto-post, send, pay, submit,
 auto-publish, batch approve, batch export, or scheduling auto-publish.
 
@@ -180,23 +183,20 @@ and do not claim browser evidence that was not captured.
 
 ## Contract and integration notes
 
-- Contract change is in this v2 worktree only: backend/openapi.json
+- Contract change history: backend/openapi.json
   and web/src/lib/schema.d.ts were regenerated with the repository
-  generators after the app.py changes. Review the actual diff at
-  integration time, not just the summary here.
-- Starlette conflict: Starlette repair also generates contracts in
-  its separate worktree, from main 4bb295d, while this v2 branch is
-  based on 966de60. Both branches may touch the same generated files
-  from different bases. This follow-up did not edit the Starlette
-  worktree, did not resolve that conflict, and does not claim it is
-  resolved. Rebase or merge handling is required at integration time.
-- Docs conflict: Item A already changed README.md and
-  docs/verification.md in its commits, and a separate docs
-  reconciliation worker owns those files in its own worktree, based
-  on main 4bb295d. This follow-up did not edit README.md or
-  docs/verification.md, and this audit file is the only new doc in
-  the v2 worktree for this task. Reconcile README and verification
-  docs at integration time, not by overwriting either branch now.
+  generators after the app.py changes. The generated files on main are
+  clean with no diff under the current passes.
+- Starlette history: a Starlette repair once generated contracts in
+  its separate worktree, from main 4bb295d, while the v2 branch was
+  based on 966de60. Both lines touched the same generated files
+  from different bases. That conflict is resolved on main; no separate
+  worktree remains, and no rebase handling is left open.
+- Docs history: Item A once changed README.md and
+  docs/verification.md in its commits while a separate docs
+  reconciliation worker owned those files in its own worktree, based
+  on main 4bb295d. Reconciliation happened on main; no separate worker
+  remains.
 - V1 preservation: v1 runs with no memory_ids and checker_profile
   standard use the previous pipeline path, except for the
   backward-compatible pipeline parameters and the receipt fields

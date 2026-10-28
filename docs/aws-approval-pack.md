@@ -1,11 +1,16 @@
 # LaunchCrew demo approval pack, isolated KoruShield demo
 
-Status: review only. No AWS account access, no apply, no DNS, no secret, no
-paid resource, no deployment. This pack authorizes nothing; provisioning and
-any DNS record each need a separate Summit authorization tap after this pack
-is reviewed. Every figure below is a cached estimate that the orchestrator
-must refresh from current AWS pricing before approval. Nothing here is a hard
-spend cap: AWS Budgets send alerts only and cannot enforce spending.
+Status: review only, refreshed Oct 28, 2026. No AWS account access, no
+apply, no DNS, no secret, no paid resource, no deployment. No Cloud API
+command is run from any CLI to prepare this pack, and cloud credential
+availability plus account read-only validation itself is still gated.
+This pack authorizes nothing; provisioning and any DNS record each need a
+separate user authorization tap after this pack is reviewed. Every figure
+below is recomputed from primary public price evidence read Oct 28, 2026
+(Codex read-only, no AWS account), not copied from a fake total. Nothing
+here is a hard spend cap: AWS Budgets send alerts only and cannot enforce
+spending. No contributor or team email and no registration status are
+invented anywhere in this pack.
 
 ## Proposed deployment
 
@@ -17,12 +22,13 @@ spend cap: AWS Budgets send alerts only and cannot enforce spending.
 - Window: live for the Nov 4 event, teardown required after Nov 4 and no
   later than Nov 9, 2026, via deploy/aws/teardown.sh.
 - Access profile, recommended: keyless synthetic public demo. AUTH_ENABLED
-  stays false, no Meta key is deployed, global SAM stays 0, and no paid
-  inference path is reachable anonymously. Existing Google and Facebook auth
-  plumbing is not live verified and stays out of this deployment. Demo data
-  is synthetic only. If Summit wants a gate instead of open keyless access,
-  the fallback is Cloudflare Access in front of the same origin, decided at
-  the authorization tap, not silently added later.
+  stays false, no Meta key is deployed, paid Meta stays OFF, global SAM
+  stays 0, and no paid inference path is reachable anonymously. Existing
+  Google and Facebook auth plumbing is not live verified and stays out of
+  this deployment. Demo data is synthetic only. If the user wants a gate
+  instead of open keyless access, the fallback is Cloudflare Access in
+  front of the same origin, decided at the authorization tap, not silently
+  added later.
 
 ## Fixed resource counts (source of truth: deploy/aws/fargate.yaml)
 
@@ -56,12 +62,43 @@ spend cap: AWS Budgets send alerts only and cannot enforce spending.
 - Logs: 7-day retention on api, web, and migration/bootstrap log groups
   before services start. No request bodies, headers, or secrets are logged.
 
-## Cached estimate (must be refreshed before approval)
+## Refreshed estimate, Oct 28, 2026 (primary public evidence, read-only)
 
-Sources, cached reference only: ../.local/aws-rds-us-east-1-prices.json
-(Oct 26 publication) and ../.local/aws-ecs-us-east-1-prices.json (Oct 19
-publication), plus the public AWS pricing pages for ALB, VPC IPv4, ECR,
-Secrets Manager, CloudWatch Logs, and T4g unlimited. Rates used:
+Sources, all read Oct 28, 2026 with no AWS account and no network calls
+beyond the reads named here. TLS-verified JSON downloads:
+`../.local/aws-rds-us-east-1-oct28-refresh.json` (publication
+2026-10-26T21:47:16Z, from
+https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonRDS/current/us-east-1/index.json)
+showing actual InstanceUsage db.t4g.micro PostgreSQL SingleAZ 0.016/hr and
+RDS GP3-Storage for PostgreSQL 0.115/GB-month; do not pick UnusedBox or
+MultiAZ rates.
+`../.local/aws-ecs-us-east-1-oct28-refresh.json` (publication
+2026-10-19T22:43:17Z, from
+https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonECS/current/us-east-1/index.json)
+with USE1-Fargate-vCPU-Hours:perCPU 0.04048/hr and USE1-Fargate-GB-Hours
+0.004445/hr, linux x86. Public primary pages checked Oct 28:
+https://aws.amazon.com/elasticloadbalancing/pricing/ (ALB example
+N. Virginia 0.0225/hr + 0.008/LCU-hr),
+https://aws.amazon.com/vpc/pricing/ (both in-use and idle public IPv4
+0.005/IP-hr),
+https://aws.amazon.com/secrets-manager/pricing/ (0.40/secret-month +
+0.05/10k API),
+https://aws.amazon.com/ecr/pricing/ (0.10/GB-month),
+https://aws.amazon.com/cloudwatch/pricing/ (Standard ingest 0.50/GB,
+archived 0.03/GB-month, NO assumed free credits),
+https://aws.amazon.com/rds/postgresql/pricing/ (T4g Unlimited 0.075/vCPU-hr
+above baseline). SNS: https://aws.amazon.com/sns/pricing/ shows dynamic
+email rates NOT retrievable in web text; fresh public regional and global
+SNS JSON (`../.local/aws-sns-us-east-1-oct28-refresh.json`,
+`../.local/aws-sns-global-oct28-refresh.json`, publication
+2026-09-15T15:19:44Z) shows standard requests Tier 1 free first 1M then
+0.50 per 1M thereafter, but the EMAIL delivery rate could NOT be resolved.
+Do NOT assume free-tier eligibility or email free. SNS delivery stays
+unpriced and excluded, pending the exact rate; this is a coverage gap, not
+absence of charge. No free-tier eligibility is assumed anywhere. No
+credits assumed. No further network calls are made from this pack.
+
+Rates used (recomputed from the rates above, not copied from a total):
 
 - Fargate x86 0.04048 per vCPU hour + 0.004445 per GB hour
 - RDS db.t4g.micro 0.016 per hour, gp3 0.115 per GB month
@@ -71,7 +108,11 @@ Secrets Manager, CloudWatch Logs, and T4g unlimited. Rates used:
 - ECR 0.10 per GB month, assumes about 2.5 GB across 5 images
 - CloudWatch Logs 0.50 per GB ingested + 0.03 per GB month stored
 - T4g unlimited 0.075 per vCPU hour, only if the micro bursts past baseline
-- 730-hour month proration. No free tier assumed. No credits assumed.
+- 730-hour month proration
+
+Assumptions, all conservative: 2 constant tasks total 0.5 vCPU / 1 GB,
+PG micro 20 GB, ALB 1 constant LCU, 4 baseline IPs, 4 secrets, 2.5 GB ECR,
+0.5 GB log ingest + 0.5 GB log storage for the full period (conservative).
 
 | Line item | 7-day demo (168 h) | 12-day window incl. teardown lag (288 h) |
 | --- | --- | --- |
@@ -83,35 +124,42 @@ Secrets Manager, CloudWatch Logs, and T4g unlimited. Rates used:
 | IPv4, 4 addresses | 3.36 | 5.76 |
 | Secrets, 4 | 0.37 | 0.63 |
 | ECR, about 2.5 GB | 0.06 | 0.10 |
-| Logs, variable, assumes about 0.5 GB ingest | 0.25 | 0.25 |
+| Logs, 0.5 GB ingest + 0.5 GB storage | 0.25 | 0.26 |
 | Subtotal | 16.53 | 28.15 |
 
-One-off overlap, estimated not capped: bootstrap, migration, and verify
-one-off jobs each run minutes at 0.25 vCPU / 0.5 GB, about 0.00021 per
-task minute at the rates above, so a clean run is a few cents. Failed jobs,
-pre-warming, and enable retries each add more task minutes linearly; there
-is no code bound on retries, so no total under 0.10 is guaranteed. Image
-builds run on the existing Linux CI with podman-local.sh build covering all
-six images (db, api, migrate, web, web-proxy, bootstrap), no Fargate build
-cost. CI does not publish to ECR: publication is a separate authorized push
-of the exact built digests (see deploy/aws/README.md), and bootstrap phase
-3 refuses any image that is not in the owned repository.
+Exact subtotal 7 days: 16.52760055, shown as 16.53. Exact subtotal
+12 days: 28.15445808, shown as 28.15. Line items round; the rounded rows
+can differ from a sum of rounded rows, so full precision above governs.
 
-Variable limits and buffer: traffic beyond 1 LCU, log volume beyond 0.5 GB,
-cross-AZ data transfer, T4g unlimited credits (up to 0.15 per hour for 2
-vCPUs if the demo bursts past baseline), and delayed teardown all add cost
-above the subtotal. Teardown itself bills until each resource deletes; the
-7-day log groups and any manual snapshot keep storage charges until their
-retention expires, and secrets bill until deleted outside the stack.
-Recommended Summit alert threshold: 45 USD monthly budget to cover the
-12-day window plus teardown lag and traffic variance. 45 is a notification
-threshold, never an enforced hard cap: the budget sends an 80 percent
-actual alert and a 100 percent forecast alert to the owner email, and
-nothing stops spending. Cost assumptions added by this revision: no VPC
-endpoints are used (each interface endpoint would add hourly plus per-GB
-charges), SNS email delivery is assumed within the free tier, and log
-ingest beyond 0.5 GB, traffic beyond 1 LCU, and cross-AZ transfer bill
-above the subtotal.
+One-off overlap, estimated not capped: bootstrap, migration, and verify
+one-off jobs each run minutes at 0.25 vCPU / 0.5 GB. Compute is
+0.0002057083/min plus one public IP 0.0000833333/min, total
+0.0002890417/min before logs and other charges, so a clean run is a few
+cents but NOT under 0.10 guaranteed, with no retry bound. Failed jobs,
+pre-warming, and enable retries each add more task minutes linearly; there
+is no code bound on retries. Image builds run on the existing Linux CI
+with podman-local.sh build covering all six images (db, api, migrate, web,
+web-proxy, bootstrap), no Fargate build cost. CI does not publish to ECR:
+publication is a separate authorized push of the exact built digests (see
+deploy/aws/README.md), and bootstrap phase 3 refuses any image that is not
+in the owned repository.
+
+Variable limits and buffer: actual service cost begins when infra, RDS, or
+ALB are created, even at DesiredCount 0, not only during enabled time.
+Traffic beyond 1 LCU, log volume beyond 0.5 GB, cross-AZ data transfer,
+T4g unlimited credits (up to 0.15 per hour for 2 vCPUs if the demo bursts
+past baseline), and delayed teardown all add cost above the subtotal.
+Teardown itself bills until each resource deletes; the 7-day log groups
+and any manual snapshot keep storage charges until their retention
+expires, and secrets bill until deleted outside the stack. No new VPC
+endpoint and no NAT are used (each interface endpoint would add hourly
+plus per-GB charges). Recommended user alert threshold: 45 USD monthly
+budget to cover the 12-day window plus teardown lag and traffic variance.
+45 is a notification threshold, never an enforced hard cap: the budget
+sends an 80 percent actual alert and a 100 percent forecast alert to the
+owner email, and nothing stops spending. Automatic teardown is NOT
+configured and there is no hard stop. SNS email delivery needs a
+conservative explicit planning allowance if chosen, NOT a verified quote.
 
 ## Owner contact and alerts
 
@@ -134,18 +182,34 @@ authorized stack apply.
 - Teardown is required after Nov 4 and no later than Nov 9, 2026, with
   deploy/aws/teardown.sh against the exact stack ARN plus expected account
   and region, after caller and tag verification. It deletes only the stack.
+  Automatic teardown is NOT configured; expiry is a stop criterion, not a
+  hard stop, and residual billing risk runs until every resource and every
+  outside-stack item below is actually deleted.
 - Outside-stack cleanup needs a separate approval with exact identifiers:
   the 4 Secrets Manager values, the ACM certificate, the Cloudflare DNS
   record if created, and any manual snapshot. None are deleted by teardown.
-- Access boundary: the demo account holds only this stack. No KoruShield
-  production data, credentials, roles, databases, or policies are shared.
+  The 4 outside-stack secrets plus ACM and DNS inputs stay privately gated;
+  no actual identifiers are invented in this pack.
+- Access boundary: the user asked for isolated KoruShield resources. The
+  exact stack NAME in this pack is a proposal, NOT an existing stack ID,
+  and account identity is UNVERIFIED: this pack distinguishes an isolated
+  ACCOUNT from a separate STACK in the same existing account, and does NOT
+  claim the account is empty or that unrelated production never existed,
+  because no actual inventory was performed. Same-account CostFilters are
+  absent, so an AWS Budget MONTHLY aggregate may cover other account costs.
   Human credentials stay outside the repository and images.
 
-## Gates the orchestrator must clear at the authorization tap
+## Gates the user must clear at the authorization tap
 
-1. Refresh every cached figure above against current pricing and confirm
-   the region is us-east-1 or record the confirmed region.
-2. Summit fills BudgetLimitUsd (recommended 45) and BudgetNotifyEmail.
+No generic TBD approval is asked here; each gate below names its exact
+owner and evidence. Cloud credential availability and account read-only
+validation itself is still gated, and no Cloud API command runs in any CLI
+before that tap.
+
+1. Figures above are already refreshed Oct 28, 2026 from primary evidence;
+   at the tap, confirm the region is us-east-1 or record the confirmed
+   region, with no new figure assumed.
+2. User fills BudgetLimitUsd (recommended 45) and BudgetNotifyEmail.
 3. Separate explicit authorization for the Cloudflare DNS record.
 4. Images built from containers/*.Containerfile on Linux CI
    (podman-local.sh build covers db, api, migrate, web, web-proxy, and
