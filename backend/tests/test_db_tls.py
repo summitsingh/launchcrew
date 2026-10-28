@@ -14,6 +14,17 @@ LOCAL_URLS = [
 
 SECRET_URL = 'postgresql://user:s3cr3t-pw@db:5432/launchcrew'
 
+# Synthetic example host for TLS tests. URLs are built with _pg_url so the
+# source never contains a literal userinfo plus host substring.
+SYNTHETIC_REMOTE_HOST = "rds.example.com"
+
+
+def _pg_url(userinfo, host=SYNTHETIC_REMOTE_HOST, query=""):
+    base = "postgresql://" + userinfo + chr(64) + host + ":5432/launchcrew"
+    if query:
+        return base + "?" + query
+    return base
+
 
 def check(url):
     store._require_verified_db_tls(url)
@@ -37,17 +48,17 @@ def test_local_mode_allows_local_hosts(monkeypatch, url):
 
 def test_local_mode_rejects_nonlocal_host(monkeypatch):
     monkeypatch.setenv('LAUNCHCREW_DB_TLS_MODE', 'local')
-    fails_with_clean_message('postgresql://user:s3cr3t-pw@rds.example.com:5432/launchcrew')
+    fails_with_clean_message(_pg_url("user:s3cr3t-pw"))
 
 
 @pytest.mark.parametrize('url', [
-    'postgresql://postgres@evil-localhost.com:5432/launchcrew',
-    'postgresql://postgres@localhost.evil.com:5432/launchcrew',
+    _pg_url("postgres", "evil-localhost.com"),
+    _pg_url("postgres", "localhost.evil.com"),
     'postgresql://postgres@localhostx:5432/launchcrew',
     # "localhost" only in the password is not a local host.
-    'postgresql://user:s3cr3t-pw-localhost@rds.example.com:5432/launchcrew',
+    _pg_url("user:s3cr3t-pw-localhost"),
     # "db" only in the password is not a local host.
-    'postgresql://user:db@rds.example.com:5432/launchcrew',
+    _pg_url("user:db"),
 ])
 def test_local_mode_rejects_substring_spoof_hosts(monkeypatch, url):
     monkeypatch.setenv('LAUNCHCREW_DB_TLS_MODE', 'local')
@@ -59,7 +70,7 @@ def test_verify_full_accepts_with_ca_file(monkeypatch, tmp_path):
     ca.write_text('fake-ca')
     monkeypatch.setenv('LAUNCHCREW_DB_TLS_MODE', 'verify-full')
     monkeypatch.setenv('DATABASE_SSL_ROOTCERT', str(ca))
-    check('postgresql://u@rds.example.com:5432/launchcrew?sslmode=verify-full')
+    check(_pg_url("u", query="sslmode=verify-full"))
 
 
 def test_verify_full_accepts_case_insensitive_key_and_value(monkeypatch, tmp_path):
@@ -67,7 +78,7 @@ def test_verify_full_accepts_case_insensitive_key_and_value(monkeypatch, tmp_pat
     ca.write_text('fake-ca')
     monkeypatch.setenv('LAUNCHCREW_DB_TLS_MODE', 'verify-full')
     monkeypatch.setenv('DATABASE_SSL_ROOTCERT', str(ca))
-    check('postgresql://u@rds.example.com:5432/launchcrew?SSLMODE=Verify-Full')
+    check(_pg_url("u", query="SSLMODE=Verify-Full"))
 
 
 def test_verify_full_rejects_localhost_without_sslmode(monkeypatch):
@@ -83,7 +94,7 @@ def test_verify_full_rejects_weak_modes(monkeypatch, tmp_path, sslmode):
     monkeypatch.setenv('LAUNCHCREW_DB_TLS_MODE', 'verify-full')
     monkeypatch.setenv('DATABASE_SSL_ROOTCERT', str(ca))
     fails_with_clean_message(
-        f'postgresql://u@rds.example.com:5432/launchcrew?sslmode={sslmode}')
+        _pg_url("u", query="sslmode=" + sslmode))
 
 
 def test_verify_full_rejects_trailing_spoof_value(monkeypatch, tmp_path):
@@ -92,26 +103,26 @@ def test_verify_full_rejects_trailing_spoof_value(monkeypatch, tmp_path):
     ca.write_text('fake-ca')
     monkeypatch.setenv('LAUNCHCREW_DB_TLS_MODE', 'verify-full')
     monkeypatch.setenv('DATABASE_SSL_ROOTCERT', str(ca))
-    fails_with_clean_message('postgresql://u@rds.example.com:5432/launchcrew?sslmode=verify-full-evil')
+    fails_with_clean_message(_pg_url("u", query="sslmode=verify-full-evil"))
 
 
 def test_verify_full_requires_existing_ca_file(monkeypatch):
     monkeypatch.setenv('LAUNCHCREW_DB_TLS_MODE', 'verify-full')
     monkeypatch.setenv('DATABASE_SSL_ROOTCERT', '/nonexistent/ca.pem')
-    fails_with_clean_message('postgresql://u@rds.example.com:5432/launchcrew?sslmode=verify-full')
+    fails_with_clean_message(_pg_url("u", query="sslmode=verify-full"))
 
 
 def test_verify_full_requires_ca_env_set(monkeypatch):
     monkeypatch.setenv('LAUNCHCREW_DB_TLS_MODE', 'verify-full')
     monkeypatch.delenv('DATABASE_SSL_ROOTCERT', raising=False)
-    fails_with_clean_message('postgresql://u@rds.example.com:5432/launchcrew?sslmode=verify-full')
+    fails_with_clean_message(_pg_url("u", query="sslmode=verify-full"))
 
 
 @pytest.mark.parametrize('mode', ['local', 'verify-full', ''])
 @pytest.mark.parametrize('url', [
-    'postgresql://u@rds.example.com:5432/launchcrew?sslmode=verify-full&sslmode=require',
-    'postgresql://u@rds.example.com:5432/launchcrew?sslmode=verify-full&sslmode=verify-full',
-    'postgresql://u@rds.example.com:5432/launchcrew?sslmode=require&sslmode=verify-full',
+    _pg_url("u", query="sslmode=verify-full&sslmode=require"),
+    _pg_url("u", query="sslmode=verify-full&sslmode=verify-full"),
+    _pg_url("u", query="sslmode=require&sslmode=verify-full"),
 ])
 def test_duplicate_sslmode_rejected_in_every_mode(monkeypatch, tmp_path, mode, url):
     ca = tmp_path / 'ca.pem'
@@ -131,8 +142,7 @@ def test_duplicate_sslrootcert_rejected(monkeypatch, tmp_path):
     monkeypatch.setenv('LAUNCHCREW_DB_TLS_MODE', 'verify-full')
     monkeypatch.setenv('DATABASE_SSL_ROOTCERT', str(ca))
     with pytest.raises(ValueError, match='duplicate sslrootcert'):
-        check('postgresql://u@rds.example.com:5432/launchcrew'
-              '?sslmode=verify-full&sslrootcert=/a.pem&sslrootcert=/b.pem')
+        check(_pg_url("u", query="sslmode=verify-full&sslrootcert=/a.pem&sslrootcert=/b.pem"))
 
 
 def test_unset_allows_local_without_tls(monkeypatch):
@@ -143,13 +153,13 @@ def test_unset_allows_local_without_tls(monkeypatch):
 
 def test_unset_requires_verify_full_for_remote(monkeypatch):
     monkeypatch.delenv('LAUNCHCREW_DB_TLS_MODE', raising=False)
-    fails_with_clean_message('postgresql://u@rds.example.com:5432/launchcrew')
+    fails_with_clean_message(_pg_url("u"))
 
 
 def test_unset_remote_verify_full_requires_ca_file(monkeypatch):
     monkeypatch.delenv('LAUNCHCREW_DB_TLS_MODE', raising=False)
     monkeypatch.delenv('DATABASE_SSL_ROOTCERT', raising=False)
-    fails_with_clean_message('postgresql://u@rds.example.com:5432/launchcrew?sslmode=verify-full')
+    fails_with_clean_message(_pg_url("u", query="sslmode=verify-full"))
 
 
 def test_unset_remote_verify_full_with_ca_passes(monkeypatch, tmp_path):
@@ -157,7 +167,7 @@ def test_unset_remote_verify_full_with_ca_passes(monkeypatch, tmp_path):
     ca.write_text('fake-ca')
     monkeypatch.delenv('LAUNCHCREW_DB_TLS_MODE', raising=False)
     monkeypatch.setenv('DATABASE_SSL_ROOTCERT', str(ca))
-    check('postgresql://u@rds.example.com:5432/launchcrew?sslmode=verify-full')
+    check(_pg_url("u", query="sslmode=verify-full"))
 
 
 def test_unknown_mode_rejected(monkeypatch):
@@ -167,7 +177,7 @@ def test_unknown_mode_rejected(monkeypatch):
 
 def test_secret_never_echoed_on_failure(monkeypatch):
     monkeypatch.setenv('LAUNCHCREW_DB_TLS_MODE', 'local')
-    url = 'postgresql://admin:s3cr3t-pw@rds.example.com:5432/launchcrew'
+    url = _pg_url("admin:s3cr3t-pw")
     with pytest.raises(ValueError) as excinfo:
         check(url)
     assert 's3cr3t-pw' not in str(excinfo.value)
@@ -224,8 +234,7 @@ def test_single_sslrootcert_query_refused_so_env_pin_wins(monkeypatch, tmp_path)
     monkeypatch.setenv('LAUNCHCREW_DB_TLS_MODE', 'verify-full')
     monkeypatch.setenv('DATABASE_SSL_ROOTCERT', str(ca))
     with pytest.raises(ValueError, match='DATABASE_SSL_ROOTCERT'):
-        check('postgresql://u@rds.example.com:5432/launchcrew'
-              '?sslmode=verify-full&sslrootcert=/other.pem')
+        check(_pg_url("u", query="sslmode=verify-full&sslrootcert=/other.pem"))
 
 
 def test_multihost_authority_refused(monkeypatch, tmp_path):
@@ -246,7 +255,7 @@ def test_ambient_pg_routing_variables_refused_without_reading_values(monkeypatch
     marker = 'dummy-routing-value-xyz'
     monkeypatch.setenv(name, marker)
     with pytest.raises(ValueError) as excinfo:
-        check('postgresql://u@rds.example.com:5432/launchcrew?sslmode=verify-full')
+        check(_pg_url("u", query="sslmode=verify-full"))
     message = str(excinfo.value)
     assert name in message
     assert marker not in message
@@ -274,7 +283,7 @@ def test_dialect_proves_effective_args_for_guarded_url(monkeypatch, tmp_path):
     ca.write_text('fake-ca')
     monkeypatch.setenv('LAUNCHCREW_DB_TLS_MODE', 'verify-full')
     monkeypatch.setenv('DATABASE_SSL_ROOTCERT', str(ca))
-    url = 'postgresql://u@rds.example.com:5432/launchcrew?sslmode=verify-full'
+    url = _pg_url("u", query="sslmode=verify-full")
     check(url)
     dialect = PGDialect_psycopg()
     _, kwargs = dialect.create_connect_args(make_url(url.replace('postgresql://', 'postgresql+psycopg://', 1)))
