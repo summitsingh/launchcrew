@@ -188,7 +188,7 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-tasks" ]; then
   esac
   CONTAINERS=""
   for NAME in $NAMES; do
-    ENTRY="{\"name\":\"$NAME\",\"lastStatus\":\"STOPPED\",\"exitCode\":$EXIT0}"
+    ENTRY="$(printf '{"name":"%s","lastStatus":"STOPPED","exitCode":%s}' "$NAME" "$EXIT0")"
     if [ -z "$CONTAINERS" ]; then CONTAINERS="$ENTRY"; else CONTAINERS="$CONTAINERS,$ENTRY"; fi
   done
   printf '{"tasks":[{"taskArn":"%s","clusterArn":"arn:aws:ecs:us-east-1:111122223333:cluster/launchcrew-demo","taskDefinitionArn":"%s","lastStatus":"STOPPED","containers":[%s]}],"failures":[]}\\n' "$TASKARN" "$TASKDEF" "$CONTAINERS"
@@ -714,6 +714,38 @@ class PhaseOrderingTests(BootstrapHarness):
                 index += 1
         return [{"ParameterKey": key, "ParameterValue": value}
                 for key, value in sorted(items.items())]
+
+
+class FixtureJsonTests(BootstrapHarness):
+    def test_describe_tasks_fixture_emits_valid_json(self):
+        import json as _json
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = Path(tmp) / "fake-aws"
+            fake.write_text(FAKE_AWS, encoding="utf-8")
+            fake.chmod(fake.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            taskdefs = Path(tmp) / "taskdefs"
+            taskdefs.write_text(
+                "arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/task001"
+                "|arn:aws:ecs:us-east-1:111122223333:task-definition/launchcrew-demo-bootstrap:1\n",
+                encoding="utf-8")
+            env = dict(os.environ)
+            env["FAKE_TASKDEF_FILE"] = str(taskdefs)
+            env["FAKE_MODE"] = "success"
+            proc = subprocess.run(
+                [str(fake), "ecs", "describe-tasks"],
+                capture_output=True, text=True, env=env, check=False)
+            self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+            doc = _json.loads(proc.stdout)
+            tasks = doc.get("tasks", [])
+            self.assertEqual(len(tasks), 1)
+            containers = tasks[0].get("containers", [])
+            self.assertTrue(containers)
+            for container in containers:
+                self.assertIn("name", container)
+                self.assertEqual(container.get("lastStatus"), "STOPPED")
+                self.assertEqual(container.get("exitCode"), 0)
+            names = sorted(container["name"] for container in containers)
+            self.assertIn("bootstrap-db-roles", names)
 
 
 class TemplateStagingTests(unittest.TestCase):

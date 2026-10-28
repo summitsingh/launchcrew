@@ -351,13 +351,13 @@ bind_verify_live() {
   log "create disposable bind database $BIND_DB"
   "$PG_BIN_DIR/createdb" -h 127.0.0.1 -p "$PORT" -U "$SUPERUSER" "$BIND_DB"
 
-  log "apply actual db-roles.sql with bind identities"
-  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" \
-    -v ON_ERROR_STOP=1 --single-transaction \
-    -v runtime_user="$BIND_RT" \
-    -v migration_user="$BIND_MG" \
-    -v app_schema="$APP_SCHEMA" \
-    -f "$SQL_FILE"
+  # Fresh bind identities stay absent here on purpose. The actual
+  # scripts/bootstrap_db_roles.py --bind below creates each role, stamps
+  # the ownership marker, binds its password, and applies the privilege
+  # split. Precreating the roles with db-roles.sql would leave them
+  # without the ownership marker, and the hardened bind correctly
+  # refuses such unowned roles, so no precreate or blind takeover
+  # happens in this stage. Stage 1 above already proves db-roles.sql.
 
   CERTDIR="$PGDATA/certs"
   mkdir -p "$CERTDIR"
@@ -398,6 +398,22 @@ bind_verify_live() {
   MG_URL="postgresql://${BIND_MG}:${BIND_MG_PW}@127.0.0.1:${PORT}/${BIND_DB}?sslmode=verify-full"
   INTR_URL="postgresql://lc_intruder_demo:${INTR_PW}@127.0.0.1:${PORT}/${BIND_DB}?sslmode=verify-full"
 
+  safe_emit() {
+    # Bounded redacted error output for stage 2 failures. Secrets arrive
+    # via env and text arrives via stdin, so no secret value ever appears
+    # in argv. Output is truncated to 2000 bytes. Harness only, no values.
+    REDACT_A="$BIND_RT_PW" REDACT_B="$BIND_MG_PW" REDACT_C="$MASTER_PW" REDACT_D="$INTR_PW" \
+    REDACT_E="$RT_URL" REDACT_F="$MG_URL" python3 -c '
+import os, sys
+text = sys.stdin.read()
+for key in ("REDACT_A", "REDACT_B", "REDACT_C", "REDACT_D", "REDACT_E", "REDACT_F"):
+    secret = os.environ.get(key, "")
+    if secret:
+        text = text.replace(secret, "***")
+sys.stdout.write(text[:2000])
+' 2>/dev/null
+  }
+
   bind_job() {
     LAUNCHCREW_DB_TLS_MODE=verify-full DATABASE_SSL_ROOTCERT="$CERTDIR/server.crt" \
       DB_HOST=127.0.0.1 DB_PORT="$PORT" DB_NAME="$BIND_DB" \
@@ -412,10 +428,20 @@ bind_verify_live() {
   BIND_OUT="$(bind_job "$BIND_RT")"
   BIND_CODE=$?
   set -e
-  [ "$BIND_CODE" -eq 0 ] || { echo "$BIND_OUT" >&2; fail "actual --bind failed"; }
-  case "$BIND_OUT" in *"BIND COMPLETE"*) ;; *) echo "$BIND_OUT" >&2; fail "actual --bind missed BIND COMPLETE" ;; esac
+  [ "$BIND_CODE" -eq 0 ] || { printf '%s' "$BIND_OUT" | safe_emit >&2; fail "actual --bind failed"; }
+  case "$BIND_OUT" in *"BIND COMPLETE"*) ;; *) printf '%s' "$BIND_OUT" | safe_emit >&2; fail "actual --bind missed BIND COMPLETE" ;; esac
   case "$BIND_OUT" in *"$BIND_RT_PW"*|*"$BIND_MG_PW"*|*"$MASTER_PW"*) fail "bind output leaked a synthetic password" ;; esac
   log "pass: actual --bind complete with no password in output"
+
+  log "repeat actual --bind for idempotence proof"
+  set +e
+  REBIND_OUT="$(bind_job "$BIND_RT")"
+  REBIND_CODE=$?
+  set -e
+  [ "$REBIND_CODE" -eq 0 ] || { printf '%s' "$REBIND_OUT" | safe_emit >&2; fail "actual --bind rerun failed"; }
+  case "$REBIND_OUT" in *"BIND COMPLETE"*) ;; *) printf '%s' "$REBIND_OUT" | safe_emit >&2; fail "actual --bind rerun missed BIND COMPLETE" ;; esac
+  case "$REBIND_OUT" in *"$BIND_RT_PW"*|*"$BIND_MG_PW"*|*"$MASTER_PW"*) fail "rebind output leaked a synthetic password" ;; esac
+  log "pass: actual --bind is idempotent"
 
   pwset="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT count(*) FROM pg_authid WHERE rolname IN ('$BIND_RT','$BIND_MG') AND rolpassword IS NOT NULL;" | tr -d '[:space:]')" || true
   [ "$pwset" = "2" ] || fail "bind did not set both role passwords"
@@ -444,7 +470,7 @@ bind_verify_live() {
   MIG_OUT="$(cd "$REPO_ROOT" && DATABASE_URL="$MG_URL" LAUNCHCREW_DB_TLS_MODE=verify-full DATABASE_SSL_ROOTCERT="$CERTDIR/server.crt" python3 -m alembic upgrade head 2>&1)"
   MIG_CODE=$?
   set -e
-  [ "$MIG_CODE" -eq 0 ] || { echo "$MIG_OUT" >&2; fail "alembic upgrade head failed"; }
+  [ "$MIG_CODE" -eq 0 ] || { printf '%s' "$MIG_OUT" | safe_emit >&2; fail "alembic upgrade head failed"; }
   ver="$(bind_as "$BIND_MG" "$BIND_MG_PW" "SELECT version_num FROM alembic_version;" | tr -d '[:space:]')" || true
   [ "$ver" = "004" ] || fail "alembic head is $ver, expected 004"
   log "pass: alembic head 004 applied via the migration role"
@@ -461,8 +487,8 @@ bind_verify_live() {
   VERIFY_OUT="$(verify_job)"
   VERIFY_CODE=$?
   set -e
-  [ "$VERIFY_CODE" -eq 0 ] || { echo "$VERIFY_OUT" >&2; fail "actual --verify failed at head 004"; }
-  case "$VERIFY_OUT" in *"VERIFY COMPLETE"*|*"revision=004"*) ;; *) echo "$VERIFY_OUT" >&2; fail "actual --verify missed proof markers" ;; esac
+  [ "$VERIFY_CODE" -eq 0 ] || { printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify failed at head 004"; }
+  case "$VERIFY_OUT" in *"VERIFY COMPLETE"*|*"revision=004"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed proof markers" ;; esac
   case "$VERIFY_OUT" in *"$BIND_RT_PW"*|*"$RT_URL"*) fail "verify output leaked a synthetic secret" ;; esac
   log "pass: actual --verify proves 004, identity, rolled-back write, DDL refusal"
 
@@ -490,7 +516,7 @@ bind_verify_live() {
   set -e
   "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "DROP ROLE lc_intruder_demo;" >/dev/null
   [ "$INTR_CODE" -ne 0 ] || fail "bind took over an unowned superuser role"
-  case "$INTR_OUT" in *"role-safety"*) ;; *) echo "$INTR_OUT" >&2; fail "superuser refusal missed the role-safety marker" ;; esac
+  case "$INTR_OUT" in *"role-safety"*) ;; *) printf '%s' "$INTR_OUT" | safe_emit >&2; fail "superuser refusal missed the role-safety marker" ;; esac
   log "pass: unowned superuser refused with role-safety"
 
   log "negative: membership takeover is refused"
@@ -501,7 +527,7 @@ bind_verify_live() {
   set -e
   "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "REVOKE lc_group_demo FROM $BIND_RT; DROP ROLE lc_group_demo;" >/dev/null
   [ "$GRP_CODE" -ne 0 ] || fail "bind took over a role with memberships"
-  case "$GRP_OUT" in *"memberships"*) ;; *) echo "$GRP_OUT" >&2; fail "membership refusal missed the marker" ;; esac
+  case "$GRP_OUT" in *"memberships"*) ;; *) printf '%s' "$GRP_OUT" | safe_emit >&2; fail "membership refusal missed the marker" ;; esac
   log "pass: membership takeover refused"
 
   log "negative: wrong head is refused by verify"
@@ -512,16 +538,16 @@ bind_verify_live() {
   set -e
   "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "UPDATE alembic_version SET version_num='004';" >/dev/null
   [ "$OLD_CODE" -ne 0 ] || fail "verify accepted the old head 003"
-  case "$OLD_OUT" in *"FAIL"*) ;; *) echo "$OLD_OUT" >&2; fail "old head refusal left no FAIL marker" ;; esac
+  case "$OLD_OUT" in *"FAIL"*) ;; *) printf '%s' "$OLD_OUT" | safe_emit >&2; fail "old head refusal left no FAIL marker" ;; esac
   set +e
   AGAIN_OUT="$(verify_job 2>&1)"
   AGAIN_CODE=$?
   set -e
-  [ "$AGAIN_CODE" -eq 0 ] || { echo "$AGAIN_OUT" >&2; fail "verify failed after restoring head 004"; }
+  [ "$AGAIN_CODE" -eq 0 ] || { printf '%s' "$AGAIN_OUT" | safe_emit >&2; fail "verify failed after restoring head 004"; }
   log "pass: old head refused, restored head proves again"
 
   unset BIND_RT_PW BIND_MG_PW MASTER_PW INTR_PW RT_URL MG_URL INTR_URL
-  unset BIND_OUT VERIFY_OUT MIG_OUT INTR_OUT GRP_OUT OLD_OUT AGAIN_OUT
+  unset BIND_OUT VERIFY_OUT MIG_OUT INTR_OUT GRP_OUT OLD_OUT AGAIN_OUT REBIND_OUT
   log "PASS: bind and verify job proof complete on disposable 127.0.0.1:$PORT"
   log "loopback self-signed CA only, NOT live RDS TLS proof"
 }

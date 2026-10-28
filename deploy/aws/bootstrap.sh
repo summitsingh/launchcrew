@@ -284,9 +284,12 @@ CURRENT_ENABLE="false"
 if STACK_JSON="$("$AWS_BIN" cloudformation describe-stacks --stack-name "$STACK_NAME" --region "$EXPECTED_REGION" --output json 2>"$TMP_ERR")"; then
   STACK_EXISTS=1
   printf '%s' "$STACK_JSON" >"$TMP_JSON"
-  STACK_PARSED="$(python3 - "$TMP_JSON" <<'PYEOF'
+  STACK_PARSED="$(python3 - "$TMP_JSON" 2>/dev/null <<'PYEOF'
 import json, sys
-doc = json.load(open(sys.argv[1]))
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
 stacks = doc.get("Stacks", [])
 if not stacks:
     print("EMPTY")
@@ -401,8 +404,11 @@ check_params_match() {
 import json, sys
 KNOWN_SECRET_KEYS = {"RuntimeDbUrlSecretArn", "MigrationDbUrlSecretArn",
                      "MasterDbPasswordSecretArn", "TlsSecretArn"}
-with open(sys.argv[1]) as handle:
-    doc = json.load(handle)
+try:
+    with open(sys.argv[1]) as handle:
+        doc = json.load(handle)
+except Exception:
+    raise SystemExit("parameters file is not valid JSON")
 if isinstance(doc, dict) and "Parameters" in doc:
     doc = doc["Parameters"]
 if not isinstance(doc, list):
@@ -471,8 +477,11 @@ cloudformation_deploy() {
 import json, subprocess, sys
 params_file, enable_value = sys.argv[1], sys.argv[2]
 aws_bin, stack, template, region, tags = sys.argv[3:8]
-with open(params_file) as handle:
-    doc = json.load(handle)
+try:
+    with open(params_file) as handle:
+        doc = json.load(handle)
+except Exception:
+    raise SystemExit("parameters file is not valid JSON")
 if isinstance(doc, dict) and "Parameters" in doc:
     doc = doc["Parameters"]
 if not isinstance(doc, list):
@@ -593,9 +602,12 @@ check_taskdef_binding() {
   fi
   BIND_EXPECTED="$(mktemp /tmp/launchcrew-expected-XXXXXX)"
   printf '%s\n' "$@" >"$BIND_EXPECTED"
-  BIND_PROOF="$(python3 - "$BIND_JSON" "$BIND_EXPECTED" "$EXPECTED_ACCOUNT" "$BIND_ROLE" <<'PYEOF'
+  BIND_PROOF="$(python3 - "$BIND_JSON" "$BIND_EXPECTED" "$EXPECTED_ACCOUNT" "$BIND_ROLE" 2>/dev/null <<'PYEOF'
 import json, sys
-doc = json.load(open(sys.argv[1]))
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
 wanted = {}
 for line in open(sys.argv[2]):
     line = line.rstrip("\n")
@@ -701,9 +713,12 @@ verify_image() {
     echo "$IMAGE_LABEL task definition $TASKDEF_LOGICAL missing, image not tied to an owned task." >&2
     phase_failed images
   fi
-  REF_IMAGE="$(python3 - "$REFADM_JSON" "$CONTAINER_NAME" <<'PYEOF'
+  REF_IMAGE="$(python3 - "$REFADM_JSON" "$CONTAINER_NAME" 2>/dev/null <<'PYEOF'
 import json, sys
-doc = json.load(open(sys.argv[1]))
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
 taskdef = doc.get("taskDefinition", doc)
 for container in taskdef.get("containerDefinitions", []) or []:
     if (container.get("name", "") or "") == sys.argv[2]:
@@ -767,9 +782,12 @@ run_one_off_task() {
     echo "$TASK_LABEL run-task failed, nothing started beyond this point." >&2
     phase_failed "$TASK_PHASE"
   fi
-  TASK_ARN="$(python3 - "$TASK_JSON" <<'PYEOF'
+  TASK_ARN="$(python3 - "$TASK_JSON" 2>/dev/null <<'PYEOF'
 import json, sys
-doc = json.load(open(sys.argv[1]))
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
 tasks = doc.get("tasks", [])
 failures = doc.get("failures", [])
 if failures:
@@ -806,10 +824,13 @@ PYEOF
     phase_failed "$TASK_PHASE"
   fi
   EXPECTED_CLUSTER_ARN="arn:aws:ecs:$EXPECTED_REGION:$EXPECTED_ACCOUNT:cluster/$CLUSTER_NAME"
-  TASK_PROOF="$(python3 - "$DESCRIBE_JSON" "$TASKDEF_JSON" "$TASK_ARN" "$TASKDEF_ARN" "$EXPECTED_CLUSTER_ARN" <<'PYEOF'
+  TASK_PROOF="$(python3 - "$DESCRIBE_JSON" "$TASKDEF_JSON" "$TASK_ARN" "$TASKDEF_ARN" "$EXPECTED_CLUSTER_ARN" 2>/dev/null <<'PYEOF'
 import json, sys
-describe = json.load(open(sys.argv[1]))
-defined = json.load(open(sys.argv[2]))
+try:
+    describe = json.load(open(sys.argv[1]))
+    defined = json.load(open(sys.argv[2]))
+except Exception:
+    sys.exit(1)
 expected_arn, expected_taskdef, expected_cluster = sys.argv[3:6]
 expected_names = []
 for container in (defined.get("taskDefinition", defined).get("containerDefinitions", []) or []):
