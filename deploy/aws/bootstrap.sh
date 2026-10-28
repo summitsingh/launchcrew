@@ -315,8 +315,10 @@ is_absent_for_stack() {
 }
 
 check_prereq_expiry() {
-  TODAY_VALUE="${LAUNCHCREW_TODAY:-}"
-  if [ -z "$TODAY_VALUE" ]; then
+  TODAY_VALUE=""
+  if [ -n "${LAUNCHCREW_TODAY:-}" ] && [ -n "${FAKE_MODE:-}" ]; then
+    TODAY_VALUE="$LAUNCHCREW_TODAY"
+  else
     TODAY_VALUE="$(date -u +%F 2>/dev/null || echo "")"
   fi
   case "$TODAY_VALUE" in
@@ -734,6 +736,27 @@ prereq_stack_resource() {
   "$AWS_BIN" cloudformation describe-stack-resource --stack-name "$1" --logical-resource-id "$2" --region "$EXPECTED_REGION" --query "StackResourceDetail.PhysicalResourceId" --output text 2>"$TMP_ERR"
 }
 
+observe_prereq_resource() {
+  OBSERVE_STACK="$1"
+  OBSERVE_LOGICAL="$2"
+  OBSERVE_TRY=1
+  while [ "$OBSERVE_TRY" -le 5 ]; do
+    if OBSERVE_VALUE="$(prereq_stack_resource "$OBSERVE_STACK" "$OBSERVE_LOGICAL" 2>"$TMP_ERR")"; then
+      OBSERVE_VALUE="$(printf '%s' "$OBSERVE_VALUE" | tr -d '[:space:]')"
+      if [ -n "$OBSERVE_VALUE" ] && [ "$OBSERVE_VALUE" != "None" ]; then
+        printf '%s' "$OBSERVE_VALUE"
+        return 0
+      fi
+    fi
+    if [ "$OBSERVE_TRY" -eq 5 ]; then
+      break
+    fi
+    sleep 2 2>/dev/null || true
+    OBSERVE_TRY=$((OBSERVE_TRY + 1))
+  done
+  return 1
+}
+
 FOUNDATION_EXISTS=0
 FOUNDATION_STATUS=""
 FOUNDATION_ID=""
@@ -914,7 +937,7 @@ check_foundation_budget_filter() {
     if is_auth_error "$ERR"; then
       echo "authorization or API failure, not absence: budgets:DescribeBudget read permission is required." >&2
     fi
-    phase_failed foundation
+    phase_failed "$PHASE"
   fi
   BUDGET_PROOF="$(python3 - "$BUDGET_JSON" 2>/dev/null <<'PYEOF'
 import json, sys
@@ -945,11 +968,64 @@ if (tags.get("Key", "") == "Project"
 else:
     print("FILTER_MISSING")
 PYEOF
-)" || { rm -f "$BUDGET_JSON"; echo "foundation budget filter unreadable, project spend monitoring UNVERIFIED." >&2; phase_failed foundation; }
+)" || { rm -f "$BUDGET_JSON"; echo "foundation budget filter unreadable, project spend monitoring UNVERIFIED." >&2; phase_failed "$PHASE"; }
   rm -f "$BUDGET_JSON"
   BUDGET_PROOF="$(printf '%s' "$BUDGET_PROOF" | tr -d '[:space:]')"
-  [ "$BUDGET_PROOF" = "FILTER_OK" ] || { echo "refused: foundation DemoBudget lacks the exact Project=LaunchCrew EQUALS-only filter, project spend monitoring UNVERIFIED." >&2; phase_failed foundation; }
+  [ "$BUDGET_PROOF" = "FILTER_OK" ] || { echo "refused: foundation DemoBudget lacks the exact Project=LaunchCrew EQUALS-only filter, project spend monitoring UNVERIFIED." >&2; phase_failed "$PHASE"; }
   echo "Verified foundation DemoBudget filter: Tags Project=LaunchCrew EQUALS only, read back from live state."
+}
+
+check_foundation_params() {
+  if ! python3 - "$FOUNDATION_PARAMETERS_FILE" <<'PYEOF'
+import json, sys
+params_file = sys.argv[1]
+try:
+    with open(params_file) as handle:
+        doc = json.load(handle)
+except Exception:
+    raise SystemExit("parameters file is not valid JSON")
+if isinstance(doc, dict) and "Parameters" in doc:
+    doc = doc["Parameters"]
+if not isinstance(doc, list):
+    raise SystemExit("parameters file must be a JSON list")
+seen = set()
+values = {}
+for entry in doc:
+    if not isinstance(entry, dict) or "ParameterKey" not in entry:
+        raise SystemExit("parameters file has a malformed entry")
+    key = entry["ParameterKey"]
+    if key in seen:
+        raise SystemExit("parameters file has a duplicate ParameterKey")
+    seen.add(key)
+    if key not in ("BudgetLimitUsd", "BudgetNotifyEmail"):
+        raise SystemExit("foundation parameters file has an unrecognized key")
+    if "ParameterValue" not in entry:
+        raise SystemExit("parameters file entry has no explicit ParameterValue")
+    value = entry.get("ParameterValue", "")
+    if not isinstance(value, str):
+        raise SystemExit("parameters file value must be a string")
+    if "\n" in value or "\r" in value or "://" in value:
+        raise SystemExit("parameters file value has a refused shape")
+    values[key] = value
+if "BudgetLimitUsd" not in seen or "BudgetNotifyEmail" not in seen:
+    raise SystemExit("foundation parameters file must carry BudgetLimitUsd and BudgetNotifyEmail")
+limit = values.get("BudgetLimitUsd", "")
+if not limit or "REPLACE_WITH" in limit:
+    raise SystemExit("BudgetLimitUsd is empty or unreplaced")
+try:
+    amount = float(limit)
+except Exception:
+    raise SystemExit("BudgetLimitUsd is not numeric")
+if amount <= 0:
+    raise SystemExit("BudgetLimitUsd must be greater than zero")
+notify = values.get("BudgetNotifyEmail", "")
+if "REPLACE_WITH" in notify:
+    raise SystemExit("BudgetNotifyEmail is unreplaced")
+PYEOF
+  then
+    echo "refused: foundation parameters file invalid, empty, malformed, or duplicate, no paid prereqs started." >&2
+    phase_failed "$PHASE"
+  fi
 }
 
 check_sns_exact_gate() {
@@ -1036,17 +1112,20 @@ for entry in subs:
     protocol = entry.get("Protocol", "")
     topic = entry.get("TopicArn", "")
     sub_arn = entry.get("SubscriptionArn", "")
+    owner = entry.get("Owner", "")
     is_exact = (endpoint == expected_email and protocol == "email"
-                and topic == expected_topic and owned_sub_arn(sub_arn))
+                and topic == expected_topic and owned_sub_arn(sub_arn)
+                and owner == expected_account)
     if is_exact:
         exact += 1
         continue
     if isinstance(sub_arn, str) and sub_arn and sub_arn != "PendingConfirmation":
         confirmed_other += 1
     elif (endpoint == expected_email and protocol == "email"
-          and topic == expected_topic and sub_arn == "PendingConfirmation"):
+          and topic == expected_topic and sub_arn == "PendingConfirmation"
+          and owner == expected_account):
         pending_expected = True
-if exact == 1 and confirmed_other == 0:
+if exact == 1 and confirmed_other == 0 and not pending_expected:
     print("EXACT_OK")
 elif exact > 1:
     print("DUPLICATE")
@@ -1075,18 +1154,20 @@ PYEOF
 
 prereqs_deploy() {
   if [ "$PREREQS_EXISTS" -eq 0 ]; then
-    if ! "$AWS_BIN" cloudformation create-stack --stack-name "$PREREQS_STACK_NAME" --template-body "file://$PREREQS_TEMPLATE_FILE" --tags Project=LaunchCrew Environment=demo --region "$EXPECTED_REGION" 2>"$TMP_ERR"; then
+    if ! "$AWS_BIN" cloudformation create-stack --stack-name "$PREREQS_STACK_NAME" --template-body "file://$PREREQS_TEMPLATE_FILE" --tags Key=Project,Value=LaunchCrew Key=Environment,Value=demo --region "$EXPECTED_REGION" >"$TMP_JSON" 2>"$TMP_ERR"; then
       echo "refused: prereqs create failed, no claim made" >&2
       phase_failed prereqs
     fi
   else
-    if ! "$AWS_BIN" cloudformation update-stack --stack-name "$PREREQS_STACK_NAME" --template-body "file://$PREREQS_TEMPLATE_FILE" --region "$EXPECTED_REGION" 2>"$TMP_ERR"; then
-      ERR="$(cat "$TMP_ERR" 2>/dev/null || true)"
-      case "$ERR" in
-        *"No updates to be performed"*) echo "Prereqs template unchanged, proceeding to verification" ;;
-        *) echo "refused: prereqs update failed, no claim made" >&2; phase_failed prereqs ;;
-      esac
-    fi
+    case "$PREREQS_STATUS" in
+      *_IN_PROGRESS)
+        echo "Prereqs stack $PREREQS_STATUS in progress, observing only, no update attempted" ;;
+      CREATE_COMPLETE|UPDATE_COMPLETE)
+        echo "Prereqs stack $PREREQS_STATUS complete, verifying without gratuitous update to preserve managed secrets and cert" ;;
+      *)
+        echo "refused: prereqs stack status is $PREREQS_STATUS, explicit review required, no automatic update to avoid secret or cert rotation" >&2
+        phase_failed prereqs ;;
+    esac
   fi
 }
 
@@ -1121,6 +1202,16 @@ fi
 if [ "$PHASE" = "prereqs" ]; then
   echo "Phase prereqs: exact SNS gate, then Secrets plus exportable ACM"
   check_foundation_stack
+  if [ "$FOUNDATION_EXISTS" -eq 0 ]; then
+    echo "refused: foundation stack absent, deploy --phase foundation to COMPLETE first, no paid prereqs started." >&2
+    phase_failed prereqs
+  fi
+  case "$FOUNDATION_STATUS" in
+    CREATE_COMPLETE|UPDATE_COMPLETE) echo "Verified owned foundation $FOUNDATION_STATUS before paid prereqs" ;;
+    *) echo "refused: foundation stack status is $FOUNDATION_STATUS, required CREATE_COMPLETE or UPDATE_COMPLETE before paid prereqs." >&2; phase_failed prereqs ;;
+  esac
+  check_foundation_params
+  check_foundation_budget_filter
   check_sns_exact_gate
   check_prereqs_stack
   prereqs_deploy
@@ -1130,19 +1221,19 @@ if [ "$PHASE" = "prereqs" ]; then
   fi
   PREREQS_STATUS_NOW="$(printf '%s' "$PREREQS_STATUS_NOW" | tr -d '[:space:]')"
   PREREQS_STATUS="$PREREQS_STATUS_NOW"
-  CERT_ARN="$(prereq_stack_resource "$PREREQS_STACK_NAME" DemoCertificate 2>"$TMP_ERR")" || { echo "prereqs certificate lookup failed, no claim made." >&2; phase_failed prereqs; }
+  CERT_ARN="$(observe_prereq_resource "$PREREQS_STACK_NAME" DemoCertificate)" || { echo "prereqs certificate not yet visible after bounded observations, rerun --phase prereqs to resume read-only, no recreate or update attempted." >&2; phase_failed prereqs; }
   CERT_ARN="$(printf '%s' "$CERT_ARN" | tr -d '[:space:]')"
-  [ -n "$CERT_ARN" ] && [ "$CERT_ARN" != "None" ] || { echo "refused: prereqs certificate ARN missing, no claim made." >&2; phase_failed prereqs; }
+  [ -n "$CERT_ARN" ] && [ "$CERT_ARN" != "None" ] || { echo "refused: prereqs certificate ARN missing after bounded observations, rerun to resume read-only." >&2; phase_failed prereqs; }
   case "$CERT_ARN" in
     arn:aws:acm:*:*:certificate/*) ;;
     *) echo "refused: prereqs certificate ARN is malformed, no claim made." >&2; phase_failed prereqs ;;
   esac
   [ "$(printf '%s' "$CERT_ARN" | cut -d: -f4)" = "$EXPECTED_REGION" ] || { echo "refused: prereqs certificate region mismatch, no claim made." >&2; phase_failed prereqs; }
   [ "$(printf '%s' "$CERT_ARN" | cut -d: -f5)" = "$EXPECTED_ACCOUNT" ] || { echo "refused: prereqs certificate account mismatch, no claim made." >&2; phase_failed prereqs; }
-  MASTER_ARN="$(prereq_stack_resource "$PREREQS_STACK_NAME" MasterSecret 2>"$TMP_ERR")" || { echo "prereqs master secret lookup failed, no claim made." >&2; phase_failed prereqs; }
-  RUNTIME_ARN="$(prereq_stack_resource "$PREREQS_STACK_NAME" RuntimeSecret 2>"$TMP_ERR")" || { echo "prereqs runtime secret lookup failed, no claim made." >&2; phase_failed prereqs; }
-  MIGRATION_ARN="$(prereq_stack_resource "$PREREQS_STACK_NAME" MigrationSecret 2>"$TMP_ERR")" || { echo "prereqs migration secret lookup failed, no claim made." >&2; phase_failed prereqs; }
-  TLS_ARN="$(prereq_stack_resource "$PREREQS_STACK_NAME" TlsSecret 2>"$TMP_ERR")" || { echo "prereqs TLS secret lookup failed, no claim made." >&2; phase_failed prereqs; }
+  MASTER_ARN="$(observe_prereq_resource "$PREREQS_STACK_NAME" MasterSecret)" || { echo "prereqs master secret not yet visible after bounded observations, rerun --phase prereqs to resume read-only." >&2; phase_failed prereqs; }
+  RUNTIME_ARN="$(observe_prereq_resource "$PREREQS_STACK_NAME" RuntimeSecret)" || { echo "prereqs runtime secret not yet visible after bounded observations, rerun --phase prereqs to resume read-only." >&2; phase_failed prereqs; }
+  MIGRATION_ARN="$(observe_prereq_resource "$PREREQS_STACK_NAME" MigrationSecret)" || { echo "prereqs migration secret not yet visible after bounded observations, rerun --phase prereqs to resume read-only." >&2; phase_failed prereqs; }
+  TLS_ARN="$(observe_prereq_resource "$PREREQS_STACK_NAME" TlsSecret)" || { echo "prereqs TLS secret not yet visible after bounded observations, rerun --phase prereqs to resume read-only." >&2; phase_failed prereqs; }
   MASTER_ARN="$(printf '%s' "$MASTER_ARN" | tr -d '[:space:]')"
   RUNTIME_ARN="$(printf '%s' "$RUNTIME_ARN" | tr -d '[:space:]')"
   MIGRATION_ARN="$(printf '%s' "$MIGRATION_ARN" | tr -d '[:space:]')"
@@ -1152,49 +1243,162 @@ if [ "$PHASE" = "prereqs" ]; then
   check_secret_arn "$MIGRATION_ARN" "prereqs-migration"
   check_secret_arn "$TLS_ARN" "prereqs-tls"
   CERT_JSON="$(mktemp /tmp/launchcrew-cert-XXXXXX)"
-  if ! "$AWS_BIN" acm describe-certificate --certificate-arn "$CERT_ARN" --region "$EXPECTED_REGION" --output json >"$CERT_JSON" 2>"$TMP_ERR"; then
-    rm -f "$CERT_JSON"
-    echo "certificate state unreadable, not treated as issued." >&2
-    phase_failed prereqs
-  fi
-  CERT_PARSED="$(python3 - "$CERT_JSON" 2>/dev/null <<'PYEOF'
+  CERT_TRY=1
+  CERT_PARSED=""
+  while [ "$CERT_TRY" -le 5 ]; do
+    if ! "$AWS_BIN" acm describe-certificate --certificate-arn "$CERT_ARN" --region "$EXPECTED_REGION" --output json >"$CERT_JSON" 2>"$TMP_ERR"; then
+      rm -f "$CERT_JSON"
+      echo "certificate state unreadable, not treated as issued." >&2
+      phase_failed prereqs
+    fi
+    if ! CERT_PARSED="$(python3 - "$CERT_JSON" "$CERT_ARN" 2>/dev/null <<'PYEOF'
 import json, sys
+cert_file, expected_arn = sys.argv[1:3]
+expected_domain = "launchcrew.summitsingh.com"
 try:
-    doc = json.load(open(sys.argv[1]))
+    doc = json.load(open(cert_file))
 except Exception:
     sys.exit(1)
 cert = doc.get("Certificate", {})
-print("STATUS\t%s" % cert.get("Status", ""))
-print("DOMAIN\t%s" % cert.get("DomainName", ""))
+if not isinstance(cert, dict):
+    cert = {}
+status = cert.get("Status", "") or ""
+domain = cert.get("DomainName", "") or ""
+returned_arn = cert.get("CertificateArn", "") or ""
+cert_type = cert.get("Type", "") or ""
+options = cert.get("Options", {}) or {}
+if not isinstance(options, dict):
+    options = {}
+export_flag = options.get("Export", "") or ""
+sans = cert.get("SubjectAlternativeNames", None)
 name = ""
 value = ""
-try:
-    options = cert.get("DomainValidationOptions", []) or []
-    if options and isinstance(options[0], dict):
-        record = (options[0].get("ResourceRecord", {}) or {})
-        name = record.get("Name", "") or ""
-        value = record.get("Value", "") or ""
-except Exception:
-    name = ""
-    value = ""
+record_type = ""
+proof = "CERT_OK"
+if returned_arn != expected_arn:
+    proof = "ARN_MISMATCH"
+elif domain != expected_domain:
+    proof = "DOMAIN_MISMATCH"
+elif not isinstance(sans, list) or sans != [expected_domain]:
+    proof = "SAN_MISMATCH"
+elif any("*" in (s or "") for s in sans):
+    proof = "SAN_MISMATCH"
+elif cert_type != "AMAZON_ISSUED":
+    proof = "TYPE_MISMATCH"
+elif export_flag != "ENABLED":
+    proof = "EXPORT_MISMATCH"
+else:
+    try:
+        dvo_list = cert.get("DomainValidationOptions", []) or []
+    except Exception:
+        dvo_list = []
+    relevant = None
+    if isinstance(dvo_list, list):
+        for opt in dvo_list:
+            if isinstance(opt, dict) and opt.get("DomainName", "") == expected_domain:
+                relevant = opt
+                break
+    if relevant is None:
+        proof = "VALIDATION_MISMATCH"
+    else:
+        method = relevant.get("ValidationMethod", "DNS")
+        if "ValidationMethod" in relevant and method != "DNS":
+            proof = "VALIDATION_MISMATCH"
+        else:
+            record = relevant.get("ResourceRecord", None)
+            if record is None:
+                proof = "CERT_OK"
+            elif not isinstance(record, dict):
+                proof = "RECORD_MISMATCH"
+            else:
+                record_type = record.get("Type", "") or ""
+                name = record.get("Name", "") or ""
+                value = record.get("Value", "") or ""
+                if record_type == "" and name == "" and value == "":
+                    proof = "CERT_OK"
+                elif record_type != "CNAME":
+                    proof = "RECORD_MISMATCH"
+                else:
+                    proof = "CERT_OK"
+print("STATUS\t%s" % status)
+print("DOMAIN\t%s" % domain)
 print("NAME\t%s" % name)
 print("VALUE\t%s" % value)
+print("PROOF\t%s" % proof)
 PYEOF
-)" || { rm -f "$CERT_JSON"; echo "certificate state unreadable, not treated as issued." >&2; phase_failed prereqs; }
+)"; then
+      rm -f "$CERT_JSON"
+      echo "certificate state unreadable, not treated as issued." >&2
+      phase_failed prereqs
+    fi
+    CERT_STATUS_TMP="$(printf '%s\n' "$CERT_PARSED" | awk -F'\t' '$1=="STATUS"{print $2}')"
+    CERT_STATUS_TMP="$(printf '%s' "$CERT_STATUS_TMP" | tr -d '[:space:]')"
+    VALIDATION_NAME_TMP="$(printf '%s\n' "$CERT_PARSED" | awk -F'\t' '$1=="NAME"{print $2}')"
+    VALIDATION_VALUE_TMP="$(printf '%s\n' "$CERT_PARSED" | awk -F'\t' '$1=="VALUE"{print $2}')"
+    CERT_PROOF_TMP="$(printf '%s\n' "$CERT_PARSED" | awk -F'\t' '$1=="PROOF"{print $2}')"
+    CERT_PROOF_TMP="$(printf '%s' "$CERT_PROOF_TMP" | tr -d '[:space:]')"
+    if [ "$CERT_PROOF_TMP" = "CERT_OK" ] && [ "$CERT_STATUS_TMP" = "PENDING_VALIDATION" ]; then
+      if [ -n "$VALIDATION_NAME_TMP" ] && [ -n "$VALIDATION_VALUE_TMP" ]; then
+        break
+      elif [ "$CERT_TRY" -lt 5 ]; then
+        sleep 2 2>/dev/null || true
+        CERT_TRY=$((CERT_TRY + 1))
+        continue
+      else
+        break
+      fi
+    else
+      break
+    fi
+  done
   rm -f "$CERT_JSON"
   CERT_STATUS="$(printf '%s\n' "$CERT_PARSED" | awk -F'\t' '$1=="STATUS"{print $2}')"
   CERT_DOMAIN="$(printf '%s\n' "$CERT_PARSED" | awk -F'\t' '$1=="DOMAIN"{print $2}')"
   VALIDATION_NAME="$(printf '%s\n' "$CERT_PARSED" | awk -F'\t' '$1=="NAME"{print $2}')"
   VALIDATION_VALUE="$(printf '%s\n' "$CERT_PARSED" | awk -F'\t' '$1=="VALUE"{print $2}')"
+  CERT_PROOF="$(printf '%s\n' "$CERT_PARSED" | awk -F'\t' '$1=="PROOF"{print $2}')"
   CERT_STATUS="$(printf '%s' "$CERT_STATUS" | tr -d '[:space:]')"
-  [ "$CERT_DOMAIN" = "launchcrew.summitsingh.com" ] || { echo "refused: certificate domain mismatch, expected the exact demo hostname, no claim made." >&2; phase_failed prereqs; }
+  CERT_PROOF="$(printf '%s' "$CERT_PROOF" | tr -d '[:space:]')"
+  case "$CERT_PROOF" in
+    CERT_OK) ;;
+    ARN_MISMATCH) echo "refused: certificate ARN mismatch, describe returned a different ARN, no claim made." >&2; phase_failed prereqs ;;
+    DOMAIN_MISMATCH) echo "refused: certificate domain mismatch, expected the exact demo hostname, no claim made." >&2; phase_failed prereqs ;;
+    SAN_MISMATCH) echo "refused: certificate SAN mismatch, expected exact hostname only with no wildcard, no claim made." >&2; phase_failed prereqs ;;
+    TYPE_MISMATCH) echo "refused: certificate type mismatch, expected AMAZON_ISSUED, no claim made." >&2; phase_failed prereqs ;;
+    EXPORT_MISMATCH) echo "refused: certificate export mismatch, expected Options Export ENABLED, no claim made." >&2; phase_failed prereqs ;;
+    VALIDATION_MISMATCH) echo "refused: certificate validation mismatch, expected DNS validation for the exact hostname, no claim made." >&2; phase_failed prereqs ;;
+    RECORD_MISMATCH) echo "refused: certificate validation record mismatch, expected CNAME type, no claim made." >&2; phase_failed prereqs ;;
+    *) echo "refused: certificate validation unreadable, no claim made." >&2; phase_failed prereqs ;;
+  esac
+  if ! CERT_TAGS_JSON="$("$AWS_BIN" acm list-tags-for-certificate --certificate-arn "$CERT_ARN" --region "$EXPECTED_REGION" --output json 2>"$TMP_ERR")"; then
+    echo "certificate tag check failed, not treated as owned." >&2
+    phase_failed prereqs
+  fi
+  printf '%s' "$CERT_TAGS_JSON" >"$TMP_JSON"
+  CERT_TAGS="$(python3 - "$TMP_JSON" 2>/dev/null <<'PYEOF'
+import json, sys
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+tags = {t.get("Key"): t.get("Value") for t in doc.get("Tags", []) if isinstance(t, dict)}
+print("PROJECT\t%s" % tags.get("Project", ""))
+print("ENV\t%s" % tags.get("Environment", ""))
+PYEOF
+)" || { echo "certificate tag check failed, not treated as owned." >&2; phase_failed prereqs; }
+  CERT_PROJECT="$(printf '%s\n' "$CERT_TAGS" | awk -F'\t' '$1=="PROJECT"{print $2}')"
+  CERT_ENV="$(printf '%s\n' "$CERT_TAGS" | awk -F'\t' '$1=="ENV"{print $2}')"
+  [ "$CERT_PROJECT" = "LaunchCrew" ] || { echo "refused: certificate Project tag mismatch, no claim made." >&2; phase_failed prereqs; }
+  [ "$CERT_ENV" = "demo" ] || { echo "refused: certificate Environment tag mismatch, no claim made." >&2; phase_failed prereqs; }
   if [ "$CERT_STATUS" = "PENDING_VALIDATION" ]; then
-    [ -n "$VALIDATION_NAME" ] && [ -n "$VALIDATION_VALUE" ] || { echo "refused: validation CNAME missing while pending, no claim made." >&2; phase_failed prereqs; }
+    [ -n "$VALIDATION_NAME" ] && [ -n "$VALIDATION_VALUE" ] || { echo "validation CNAME not yet visible after bounded observations, rerun --phase prereqs to resume read-only, no recreate or update attempted." >&2; phase_failed prereqs; }
     if ! (umask 077; python3 - "$DNS_RECEIPT_FILE" "$PREREQS_STACK_NAME" "$FOUNDATION_STACK_NAME" "$EXPECTED_REGION" "$CERT_ARN" "$CERT_STATUS" "$CERT_DOMAIN" "$VALIDATION_NAME" "$VALIDATION_VALUE" "$MASTER_ARN" "$RUNTIME_ARN" "$MIGRATION_ARN" "$TLS_ARN" "$PREREQS_STATUS_NOW" <<'PYEOF'
-import json, os, sys
+import json, os, sys, tempfile
 (path, prereqs_stack, foundation_stack, region, cert_arn, cert_status,
  cert_domain, v_name, v_value, master_arn, runtime_arn,
- migration_arn, tls_arn, stack_status) = sys.argv[1:14]
+ migration_arn, tls_arn, stack_status) = sys.argv[1:15]
+if os.path.islink(path):
+    raise SystemExit("refused: receipt path is a symlink")
 doc = {
     "prereqs_stack": prereqs_stack,
     "foundation_stack": foundation_stack,
@@ -1212,11 +1416,21 @@ doc = {
         "tls": tls_arn,
     },
 }
-flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-handle = os.open(path, flags, 0o600)
-with os.fdopen(handle, "w", encoding="utf-8") as out:
-    json.dump(doc, out, indent=2, sort_keys=True)
-    out.write("\n")
+directory = os.path.dirname(os.path.abspath(path)) or "."
+fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".dns-receipt-")
+try:
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as out:
+        json.dump(doc, out, indent=2, sort_keys=True)
+        out.write("\n")
+    os.replace(tmp_path, path)
+    os.chmod(path, 0o600)
+except Exception:
+    try:
+        os.unlink(tmp_path)
+    except Exception:
+        pass
+    raise
 PYEOF
 ); then
       echo "refused: private DNS receipt write failed, no claim made." >&2
@@ -1233,31 +1447,13 @@ PYEOF
       CREATE_COMPLETE|UPDATE_COMPLETE) ;;
       *) echo "Certificate ISSUED but prereqs stack is $PREREQS_STATUS_NOW, rerun --phase prereqs to observe completion" >&2; phase_failed prereqs ;;
     esac
-    if ! CERT_TAGS_JSON="$("$AWS_BIN" acm list-tags-for-certificate --certificate-arn "$CERT_ARN" --region "$EXPECTED_REGION" --output json 2>"$TMP_ERR")"; then
-      echo "certificate tag check failed, not treated as owned." >&2
-      phase_failed prereqs
-    fi
-    printf '%s' "$CERT_TAGS_JSON" >"$TMP_JSON"
-    CERT_TAGS="$(python3 - "$TMP_JSON" 2>/dev/null <<'PYEOF'
-import json, sys
-try:
-    doc = json.load(open(sys.argv[1]))
-except Exception:
-    sys.exit(1)
-tags = {t.get("Key"): t.get("Value") for t in doc.get("Tags", []) if isinstance(t, dict)}
-print("PROJECT\t%s" % tags.get("Project", ""))
-print("ENV\t%s" % tags.get("Environment", ""))
-PYEOF
-)" || { echo "certificate tag check failed, not treated as owned." >&2; phase_failed prereqs; }
-    CERT_PROJECT="$(printf '%s\n' "$CERT_TAGS" | awk -F'\t' '$1=="PROJECT"{print $2}')"
-    CERT_ENV="$(printf '%s\n' "$CERT_TAGS" | awk -F'\t' '$1=="ENV"{print $2}')"
-    [ "$CERT_PROJECT" = "LaunchCrew" ] || { echo "refused: certificate Project tag mismatch, no claim made." >&2; phase_failed prereqs; }
-    [ "$CERT_ENV" = "demo" ] || { echo "refused: certificate Environment tag mismatch, no claim made." >&2; phase_failed prereqs; }
     if ! (umask 077; python3 - "$DNS_RECEIPT_FILE" "$PREREQS_STACK_NAME" "$FOUNDATION_STACK_NAME" "$EXPECTED_REGION" "$CERT_ARN" "$CERT_STATUS" "$CERT_DOMAIN" "$VALIDATION_NAME" "$VALIDATION_VALUE" "$MASTER_ARN" "$RUNTIME_ARN" "$MIGRATION_ARN" "$TLS_ARN" "$PREREQS_STATUS_NOW" <<'PYEOF'
-import json, os, sys
+import json, os, sys, tempfile
 (path, prereqs_stack, foundation_stack, region, cert_arn, cert_status,
  cert_domain, v_name, v_value, master_arn, runtime_arn,
- migration_arn, tls_arn, stack_status) = sys.argv[1:14]
+ migration_arn, tls_arn, stack_status) = sys.argv[1:15]
+if os.path.islink(path):
+    raise SystemExit("refused: receipt path is a symlink")
 doc = {
     "prereqs_stack": prereqs_stack,
     "foundation_stack": foundation_stack,
@@ -1275,11 +1471,21 @@ doc = {
         "tls": tls_arn,
     },
 }
-flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-handle = os.open(path, flags, 0o600)
-with os.fdopen(handle, "w", encoding="utf-8") as out:
-    json.dump(doc, out, indent=2, sort_keys=True)
-    out.write("\n")
+directory = os.path.dirname(os.path.abspath(path)) or "."
+fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".dns-receipt-")
+try:
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as out:
+        json.dump(doc, out, indent=2, sort_keys=True)
+        out.write("\n")
+    os.replace(tmp_path, path)
+    os.chmod(path, 0o600)
+except Exception:
+    try:
+        os.unlink(tmp_path)
+    except Exception:
+        pass
+    raise
 PYEOF
 ); then
       echo "refused: private DNS receipt write failed, no claim made." >&2

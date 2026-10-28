@@ -22,6 +22,7 @@ Conditions:
 Resources:
   DemoBudget:
     Type: AWS::Budgets::Budget
+    DependsOn: BudgetTopicPolicy
     DeletionPolicy: Delete
     UpdateReplacePolicy: Delete
     Properties:

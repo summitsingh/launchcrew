@@ -151,6 +151,13 @@ if [ "$1" = "cloudformation" ] && [ "$2" = "describe-stack-resource" ]; then
     if [ "$PREV" = "--logical-resource-id" ]; then LOGICAL="$ARG"; fi
     PREV="$ARG"
   done
+  if [ "${FAKE_RESOURCE_MISSING:-0}" = "1" ]; then
+    case "$LOGICAL" in
+      MasterSecret|RuntimeSecret|MigrationSecret|TlsSecret|DemoCertificate)
+        printf 'None\\n'
+        exit 0 ;;
+    esac
+  fi
   if [ "$MODE" = "topic_mismatch" ] && [ "$LOGICAL" = "BudgetTopic" ]; then
     printf 'arn:aws:sns:us-east-1:999988887777:other-topic\\n'
     exit 0
@@ -182,6 +189,20 @@ if [ "$1" = "cloudformation" ] && [ "$2" = "deploy" ]; then
   exit 0
 fi
 if [ "$1" = "cloudformation" ] && [ "$2" = "create-stack" ]; then
+  case "$*" in
+    *"Project=LaunchCrew"*) echo "fake-aws: create-stack tags must use Key=Project,Value=LaunchCrew shape, not Project=LaunchCrew" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"Environment=demo"*) echo "fake-aws: create-stack tags must use Key=Environment,Value=demo shape, not Environment=demo" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"Key=Project,Value=LaunchCrew"*) ;;
+    *) echo "fake-aws: create-stack missing Key=Project,Value=LaunchCrew" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"Key=Environment,Value=demo"*) ;;
+    *) echo "fake-aws: create-stack missing Key=Environment,Value=demo" >&2; exit 2 ;;
+  esac
   if [ -n "$FAKE_PREREQS_CREATED_FILE" ]; then : >"$FAKE_PREREQS_CREATED_FILE" 2>/dev/null || true; fi
   printf '{"StackId":"arn:aws:cloudformation:us-east-1:111122223333:stack/launchcrew-prereqs/def456"}\\n'
   exit 0
@@ -215,15 +236,17 @@ if [ "$1" = "sns" ] && [ "$2" = "list-subscriptions-by-topic" ]; then
   fi
   if [ "$SNS_MODE" = "malformed" ]; then printf 'not-json{{{\\n'; exit 0; fi
   case "$SNS_MODE" in
-    exact) printf '{"Subscriptions":[{"Endpoint":"%s","Protocol":"email","TopicArn":"%s","SubscriptionArn":"%s"}]}\\n' "$EXPECTED" "$TOPIC" "$SUB"; exit 0 ;;
-    pending) printf '{"Subscriptions":[{"Endpoint":"%s","Protocol":"email","TopicArn":"%s","SubscriptionArn":"PendingConfirmation"}]}\\n' "$EXPECTED" "$TOPIC"; exit 0 ;;
+    exact) printf '{"Subscriptions":[{"Endpoint":"%s","Protocol":"email","TopicArn":"%s","SubscriptionArn":"%s","Owner":"111122223333"}]}\\n' "$EXPECTED" "$TOPIC" "$SUB"; exit 0 ;;
+    pending) printf '{"Subscriptions":[{"Endpoint":"%s","Protocol":"email","TopicArn":"%s","SubscriptionArn":"PendingConfirmation","Owner":"111122223333"}]}\\n' "$EXPECTED" "$TOPIC"; exit 0 ;;
     empty) printf '{"Subscriptions":[]}\\n'; exit 0 ;;
-    wrong_email) printf '{"Subscriptions":[{"Endpoint":"wrong-%s","Protocol":"email","TopicArn":"%s","SubscriptionArn":"%s"}]}\\n' "$EXPECTED" "$TOPIC" "$SUB"; exit 0 ;;
-    wrong_protocol) printf '{"Subscriptions":[{"Endpoint":"%s","Protocol":"sms","TopicArn":"%s","SubscriptionArn":"%s"}]}\\n' "$EXPECTED" "$TOPIC" "$SUB"; exit 0 ;;
-    wrong_topic) printf '{"Subscriptions":[{"Endpoint":"%s","Protocol":"email","TopicArn":"arn:aws:sns:us-east-1:111122223333:other-topic","SubscriptionArn":"%s"}]}\\n' "$EXPECTED" "$SUB"; exit 0 ;;
-    duplicate) printf '{"Subscriptions":[{"Endpoint":"%s","Protocol":"email","TopicArn":"%s","SubscriptionArn":"%s"},{"Endpoint":"%s","Protocol":"email","TopicArn":"%s","SubscriptionArn":"%s"}]}\\n' "$EXPECTED" "$TOPIC" "$SUB" "$EXPECTED" "$TOPIC" "$SUB"; exit 0 ;;
-    ambiguous) printf '{"Subscriptions":[{"Endpoint":"%s","Protocol":"email","TopicArn":"%s","SubscriptionArn":"%s"},{"Endpoint":"wrong-%s","Protocol":"email","TopicArn":"%s","SubscriptionArn":"%s"}]}\\n' "$EXPECTED" "$TOPIC" "$SUB" "$EXPECTED" "$TOPIC" "$SUB"; exit 0 ;;
-    unconfirmed) printf '{"Subscriptions":[{"Endpoint":"%s","Protocol":"email","TopicArn":"%s","SubscriptionArn":"PendingConfirmation"}]}\\n' "$EXPECTED" "$TOPIC"; exit 0 ;;
+    wrong_email) printf '{"Subscriptions":[{"Endpoint":"wrong-%s","Protocol":"email","TopicArn":"%s","SubscriptionArn":"%s","Owner":"111122223333"}]}\\n' "$EXPECTED" "$TOPIC" "$SUB"; exit 0 ;;
+    wrong_protocol) printf '{"Subscriptions":[{"Endpoint":"%s","Protocol":"sms","TopicArn":"%s","SubscriptionArn":"%s","Owner":"111122223333"}]}\\n' "$EXPECTED" "$TOPIC" "$SUB"; exit 0 ;;
+    wrong_topic) printf '{"Subscriptions":[{"Endpoint":"%s","Protocol":"email","TopicArn":"arn:aws:sns:us-east-1:111122223333:other-topic","SubscriptionArn":"%s","Owner":"111122223333"}]}\\n' "$EXPECTED" "$SUB"; exit 0 ;;
+    wrong_owner) printf '{"Subscriptions":[{"Endpoint":"%s","Protocol":"email","TopicArn":"%s","SubscriptionArn":"%s","Owner":"999988887777"}]}\\n' "$EXPECTED" "$TOPIC" "$SUB"; exit 0 ;;
+    duplicate) printf '{"Subscriptions":[{"Endpoint":"%s","Protocol":"email","TopicArn":"%s","SubscriptionArn":"%s","Owner":"111122223333"},{"Endpoint":"%s","Protocol":"email","TopicArn":"%s","SubscriptionArn":"%s","Owner":"111122223333"}]}\\n' "$EXPECTED" "$TOPIC" "$SUB" "$EXPECTED" "$TOPIC" "$SUB"; exit 0 ;;
+    ambiguous) printf '{"Subscriptions":[{"Endpoint":"%s","Protocol":"email","TopicArn":"%s","SubscriptionArn":"%s","Owner":"111122223333"},{"Endpoint":"wrong-%s","Protocol":"email","TopicArn":"%s","SubscriptionArn":"%s","Owner":"111122223333"}]}\\n' "$EXPECTED" "$TOPIC" "$SUB" "$EXPECTED" "$TOPIC" "$SUB"; exit 0 ;;
+    pending_extra) printf '{"Subscriptions":[{"Endpoint":"%s","Protocol":"email","TopicArn":"%s","SubscriptionArn":"%s","Owner":"111122223333"},{"Endpoint":"%s","Protocol":"email","TopicArn":"%s","SubscriptionArn":"PendingConfirmation","Owner":"111122223333"}]}\\n' "$EXPECTED" "$TOPIC" "$SUB" "$EXPECTED" "$TOPIC"; exit 0 ;;
+    unconfirmed) printf '{"Subscriptions":[{"Endpoint":"%s","Protocol":"email","TopicArn":"%s","SubscriptionArn":"PendingConfirmation","Owner":"111122223333"}]}\\n' "$EXPECTED" "$TOPIC"; exit 0 ;;
     *) echo "fake-aws: unknown FAKE_SNS: $SNS_MODE" >&2; exit 2 ;;
   esac
 fi
@@ -262,16 +285,19 @@ fi
 if [ "$1" = "acm" ] && [ "$2" = "describe-certificate" ]; then
   CERT_MODE="${FAKE_CERT:-issued}"
   DOMAIN="launchcrew.summitsingh.com"
-  if [ "$CERT_MODE" = "wrong_domain" ]; then DOMAIN="other.example.test"; fi
+  CERTARN="${FAKE_CERT_ARN:-cert}"
   if [ "$CERT_MODE" = "auth" ]; then
     echo "An error occurred (AccessDenied) when calling the DescribeCertificate operation: not authorized" >&2
     exit 254
   fi
   case "$CERT_MODE" in
-    issued) printf '{"Certificate":{"CertificateArn":"%s","DomainName":"%s","Status":"ISSUED","DomainValidationOptions":[{"DomainName":"%s","ValidationStatus":"SUCCESS","ResourceRecord":{"Name":"_abc123.acm-validations.aws","Value":"_def456.acm-validations.aws"}}]}}\\n' "${FAKE_CERT_ARN:-cert}" "$DOMAIN" "$DOMAIN"; exit 0 ;;
-    pending) printf '{"Certificate":{"CertificateArn":"%s","DomainName":"%s","Status":"PENDING_VALIDATION","DomainValidationOptions":[{"DomainName":"%s","ValidationStatus":"PENDING_VALIDATION","ResourceRecord":{"Name":"_abc123.acm-validations.aws","Value":"_def456.acm-validations.aws"}}]}}\\n' "${FAKE_CERT_ARN:-cert}" "$DOMAIN" "$DOMAIN"; exit 0 ;;
-    wrong_domain) printf '{"Certificate":{"CertificateArn":"%s","DomainName":"%s","Status":"ISSUED","DomainValidationOptions":[]}}\\n' "${FAKE_CERT_ARN:-cert}" "$DOMAIN"; exit 0 ;;
-    failed) printf '{"Certificate":{"CertificateArn":"%s","DomainName":"%s","Status":"FAILED","DomainValidationOptions":[]}}\\n' "${FAKE_CERT_ARN:-cert}" "$DOMAIN"; exit 0 ;;
+    issued) printf '{"Certificate":{"CertificateArn":"%s","DomainName":"%s","SubjectAlternativeNames":["%s"],"Type":"AMAZON_ISSUED","Options":{"Export":"ENABLED","CertificateTransparencyLoggingPreference":"ENABLED"},"Status":"ISSUED","DomainValidationOptions":[{"DomainName":"%s","ValidationDomain":"%s","ValidationStatus":"SUCCESS","ValidationMethod":"DNS","ResourceRecord":{"Name":"_abc123.acm-validations.aws","Type":"CNAME","Value":"_def456.acm-validations.aws"}}]}}\\n' "$CERTARN" "$DOMAIN" "$DOMAIN" "$DOMAIN" "$DOMAIN"; exit 0 ;;
+    pending) printf '{"Certificate":{"CertificateArn":"%s","DomainName":"%s","SubjectAlternativeNames":["%s"],"Type":"AMAZON_ISSUED","Options":{"Export":"ENABLED","CertificateTransparencyLoggingPreference":"ENABLED"},"Status":"PENDING_VALIDATION","DomainValidationOptions":[{"DomainName":"%s","ValidationDomain":"%s","ValidationStatus":"PENDING_VALIDATION","ValidationMethod":"DNS","ResourceRecord":{"Name":"_abc123.acm-validations.aws","Type":"CNAME","Value":"_def456.acm-validations.aws"}}]}}\\n' "$CERTARN" "$DOMAIN" "$DOMAIN" "$DOMAIN" "$DOMAIN"; exit 0 ;;
+    wrong_domain) printf '{"Certificate":{"CertificateArn":"%s","DomainName":"other.example.test","SubjectAlternativeNames":["other.example.test"],"Type":"AMAZON_ISSUED","Options":{"Export":"ENABLED","CertificateTransparencyLoggingPreference":"ENABLED"},"Status":"ISSUED","DomainValidationOptions":[{"DomainName":"other.example.test","ValidationDomain":"other.example.test","ValidationStatus":"SUCCESS","ValidationMethod":"DNS","ResourceRecord":{"Name":"_abc123.acm-validations.aws","Type":"CNAME","Value":"_def456.acm-validations.aws"}}]}}\\n' "$CERTARN"; exit 0 ;;
+    failed) printf '{"Certificate":{"CertificateArn":"%s","DomainName":"%s","SubjectAlternativeNames":["%s"],"Type":"AMAZON_ISSUED","Options":{"Export":"ENABLED","CertificateTransparencyLoggingPreference":"ENABLED"},"Status":"FAILED","DomainValidationOptions":[{"DomainName":"%s","ValidationDomain":"%s","ValidationStatus":"FAILED","ValidationMethod":"DNS"}]}}\\n' "$CERTARN" "$DOMAIN" "$DOMAIN" "$DOMAIN" "$DOMAIN"; exit 0 ;;
+    export_disabled) printf '{"Certificate":{"CertificateArn":"%s","DomainName":"%s","SubjectAlternativeNames":["%s"],"Type":"AMAZON_ISSUED","Options":{"Export":"DISABLED","CertificateTransparencyLoggingPreference":"ENABLED"},"Status":"ISSUED","DomainValidationOptions":[{"DomainName":"%s","ValidationDomain":"%s","ValidationStatus":"SUCCESS","ValidationMethod":"DNS","ResourceRecord":{"Name":"_abc123.acm-validations.aws","Type":"CNAME","Value":"_def456.acm-validations.aws"}}]}}\\n' "$CERTARN" "$DOMAIN" "$DOMAIN" "$DOMAIN" "$DOMAIN"; exit 0 ;;
+    san_extra) printf '{"Certificate":{"CertificateArn":"%s","DomainName":"%s","SubjectAlternativeNames":["%s","other.example.test"],"Type":"AMAZON_ISSUED","Options":{"Export":"ENABLED","CertificateTransparencyLoggingPreference":"ENABLED"},"Status":"ISSUED","DomainValidationOptions":[{"DomainName":"%s","ValidationDomain":"%s","ValidationStatus":"SUCCESS","ValidationMethod":"DNS","ResourceRecord":{"Name":"_abc123.acm-validations.aws","Type":"CNAME","Value":"_def456.acm-validations.aws"}}]}}\\n' "$CERTARN" "$DOMAIN" "$DOMAIN" "$DOMAIN" "$DOMAIN"; exit 0 ;;
+    record_missing) printf '{"Certificate":{"CertificateArn":"%s","DomainName":"%s","SubjectAlternativeNames":["%s"],"Type":"AMAZON_ISSUED","Options":{"Export":"ENABLED","CertificateTransparencyLoggingPreference":"ENABLED"},"Status":"PENDING_VALIDATION","DomainValidationOptions":[{"DomainName":"%s","ValidationDomain":"%s","ValidationStatus":"PENDING_VALIDATION","ValidationMethod":"DNS"}]}}\\n' "$CERTARN" "$DOMAIN" "$DOMAIN" "$DOMAIN" "$DOMAIN"; exit 0 ;;
     *) echo "fake-aws: unknown FAKE_CERT: $CERT_MODE" >&2; exit 2 ;;
   esac
 fi
@@ -441,6 +467,15 @@ class OwnershipTests(PrereqHarness):
         self.assertFalse(any("create-stack" in call for call in calls))
         self.assertFalse(any("update-stack" in call for call in calls))
 
+    def test_foundation_incomplete_blocks_prereqs(self):
+        result, calls, _, _ = self.run_phase(
+            self.prereqs_args(), foundation_status="CREATE_IN_PROGRESS")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("CREATE_COMPLETE or UPDATE_COMPLETE",
+                      result.stdout + result.stderr)
+        self.assertFalse(any("create-stack" in call for call in calls))
+        self.assertFalse(any("update-stack" in call for call in calls))
+
     def test_stack_auth_is_not_absence(self):
         result, calls, _, _ = self.run_phase(
             self.foundation_args(), mode="stack_auth")
@@ -559,6 +594,21 @@ class SnsExactGateTests(PrereqHarness):
         self.assertIn("ambiguous", result.stdout + result.stderr)
         self.assertFalse(any("create-stack" in call for call in calls))
 
+    def test_wrong_owner_blocks(self):
+        result, calls, _, _ = self.run_phase(
+            self.prereqs_args(), extra_env={"FAKE_SNS": "wrong_owner"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any("create-stack" in call for call in calls))
+        self.assertFalse(any("update-stack" in call for call in calls))
+
+    def test_pending_extra_blocks_as_ambiguous(self):
+        result, calls, _, _ = self.run_phase(
+            self.prereqs_args(), extra_env={"FAKE_SNS": "pending_extra"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ambiguous", result.stdout + result.stderr)
+        self.assertFalse(any("create-stack" in call for call in calls))
+        self.assertFalse(any("update-stack" in call for call in calls))
+
     def test_empty_email_blocks(self):
         result, calls, _, _ = self.run_phase(
             self.prereqs_args(), foundation_email="")
@@ -598,6 +648,14 @@ class FoundationDeployTests(PrereqHarness):
             self.foundation_args(), extra_env={"FAKE_BUDGET": "unfiltered"})
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("UNVERIFIED", result.stdout + result.stderr)
+
+    def test_prereqs_budget_filter_required(self):
+        result, calls, _, _ = self.run_phase(
+            self.prereqs_args(), extra_env={"FAKE_BUDGET": "unfiltered"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("UNVERIFIED", result.stdout + result.stderr)
+        self.assertFalse(any("create-stack" in call for call in calls))
+        self.assertFalse(any("update-stack" in call for call in calls))
 
     def test_foundation_never_uses_parameter_file_option(self):
         result, calls, _, _ = self.run_phase(self.foundation_args())
@@ -652,6 +710,50 @@ class PrereqsPendingTests(PrereqHarness):
         result, _, _, _ = self.run_phase(
             self.prereqs_args(), mode="cert_arn_mismatch")
         self.assertNotEqual(result.returncode, 0)
+
+    def test_export_disabled_refused(self):
+        result, _, _, _ = self.run_phase(
+            self.prereqs_args(), extra_env={"FAKE_CERT": "export_disabled"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("export mismatch", result.stdout + result.stderr)
+
+    def test_san_extra_refused(self):
+        result, _, _, _ = self.run_phase(
+            self.prereqs_args(), extra_env={"FAKE_CERT": "san_extra"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("SAN mismatch", result.stdout + result.stderr)
+
+    def test_inprogress_observes_without_update(self):
+        result, calls, receipt, _ = self.run_phase(
+            self.prereqs_args(), prereqs_status="CREATE_IN_PROGRESS",
+            extra_env={"FAKE_CERT": "pending"})
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertFalse(any("update-stack" in call for call in calls))
+        self.assertFalse(any("create-stack" in call for call in calls))
+        self.assertIn("observing only", result.stdout)
+        self.assertIsNotNone(receipt)
+
+    def test_record_missing_resumes_readonly(self):
+        result, calls, _, _ = self.run_phase(
+            self.prereqs_args(), mode="prereqs_missing",
+            prereqs_status="CREATE_IN_PROGRESS",
+            extra_env={"FAKE_CERT": "record_missing"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("resume read-only", result.stdout + result.stderr)
+        self.assertFalse(any("update-stack" in call for call in calls))
+        creates = [call for call in calls if "create-stack" in call]
+        self.assertEqual(len(creates), 1)
+
+    def test_resource_missing_resumes_readonly(self):
+        result, calls, _, _ = self.run_phase(
+            self.prereqs_args(), mode="prereqs_missing",
+            prereqs_status="CREATE_IN_PROGRESS",
+            extra_env={"FAKE_RESOURCE_MISSING": "1", "FAKE_CERT": "pending"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("resume read-only", result.stdout + result.stderr)
+        self.assertFalse(any("update-stack" in call for call in calls))
+        creates = [call for call in calls if "create-stack" in call]
+        self.assertEqual(len(creates), 1)
 
     def test_no_get_secret_value_in_any_call(self):
         result, calls, _, _ = self.run_phase(self.prereqs_args())

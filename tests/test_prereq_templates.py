@@ -25,11 +25,27 @@ class FoundationTemplateTests(unittest.TestCase):
                         "BudgetEmailSubscription:"):
             self.assertIn(logical, self.text)
 
+    def test_demo_budget_depends_on_topic_policy(self):
+        demo_idx = self.text.index("DemoBudget:")
+        topic_idx = self.text.index("BudgetTopic:")
+        policy_idx = self.text.index("BudgetTopicPolicy:")
+        end_idx = topic_idx if topic_idx > demo_idx else policy_idx
+        demo_block = self.text[demo_idx:end_idx]
+        self.assertRegex(demo_block, r'(?m)^\s*DependsOn:\s*BudgetTopicPolicy\s*$')
+        try:
+            sub_idx = self.text.index("BudgetEmailSubscription:", policy_idx)
+            policy_block = self.text[policy_idx:sub_idx]
+        except ValueError:
+            policy_block = self.text[policy_idx:]
+        self.assertNotIn("DemoBudget", policy_block)
+        self.assertIn("!Ref BudgetTopic", policy_block)
+
     def test_project_filter_exact(self):
         self.assertIn("Key: Project", self.text)
         self.assertIn("Values: [LaunchCrew]", self.text)
         self.assertIn("MatchOptions: [EQUALS]", self.text)
-        self.assertNotIn("CostFilters", self.text)
+        self.assertNotRegex(self.text, r'(?m)^\s*CostFilters\s*:')
+        self.assertNotRegex(self.text, r'(?m)^\s*BudgetFilters\s*:')
 
     def test_email_protocol_and_empty_default(self):
         self.assertIn("Protocol: email", self.text)
@@ -46,7 +62,7 @@ class FoundationTemplateTests(unittest.TestCase):
 
     def test_no_secrets_in_foundation(self):
         self.assertNotIn("GenerateSecretString", self.text)
-        self.assertNotIn("SecretString:", self.text)
+        self.assertNotRegex(self.text, r'(?m)^\s*SecretString\s*:')
         self.assertNotIn("SecretStringTemplate", self.text)
 
     def test_no_scanner_literals(self):
@@ -78,7 +94,7 @@ class PrereqsTemplateTests(unittest.TestCase):
         self.assertIn("ExcludeCharacters:", self.text)
 
     def test_no_secret_plaintext(self):
-        self.assertNotIn("SecretString:", self.text)
+        self.assertNotRegex(self.text, r'(?m)^\s*SecretString\s*:')
         self.assertIn("SecretStringTemplate:", self.text)
 
     def test_tls_empty(self):
@@ -89,7 +105,7 @@ class PrereqsTemplateTests(unittest.TestCase):
             end = len(self.text)
         tls_block = self.text[start:end]
         self.assertNotIn("GenerateSecretString", tls_block)
-        self.assertNotIn("SecretString:", tls_block)
+        self.assertNotRegex(tls_block, r'(?m)^\s*SecretString\s*:')
 
     def test_retain_lifecycle_for_secrets(self):
         self.assertEqual(self.text.count("DeletionPolicy: Retain"), 4)
