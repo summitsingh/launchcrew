@@ -24,6 +24,94 @@
         "title": "Approval",
         "type": "object"
       },
+      "CampaignDay": {
+        "additionalProperties": false,
+        "properties": {
+          "approval_state": {
+            "enum": [
+              "pending_approval",
+              "approved_for_export"
+            ],
+            "title": "Approval State",
+            "type": "string"
+          },
+          "checker_v2_blocked_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checker V2 Blocked Count"
+          },
+          "day": {
+            "title": "Day",
+            "type": "integer"
+          },
+          "idea": {
+            "title": "Idea",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "day",
+          "run_id",
+          "approval_state",
+          "status",
+          "checker_v2_blocked_count",
+          "idea"
+        ],
+        "title": "CampaignDay",
+        "type": "object"
+      },
+      "CampaignOut": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_name": {
+            "title": "Agent Name",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "days": {
+            "items": {
+              "$ref": "#/components/schemas/CampaignDay"
+            },
+            "title": "Days",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "idea": {
+            "title": "Idea",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "idea",
+          "agent_name",
+          "created_at",
+          "days"
+        ],
+        "title": "CampaignOut",
+        "type": "object"
+      },
       "Check": {
         "properties": {
           "blocked_claims": {
@@ -134,6 +222,158 @@
           "idea"
         ],
         "title": "Idea",
+        "type": "object"
+      },
+      "LearnMemory": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "approval_example",
+              "blocked_rule"
+            ],
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "LearnMemory",
+        "type": "object"
+      },
+      "MemoryItemEdit": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "additionalProperties": true,
+            "title": "Content",
+            "type": "object"
+          },
+          "kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "brand_fact",
+                  "profile",
+                  "approval_example",
+                  "blocked_rule"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Kind"
+          },
+          "title": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "content"
+        ],
+        "title": "MemoryItemEdit",
+        "type": "object"
+      },
+      "MemoryItemIn": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "additionalProperties": true,
+            "title": "Content",
+            "type": "object"
+          },
+          "kind": {
+            "enum": [
+              "brand_fact",
+              "profile",
+              "approval_example",
+              "blocked_rule"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "title",
+          "content"
+        ],
+        "title": "MemoryItemIn",
+        "type": "object"
+      },
+      "MemoryItemOut": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "additionalProperties": true,
+            "title": "Content",
+            "type": "object"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "brand_fact",
+              "profile",
+              "approval_example",
+              "blocked_rule"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "source_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Run Id"
+          },
+          "title": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "title",
+          "content",
+          "id",
+          "source_run_id",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "MemoryItemOut",
         "type": "object"
       },
       "Preview": {
@@ -345,6 +585,238 @@
           "audit"
         ],
         "title": "Receipt",
+        "type": "object"
+      },
+      "RunDiff": {
+        "additionalProperties": false,
+        "properties": {
+          "approval_state_a": {
+            "title": "Approval State A",
+            "type": "string"
+          },
+          "approval_state_b": {
+            "title": "Approval State B",
+            "type": "string"
+          },
+          "approval_state_changed": {
+            "title": "Approval State Changed",
+            "type": "boolean"
+          },
+          "blocked_claims_only_in_a": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "title": "Blocked Claims Only In A",
+            "type": "array"
+          },
+          "blocked_claims_only_in_b": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "title": "Blocked Claims Only In B",
+            "type": "array"
+          },
+          "checker_v1_blocked_count_a": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checker V1 Blocked Count A"
+          },
+          "checker_v1_blocked_count_b": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checker V1 Blocked Count B"
+          },
+          "checker_v2_blocked_count_a": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checker V2 Blocked Count A"
+          },
+          "checker_v2_blocked_count_b": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checker V2 Blocked Count B"
+          },
+          "draft_v1_email_changed": {
+            "title": "Draft V1 Email Changed",
+            "type": "boolean"
+          },
+          "draft_v1_post_a": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Draft V1 Post A"
+          },
+          "draft_v1_post_b": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Draft V1 Post B"
+          },
+          "draft_v1_post_changed": {
+            "title": "Draft V1 Post Changed",
+            "type": "boolean"
+          },
+          "draft_v2_email_a": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Draft V2 Email A"
+          },
+          "draft_v2_email_b": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Draft V2 Email B"
+          },
+          "draft_v2_email_changed": {
+            "title": "Draft V2 Email Changed",
+            "type": "boolean"
+          },
+          "draft_v2_post_a": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Draft V2 Post A"
+          },
+          "draft_v2_post_b": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Draft V2 Post B"
+          },
+          "draft_v2_post_changed": {
+            "title": "Draft V2 Post Changed",
+            "type": "boolean"
+          },
+          "idea": {
+            "title": "Idea",
+            "type": "string"
+          },
+          "receipt_keys_only_in_a": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Receipt Keys Only In A",
+            "type": "array"
+          },
+          "receipt_keys_only_in_b": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Receipt Keys Only In B",
+            "type": "array"
+          },
+          "run_a_id": {
+            "title": "Run A Id",
+            "type": "string"
+          },
+          "run_b_id": {
+            "title": "Run B Id",
+            "type": "string"
+          },
+          "same_idea": {
+            "title": "Same Idea",
+            "type": "boolean"
+          },
+          "status_a": {
+            "title": "Status A",
+            "type": "string"
+          },
+          "status_b": {
+            "title": "Status B",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_a_id",
+          "run_b_id",
+          "same_idea",
+          "idea",
+          "draft_v1_post_changed",
+          "draft_v1_email_changed",
+          "draft_v2_post_changed",
+          "draft_v2_email_changed",
+          "draft_v1_post_a",
+          "draft_v1_post_b",
+          "draft_v2_post_a",
+          "draft_v2_post_b",
+          "draft_v2_email_a",
+          "draft_v2_email_b",
+          "checker_v1_blocked_count_a",
+          "checker_v1_blocked_count_b",
+          "checker_v2_blocked_count_a",
+          "checker_v2_blocked_count_b",
+          "blocked_claims_only_in_a",
+          "blocked_claims_only_in_b",
+          "approval_state_a",
+          "approval_state_b",
+          "approval_state_changed",
+          "status_a",
+          "status_b",
+          "receipt_keys_only_in_a",
+          "receipt_keys_only_in_b"
+        ],
+        "title": "RunDiff",
         "type": "object"
       },
       "RunInput": {
@@ -781,6 +1253,219 @@
         "summary": "Login"
       }
     },
+    "/api/campaigns": {
+      "get": {
+        "operationId": "list_campaigns_api_campaigns_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CampaignOut"
+                  },
+                  "title": "Response List Campaigns Api Campaigns Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Campaigns"
+      },
+      "post": {
+        "operationId": "create_campaign_api_campaigns_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Campaign"
+      }
+    },
+    "/api/campaigns/{campaign_id}": {
+      "get": {
+        "operationId": "get_campaign_api_campaigns__campaign_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Campaign"
+      }
+    },
+    "/api/campaigns/{campaign_id}/days/{day}/approve": {
+      "post": {
+        "operationId": "approve_campaign_day_api_campaigns__campaign_id__days__day__approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "day",
+            "required": true,
+            "schema": {
+              "title": "Day",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Empty"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Receipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Approve Campaign Day"
+      }
+    },
+    "/api/campaigns/{campaign_id}/days/{day}/export": {
+      "post": {
+        "operationId": "export_campaign_day_api_campaigns__campaign_id__days__day__export_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "day",
+            "required": true,
+            "schema": {
+              "title": "Day",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Empty"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Receipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Export Campaign Day"
+      }
+    },
     "/api/health": {
       "get": {
         "operationId": "health_api_health_get",
@@ -801,6 +1486,229 @@
           }
         },
         "summary": "Health"
+      }
+    },
+    "/api/memory": {
+      "get": {
+        "operationId": "list_memory_api_memory_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/MemoryItemOut"
+                  },
+                  "title": "Response List Memory Api Memory Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Memory"
+      },
+      "post": {
+        "operationId": "create_memory_api_memory_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemoryItemIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryItemOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Memory"
+      }
+    },
+    "/api/memory/from-run/{run_id}": {
+      "post": {
+        "operationId": "learn_memory_api_memory_from_run__run_id__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LearnMemory"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryItemOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Learn Memory"
+      }
+    },
+    "/api/memory/{item_id}": {
+      "delete": {
+        "operationId": "delete_memory_api_memory__item_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Memory"
+      },
+      "get": {
+        "operationId": "get_memory_api_memory__item_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryItemOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Memory"
+      },
+      "put": {
+        "operationId": "edit_memory_api_memory__item_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MemoryItemEdit"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryItemOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Edit Memory"
       }
     },
     "/api/queue": {
@@ -861,6 +1769,54 @@
           }
         },
         "summary": "Create Run"
+      }
+    },
+    "/api/runs/{run_a}/diff/{run_b}": {
+      "get": {
+        "operationId": "replay_diff_api_runs__run_a__diff__run_b__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_a",
+            "required": true,
+            "schema": {
+              "title": "Run A",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "run_b",
+            "required": true,
+            "schema": {
+              "title": "Run B",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunDiff"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Replay Diff"
       }
     },
     "/api/runs/{run_id}": {
