@@ -39,6 +39,8 @@ class Idea(Strict):
 class RunInput(Idea):
     agent_name: str
     seed_unverified_claim: bool = False
+    memory_ids: list[str] = []
+    checker_profile: Literal['standard', 'strict'] = 'standard'
 
 
 class Clone(Strict):
@@ -72,6 +74,10 @@ class Receipt(BaseModel):
     model_config = ConfigDict(extra='allow')
     run_id: str
     idea: str = ''
+    memory_used: list[dict[str, Any]] = []
+    checker_profile: str = 'standard'
+    campaign_day: int | None = None
+    campaign_brief: str | None = None
     status: str
     approval_state: Literal['pending_approval', 'approved_for_export']
     approvals: list[Approval]
@@ -201,12 +207,21 @@ def preview_agent(name: str, body: Idea, actor: str = Depends(auth.actor)):
         return adapter.preview(get_profile(db, name), body.idea)
 
 
+def load_memory_selection(db, memory_ids):
+    items = []
+    for item_id in (memory_ids or []):
+        items.append(memory_item(db, item_id))
+    return items
+
+
 @app.post('/api/runs', response_model=Receipt, status_code=201)
 def create_run(body: RunInput, actor: str = Depends(auth.actor)):
     with store.connect() as db:
         profile = get_profile(db, body.agent_name)
+        items = load_memory_selection(db, body.memory_ids)
     run_id = 'run_' + uuid4().hex
-    receipt = adapter.execute(run_id, body.idea, profile, body.seed_unverified_claim)
+    receipt = adapter.execute(run_id, body.idea, profile, body.seed_unverified_claim,
+                              memory_items=items, checker_profile=body.checker_profile)
     with store.connect() as db:
         save_run(db, receipt, body.agent_name, actor)
     return receipt
@@ -371,6 +386,11 @@ class RunDiff(Strict):
     checker_v1_blocked_count_b: int | None
     checker_v2_blocked_count_a: int | None
     checker_v2_blocked_count_b: int | None
+    checker_profile_a: str | None = None
+    checker_profile_b: str | None = None
+    checker_profile_changed: bool = False
+    memory_ids_a: list[str] = []
+    memory_ids_b: list[str] = []
     blocked_claims_only_in_a: list[dict[str, str]]
     blocked_claims_only_in_b: list[dict[str, str]]
     approval_state_a: str
@@ -385,7 +405,11 @@ class RunDiff(Strict):
 def diff_receipts(a, b):
     result = {'run_a_id': a['run_id'], 'run_b_id': b['run_id'],
               'same_idea': a.get('idea') == b.get('idea'), 'idea': a.get('idea', ''),
-              'approval_state_changed': a['approval_state'] != b['approval_state']}
+              'approval_state_changed': a['approval_state'] != b['approval_state'],
+              'checker_profile_a': a.get('checker_profile'), 'checker_profile_b': b.get('checker_profile'),
+              'checker_profile_changed': a.get('checker_profile') != b.get('checker_profile'),
+              'memory_ids_a': [m.get('id') for m in a.get('memory_used', []) if isinstance(m, dict)],
+              'memory_ids_b': [m.get('id') for m in b.get('memory_used', []) if isinstance(m, dict)]}
     for version in ('v1', 'v2'):
         for field in ('post', 'email'):
             left = (a.get(f'maker_draft_{version}') or {}).get(field)
@@ -413,6 +437,18 @@ def replay_diff(run_a: str, run_b: str, actor: str = Depends(auth.actor)):
         return diff_receipts(get_receipt(db, run_a), get_receipt(db, run_b))
 
 
+CAMPAIGN_BRIEFS = [
+    (1, 'Origin story', 'Designed in Texas for Austin commuters', 'Vegan leather wallet, designed in Texas'),
+    (2, 'Material and craft', '100% vegan PU leather, made to last', '100% vegan PU leather, $49'),
+    (3, 'Commuter use', 'A wallet for Austin commuters on the go', 'Vegan leather wallet for Austin commuters'),
+    (4, 'Styling', 'Designed in Texas, priced for everyday carry', 'Designed in Texas, $49'),
+    (5, 'Care and durability', '100% vegan PU leather for Austin commuters', '100% vegan PU leather for Austin commuters'),
+    (6, 'Social proof', 'A $49 wallet designed in Texas', 'Vegan leather wallet, $49, designed in Texas'),
+    (7, 'Launch offer', 'Launch on Instagram for Austin commuters', 'For Austin commuters, launch on Instagram'),
+]
+CAMPAIGN_BRIEF_BY_DAY = {day: (angle, brief, claim) for day, angle, brief, claim in CAMPAIGN_BRIEFS}
+
+
 class CampaignDay(Strict):
     day: int
     run_id: str
@@ -420,6 +456,9 @@ class CampaignDay(Strict):
     status: str
     checker_v2_blocked_count: int | None
     idea: str
+    angle: str = ''
+    brief: str = ''
+    draft_v2_post: str | None = None
 
 
 class CampaignOut(Strict):
@@ -437,9 +476,11 @@ def campaign_detail(db, campaign_id):
     result = dict(row)
     result['days'] = []
     for day, receipt in db.execute(text('SELECT d.day,r.receipt FROM campaign_days d JOIN runs r ON r.id=d.run_id WHERE d.campaign_id=:id ORDER BY d.day'), {'id': campaign_id}):
+        angle, brief, _claim = CAMPAIGN_BRIEF_BY_DAY.get(day, ('', '', ''))
         result['days'].append({'day': day, 'run_id': receipt['run_id'], 'approval_state': receipt['approval_state'],
                                'status': receipt['status'], 'checker_v2_blocked_count': (receipt.get('checker_v2') or {}).get('blocked_count'),
-                               'idea': receipt.get('idea', '')})
+                               'idea': receipt.get('idea', ''), 'angle': angle, 'brief': brief,
+                               'draft_v2_post': (receipt.get('maker_draft_v2') or {}).get('post')})
     return result
 
 
@@ -448,11 +489,15 @@ def create_campaign(body: RunInput, actor: str = Depends(auth.actor)):
     campaign_id = 'camp_' + uuid4().hex
     with store.connect() as db:
         profile = get_profile(db, body.agent_name)
+        items = load_memory_selection(db, body.memory_ids)
         db.execute(text('INSERT INTO campaigns(id,idea,agent_name) VALUES (:id,:idea,:agent)'),
                    {'id': campaign_id, 'idea': body.idea, 'agent': body.agent_name})
         for day in range(1, 8):
+            angle, brief, brief_claim = CAMPAIGN_BRIEF_BY_DAY[day]
             run_id = 'run_' + uuid4().hex
-            receipt = adapter.execute(run_id, body.idea, profile, body.seed_unverified_claim)
+            receipt = adapter.execute(run_id, body.idea, profile, body.seed_unverified_claim,
+                                      memory_items=items, checker_profile=body.checker_profile,
+                                      brief=brief, campaign_day=day, extra_claims=[brief_claim])
             save_run(db, receipt, body.agent_name, actor)
             db.execute(text('INSERT INTO campaign_days(campaign_id,day,run_id) VALUES (:id,:day,:run)'),
                        {'id': campaign_id, 'day': day, 'run': run_id})

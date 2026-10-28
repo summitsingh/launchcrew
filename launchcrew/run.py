@@ -5,19 +5,43 @@ import os
 from pathlib import Path
 
 from . import agents
-from .facts import check_sentence, check_claims, check_draft, load_facts
+from .facts import check_sentence, check_claims, check_draft, load_facts, normalize
 from .receipts import create_receipt, save_receipt, timestamp, failed_receipt
 from .spark import spark_for_agent
 from .wonder import wonder_synthesize_for_scout
 
 
-def check_pack(draft, facts):
+STRICT_HYPE = ('amazing', 'incredible', 'revolutionary', 'unbeatable', 'perfect',
+              'best', 'greatest', 'fastest', 'cheapest', 'only', 'guaranteed')
+
+
+def _blocked_names(blocked_claims):
+    return {normalize(c) for c in (blocked_claims or []) if isinstance(c, str) and normalize(c)}
+
+
+def check_pack(draft, facts, blocked_claims=None, checker_profile='standard'):
+    # Deterministic claim safety is never skipped: blocked_claims and the
+    # strict profile only add blocks, they never verify an unverified claim.
+    blocked_names = _blocked_names(blocked_claims)
     results = check_claims(draft['claims'], facts)
-    blocked = [r for r in results['results'] if not r['verified']]
+    blocked = []
+    for r in results['results']:
+        if normalize(r['claim']) in blocked_names:
+            blocked.append({'claim': r['claim'], 'reason': 'Blocked by selected memory rule'})
+        elif not r['verified']:
+            blocked.append(r)
+        elif checker_profile == 'strict' and any(word in normalize(r['claim']).split() for word in STRICT_HYPE):
+            blocked.append({'claim': r['claim'], 'reason': 'Blocked by strict Checker profile: superlative or hype'})
     for result in check_draft(draft['post'] + '\n' + draft['email'], facts):
         if result['claim'] not in [r['claim'] for r in blocked]:
-            blocked.append(result)
-    return {'verified_count': results['verified_count'], 'blocked_count': len(blocked),
+            if normalize(result['claim']) in blocked_names:
+                blocked.append({'claim': result['claim'], 'reason': 'Blocked by selected memory rule'})
+            elif checker_profile == 'strict' and any(word in normalize(result['claim']).split() for word in STRICT_HYPE):
+                blocked.append({'claim': result['claim'], 'reason': 'Blocked by strict Checker profile: superlative or hype'})
+            else:
+                blocked.append(result)
+    verified = sum(1 for c in draft['claims'] if c not in [b['claim'] for b in blocked])
+    return {'verified_count': verified, 'blocked_count': len(blocked),
             'blocked_claims': [{'claim': r['claim'], 'reason': r['reason']} for r in blocked],
             'revision_instructions': ['Remove ' + r['claim'] + '; replace with an approved facts file claim.' for r in blocked]}
 
@@ -47,7 +71,7 @@ def model_usage(attempts):
              'data_mode_note': 'Stated intent for user data, not a verified API setting.'}
 
 
-def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverified_claim=False, receipt_writer=save_receipt, model_enabled=True, visual_verifier=None):
+def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverified_claim=False, receipt_writer=save_receipt, model_enabled=True, visual_verifier=None, memory_claims=None, blocked_claims=None, checker_profile='standard', brief=None, campaign_day=None):
     model_enabled = model_enabled and bool(os.environ.get('META_API_KEY', '').strip())
     events = []
     attempts = []
@@ -57,6 +81,12 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
         step = 'load_facts'
         facts, _ = load_facts(facts_path)
         claims = list(facts['approved_claims'])
+        for claim in (memory_claims or []):
+            if isinstance(claim, str) and claim.strip() and claim not in claims:
+                claims.append(claim)
+        facts['approved_claims'] = list(claims)
+        facts['memory_claims'] = list(memory_claims or [])
+        blocked_names = _blocked_names(blocked_claims)
         # Deterministic checks run before any model call.
         step = 'deterministic_checks'
         initial = check_claims(claims, facts)
@@ -107,13 +137,16 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
         if seed_unverified_claim:
             # Demo test seed only, not normal Maker behavior.
             v1_claims.append('best in Texas')
+        for claim in (blocked_claims or []):
+            if isinstance(claim, str) and claim.strip() and normalize(claim) not in [normalize(c) for c in v1_claims]:
+                v1_claims.append(claim)
         step = 'maker_draft_v1'
         maker = model_candidate('Maker', task)
         if maker:
             # Only exact, independently verified sentences can reach Maker.
             safe = [c for c in maker['claims'] if check_sentence(c, facts)['verified']]
             proposed = make_draft(safe) if safe else None
-            if proposed and not check_pack(proposed, facts)['blocked_count']:
+            if proposed and not check_pack(proposed, facts, blocked_claims, checker_profile)['blocked_count']:
                 v1_claims = safe + (['best in Texas'] if seed_unverified_claim else [])
         v1 = make_draft(v1_claims)
         event('maker_draft_v1', 'Maker', 'Prepared local post and email drafts')
@@ -121,15 +154,20 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
         suggestion = model_candidate('Checker', json.dumps({'draft': v1, 'approved_claims': claims}))
         if suggestion:
             # Candidate claims are checked but cannot change the actual draft verdict.
-            check_pack(make_draft(suggestion['claims']), facts)
-        c1 = check_pack(v1, facts)
+            check_pack(make_draft(suggestion['claims']), facts, blocked_claims, checker_profile)
+        c1 = check_pack(v1, facts, blocked_claims, checker_profile)
         event('checker_v1', 'Checker', 'Checked explicit claims and draft text; blocked_count=' + str(c1['blocked_count']))
         # Rebuild from verified allowlist sentences, removing every blocked sentence.
+        # Blocked and strict-hype claims are excluded here, so the final draft
+        # stays clean while v1 still records the verdict difference.
         step = 'maker_draft_v2'
-        v2 = make_draft(claims)
+        v2_claims = [c for c in claims
+                     if normalize(c) not in blocked_names
+                     and not (checker_profile == 'strict' and any(word in normalize(c).split() for word in STRICT_HYPE))]
+        v2 = make_draft(v2_claims)
         event('maker_draft_v2', 'Maker', 'Revised using approved facts file claims')
         step = 'checker_v2'
-        c2 = check_pack(v2, facts)
+        c2 = check_pack(v2, facts, blocked_claims, checker_profile)
         event('checker_v2', 'Checker', 'Rechecked revised drafts; blocked_count=' + str(c2['blocked_count']))
         if c2['blocked_count']:
             raise ValueError('Final draft has blocked claims')
@@ -140,6 +178,13 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
         usage = model_usage(attempts)
         step = 'receipt'
         receipt = create_receipt(Path(out).stem, idea, scout, v1, c1, v2, c2, events, usage, approve)
+        receipt['checker_profile'] = checker_profile
+        receipt['memory_claims'] = list(memory_claims or [])
+        receipt['blocked_claims'] = list(blocked_claims or [])
+        if brief is not None:
+            receipt['campaign_brief'] = brief
+        if campaign_day is not None:
+            receipt['campaign_day'] = campaign_day
         if visual_verifier is not None:
             receipt['visual_verification'] = visual_verifier()
         receipt_writer(receipt, out)
