@@ -90,7 +90,7 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
         step = 'approval'
         if approve:
             event('approval', 'demo_human', 'Simulated approval for local export')
-        event('receipt', 'LaunchCrew', 'Stored local JSON pack; no submission attempted')
+        event('receipt', 'LaunchCrew', 'Prepared receipt for storage; no submission attempted')
         usage = {'spark_calls': int(wonder is None and model.get('attempted', False)),
                  'spark_mode': model['mode'], 'wonder_used': wonder is not None,
                  'data_mode': 'standard_no_train',
