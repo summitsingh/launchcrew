@@ -84,7 +84,7 @@ refuse() {
 aws_class() {
   _line="$(sed -n '/^$/!{p;q;}' "$1" 2>/dev/null || true)"
   case "$_line" in
-    "aws: [ERROR]: "*) _line="${_line#aws: [ERROR]: }" ;;
+    "aws: [ERROR]: "*) _line="${_line#aws: \[ERROR\]: }" ;;
   esac
   _class="$(printf '%s' "$_line" | sed -n -E 's/^An error occurred \(([A-Za-z][A-Za-z0-9]{0,63})\) when calling the [A-Za-z][A-Za-z0-9]{0,63} operation:.*/\1/p' 2>/dev/null || true)"
   if [ -z "${_class:-}" ]; then
