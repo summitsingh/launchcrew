@@ -18,11 +18,14 @@ The initial sandbox curl failed with `curl exit 6`. With network access enabled 
 
 ## Routes and deterministic boundaries
 
-The only FastAPI route that can call Meta Model API is:
+Two FastAPI routes can call Meta Model API, each under explicit gates:
 
 - `POST /api/runs`
+- `POST /api/runs/{run_id}/photo-check`
 
-With a key present, it runs deterministic facts checks first, optional configured Wonder Scout synthesis with Spark fallback, and Spark Scout synthesis when Wonder is disabled. Maker and Checker each have one strict-JSON Spark candidate call. Scout candidates are independently checked against `facts/demo_facts.json`, with unverified entries explicitly marked and excluded from Maker. Maker accepts only independently checked allowlist sentences whose assembled draft also passes the deterministic Checker. Checker candidate claims are rechecked and discarded; they never determine the draft verdict. Final revision and both actual Checker verdicts remain deterministic. No model can approve, unblock, or verify a claim by suggestion.
+With a key present, `POST /api/runs` runs deterministic facts checks first, optional configured Wonder Scout synthesis with Spark fallback, and Spark Scout synthesis when Wonder is disabled. Maker and Checker each have one strict-JSON Spark candidate call. Scout candidates are independently checked against `facts/demo_facts.json`, with unverified entries explicitly marked and excluded from Maker. Maker accepts only independently checked allowlist sentences whose assembled draft also passes the deterministic Checker. Checker candidate claims are rechecked and discarded; they never determine the draft verdict. Final revision and both actual Checker verdicts remain deterministic. No model can approve, unblock, or verify a claim by suggestion.
+
+`POST /api/runs/{run_id}/photo-check` runs paid SAM segmentation only after an explicit Check click passes every photo gate in the paid photo check section below. Run creation never segments; nothing is sent automatically.
 
 These FastAPI business routes never call the model API:
 
@@ -38,22 +41,25 @@ These FastAPI business routes never call the model API:
 - `GET /api/runs/{run_id}/receipt`
 - `POST /api/runs/{run_id}/approve`
 - `POST /api/runs/{run_id}/export`
+- `DELETE /api/runs/{run_id}/photo`
 - `GET /api/auth/status`
 - `GET /api/auth/{provider}/login`
 - `GET /api/auth/{provider}/callback`
 - `POST /api/auth/logout`
 
-The provider routes support google and facebook. Framework endpoints `GET /openapi.json`, `GET /docs`, `GET /docs/oauth2-redirect`, and `GET /redoc` also never call models. Auth, connectors, database operations, individual approval and export gates remain deterministic. OAuth identity provider exchanges are unrelated to model transport. Next.js has no model client, endpoint secret or key, and no UI changes were needed.
+The provider routes support google and facebook. Framework endpoints `GET /openapi.json`, `GET /docs`, `GET /docs/oauth2-redirect`, and `GET /redoc` also never call models. Auth, connectors, database operations, individual approval and export gates remain deterministic. OAuth identity provider exchanges are unrelated to model transport. `DELETE /api/runs/{run_id}/photo` only detaches the photo at a new revision and never segments. Next.js has no provider client, endpoint secret, or key; the PhotoCheck UI sends photo bytes to the backend check route only on an explicit Check click, never on select, preview, crop, or remove.
 
 Without the key, no model network call occurs; drafts and Checker behavior retain deterministic fallback, with `model_used=none`. Runtime errors fall back with exception type only, never exception messages, response bodies or headers. Receipts record mode, models used, Spark attempt count, Wonder attempts and success flag, allowlisted numeric token counts and whether counts are known. Zero totals with unknown counts do not imply free provider usage. Failed pipeline receipts retain safe usage metadata too. Raw model candidate drafts and Checker suggestions are not persisted. Scout rejected claims remain explicitly unverified audit entries, never verified facts.
 
-## SAM opt-in
+## Paid photo check
 
 On Oct 27, 2026, with Summit approval, the fixed SAM demo concept changed from `wallet` to `jacket`. This change applies to the SAM demo only. The Spark idea demo remains unchanged: Vegan leather wallet, $49, for Austin commuters.
 
-SAM defaults to `method=not_run`, `checked=false`. Only a server operator setting `LAUNCHCREW_SAM_DEMO_PHOTO` to a demo image beneath `facts/demo_photos/`, plus runtime key presence, enables it during `POST /api/runs`. No client upload or arbitrary client path is accepted. The demo directory must contain only reviewed demo images. The new server module posts multipart files with purpose `user_data`, then Responses with `input_text`, `input_image.file_id`, streaming and lossless mask metadata. Network timeouts are bounded by a 30 second operation budget. No demo photo was supplied or uploaded in this run.
+The paid photo check is explicit, off by default, and single-owner. The enable flag is unset by default, the global one-shot budget starts at 0 images, and only exact operator-approved bytes are admitted (the photo sha256 must be allowlisted, with a runtime key present). Operator preflight checks key presence, pricing, and balance against the existing max-$1 envelope for the one approved file before any paid call. With the flag off or keyless, the check returns `method: not_run` over HTTP 200, sends no bytes, and the UI states SAM is not configured. No client path is accepted; only the bytes the operator explicitly approved can pass admission.
 
-Visual receipts contain only `method`, `checked`, and optional `error_type`. Checked means segmentation completed, including zero matches; it does not verify product claims. Neither SAM failure nor absence blocks approval or export. Photos, file IDs, boxes and masks never enter receipts or Postgres. Provider uploads would remain until deleted at the provider; no live upload was performed here.
+With all gates passing, admission commits revision N+1 with `photo_status` `check_requested` before transport, exactly one transport owner runs one Files upload plus one Responses segmentation with no retry inside a 30 second operation budget, and finalization attaches the verdict at the same revision without a second bump. A revision that moves first lands `failed_terminal` and the late reply is refused (409). The UI adds an optional PhotoCheck panel: PNG or JPEG up to 1 MiB and 8 megapixels, local-only preview, explicit Check, a detected-only crop suggestion drawn from existing pixels with download after a real draw, and explicit Remove. Any photo state other than a current-revision `detected` check refuses approval and export (422) with the photo reason; removing the photo returns the pack to the text-only path and still needs fresh human approval.
+
+Receipts keep only the sanitized summary (label, reason, policy version, actor, time) plus transport counts (attempts, uploads, segmentations, handling, note). Checked means segmentation completed, including zero matches; it does not verify product claims. No photo bytes, digests, provider file IDs, boxes, or masks ever enter receipts or Postgres. The crop preview is volatile and never persisted. Provider uploads would remain until deleted at the provider. Run creation never segments; nothing is sent automatically.
 
 ## Key handling and live gates
 
@@ -61,9 +67,9 @@ Model calls use the existing portal key via environment only, server-side on thi
 
 Live Spark: **BLOCKED**, error type `EnvironmentVariableAbsent`; model used `none`, token counts zero, usage unknown. No live request was made.
 
-Live SAM: attempted Oct 27, 2026, against commit `77f6730` plus the jacket concept change, with approved demo photo `DSC_3252.JPG`; model `sam-3.1`, method `sam-3.1`, checked `false`, error type `HTTPError`. No box or mask geometry and no key material appeared in any receipt. The backend returns only the error type, so provider file upload success or failure is unknown. Approval and export were verified separately on a keyless demo run and were not blocked by SAM.
+Live SAM: attempted Oct 27, 2026, against commit `77f6730` plus the jacket concept change, with the reviewed demo file; model `sam-3.1`, method `sam-3.1`, checked `false`, error type `HTTPError`. No box or mask geometry and no key material appeared in any receipt. The backend returns only the error type, so provider file upload success or failure is unknown. Approval and export were verified separately on a keyless demo run. This stays history: a Files-only success plus an attempted SAM is not new live SAM and not current paid proof, and the keyless approval path above predates the paid photo gates (a photo-bearing pack now needs a current-revision `detected` check plus fresh approval).
 
-Live Spark and live SAM remain separate unverified gates. Mocked tests validate wiring, filtering, telemetry and SSE parsing, not live service compatibility. AWS, DNS, v2, submission and live sign-in were not performed. The existing Podman stack and standalone test Postgres were reused without stopping or rebuilding containers.
+Live Spark and live SAM remain separate unverified gates. Prior baseline is published `6e2b7ef` with CI run `40659590053` (host 162 backend, 109 core, 44 Vitest, 16 browser plus the real keyless proof); newer photo UI counts stay pending until the host supplies them. Still open: live SAM balance and operator cap, deployment, demo video, and final submission gates. Mocked tests validate wiring, filtering, telemetry and SSE parsing, not live service compatibility. AWS, DNS, v2, submission and live sign-in were not performed. No new product features are added here.
 
 ## Truth and transport pass, Oct 28, 2026
 

@@ -200,10 +200,12 @@ test('synthetic UI proof (mocked photo-check, never live SAM): deferred response
   await expect(page.getByTestId('photo-crop-canvas')).toHaveCount(0);
   const reread = (await (await request.get(`/api/runs/${runId}/receipt`)).json()) as {
     revision: number;
-    photo_status: { state: string };
+    photo_status: { state: string } | null;
   };
   expect(reread.revision).toBe(1);
-  expect(reread.photo_status.state).toBe('no_photo');
+  // A legacy text-only receipt carries an absent photo status, which the UI
+  // honestly reads as no_photo; accept that without fabricating a server photo.
+  expect(reread.photo_status?.state ?? 'no_photo').toBe('no_photo');
 });
 
 test('synthetic UI proof (mocked photo-check, never live SAM): deferred response after unmount applies nothing stale', async ({
@@ -254,7 +256,172 @@ test('synthetic UI proof (mocked photo-check, never live SAM): deferred response
   await expect(page.getByText('Photo check detected one in-frame candidate')).toHaveCount(0);
   await expect(page.getByTestId('photo-crop-canvas')).toHaveCount(0);
   const reread = (await (await request.get(`/api/runs/${runId}/receipt`)).json()) as {
-    photo_status: { state: string };
+    photo_status: { state: string } | null;
   };
-  expect(reread.photo_status.state).toBe('no_photo');
+  // A legacy text-only receipt carries an absent photo status, which the UI
+  // honestly reads as no_photo; accept that without fabricating a server photo.
+  expect(reread.photo_status?.state ?? 'no_photo').toBe('no_photo');
+});
+
+// SYNTHETIC UI TRANSPORT ONLY, never live SAM. The GET receipt override below
+// simulates the paid admission the real server commits (revision N+1 with
+// check_requested) while the photo-check POST is still deferred. Direct
+// page.request calls in this file bypass page.route and still hit the real
+// server, so simulated state is asserted through the UI only.
+function simulatedAdmission(baseReceipt: Record<string, unknown>) {
+  const sentRevision = (baseReceipt.revision as number) ?? 0;
+  const admittedRevision = sentRevision + 1;
+  return {
+    ...baseReceipt,
+    revision: admittedRevision,
+    photo_status: {
+      state: 'check_requested',
+      label: null,
+      reason: 'check_requested: segmentation in flight (synthetic UI transport only, never live SAM)',
+      policy_version: 'photo-geometry/v1',
+      revision: admittedRevision,
+      actor: 'synthetic-proof',
+      checked_at: '',
+    },
+  };
+}
+
+test('synthetic UI proof (mocked photo-check, never live SAM): own admission observed mid-flight still applies and draws', async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ width: 375, height: 1000 });
+  const runId = await createCleanRun(page);
+
+  const fixture = `/tmp/launchcrew-synthetic-admit-${Date.now()}.png`;
+  writeFileSync(fixture, syntheticPng(1600, 1067));
+  await page.getByLabel(/Select photo \(PNG or JPEG/).setInputFiles(fixture);
+  const checkButton = page.getByRole('button', { name: 'Check photo', exact: true });
+  await expect(checkButton).toBeEnabled();
+
+  const baseReceipt = (await (await request.get(`/api/runs/${runId}/receipt`)).json()) as Record<string, unknown>;
+  const admittedReceipt = simulatedAdmission(baseReceipt);
+  let receiptPhase: 'pre' | 'admitted' = 'pre';
+  await page.route('**/api/runs/*/receipt', async route => {
+    if (receiptPhase === 'pre') {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(admittedReceipt),
+    });
+  });
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => {
+    release = resolve;
+  });
+  await page.route('**/api/runs/*/photo-check', async route => {
+    const body = route.request().postDataJSON() as { expected_revision: number };
+    await gate;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(syntheticDetected(baseReceipt, body.expected_revision)),
+    });
+  });
+  await checkButton.click();
+  // From here the simulated UI transport reports the paid admission N+1 with
+  // check_requested while the check POST stays deferred, mirroring the real
+  // server commit that lands before a slow transport finishes.
+  receiptPhase = 'admitted';
+
+  // The UI must observe its own admission without invalidating the pending
+  // check: the admitted summary renders at the admitted revision.
+  await expect(page.getByText('Photo check in flight')).toBeVisible({ timeout: 15000 });
+  await expect(page.getByText('Stored at revision 1.')).toBeVisible({ timeout: 15000 });
+
+  const responsePromise = page.waitForResponse('**/api/runs/*/photo-check');
+  release();
+  await responsePromise;
+
+  // The valid final detected response applies and draws with original pixels.
+  const canvas = page.getByTestId('photo-crop-canvas');
+  await expect(canvas).toBeVisible({ timeout: 15000 });
+  const dims = await canvas.evaluate(el => ({ w: (el as HTMLCanvasElement).width, h: (el as HTMLCanvasElement).height }));
+  expect(dims).toEqual({ w: 800, h: 500 });
+  expect(await canvas.evaluate(el => el.getBoundingClientRect().width)).toBeLessThanOrEqual(375);
+  await expect(page.getByText('Photo check detected one in-frame candidate')).toBeVisible();
+  const downloadButton = page.getByRole('button', { name: 'Download crop', exact: true });
+  await expect(downloadButton).toBeEnabled();
+  const downloadEvent = page.waitForEvent('download');
+  await downloadButton.click();
+  const download = await downloadEvent;
+  const target = `/tmp/launchcrew-synthetic-admit-crop-${Date.now()}.png`;
+  await download.saveAs(target);
+  expect(readFileSync(target).length).toBeGreaterThan(0);
+});
+
+test('synthetic UI proof (mocked photo-check, never live SAM): superseding N+2 after own admission drops the stale result', async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ width: 375, height: 1000 });
+  const runId = await createCleanRun(page);
+
+  const fixture = `/tmp/launchcrew-synthetic-supersede-${Date.now()}.png`;
+  writeFileSync(fixture, syntheticPng(1600, 1067));
+  await page.getByLabel(/Select photo \(PNG or JPEG/).setInputFiles(fixture);
+  const checkButton = page.getByRole('button', { name: 'Check photo', exact: true });
+  await expect(checkButton).toBeEnabled();
+
+  const baseReceipt = (await (await request.get(`/api/runs/${runId}/receipt`)).json()) as Record<string, unknown>;
+  const admittedReceipt = simulatedAdmission(baseReceipt);
+  // A later text edit bumps the pack to N+2 while the photo summary stays at
+  // the admission revision, exactly as the real server leaves it. This is a
+  // proper separate synthetic state, never a live edit.
+  const supersededReceipt = { ...admittedReceipt, revision: 2 };
+  let receiptPhase: 'pre' | 'admitted' | 'superseded' = 'pre';
+  await page.route('**/api/runs/*/receipt', async route => {
+    if (receiptPhase === 'pre') {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(receiptPhase === 'admitted' ? admittedReceipt : supersededReceipt),
+    });
+  });
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => {
+    release = resolve;
+  });
+  await page.route('**/api/runs/*/photo-check', async route => {
+    const body = route.request().postDataJSON() as { expected_revision: number };
+    await gate;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(syntheticDetected(baseReceipt, body.expected_revision)),
+    });
+  });
+  await checkButton.click();
+  receiptPhase = 'admitted';
+  await expect(page.getByText('Stored at revision 1.')).toBeVisible({ timeout: 15000 });
+
+  // The pack moves to N+2 after the admission was observed: the UI must treat
+  // this as truly superseding, invalidate the pending check, and never
+  // restore the old admission or image once the stale reply lands.
+  receiptPhase = 'superseded';
+  await expect(page.getByText(`Bound to run ${runId}, revision 2`)).toBeVisible({ timeout: 15000 });
+  await expect(page.getByText('superseded')).toBeVisible({ timeout: 15000 });
+
+  const responsePromise = page.waitForResponse('**/api/runs/*/photo-check');
+  release();
+  await responsePromise;
+  await page.waitForTimeout(500);
+
+  await expect(page.getByText('Photo check detected one in-frame candidate')).toHaveCount(0);
+  await expect(page.getByTestId('photo-crop-canvas')).toHaveCount(0);
+  // The UI stays on the superseding revision: no old receipt is restored.
+  await expect(page.getByText(`Bound to run ${runId}, revision 2`)).toBeVisible();
 });

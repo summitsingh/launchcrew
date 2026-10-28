@@ -146,6 +146,31 @@ export function isStaleReply(sentRun: string, currentRun: string, sentSeq: numbe
   return sentRun !== currentRun || sentSeq !== currentSeq;
 }
 
+export type ExpectedPhotoAdmission = {
+  sentRevision: number;
+  expectedRevision: number;
+};
+
+/** True when a polled revision is exactly the in-flight check's own paid
+ * admission: the server commits N+1 with check_requested before the check
+ * HTTP transport finishes. Such a poll must NOT invalidate the pending
+ * check. Anything else (text edit, remove, different operation, new run,
+ * unmount) still invalidates. Revision alone is never enough: the stored
+ * server photo state must be check_requested at exactly the expected
+ * revision, so a later text edit that leaves a stale check_requested
+ * summary behind still invalidates. No provider IDs, bytes, or digests
+ * are consulted here, only the sanitized receipt summary. */
+export function isOwnAdmissionPoll(
+  expected: ExpectedPhotoAdmission | null,
+  currentRevision: number,
+  stored: StoredPhoto | null,
+): boolean {
+  if (!expected) return false;
+  if (currentRevision !== expected.expectedRevision) return false;
+  if (!stored || stored.state !== 'check_requested') return false;
+  return stored.revision === expected.expectedRevision;
+}
+
 export function revokePreviewUrl(url: string | null): void {
   if (!url) return;
   URL.revokeObjectURL(url);
@@ -308,6 +333,12 @@ export function PhotoCheck({ receipt, onReceipt }: { receipt: Receipt; onReceipt
   const seq = useRef(0);
   const lastAckedRevision = useRef<number>(revision);
   const trackedRun = useRef<string>(runId);
+  // The paid admission the current in-flight check expects: sent N, server
+  // commits N+1 with check_requested before the check HTTP finishes. While
+  // set, exactly that polled admission is acknowledged without dropping the
+  // pending check's local pixels. Cleared when the check settles or when any
+  // truly superseding revision, run change, or unmount invalidates it.
+  const expectedAdmission = useRef<ExpectedPhotoAdmission | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const selectionRef = useRef<Selection | null>(null);
   selectionRef.current = selection;
@@ -327,11 +358,17 @@ export function PhotoCheck({ receipt, onReceipt }: { receipt: Receipt; onReceipt
   // superseded check) also drop the local bytes so nothing stale can resend.
   // Both branches advance the request generation so deferred FileReader,
   // image, check, remove, and crop callbacks from the older generation are
-  // dropped instead of resurrecting old pixels or notices.
+  // dropped instead of resurrecting old pixels or notices. The one exception
+  // is the in-flight check's own paid admission: the Desk polls the receipt
+  // every 3 seconds, and the server commits N+1 with check_requested before
+  // the check HTTP finishes, so that exact polled admission is acknowledged
+  // without clearing the pending check. Its final response then still
+  // applies and draws.
   useEffect(() => {
     if (trackedRun.current !== runId) {
       trackedRun.current = runId;
       lastAckedRevision.current = revision;
+      expectedAdmission.current = null;
       seq.current += 1;
       clearLocalImage();
       setNotice(null);
@@ -341,6 +378,11 @@ export function PhotoCheck({ receipt, onReceipt }: { receipt: Receipt; onReceipt
       return;
     }
     if (revision !== lastAckedRevision.current) {
+      if (isOwnAdmissionPoll(expectedAdmission.current, revision, stored)) {
+        lastAckedRevision.current = revision;
+        return;
+      }
+      expectedAdmission.current = null;
       lastAckedRevision.current = revision;
       seq.current += 1;
       clearLocalImage();
@@ -369,6 +411,8 @@ export function PhotoCheck({ receipt, onReceipt }: { receipt: Receipt; onReceipt
   const handleFile = (file: File) => {
     if (pending || removePending || failed) return;
     seq.current += 1;
+    // A new selection starts a new generation: no earlier admission stays tracked.
+    expectedAdmission.current = null;
     const mySeq = seq.current;
     const myRun = runId;
     setError(null);
@@ -463,6 +507,11 @@ export function PhotoCheck({ receipt, onReceipt }: { receipt: Receipt; onReceipt
     const mySeq = seq.current;
     const myRun = runId;
     const sentRevision = revision;
+    // The server commits sentRevision + 1 with check_requested before this
+    // HTTP finishes; the 3-second receipt poll will observe that admission
+    // while this check is still in flight. Track it so the poll is
+    // recognized as our own operation instead of an external revision.
+    expectedAdmission.current = { sentRevision, expectedRevision: sentRevision + 1 };
     setPending(true);
     setError(null);
     setNotice(null);
@@ -473,6 +522,7 @@ export function PhotoCheck({ receipt, onReceipt }: { receipt: Receipt; onReceipt
       });
       if (isStaleReply(myRun, trackedRun.current, mySeq, seq.current)) return;
       if (!result.response.ok || result.data === undefined) {
+        expectedAdmission.current = null;
         if (result.response.status === 409) {
           clearLocalImage();
           lastAckedRevision.current = revision;
@@ -486,6 +536,7 @@ export function PhotoCheck({ receipt, onReceipt }: { receipt: Receipt; onReceipt
         return;
       }
       const body = result.data;
+      expectedAdmission.current = null;
       lastAckedRevision.current = body.receipt.revision ?? sentRevision + 1;
       setPreview(body.preview ?? null);
       setCropDrawn(false);
@@ -501,6 +552,7 @@ export function PhotoCheck({ receipt, onReceipt }: { receipt: Receipt; onReceipt
       onReceipt(body.receipt as Receipt);
     } catch {
       if (isStaleReply(myRun, trackedRun.current, mySeq, seq.current)) return;
+      expectedAdmission.current = null;
       clearLocalImage();
       // Ambiguous transport failure: never claim nothing was sent and never
       // retry blindly. The receipt decides the next step.
@@ -517,6 +569,9 @@ export function PhotoCheck({ receipt, onReceipt }: { receipt: Receipt; onReceipt
     const mySeq = seq.current;
     const myRun = runId;
     const sentRevision = revision;
+    // A remove is a different operation: any tracked admission from an
+    // earlier check must not survive it.
+    expectedAdmission.current = null;
     setRemovePending(true);
     setError(null);
     setNotice(null);

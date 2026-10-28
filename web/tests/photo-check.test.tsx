@@ -4,6 +4,7 @@ import {
   PhotoCheckPanel,
   cropFitsFrame,
   cropWithinFrame,
+  isOwnAdmissionPoll,
   isStaleReply,
   photoBlocksApproval,
   photoStatusCopy,
@@ -141,6 +142,32 @@ describe('photo check guards', () => {
     expect(isStaleReply('run_a', 'run_b', 1, 1)).toBe(true);
     expect(isStaleReply('run_a', 'run_a', 1, 2)).toBe(true);
     expect(isStaleReply('run_a', 'run_a', 2, 2)).toBe(false);
+  });
+
+  it('recognizes only the exact own admission, never a superseding revision', () => {
+    const admitted: StoredPhoto = {
+      state: 'check_requested',
+      label: null,
+      reason: 'check_requested: segmentation in flight',
+      revision: 1,
+      actor: 'demo_placeholder',
+      checkedAt: '',
+    };
+    const expected = { sentRevision: 0, expectedRevision: 1 };
+    // The polled N+1 with check_requested at exactly N+1 is our own operation.
+    expect(isOwnAdmissionPoll(expected, 1, admitted)).toBe(true);
+    // No tracked admission means every revision change invalidates.
+    expect(isOwnAdmissionPoll(null, 1, admitted)).toBe(false);
+    // A later text edit that leaves the stale check_requested summary behind
+    // still invalidates: the polled revision moved past the admission.
+    expect(isOwnAdmissionPoll(expected, 2, admitted)).toBe(false);
+    expect(isOwnAdmissionPoll(expected, 2, { ...admitted, revision: 1 })).toBe(false);
+    // A final verdict, a removal, or a missing summary is never the admission.
+    expect(isOwnAdmissionPoll(expected, 1, { ...admitted, state: 'checked' })).toBe(false);
+    expect(isOwnAdmissionPoll(expected, 1, { ...admitted, state: 'no_photo' })).toBe(false);
+    expect(isOwnAdmissionPoll(expected, 1, null)).toBe(false);
+    // Revision alone never suffices: a mismatched stored revision is stale.
+    expect(isOwnAdmissionPoll(expected, 1, { ...admitted, revision: 0 })).toBe(false);
   });
 
   it('revokes object URLs on replace and unmount, and ignores empty input', () => {
