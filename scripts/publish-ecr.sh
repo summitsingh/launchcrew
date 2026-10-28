@@ -16,8 +16,9 @@
 # travels on stdin
 # from the AWS CLI to Podman only, never in argv, files, or output. The
 # Podman auth file is real reversible credential storage on local disk
-# during the run: private mode 600 inside an owned mode 700 temp dir,
-# removed on success and on failure. No other auth file, cache entry, or
+# during the run: valid empty JSON with private mode 600 inside an
+# owned mode 700 temp dir, set before login, removed on success and
+# on failure. No other auth file, cache entry, or
 # profile is touched. Storage flags mirror scripts/podman-local.sh
 # (graph root, runroot, vfs, cgroupfs, containers config) so builds match
 # the proven local path. Single attempts only with three explicit bounded
@@ -444,10 +445,13 @@ PODMAN_GLOBAL=(--root "$PODMAN_STORE_ROOT" --runroot "$PODMAN_RUNROOT" --storage
 # Podman login step alone would exit zero. The password never appears
 # in argv, files, or output. The auth file holds registry credentials
 # on local disk during the run and is removed on success and failure.
+# Real containers/image login parses an existing auth file before
+# write and refuses an empty file, so the file starts as valid empty
+# credential JSON with private mode before login.
 AUTH_TMP="$(mktemp -d)"
 chmod 700 "$AUTH_TMP"
 AUTH_FILE="$AUTH_TMP/auth.json"
-touch "$AUTH_FILE"
+printf '{"auths":{}}\n' >"$AUTH_FILE"
 chmod 600 "$AUTH_FILE"
 cleanup_auth() { rm -rf "$AUTH_TMP"; }
 trap 'cleanup_auth; cleanup_err' EXIT INT TERM

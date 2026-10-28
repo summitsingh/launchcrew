@@ -42,6 +42,14 @@ node .local/tools/node_modules/pnpm/bin/pnpm.cjs --dir web dev
 
 The host-development database used in verification is container launchcrew-db, with its data in .local/pgdata and a localhost-only 54329 port. The separately verified full stack has its own database volume. No system Postgres installation was changed.
 
+Local backend key file: copy the tracked placeholder `.env.example` to private `.local/.env.local` once (mode 600, stays ignored and outside the container context), then set the existing dedicated `META_API_KEY` there privately. Never place the key in `NEXT_PUBLIC`, frontend code, GitHub, build args, or CI. With `DATABASE_URL` already configured as above and the database running, start the host backend with:
+
+```bash
+uv run --frozen --env-file .local/.env.local uvicorn backend.app:app --host 127.0.0.1 --port 8000 --no-access-log
+```
+
+Adding the file alone makes no Meta call. Ordinary runs with a configured key can invoke Spark text synthesis, so run no paid workflow until an approved controlled execution. SAM stays OFF (`LAUNCHCREW_PHOTO_SAM_ENABLED=false`) and the global one-shot budget stays 0 until a separately authorized one-shot setup. The only approved asset test is max USD 1 from existing credits, one upload plus at most one segmentation, no retry, not a generic permission.
+
 ## Review workflow
 
 Open the new UI at http://127.0.0.1:3001. Agent builder supports list, create, edit, clone, and preview of saved profiles. Preview performs no writes or model calls. Individual approval is fixed, spend limit is zero, and tools remain allowlisted.

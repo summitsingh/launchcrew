@@ -84,7 +84,8 @@ emails, no registry URIs, no response bodies. The ECR password
 travels on stdin from the
 AWS CLI to Podman only, never in argv, files, or output. The Podman
 auth file holds registry credentials as reversible credential storage
-on local disk during the run (private mode 600 inside an owned mode
-700 temp dir) and is always removed on success and on failure. Cost,
+on local disk during the run (valid empty JSON, private mode 600
+inside an owned mode 700 temp dir, set before login) and is always
+removed on success and on failure. Cost,
 deploy, IAM, secret, DNS, recording, and submission approvals remain
 pending and unchanged.

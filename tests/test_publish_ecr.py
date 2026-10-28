@@ -6,7 +6,9 @@ stdin byte counts, never secret values in argv) and return canned JSON
 shaped like the actual AWS APIs, or canned digests through --digestfile.
 The fake Podman validates the real argv shape: proven global storage
 flags, login command options, and push command options with a digest
-file. Push stdout stays empty to prove the helper never parses it.
+file. Login also requires a valid blank auth JSON file with private
+modes, matching the real login parser. Push stdout stays empty to
+prove the helper never parses it.
 Dry-run must make zero calls. Every refusal must happen before any
 push, and ownership failures happen before any build. Any existing tag
 for the requested SHA refuses the whole run before any build or push:
@@ -288,6 +290,10 @@ if [ "$CMD" = "login" ]; then
     prev="$arg"
   done
   printf '%s\\n' "$authfile" >>"${FAKE_AUTHFILE_RECORD:-/dev/null}"
+  if [ -z "$authfile" ]; then echo "fake-podman: login authfile empty" >&2; exit 2; fi
+  if [ ! -f "$authfile" ]; then echo "fake-podman: login authfile missing" >&2; exit 2; fi
+  if [ ! -s "$authfile" ]; then echo "fake-podman: login authfile empty rejected" >&2; exit 2; fi
+  if ! python3 -c 'import json,os,sys,stat; p=sys.argv[1]; d=os.path.dirname(p) or "."; assert stat.S_IMODE(os.stat(p).st_mode)==0o600, "file mode"; assert stat.S_IMODE(os.stat(d).st_mode)==0o700, "dir mode"; assert json.load(open(p))=={"auths":{}}, "blank json"' "$authfile" 2>/dev/null; then echo "fake-podman: login authfile must be valid blank JSON with 600 file and 700 parent" >&2; exit 2; fi
   BYTES="$(wc -c | tr -d '[:space:]')"
   printf 'STDIN_BYTES=%s\\n' "$BYTES" >>"$LOG"
   exit 0
