@@ -63,7 +63,7 @@ for (const width of [375, 768, 1024, 1440]) {
     });
     test('receipt view', async ({ page }) => {
       const { run_id } = JSON.parse(readFileSync(`${local}/demo-${width}.json`, 'utf8'));
-      await page.getByRole('button', { name: 'Approval queue', exact: false }).click();
+      await page.getByRole('navigation', { name: 'Workspace' }).getByRole('button', { name: 'Approval queue' }).click();
       await page.locator(`[data-run-id="${run_id}"]`).getByRole('button', { name: 'View receipt', exact: true }).click();
       await expect(page.getByRole('heading', { name: 'Receipt', exact: true })).toBeVisible();
       await expect(page.getByText('demo_placeholder', { exact: true })).toBeVisible();
