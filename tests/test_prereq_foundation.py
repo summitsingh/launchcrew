@@ -97,16 +97,124 @@ if [ "$1" = "budgets" ] && [ "$2" = "describe-notifications-for-budget" ]; then
     exit 254
   fi
   if [ "$NOTIF_MODE" = "malformed" ]; then printf 'not-json{{{\\n'; exit 0; fi
-  NOTIF_TOPIC="${FAKE_TOPIC_ARN:-arn:aws:sns:us-east-1:111122223333:launchcrew-foundation-BudgetTopic-ABC123}"
+  case "$*" in
+    *"--next-token"*) echo "fake-aws: unsupported --next-token rejected, use --cli-input-json NextToken" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"--starting-token"*|*"--max-items"*) echo "fake-aws: high level pagination args rejected with --no-paginate" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"--no-paginate"*) ;;
+    *) echo "fake-aws: unbounded autopagination rejected, --no-paginate required" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"--cli-input-json"*) ;;
+    *) echo "fake-aws: --cli-input-json required" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"--account-id"*|*"--budget-name"*) echo "fake-aws: raw JSON required, flag pagination refused" >&2; exit 2 ;;
+  esac
+  NOTIF_INPUT_PATH=""
+  NOTIF_INPUT_PREV=""
+  for NOTIF_ARG in "$@"; do
+    if [ "$NOTIF_INPUT_PREV" = "--cli-input-json" ]; then NOTIF_INPUT_PATH="$NOTIF_ARG"; fi
+    NOTIF_INPUT_PREV="$NOTIF_ARG"
+  done
+  case "$NOTIF_INPUT_PATH" in
+    file://*) NOTIF_INPUT_PATH="${NOTIF_INPUT_PATH#file://}" ;;
+    *) echo "fake-aws: --cli-input-json must be file:// path" >&2; exit 2 ;;
+  esac
+  echo "INPUT_JSON_NOTIF $(cat "$NOTIF_INPUT_PATH" 2>/dev/null || echo MALFORMED)" >>"$LOG" 2>/dev/null || true
+  NOTIF_NEXT="$(python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); a=d.get("AccountId",""); b=d.get("BudgetName",""); m=d.get("MaxResults",None); n=d.get("NextToken",""); nn=d.get("nextToken","__absent__"); bad="";
+if a!="111122223333": bad="BAD_ACCOUNT";
+elif b!="launchcrew-demo": bad="BAD_BUDGET";
+elif not isinstance(m,int) or m<=0 or m>10: bad="BAD_MAXRESULTS";
+elif nn!="__absent__": bad="BAD_CASE";
+elif n is None: n="";
+elif not isinstance(n,str): bad="MALFORMED_INPUT";
+print(bad if bad else n)' "$NOTIF_INPUT_PATH" 2>/dev/null || echo MALFORMED_INPUT)"
+  case "$NOTIF_NEXT" in
+    MALFORMED_INPUT|BAD_ACCOUNT|BAD_BUDGET|BAD_MAXRESULTS|BAD_CASE) echo "fake-aws: invalid cli-input-json $NOTIF_NEXT" >&2; exit 2 ;;
+  esac
+  if [ -n "$NOTIF_NEXT" ]; then
+    printf '{"Notifications":[]}\\n'
+    exit 0
+  fi
   if [ "$NOTIF_MODE" = "missing" ]; then
-    printf '{"NotificationsWithSubscribers":[{"Notification":{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"PERCENTAGE"},"Subscribers":[{"SubscriptionType":"SNS","Address":"%s"}]}]}\\n' "$NOTIF_TOPIC"
+    printf '{"Notifications":[{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"PERCENTAGE"}]}\\n'
     exit 0
   fi
   if [ "$NOTIF_MODE" = "wrong" ]; then
-    printf '{"NotificationsWithSubscribers":[{"Notification":{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":50,"ThresholdType":"PERCENTAGE"},"Subscribers":[{"SubscriptionType":"SNS","Address":"%s"}]},{"Notification":{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100,"ThresholdType":"PERCENTAGE"},"Subscribers":[{"SubscriptionType":"SNS","Address":"%s"}]}]}\\n' "$NOTIF_TOPIC" "$NOTIF_TOPIC"
+    printf '{"Notifications":[{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":50,"ThresholdType":"PERCENTAGE"},{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100,"ThresholdType":"PERCENTAGE"}]}\\n'
     exit 0
   fi
-  printf '{"NotificationsWithSubscribers":[{"Notification":{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"PERCENTAGE"},"Subscribers":[{"SubscriptionType":"SNS","Address":"%s"}]},{"Notification":{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100,"ThresholdType":"PERCENTAGE"},"Subscribers":[{"SubscriptionType":"SNS","Address":"%s"}]}]}\\n' "$NOTIF_TOPIC" "$NOTIF_TOPIC"
+  printf '{"Notifications":[{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"PERCENTAGE"},{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100,"ThresholdType":"PERCENTAGE"}]}\\n'
+  exit 0
+fi
+if [ "$1" = "budgets" ] && [ "$2" = "describe-subscribers-for-notification" ]; then
+  SUB_MODE="${FAKE_SUB:-exact}"
+  if [ "$SUB_MODE" = "auth" ]; then
+    echo "An error occurred (AccessDenied) when calling the DescribeSubscribersForNotification operation: not authorized" >&2
+    exit 254
+  fi
+  if [ "$SUB_MODE" = "error" ]; then
+    echo "An error occurred (ThrottlingException) when calling the DescribeSubscribersForNotification operation: Rate exceeded" >&2
+    exit 254
+  fi
+  if [ "$SUB_MODE" = "malformed" ]; then printf 'not-json{{{\\n'; exit 0; fi
+  case "$*" in
+    *"--next-token"*) echo "fake-aws: unsupported --next-token rejected, use --cli-input-json NextToken" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"--starting-token"*|*"--max-items"*) echo "fake-aws: high level pagination args rejected with --no-paginate" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"--no-paginate"*) ;;
+    *) echo "fake-aws: unbounded autopagination rejected, --no-paginate required" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"--cli-input-json"*) ;;
+    *) echo "fake-aws: --cli-input-json required" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"--account-id"*|*"--budget-name"*|*"--notification"*) echo "fake-aws: raw JSON required, flag pagination refused" >&2; exit 2 ;;
+  esac
+  SUB_TOPIC="${FAKE_TOPIC_ARN:-arn:aws:sns:us-east-1:111122223333:launchcrew-foundation-BudgetTopic-ABC123}"
+  SUB_INPUT_PATH=""
+  SUB_INPUT_PREV=""
+  for SUB_ARG in "$@"; do
+    if [ "$SUB_INPUT_PREV" = "--cli-input-json" ]; then SUB_INPUT_PATH="$SUB_ARG"; fi
+    SUB_INPUT_PREV="$SUB_ARG"
+  done
+  case "$SUB_INPUT_PATH" in
+    file://*) SUB_INPUT_PATH="${SUB_INPUT_PATH#file://}" ;;
+    *) echo "fake-aws: --cli-input-json must be file:// path" >&2; exit 2 ;;
+  esac
+  echo "INPUT_JSON_SUB $(cat "$SUB_INPUT_PATH" 2>/dev/null || echo MALFORMED)" >>"$LOG" 2>/dev/null || true
+  SUB_DECODED="$(python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); a=d.get("AccountId",""); b=d.get("BudgetName",""); m=d.get("MaxResults",None); n=d.get("NextToken",""); nn=d.get("nextToken","__absent__"); nt=d.get("Notification",None); bad=""; typ="";
+if a!="111122223333": bad="BAD_ACCOUNT";
+elif b!="launchcrew-demo": bad="BAD_BUDGET";
+elif not isinstance(m,int) or m<=0 or m>10: bad="BAD_MAXRESULTS";
+elif nn!="__absent__": bad="BAD_CASE";
+elif not isinstance(nt,dict): bad="BAD_NOTIFICATION";
+elif nt.get("NotificationType","") not in ("ACTUAL","FORECASTED"): bad="BAD_NOTIFICATION";
+elif nt.get("ComparisonOperator","")!="GREATER_THAN": bad="BAD_NOTIFICATION";
+elif nt.get("ThresholdType","")!="PERCENTAGE": bad="BAD_THRESHOLD_TYPE";
+elif nt.get("NotificationType","")=="ACTUAL" and nt.get("Threshold",None) not in (80,80.0): bad="BAD_NOTIFICATION";
+elif nt.get("NotificationType","")=="FORECASTED" and nt.get("Threshold",None) not in (100,100.0): bad="BAD_NOTIFICATION";
+elif n is None: n="";
+elif not isinstance(n,str): bad="MALFORMED_INPUT";
+else: typ=nt.get("NotificationType","");
+print(bad if bad else (typ+"|"+n))' "$SUB_INPUT_PATH" 2>/dev/null || echo MALFORMED_INPUT)"
+  case "$SUB_DECODED" in
+    MALFORMED_INPUT|BAD_ACCOUNT|BAD_BUDGET|BAD_MAXRESULTS|BAD_CASE|BAD_NOTIFICATION|BAD_THRESHOLD_TYPE) echo "fake-aws: invalid cli-input-json $SUB_DECODED" >&2; exit 2 ;;
+  esac
+  SUB_NEXT_TOKEN="${SUB_DECODED#*|}"
+  if [ -n "$SUB_NEXT_TOKEN" ]; then
+    printf '%s' '{"Subscribers":[]}'
+    exit 0
+  fi
+  printf '{"Subscribers":[{"SubscriptionType":"SNS","Address":"%s"}]}\\n' "$SUB_TOPIC"
   exit 0
 fi
 if [ "$1" = "cloudformation" ] && [ "$2" = "describe-stacks" ]; then
