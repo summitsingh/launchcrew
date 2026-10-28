@@ -211,6 +211,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/checker-policies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Checker Policies */
+        get: operations["checker_policies_api_checker_policies_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/health": {
         parameters: {
             query?: never;
@@ -473,6 +490,26 @@ export interface components {
             /** Verified Count */
             verified_count: number;
         };
+        /** CheckerPoliciesOut */
+        CheckerPoliciesOut: {
+            /** Floor Note */
+            floor_note: string;
+            /** Matching */
+            matching: string;
+            /** Supported */
+            supported: components["schemas"]["CheckerPolicyOut"][];
+        };
+        /** CheckerPolicyOut */
+        CheckerPolicyOut: {
+            /** Description */
+            description: string;
+            /** Policy */
+            policy: string;
+            /** Rule Line */
+            rule_line: string;
+            /** Veto Token */
+            veto_token: string;
+        };
         /** Clone */
         Clone: {
             /** Name */
@@ -562,8 +599,14 @@ export interface components {
         };
         /** Preview */
         Preview: {
+            /** Checker Enforcement */
+            checker_enforcement?: {
+                [key: string]: unknown;
+            } | null;
             /** Dry Run */
             dry_run: boolean;
+            /** Enforcement Note */
+            enforcement_note?: string | null;
             /** First Action */
             first_action: string;
             /** Model Called */
@@ -573,6 +616,10 @@ export interface components {
             sample_idea: string;
             /** Side Effects */
             side_effects: boolean;
+            /** Supported Policies */
+            supported_policies?: {
+                [key: string]: unknown;
+            }[] | null;
         };
         /** Profile */
         Profile: {
@@ -674,6 +721,10 @@ export interface components {
             blocked_claims_only_in_b: {
                 [key: string]: string;
             }[];
+            /** Checker Name A */
+            checker_name_a?: string | null;
+            /** Checker Name B */
+            checker_name_b?: string | null;
             /** Checker Profile A */
             checker_profile_a?: string | null;
             /** Checker Profile B */
@@ -713,6 +764,10 @@ export interface components {
             draft_v2_post_changed: boolean;
             /** Idea */
             idea: string;
+            /** Maker Name A */
+            maker_name_a?: string | null;
+            /** Maker Name B */
+            maker_name_b?: string | null;
             /**
              * Memory Ids A
              * @default []
@@ -733,6 +788,15 @@ export interface components {
             run_b_id: string;
             /** Same Idea */
             same_idea: boolean;
+            /** Scout Name A */
+            scout_name_a?: string | null;
+            /** Scout Name B */
+            scout_name_b?: string | null;
+            /**
+             * Stage Bindings Changed
+             * @default false
+             */
+            stage_bindings_changed: boolean;
             /** Status A */
             status_a: string;
             /** Status B */
@@ -740,10 +804,19 @@ export interface components {
         };
         /** RunInput */
         RunInput: {
-            /** Agent Name */
+            /**
+             * Agent Name
+             * @description Legacy Maker selector. Preserved for compatibility. Maker stage uses maker_name when provided, else agent_name.
+             */
             agent_name: string;
             /**
+             * Checker Name
+             * @description Checker stage agent name. Defaults to built-in Checker.
+             */
+            checker_name?: string | null;
+            /**
              * Checker Profile
+             * @description Legacy strictness. Strict adds the superlatives policy. Checker agent policies add blocks on top.
              * @default standard
              * @enum {string}
              */
@@ -751,10 +824,20 @@ export interface components {
             /** Idea */
             idea: string;
             /**
+             * Maker Name
+             * @description Maker stage agent name. Defaults to agent_name for compatibility.
+             */
+            maker_name?: string | null;
+            /**
              * Memory Ids
              * @default []
              */
             memory_ids: string[];
+            /**
+             * Scout Name
+             * @description Scout stage agent name. Defaults to built-in Scout.
+             */
+            scout_name?: string | null;
             /**
              * Seed Unverified Claim
              * @default false
@@ -1230,6 +1313,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    checker_policies_api_checker_policies_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CheckerPoliciesOut"];
                 };
             };
         };

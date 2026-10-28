@@ -81,7 +81,9 @@ def test_checker_strict_vs_standard_same_idea(client):
     strict = run_with(client, memory_ids=[item['id']], checker_profile='strict')
     assert strict['checker_v1']['blocked_count'] == 1
     assert strict['checker_v1']['blocked_claims'][0]['claim'] == 'Amazing vegan wallet for commuters'
-    assert 'strict Checker profile' in strict['checker_v1']['blocked_claims'][0]['reason']
+    assert 'superlatives' in strict['checker_v1']['blocked_claims'][0]['reason']
+    assert 'superlative or hype' in strict['checker_v1']['blocked_claims'][0]['reason']
+    assert strict['checker_profile'] == 'strict'
     assert strict['checker_v2']['blocked_count'] == 0
     assert 'Amazing vegan wallet for commuters' not in strict['maker_draft_v2']['post']
     assert client.post(f"/api/runs/{strict['run_id']}/approve", json={}).status_code == 200
