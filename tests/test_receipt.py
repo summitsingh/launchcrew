@@ -65,20 +65,25 @@ class ReceiptTests(unittest.TestCase):
         with patch.dict(os.environ, {'META_API_KEY': 'ENV_PLACEHOLDER'}):
             response = io.StringIO(json.dumps({'choices': [{'message': {'content': '{"facts_used": []}'}}]}))
             with patch.object(spark, 'urlopen', return_value=contextlib.closing(response)) as network:
-                result = spark.call_spark_strict_json('system', 'demo', {})
+                result = spark.call_spark_strict_json('system', 'demo', {'facts_used': []})
                 self.assertEqual(result['mode'], 'spark')
                 self.assertEqual(network.call_args.kwargs['timeout'], 30)
                 payload = json.loads(network.call_args.args[0].data)
-                self.assertEqual(payload['response_format'], {'type': 'json_object'})
+                self.assertEqual(payload['response_format']['type'], 'json_schema')
+                self.assertTrue(payload['response_format']['json_schema']['strict'])
+                self.assertEqual(payload['response_format']['json_schema']['schema']['required'], ['facts_used'])
             with patch.object(spark, 'urlopen', side_effect=ValueError('ENV_PLACEHOLDER')):
-                result = spark.call_spark_strict_json('system', 'demo', {})
+                result = spark.call_spark_strict_json('system', 'demo', {'facts_used': []})
                 self.assertEqual(result['error_type'], 'ValueError')
                 self.assertNotIn('ENV_PLACEHOLDER', json.dumps(result))
 
     def test_model_facts_filtered(self):
         synthesis = {'mode': 'spark', 'model_used': 'placeholder', 'attempted': True,
                      'raw_json': {'facts_used': ['best in Texas'], 'risks': []}}
-        with patch('launchcrew.run.spark_for_agent', return_value=synthesis):
+        with patch.dict(os.environ, {'META_API_KEY': 'ENV_PLACEHOLDER'}), patch(
+                'launchcrew.run.spark_for_agent', side_effect=[synthesis,
+                    {'mode': 'deterministic_fallback', 'attempted': False},
+                    {'mode': 'deterministic_fallback', 'attempted': False}]):
             receipt = self.run_demo()
         self.assertFalse(receipt['scout']['facts_used'][-1]['verified'])
         self.assertNotIn('best in Texas', receipt['maker_draft_v1']['claims'])

@@ -1,10 +1,11 @@
 """LaunchCrew demo pipeline. Local drafts and receipts only."""
 import argparse
 import json
+import os
 from pathlib import Path
 
 from . import agents
-from .facts import check_claim, check_claims, check_draft, load_facts
+from .facts import check_sentence, check_claims, check_draft, load_facts
 from .receipts import create_receipt, save_receipt, timestamp, failed_receipt
 from .spark import spark_for_agent
 from .wonder import wonder_synthesize_for_scout
@@ -27,8 +28,29 @@ def make_draft(claims):
     return {'post': text, 'email': text, 'claims': list(claims)}
 
 
-def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverified_claim=False, receipt_writer=save_receipt, model_enabled=True):
+def model_usage(attempts):
+    """Only allowlisted metadata can reach persistent receipts."""
+    successful = [r for _, r in attempts if r['mode'] == 'spark']
+    attempted = [r for _, r in attempts if r.get('attempted', False)]
+    errors = [r['error_type'] for _, r in attempts if r.get('error_type')]
+    return {'spark_calls': sum(int(r.get('attempted', False)) for kind, r in attempts if kind == 'spark'),
+             'spark_mode': 'spark' if successful else 'deterministic_fallback',
+             'mode': 'spark' if successful else (errors[0] if errors else 'deterministic_fallback'),
+             'model_used': successful[0]['model_used'] if successful else 'none',
+             'models_used': sorted({r['model_used'] for r in successful}),
+             'error_types': errors, 'wonder_used': any(kind == 'wonder' and r['mode'] == 'spark' for kind, r in attempts),
+             'wonder_attempts': sum(int(r.get('attempted', False)) for kind, r in attempts if kind == 'wonder'),
+             'token_counts': {name: sum(r.get('usage', {}).get(name, 0) for _, r in attempts)
+                              for name in ('prompt_tokens', 'completion_tokens', 'total_tokens')},
+             'tokens_known': bool(attempted) and all('total_tokens' in r.get('usage', {}) for r in attempted),
+             'data_mode': 'standard_no_train',
+             'data_mode_note': 'Stated intent for user data, not a verified API setting.'}
+
+
+def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverified_claim=False, receipt_writer=save_receipt, model_enabled=True, visual_verifier=None):
+    model_enabled = model_enabled and bool(os.environ.get('META_API_KEY', '').strip())
     events = []
+    attempts = []
     step = 'load_agents'
     try:
         profiles = {name: agents.load_agent(name, agents_path) for name in ('Scout', 'Maker', 'Checker')}
@@ -47,21 +69,34 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
         event('deterministic_checks', 'Scout', 'Checked facts file before optional synthesis')
         task = json.dumps({'idea': idea, 'approved_claims': claims, 'sources': facts['sources']})
         step = 'scout'
-        wonder = wonder_synthesize_for_scout(task, lambda: spark_for_agent(profiles['Scout'], task)) if model_enabled else None
-        model = (wonder if wonder is not None else spark_for_agent(profiles['Scout'], task)) if model_enabled else {
-            'mode': 'deterministic_fallback', 'attempted': False, 'note': 'Demo adapter disables model calls.'}
+        wonder = wonder_synthesize_for_scout(task, None) if model_enabled else None
+        if wonder is not None:
+            attempts.append(('wonder', wonder))
+        wonder_used = wonder is not None and wonder['mode'] == 'spark'
+        model = wonder if wonder_used else (spark_for_agent(profiles['Scout'], task) if model_enabled else {
+            'mode': 'deterministic_fallback', 'model_used': 'none', 'attempted': False})
+        if not wonder_used:
+            attempts.append(('spark', model))
+
+        def model_candidate(name, text):
+            if not model_enabled:
+                return None
+            result = spark_for_agent(profiles[name], text)
+            attempts.append(('spark', result))
+            return result.get('raw_json') if result['mode'] == 'spark' else None
+
         scout = {'facts_used': [{'claim': c, 'verified': True, 'evidence': c, 'sources': facts['sources']} for c in claims],
                  'risks': ['Demo risk: unsupported product claims require revision.',
                            'Demo risk: channel suitability is unverified by this facts file.'],
                  'sources': facts['sources'], 'model_mode': model['mode'],
-                 'model_note': model.get('note', model.get('error_type', 'Optional Scout synthesis received.'))}
+                 'model_note': model.get('error_type', 'Optional Scout synthesis received.' if model['mode'] == 'spark' else 'No model synthesis.')}
         if model['mode'] == 'spark':
             raw = model['raw_json']
             candidates = raw.get('facts_used', [])
             if isinstance(candidates, list):
                 for candidate in candidates:
                     if isinstance(candidate, str) and candidate not in claims:
-                        result = check_claim(candidate, facts)
+                        result = check_sentence(candidate, facts)
                         scout['facts_used'].append({**result, 'sources': facts['sources'] if result['verified'] else []})
             # Risks are hypotheses for review, never approved product facts.
             risks = raw.get('risks', [])
@@ -73,9 +108,20 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
             # Demo test seed only, not normal Maker behavior.
             v1_claims.append('best in Texas')
         step = 'maker_draft_v1'
+        maker = model_candidate('Maker', task)
+        if maker:
+            # Only exact, independently verified sentences can reach Maker.
+            safe = [c for c in maker['claims'] if check_sentence(c, facts)['verified']]
+            proposed = make_draft(safe) if safe else None
+            if proposed and not check_pack(proposed, facts)['blocked_count']:
+                v1_claims = safe + (['best in Texas'] if seed_unverified_claim else [])
         v1 = make_draft(v1_claims)
         event('maker_draft_v1', 'Maker', 'Prepared local post and email drafts')
         step = 'checker_v1'
+        suggestion = model_candidate('Checker', json.dumps({'draft': v1, 'approved_claims': claims}))
+        if suggestion:
+            # Candidate claims are checked but cannot change the actual draft verdict.
+            check_pack(make_draft(suggestion['claims']), facts)
         c1 = check_pack(v1, facts)
         event('checker_v1', 'Checker', 'Checked explicit claims and draft text; blocked_count=' + str(c1['blocked_count']))
         # Rebuild from verified allowlist sentences, removing every blocked sentence.
@@ -91,17 +137,19 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
         if approve:
             event('approval', 'demo_human', 'Simulated approval for local export')
         event('receipt', 'LaunchCrew', 'Prepared receipt for storage; no submission attempted')
-        usage = {'spark_calls': int(wonder is None and model.get('attempted', False)),
-                 'spark_mode': model['mode'], 'wonder_used': wonder is not None,
-                 'data_mode': 'standard_no_train',
-                 'data_mode_note': 'Stated intent for user data, not a verified API setting.'}
+        usage = model_usage(attempts)
         step = 'receipt'
         receipt = create_receipt(Path(out).stem, idea, scout, v1, c1, v2, c2, events, usage, approve)
+        if visual_verifier is not None:
+            receipt['visual_verification'] = visual_verifier()
         receipt_writer(receipt, out)
         return receipt
     except Exception as error:
-        receipt_writer(failed_receipt(Path(out).stem,
-                                    [e for e in events if e['step'] != 'receipt'], step, error), out)
+        failure = failed_receipt(Path(out).stem,
+                                 [e for e in events if e['step'] != 'receipt'], step, error)
+        failure['model_usage'] = model_usage(attempts)
+        failure['visual_verification'] = {'method': 'not_run', 'checked': False}
+        receipt_writer(failure, out)
         raise
 
 

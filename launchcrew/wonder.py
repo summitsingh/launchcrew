@@ -10,4 +10,4 @@ def wonder_synthesize_for_scout(text, fallback_callable):
     result = _call('Scout synthesis only. Use supplied demo facts; mark other claims unverified.',
                    text, {'facts_used': ['approved claim'], 'risks': ['demo risk']}, model)
     # The caller owns fallback_callable invocation so attempts can be audited once.
-    return result if result['mode'] == 'spark' else None
+    return result
