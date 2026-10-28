@@ -1,0 +1,41 @@
+# Local demo only. Trust auth is limited to this isolated development network.
+services:
+  db:
+    build:
+      context: .
+      dockerfile: containers/db.Containerfile
+    image: localhost/launchcrew-db:demo
+    environment:
+      POSTGRES_DB: launchcrew
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      - launchcrew-db:/var/lib/postgresql/data:U
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U postgres -d launchcrew]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+  api:
+    build:
+      context: .
+      dockerfile: containers/api.Containerfile
+    image: localhost/launchcrew-api:demo
+    environment:
+      DATABASE_URL: postgresql://postgres@db:5432/launchcrew
+      AUTH_ENABLED: 'false'
+      PUBLIC_BASE_URL: http://127.0.0.1:3001
+    ports: ['127.0.0.1:8001:8000']
+    depends_on:
+      db:
+        condition: service_healthy
+  web:
+    build:
+      context: .
+      dockerfile: containers/web.Containerfile
+      args:
+        API_URL: http://api:8000
+    image: localhost/launchcrew-web:demo
+    ports: ['127.0.0.1:3001:3000']
+    depends_on: [api]
+volumes:
+  launchcrew-db:

@@ -1,0 +1,12 @@
+.git
+.venv
+.local
+**/node_modules
+**/.next
+**/__pycache__
+**/.pytest_cache
+**/test-results
+**/*.tsbuildinfo
+.env
+.env.*
+runs
