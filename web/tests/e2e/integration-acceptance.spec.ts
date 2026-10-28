@@ -164,11 +164,24 @@ test('integration acceptance V1 plus V2', async ({ page, request }) => {
   const angles = dayHeadings.filter((h) => h.startsWith('Day '));
   expect(angles).toHaveLength(7);
   expect(new Set(angles).size).toBe(7);
+  const briefs: string[] = [];
+  for (let day = 1; day <= 7; day++) {
+    const card = page.locator('article', { has: page.getByRole('heading', { name: `Day ${day}:` }) });
+    briefs.push(await card.locator('h3 + p').innerText());
+  }
+  expect(briefs).toHaveLength(7);
+  expect(briefs.every((brief) => brief.trim().length > 0)).toBe(true);
+  expect(new Set(briefs).size).toBe(7);
   const weekId = await page.locator('section p.run-id').first().innerText();
   const week = await request.get(`/api/campaigns/${weekId}`);
   const weekJson = await week.json();
+  const apiBriefs = weekJson.days.map((d: { brief: string }) => d.brief);
+  expect(new Set(apiBriefs).size).toBe(7);
+  expect(briefs).toEqual(apiBriefs);
   const day2Run = weekJson.days[1].run_id;
   const day1Run = weekJson.days[0].run_id;
+  // SEEDED blocked day: direct receipt update in the disposable database,
+  // then the browser must render the guard. Not a natural UI blocked path.
   seedReceipt(day2Run, 'checker_v2,blocked_count', '1');
   await page.reload();
   await page.getByRole('button', { name: 'Campaign', exact: false }).click();
@@ -179,6 +192,11 @@ test('integration acceptance V1 plus V2', async ({ page, request }) => {
   await expect(day2Card.getByRole('button', { name: 'Export pack', exact: true })).toHaveCount(0);
   const day1Card = page.locator('article', { has: page.getByRole('heading', { name: 'Day 1:' }) });
   await expect(day1Card.getByRole('button', { name: 'Export pack', exact: true })).toHaveCount(0);
+  const day1RunRefused = await request.post(`/api/runs/${day1Run}/export`, { data: {} });
+  expect(day1RunRefused.status()).toBe(422);
+  const day1CampaignRefused = await request.post(`/api/campaigns/${weekId}/days/1/export`, { data: {} });
+  expect(day1CampaignRefused.status()).toBe(422);
+  await expect(day1Card.getByText('pending_approval')).toBeVisible();
   await day1Card.getByRole('button', { name: 'Approve for export', exact: true }).click();
   await expect(day1Card.getByText('approved_for_export')).toBeVisible();
   const day1DownloadEvent = page.waitForEvent('download');
@@ -198,6 +216,8 @@ test('integration acceptance V1 plus V2', async ({ page, request }) => {
   await page.screenshot({ path: `${local}/07-campaign.png`, fullPage: true });
 
   // Failed run guard in the queue: Approve is disabled, export is refused.
+  // SEEDED failed run: direct receipt update in the disposable database,
+  // then the browser must render the guard. Not a natural UI failure path.
   const failedRun = await request.post('/api/runs', { data: { idea: wallet, agent_name: agentName, seed_unverified_claim: false } });
   const failedJson = await failedRun.json();
   seedReceipt(failedJson.run_id, 'status', '"failed"');
