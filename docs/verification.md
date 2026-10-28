@@ -1,5 +1,19 @@
 # Local verification, Oct 27, 2026
 
+## Update, Oct 27 evening, superseding stale CI and live-model statements
+
+Remote GitHub Actions execution is no longer unverified. Completed Verify LaunchCrew runs, with links:
+- Main: run 40618077504, commit 4bb295d, Status Success, 5m 5s, https://github.com/summitsingh/launchcrew/actions/runs/40618077504
+- Auth branch, context only, not main: run 40618273486, commit 8c49012, feature/auth-hardening, Status Success, 4m 44s, https://github.com/summitsingh/launchcrew/actions/runs/40618273486
+- AWS branch, context only, not main: run 40617911319, commit 9b11d52, feature/aws-deployment-prep, Status Success, 4m 51s, https://github.com/summitsingh/launchcrew/actions/runs/40617911319
+Test counts are not listed in the run page text, so no count is claimed here beyond workflow success. Main run annotations are warnings only: Node.js 20 deprecation, no artifacts for Playwright paths, and ubuntu-latest migration notice.
+
+Historical live Spark backend pass, Oct 27 evening: model muse-spark-1.3, 3 Spark calls, 5,401 total tokens, Checker still blocked the seeded unverified claim deterministically, approval and export both HTTP 200, run run_40c88a9d14ea48e18cb85386a86545c6, commit ea6666e at that time, via FastAPI TestClient plus standalone Postgres, temporary schema dropped. This is a historical backend pass, not a container pass, not a deployment pass, not a current retest, and not a claim that Spark passes today in every path.
+
+Live SAM end to end remains OPEN, not passed. Files step failed 400 with original DSC_3252.JPG, 5504 by 8256, 25,956,803 bytes; files step succeeded 200 with derivative DSC_3252_demo_1600.jpg, 1067 by 1600, 496,593 bytes, Accept application/json in diagnostic code; responses never run; product retry never run in the fixed configuration; checked true never recorded; provider file from the successful derivative upload is left until deleted, delete endpoint unconfirmed. A files-only success is not a SAM pass.
+
+Explicitly retained as OPEN: container-path model tests for Spark and SAM through the Podman container API with a key at container start, real Google and Facebook sign-in, deployment at launchcrew.summitsingh.com, demo video, and final submission. Video gate is BOTH a live SAM pass AND a CI pass; CI pass is now met, SAM pass is not, so video stays gated. Submission gate is Summit's final tap after demo, repo, video, and deployment are ready, due Nov 4, 2026, 9:00 PM ET, and is not done.
+
 Machine: summit-amd. Checkout: /home/summit/launchcrew. Work stayed local. No Docker daemon, AWS provisioning, DNS creation, submission, signed-in browser, or origin push was used. Git commits are local for independent coordinator verification.
 
 ## Recovered work and changes
@@ -101,7 +115,7 @@ The Request annotation, pytest pythonpath, in-memory client generation, workspac
 | Addition | Result |
 | --- | --- |
 | A1 testing | Implemented and locally verified: pytest 21, unittest 38, Vitest 6, Playwright 12 passing. |
-| A2 CI | Implemented for every push and pull request; constituent commands verified locally. Remote Actions execution remains unverified because no push is authorized. |
+| A2 CI | Implemented for every push and pull request; constituent commands verified locally. Remote Actions execution has since been verified: main run 40618077504, commit 4bb295d, Status Success, 5m 5s, https://github.com/summitsingh/launchcrew/actions/runs/40618077504 . Auth branch run 40618273486, commit 8c49012, Success, 4m 44s, and AWS branch run 40617911319, commit 9b11d52, Success, 4m 51s, are branch context only, not main. |
 | A3 package managers | uv preinstalled, pnpm locally installed; frozen Python and pnpm installs verified, both lockfiles committed. |
 | A4 database | SQLAlchemy and Alembic verified on real local Postgres. Raw psycopg persistence removed; retained SQL file explicitly superseded. |
 | A5 frontend | Tailwind, locally styled attributed shadcn/ui Button pattern, and TanStack Query queue/run polling and export mutation state implemented and browser verified. |
@@ -110,9 +124,9 @@ The Request annotation, pytest pythonpath, in-memory client generation, workspac
 
 ## Remaining gates and exclusions
 
-Open gates are independent coordinator verification and any later coordinator push; remote GitHub Actions execution; optional compose-path execution; real Google and Facebook sign-in with provider credentials and HTTPS; deployment TLS including API-to-database TLS; the blank AWS cost cap, later provisioning approval, resource and region review, DNS creation and later teardown verification; live Spark; live SAM; v2 build and lock; demo video; and final submission authorization and execution. AWS, DNS, auth sign-in, v2, Spark, SAM, and submission are not claimed as live or done.
+Open gates are independent coordinator verification and any later coordinator push; optional compose-path execution; real Google and Facebook sign-in with provider credentials and HTTPS; deployment TLS including API-to-database TLS; the blank AWS cost cap, later provisioning approval, resource and region review, DNS creation and later teardown verification; live Spark container-path and deployment tests; live SAM end to end; v2 build and lock; demo video; and final submission authorization and execution. AWS, DNS, auth sign-in, v2, SAM end to end, and submission are not claimed as live or done. Live Spark is claimed only as the historical backend pass described in the Oct 27 evening update above, not as a container, deployment, or current pass.
 
-Not added: Redis queue, S3 photo storage, Sentry, pgvector, Terraform, a second auth system, WebSockets for run progress, DynamoDB, Mongo, SQLite as primary, Svelte, Astro, Remix, Django, Node backend, or Go backend. The Next server provides frontend rendering and the API proxy only. No AWS or DNS command was executed, nothing was submitted, and nothing was pushed.
+Not added: Redis queue, S3 photo storage, Sentry, pgvector, Terraform, a second auth system, WebSockets for run progress, DynamoDB, Mongo, SQLite as primary, Svelte, Astro, Remix, Django, Node backend, or Go backend. The Next server provides frontend rendering and the API proxy only. No AWS or DNS command was executed in that run, nothing was submitted in that run, and nothing was pushed in that run; later pushes and remote CI runs are recorded in the Oct 27 evening update above.
 
 ## Final wallet demo runs
 
