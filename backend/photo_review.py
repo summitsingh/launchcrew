@@ -60,16 +60,39 @@ def blank_photo_status():
             'actor': '', 'checked_at': ''}
 
 
+def _invalid_photo_status(receipt, reason):
+    """Fail-closed placeholder for a present-but-unusable photo status.
+
+    Only an absent legacy status may default to ``no_photo``. Anything
+    present that is malformed, unknown, or inconsistent must keep blocking
+    approval and export until resolved.
+    """
+    return {'state': STATE_REQUESTED_UNCHECKED, 'label': None,
+            'reason': 'invalid_photo_status: ' + reason,
+            'policy_version': PHOTO_POLICY_VERSION,
+            'revision': _current_revision(receipt),
+            'actor': '', 'checked_at': ''}
+
+
 def photo_status_of(receipt):
-    """Return the receipt photo status, defaulting to no-photo legacy."""
-    status = receipt.get('photo_status')
-    if not isinstance(status, dict):
+    """Return the receipt photo status, defaulting to no-photo legacy.
+
+    The legacy default applies only when no photo status is present at
+    all. A present status that is malformed or names an unknown state
+    fails closed instead of silently becoming ``no_photo``.
+    """
+    if not isinstance(receipt, dict) or 'photo_status' not in receipt:
         return blank_photo_status()
+    status = receipt.get('photo_status')
+    if status is None:
+        return blank_photo_status()
+    if not isinstance(status, dict):
+        return _invalid_photo_status(receipt, 'photo status is not an object')
     merged = blank_photo_status()
     merged.update({k: status.get(k, merged[k]) for k in merged})
     if merged['state'] not in (STATE_NO_PHOTO, STATE_REQUESTED_UNCHECKED,
                                STATE_CHECK_REQUESTED, STATE_CHECKED):
-        return blank_photo_status()
+        return _invalid_photo_status(receipt, 'unknown photo state')
     return merged
 
 
@@ -85,7 +108,10 @@ def photo_block_reason(receipt):
     status = photo_status_of(receipt)
     if status['state'] == STATE_NO_PHOTO:
         return None
+    # Strict pass: exact detected label on the exact current revision.
+    # Bool coercions (True == 1) must never satisfy the revision match.
     if (status['state'] == STATE_CHECKED and status['label'] == 'detected'
+            and type(status.get('revision')) is int
             and status['revision'] == _current_revision(receipt)):
         return None
     if status['state'] in BLOCKING_STATES:
@@ -109,13 +135,16 @@ def apply_photo_event(receipt, *, event, actor, status):
 
     Text source truth is preserved: ``human_draft`` post/email/claims are
     untouched and the history entry keeps the existing draft/check
-    alongside the ``photo_event`` discriminator. Superseded entries are
+    alongside the ``photo_event`` discriminator. The superseded snapshot
+    keeps the PRIOR photo state; the new status lives only on the revised
+    receipt, so the entry describes what changed. Superseded entries are
     never mutated here; a new entry is appended.
     """
     if event not in (PHOTO_EVENT_CHECKED, PHOTO_EVENT_REMOVED):
         raise ValueError('Unknown photo event')
     revised = copy.deepcopy(receipt)
     previous = _current_revision(revised)
+    prior_status = copy.deepcopy(photo_status_of(revised))
     now = timestamp()
     status = dict(status)
     status['revision'] = previous + 1
@@ -134,7 +163,7 @@ def apply_photo_event(receipt, *, event, actor, status):
                     'stage_bindings': copy.deepcopy(revised.get('stage_bindings')),
                     'memory_used': copy.deepcopy(revised.get('memory_used')),
                     'photo_event': event,
-                    'photo_status': copy.deepcopy(status),
+                    'photo_status': prior_status,
                     'revised_by': actor,
                     'revised_at': now,
                     'superseded_by': previous + 1, 'outcome': 'superseded_by_photo_event'})
@@ -154,8 +183,16 @@ def apply_photo_event(receipt, *, event, actor, status):
     return revised
 
 
-def attach_verdict(receipt, *, label, reason, actor):
-    """Attach a final verdict to the current revision without bumping."""
+def attach_verdict(receipt, *, label, reason, actor, uploads=0, segmentations=0,
+                   segmented=False):
+    """Attach a final verdict to the current revision without bumping.
+
+    Transport accounting is explicit: ``uploads``/``segmentations`` count
+    actual provider calls made for this check, and ``segmented`` is true
+    only when a segmentation actually completed. The note never claims a
+    send that did not happen, and only sanitized summary fields reach the
+    receipt and audit log: no bytes, digests, file IDs, or geometry.
+    """
     revised = copy.deepcopy(receipt)
     now = timestamp()
     status = photo_status_of(revised)
@@ -165,10 +202,37 @@ def attach_verdict(receipt, *, label, reason, actor):
                    'actor': actor, 'checked_at': now})
     revised['photo_status'] = status
     transport = dict(revised.get('photo_transport') or {})
-    transport.update({'attempts': int(transport.get('attempts', 0)) + 1,
-                      'last_handling': 'segmented' if label else 'delivery_failed',
-                      'note': ('Photo bytes were sent to the segmentation provider for this check; '
-                               'text-model usage above is unchanged and covers text models only.')})
+    try:
+        prior_uploads = int(transport.get('uploads', 0))
+    except (TypeError, ValueError):
+        prior_uploads = 0
+    try:
+        prior_segmentations = int(transport.get('segmentations', 0))
+    except (TypeError, ValueError):
+        prior_segmentations = 0
+    try:
+        prior_attempts = int(transport.get('attempts', 0))
+    except (TypeError, ValueError):
+        prior_attempts = 0
+    uploads = int(uploads or 0)
+    segmentations = int(segmentations or 0)
+    if segmented:
+        handling = 'segmented'
+        note = ('Photo bytes were sent to the segmentation provider for this check; '
+                'text-model usage above is unchanged and covers text models only.')
+    elif uploads or segmentations:
+        handling = 'delivery_failed'
+        note = ('The photo transport was attempted but the segmentation sequence did not '
+                'complete; nothing was segmented. Text-model usage above is unchanged '
+                'and covers text models only.')
+    else:
+        handling = 'delivery_failed'
+        note = ('No photo bytes were sent for this verdict; nothing was segmented. '
+                'Text-model usage above is unchanged and covers text models only.')
+    transport.update({'attempts': prior_attempts + 1,
+                      'uploads': prior_uploads + uploads,
+                      'segmentations': prior_segmentations + segmentations,
+                      'last_handling': handling, 'note': note})
     revised['photo_transport'] = transport
     events = list((revised.get('audit') or {}).get('event_log') or [])
     events.append({'step': PHOTO_EVENT_CHECKED, 'agent': 'human',
