@@ -129,6 +129,41 @@ describe('photo check review copy', () => {
     expect(html).not.toContain('not yet checked)');
   });
 
+  it('marks only the acknowledged current selection checked, never a new file', () => {
+    // The acknowledged selection for the current revision reads checked
+    // and waits for fresh human approval, never not-sent.
+    const checked = selectionPhotoCopy(detected, 1, true);
+    expect(checked.caption).toContain('Checked: these current pixels passed the size and edge gates');
+    expect(checked.caption).toContain('fresh human approval');
+    expect(checked.caption).not.toContain('were not sent');
+    expect(checked.alt).toBe('Selected photo preview (checked on this revision, detected)');
+    // A new file without proof stays unchecked and never inherits the verdict.
+    const fresh = selectionPhotoCopy(detected, 1, false);
+    expect(fresh.caption).toContain('New selection, not yet checked');
+    expect(fresh.caption).toContain('were not sent');
+    expect(fresh.alt).toContain('new local pixels, not yet checked');
+    // A stale proof revision never reads checked on the new revision.
+    const staleProof = selectionPhotoCopy(detected, 2, true);
+    expect(staleProof.caption).toContain('not yet checked');
+    expect(staleProof.caption).not.toContain('Checked: these current pixels passed');
+    // The keyless post-check copy admits the validation-server send: the
+    // bytes reached LaunchCrew validation, but SAM never ran.
+    const keyless = selectionPhotoCopy(notRun, 1, true);
+    expect(keyless.caption).toContain('Checked: these current pixels were sent to the validation server once');
+    expect(keyless.caption).toContain('segmentation did not run');
+    expect(keyless.caption).not.toContain('were not sent');
+    expect(keyless.alt).toContain('segmentation did not run');
+    // The panel renders the checked copy only with proof; without proof
+    // the same detected server state still reads as a new unchecked selection.
+    const html = panel({ stored: detected, revision: 1, selectionName: 'a.png', previewUrl: 'blob:a', hasPayload: true, selectionChecked: true });
+    expect(html).toContain('Checked: these current pixels passed the size and edge gates');
+    expect(html).toContain('checked on this revision, detected');
+    expect(html).not.toContain('were not sent');
+    const htmlFresh = panel({ stored: detected, revision: 1, selectionName: 'b.png', previewUrl: 'blob:b', hasPayload: true });
+    expect(htmlFresh).toContain('New selection, not yet checked');
+    expect(htmlFresh).toContain('were not sent');
+  });
+
   it('disables duplicate checks while a check is pending', () => {
     const html = panel({ selectionName: 'wallet.png', hasPayload: true, pending: true });
     expect(html).toContain('Checking photo...');

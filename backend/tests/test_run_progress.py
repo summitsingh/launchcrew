@@ -137,10 +137,23 @@ def test_first_completion_arrives_before_later_stage_released(client, monkeypatc
         assert by_stage[stage]['profile']
     assert 'receipt' in logged
     assert by_stage['receipt']['evidence'].get('stored') is True
-    # Every stored row carries a distinct server timestamp.
+    # Stored rows keep pipeline order through unique sequence ids, valid
+    # timezone-aware UTC observed times, and nondecreasing instants: two
+    # legitimate quick events may share one millisecond, so uniqueness of
+    # raw strings or millisecond instants is never required. Ties are
+    # ordered by seq, never by the clock alone.
+    seqs = [row['seq'] for row in steps['steps']]
+    assert seqs == sorted(seqs)
+    assert len(set(seqs)) == len(seqs)
     observed = [row['observed_at'] for row in steps['steps']]
-    assert len(set(observed)) == len(observed)
-    assert len({parse_instant(value) for value in observed}) == len(observed)
+    assert observed
+    for value in observed:
+        assert isinstance(value, str) and value
+        parsed = parse_instant(value)
+        assert parsed.tzinfo is not None
+        assert str(value).endswith('+00:00')
+    instants = [parse_instant(value) for value in observed]
+    assert all(later >= earlier for earlier, later in zip(instants, instants[1:]))
     assert receipt['stage_bindings'] == {'scout': 'Scout', 'maker': 'Maker', 'checker': 'Checker'}
     assert receipt['checker_v2']['blocked_count'] == 0
     # Completion was claimed only with the stored receipt: the terminal
@@ -236,6 +249,32 @@ def test_observed_at_is_canonical_utc_across_zone_offsets():
     assert parse_instant(canonical_observed_at(same)) == same
     assert str(canonical_observed_at(same)).endswith('+00:00')
     assert canonical_observed_at(None) is None
+
+
+def test_same_millisecond_events_keep_sequence_order():
+    """Two ordered events in one millisecond stay ordered without unique instants.
+
+    Raw timestamp strings differ at full microsecond precision while the
+    millisecond clock reading ties: the shared millisecond is legitimate,
+    and pipeline order comes from seq, never from forcing the clock apart.
+    """
+    first = '2026-10-28T10:18:37.890757+00:00'
+    second = '2026-10-28T10:18:37.890900+00:00'
+    assert first != second
+    earlier, later = parse_instant(first), parse_instant(second)
+    assert earlier.tzinfo is not None and later.tzinfo is not None
+    assert earlier < later
+    assert earlier.astimezone(timezone.utc).isoformat() == first
+    # The millisecond reading ties: Date-style millisecond truncation
+    # cannot tell these legitimate events apart.
+    assert int(earlier.timestamp() * 1000) == int(later.timestamp() * 1000)
+    assert earlier.microsecond != later.microsecond
+    # Order is carried by seq even when the millisecond clock ties.
+    rows = [{'seq': 0, 'observed_at': first}, {'seq': 1, 'observed_at': second}]
+    seqs = [row['seq'] for row in rows]
+    assert seqs == sorted(seqs) and len(set(seqs)) == len(rows)
+    instants = [parse_instant(row['observed_at']) for row in rows]
+    assert all(later >= earlier for earlier, later in zip(instants, instants[1:]))
 
 
 def test_accept_journal_failure_rolls_back_run_and_starts_no_worker(client, monkeypatch):

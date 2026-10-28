@@ -96,12 +96,53 @@ export function photoStatusCopy(stored: StoredPhoto | null, currentRevision: num
   return `Photo state ${stored.state}: ${stored.reason || 'unavailable'}.${revNote} Approval and export stay refused.`;
 }
 
-/** Caption and alt text for newly selected local pixels, derived from the
- * actual current server verdict. Local pixels are never implied checked:
- * the copy distinguishes a pack with no verdict from one whose current
- * revision already has a detected check, a stale check, or an unconfirmed
- * state. Plain product copy, no implementation noise. */
-export function selectionPhotoCopy(stored: StoredPhoto | null, currentRevision: number): { caption: string; alt: string } {
+/** Caption and alt text for selected local pixels, derived from the
+ * actual current server verdict plus whether THIS selection is the one
+ * the server just checked. Unchecked local pixels are never implied
+ * checked: the copy distinguishes a pack with no verdict from one whose
+ * current revision already has a detected check, a stale check, or an
+ * unconfirmed state. A checked selection is the local generation whose
+ * check response already succeeded for the current revision, so its copy
+ * never claims the pixels were not sent. Plain product copy, no
+ * implementation noise. */
+export function selectionPhotoCopy(
+  stored: StoredPhoto | null,
+  currentRevision: number,
+  checkedCurrent = false,
+): { caption: string; alt: string } {
+  if (checkedCurrent && stored && stored.revision === currentRevision) {
+    if (stored.state === 'checked' && stored.label === 'detected') {
+      return {
+        caption: 'Checked: these current pixels passed the size and edge gates on this revision. They are not approved and not exportable until a fresh human approval passes.',
+        alt: 'Selected photo preview (checked on this revision, detected)',
+      };
+    }
+    if (stored.state === 'requested_unchecked') {
+      return {
+        caption: `Checked: these current pixels were sent to the validation server once, but segmentation did not run (${stored.reason || 'not_run'}). They are not approved and not exportable; approval and export stay refused.`,
+        alt: 'Selected photo preview (checked on this revision, segmentation did not run)',
+      };
+    }
+    if (stored.state === 'check_requested') {
+      return {
+        caption: 'Checking: these current pixels were sent and a check is in flight on this revision. They are not approved and not exportable until it passes.',
+        alt: 'Selected photo preview (check in flight for these pixels)',
+      };
+    }
+    if (stored.state === 'unknown' || stored.state === 'checked' || stored.state === 'no_photo') {
+      const detail = stored.state === 'checked'
+        ? `${stored.label || 'unknown'}: ${stored.reason || 'needs review'}`
+        : `${stored.state}: ${stored.reason || 'unavailable'}`;
+      return {
+        caption: `Checked: these current pixels were checked on this revision and the photo gate did not pass (${detail}). There is no override; they are not approved and not exportable.`,
+        alt: 'Selected photo preview (checked on this revision, photo gate did not pass)',
+      };
+    }
+    return {
+      caption: `Checked: these current pixels were sent on this revision and the photo state is ${stored.state}: ${stored.reason || 'unavailable'}. They are not approved and not exportable.`,
+      alt: 'Selected photo preview (checked on this revision, result unconfirmed)',
+    };
+  }
   const base = 'These local pixels were not sent, and they are not approved and not exportable until an explicit check passes.';
   if (!stored || stored.state === 'no_photo') {
     return {
@@ -255,6 +296,7 @@ export type PhotoPanelProps = {
   selectionName: string | null;
   selectionMeta: string | null;
   previewUrl: string | null;
+  selectionChecked?: boolean;
   cropCanvasRef?: RefObject<HTMLCanvasElement | null>;
   hasPayload: boolean;
   pending: boolean;
@@ -316,7 +358,7 @@ export function PhotoCheckPanel(props: PhotoPanelProps) {
             />
           </div>
           {props.selectionName && (() => {
-            const selection = selectionPhotoCopy(props.stored, props.revision);
+            const selection = selectionPhotoCopy(props.stored, props.revision, props.selectionChecked === true);
             return (
               <div>
                 <p role="status">
@@ -395,6 +437,18 @@ export function PhotoCheck({ receipt, onReceipt }: { receipt: Receipt; onReceipt
   const stored = readStoredPhoto(receipt);
   const transport = readPhotoTransport(receipt);
   const [selection, setSelection] = useState<Selection | null>(null);
+  // Local proof that THIS selection generation is the one whose check
+  // response already succeeded for the current revision. Ephemeral only:
+  // never persisted, never sent, never logged. Set only when the response
+  // for the current selection confirms the current photo check; cleared
+  // on any new file, external revision, new run, unmount, remove, error,
+  // or ambiguous result, so a new file never inherits an older verdict.
+  const [checkedProof, setCheckedProof] = useState<{ url: string; revision: number; runId: string } | null>(null);
+  const checkedProofRef = useRef<{ url: string; revision: number; runId: string } | null>(null);
+  const clearProof = () => {
+    checkedProofRef.current = null;
+    setCheckedProof(null);
+  };
   const [pending, setPending] = useState(false);
   const [removePending, setRemovePending] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -423,6 +477,7 @@ export function PhotoCheck({ receipt, onReceipt }: { receipt: Receipt; onReceipt
     setPreview(null);
     setCropDrawn(false);
     setCropHint(null);
+    clearProof();
   };
 
   // Run changes drop every transient pixel and notice. Revision bumps that
@@ -483,8 +538,10 @@ export function PhotoCheck({ receipt, onReceipt }: { receipt: Receipt; onReceipt
   const handleFile = (file: File) => {
     if (pending || removePending || failed) return;
     seq.current += 1;
-    // A new selection starts a new generation: no earlier admission stays tracked.
+    // A new selection starts a new generation: no earlier admission stays tracked,
+    // and no earlier check verdict is inherited by the new file.
     expectedAdmission.current = null;
+    clearProof();
     const mySeq = seq.current;
     const myRun = runId;
     setError(null);
@@ -609,7 +666,17 @@ export function PhotoCheck({ receipt, onReceipt }: { receipt: Receipt; onReceipt
       }
       const body = result.data;
       expectedAdmission.current = null;
-      lastAckedRevision.current = body.receipt.revision ?? sentRevision + 1;
+      const ackedRevision = body.receipt.revision ?? sentRevision + 1;
+      lastAckedRevision.current = ackedRevision;
+      // The response confirms THIS current selection: record the local
+      // generation it checked. A newer file would have bumped the
+      // generation above and returned early as stale, so only the
+      // selection that was actually sent is ever marked checked.
+      if (selectionRef.current?.url === current.url) {
+        const proof = { url: current.url, revision: ackedRevision, runId: myRun };
+        checkedProofRef.current = proof;
+        setCheckedProof(proof);
+      }
       setPreview(body.preview ?? null);
       setCropDrawn(false);
       setCropHint(null);
@@ -792,6 +859,17 @@ export function PhotoCheck({ receipt, onReceipt }: { receipt: Receipt; onReceipt
     selection.height !== null &&
     validateSelection(selection.file, { width: selection.width, height: selection.height }) === null;
 
+  // The current selection counts as checked only when the acknowledged
+  // proof names exactly this local generation at this revision of this
+  // run. A newer file, an external revision, a new run, a removal, or an
+  // unmount clears the proof, so file B never inherits file A's verdict.
+  const selectionChecked =
+    checkedProof !== null &&
+    selection !== null &&
+    checkedProof.url === selection.url &&
+    checkedProof.revision === revision &&
+    checkedProof.runId === runId;
+
   return (
       <PhotoCheckPanel
         runId={runId}
@@ -802,6 +880,7 @@ export function PhotoCheck({ receipt, onReceipt }: { receipt: Receipt; onReceipt
         selectionName={selection?.file.name ?? null}
         selectionMeta={selectionMeta}
         previewUrl={selection?.url ?? null}
+        selectionChecked={selectionChecked}
         cropCanvasRef={canvasRef}
         hasPayload={selectionValidated}
         pending={pending}

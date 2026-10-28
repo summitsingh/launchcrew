@@ -425,3 +425,65 @@ test('synthetic UI proof (mocked photo-check, never live SAM): superseding N+2 a
   // The UI stays on the superseding revision: no old receipt is restored.
   await expect(page.getByText(`Bound to run ${runId}, revision 2`)).toBeVisible();
 });
+
+test('synthetic UI proof (mocked photo-check, never live SAM): checked selection reads checked, a new file stays unchecked with the old crop gone', async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ width: 375, height: 1000 });
+  const runId = await createCleanRun(page);
+
+  // File A starts unchecked with an honest local-only caption.
+  const fixtureA = `/tmp/launchcrew-synthetic-checked-a-${Date.now()}.png`;
+  writeFileSync(fixtureA, syntheticPng(1600, 1067));
+  await page.getByLabel(/Select photo \(PNG or JPEG/).setInputFiles(fixtureA);
+  await expect(page.getByText(/Unchecked:/)).toBeVisible();
+  await expect(page.getByAltText('Selected photo preview (local only, not yet checked)')).toBeVisible();
+
+  // The mocked detected response applies to file A only: no live SAM.
+  const baseReceipt = (await (await request.get(`/api/runs/${runId}/receipt`)).json()) as Record<string, unknown>;
+  let checkCalls = 0;
+  await page.route('**/api/runs/*/photo-check', async route => {
+    checkCalls += 1;
+    const body = route.request().postDataJSON() as { expected_revision: number };
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(syntheticDetected(baseReceipt, body.expected_revision)),
+    });
+  });
+  await page.getByRole('button', { name: 'Check photo', exact: true }).click();
+
+  // The checked selection draws the real crop and reads checked for the
+  // current pixels with fresh approval still required: never not-sent.
+  const canvas = page.getByTestId('photo-crop-canvas');
+  await expect(canvas).toBeVisible();
+  await expect(page.getByText('Checked: these current pixels passed the size and edge gates on this revision.')).toBeVisible();
+  await expect(page.getByAltText('Selected photo preview (checked on this revision, detected)')).toBeVisible();
+  await expect(page.getByText('These local pixels were not sent')).toHaveCount(0);
+  expect(checkCalls).toBe(1);
+
+  // Selecting a different file B is a new generation: it stays unchecked
+  // with no inherited verdict, the old crop is gone, and nothing is sent
+  // automatically.
+  const fixtureB = `/tmp/launchcrew-synthetic-checked-b-${Date.now()}.png`;
+  writeFileSync(fixtureB, syntheticPng(800, 600));
+  await page.getByLabel(/Select photo \(PNG or JPEG/).setInputFiles(fixtureB);
+  await expect(page.getByText(/New selection, not yet checked:/)).toBeVisible();
+  await expect(
+    page.getByAltText('Selected photo preview (new local pixels, not yet checked; current revision has a detected check)'),
+  ).toBeVisible();
+  await expect(page.getByTestId('photo-crop-canvas')).toHaveCount(0);
+  await expect(page.getByText('Checked: these current pixels passed')).toHaveCount(0);
+  await page.waitForTimeout(1500);
+  expect(checkCalls).toBe(1);
+  // The mock never reached the real server, so the stored server receipt
+  // is untouched on the text-only path: no phantom server check exists.
+  const reread = (await (await request.get(`/api/runs/${runId}/receipt`)).json()) as {
+    revision: number;
+    photo_status: { state: string } | null;
+  };
+  expect(reread.revision).toBe(0);
+  expect(reread.photo_status?.state ?? 'no_photo').toBe('no_photo');
+});
