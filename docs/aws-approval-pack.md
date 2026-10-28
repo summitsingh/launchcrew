@@ -1,16 +1,25 @@
 # LaunchCrew demo approval pack, isolated KoruShield demo
 
-Status: review only, refreshed Oct 28, 2026. No AWS account access, no
-apply, no DNS, no secret, no paid resource, no deployment. No Cloud API
-command is run from any CLI to prepare this pack, and cloud credential
-availability plus account read-only validation itself is still gated.
-This pack authorizes nothing; provisioning and any DNS record each need a
-separate user authorization tap after this pack is reviewed. Every figure
-below is recomputed from primary public price evidence read Oct 28, 2026
+Status: review only, refreshed Oct 28, 2026. No apply, no DNS, no secret,
+no paid resource, no deployment from this pack. Read-only validation was
+completed Oct 28, 2026 against us-east-1 with a limited inventory scope:
+Active CloudFormation stacks 0, ACM certificates 0, ECS clusters 0, ECR
+private repositories 0, Secrets Manager list 0 with no secret values
+retrieved; two available VPCs seen (default 172.31/16 and one existing
+nondefault 10.0.0.0/16) with no peering and no touch of existing
+resources; public DNS nameservers are Cloudflare and the demo hostname
+has no A, CNAME, or AAAA answer (NODATA or NOERROR), so it is not live
+TLS; browser read access proof only, never permission to provision or
+automate. No account ID, production names, resource names, spend amounts,
+or private URLs appear in public source or docs. This pack authorizes
+nothing; provisioning and any DNS record each need a separate user
+authorization tap after this pack is reviewed. Every figure below is
+recomputed from primary public price evidence read Oct 28, 2026
 (Codex read-only, no AWS account), not copied from a fake total. Nothing
 here is a hard spend cap: AWS Budgets send alerts only and cannot enforce
 spending. No contributor or team email and no registration status are
-invented anywhere in this pack.
+invented anywhere in this pack. No active CloudFormation stack is not
+proof of no resources globally.
 
 ## Proposed deployment
 
@@ -44,9 +53,14 @@ invented anywhere in this pack.
 - ALB: internet-facing across 2 AZ, HTTPS 443 only plus HTTP to HTTPS
   redirect; API target HTTPS 8443 with /api/health, web target HTTPS 8443
   with / listening on the web TLS sidecar, never the plain app port.
-- Network: 2 public subnets for service tasks, ALB, and one-off job tasks;
-  2 private subnets for RDS. Tasks carry public IPs (no NAT gateway, no
-  VPC endpoints). One-off jobs run in the public subnets with a public IP
+- Network: fresh unpeered demo VPC 10.42.0.0/16, chosen to avoid the
+  existing nondefault 10.0.0.0/16 range, with 2 public subnets
+  (10.42.1.0/24, 10.42.2.0/24) for service tasks, ALB, and one-off job
+  tasks, and 2 private subnets (10.42.11.0/24, 10.42.12.0/24) for RDS.
+  Same AZ layout, masks, and security policy as the reviewed design,
+  with no changes to existing networks, routes, or attachments, and no
+  peering. Tasks carry public IPs (no NAT gateway, no VPC
+  endpoints). One-off jobs run in the public subnets with a public IP
   under an isolated group with no inbound rules at all, so they can reach
   ECR, Secrets Manager, and Logs; this is the honest minimal egress path,
   because the private subnets have no NAT and no endpoints. The database
@@ -161,7 +175,7 @@ owner email, and nothing stops spending. Automatic teardown is NOT
 configured and there is no hard stop. SNS email delivery needs a
 conservative explicit planning allowance if chosen, NOT a verified quote.
 
-## Owner contact and alerts
+## Owner contact, project budget filter, and coverage limits
 
 BudgetNotifyEmail is a template parameter with an empty default, supplied
 privately at deploy review and never committed with a real address. When
@@ -177,6 +191,38 @@ confirmed subscription, verified after apply. No message or subscription is
 created by reviewing this source; the subscription exists only after an
 authorized stack apply.
 
+DemoBudget is Project scoped only: FilterExpression Tags Project
+LaunchCrew with MatchOptions EQUALS, using the current official
+FilterExpression and TagValues schema. Legacy CostFilters JSON is
+deprecated and not used. This filter never counts the whole account, and
+the old same-account 45 aggregate framing must not be reused as the demo
+budget. Priced resources carry Project LaunchCrew tags (VPC, subnets,
+security groups, ALB, target groups, ECS services with PropagateTags
+SERVICE, ECS task definitions, ECR repositories, RDS, log groups, SNS
+topic) where supported, and ECS tasks inherit service tags through
+propagation. Coverage is not 100 percent and is stated plainly: public
+IPv4, data transfer, SNS delivery, Secrets Manager API calls and staged
+secret rotation, and any untagged or nontagging charges stay outside
+tag-filtered coverage, so a manual billing guard stays on the operator and
+no broad cloud platform monitoring is added here. There is no hard cap
+anywhere in this design.
+
+Budget tag readiness is UNVERIFIED in source. Resource tags alone do not
+scope a budget: the Project key must also be activated as a user defined
+resource cost allocation tag in Billing, and activation needs a separate
+billing approval that is never done by this template or by
+deploy/aws/bootstrap.sh. Allow about 24 hours for a new tag key to appear
+plus about 24 hours for activation. Until then the filter can return no
+data, and a filter with no data or 0 is NOT proof of zero spend and NOT a
+hard cap. Source and bootstrap fail closed on this point: an unfiltered
+budget refuses enable, and monitoring is never claimed working before the
+operator preflight in deploy/aws/bootstrap.sh passes. Resource billing
+begins at infra, RDS, and ALB creation even with both ECS services at
+DesiredCount 0. If activation needs the tag key to appear first, the only
+honest path is staged infra under manual control with a controlled stop,
+the cached cost estimate above, and billing lag noted, never a promise of
+a cap.
+
 ## Explicit expiration, teardown, and access boundary
 
 - Teardown is required after Nov 4 and no later than Nov 9, 2026, with
@@ -191,26 +237,39 @@ authorized stack apply.
   The 4 outside-stack secrets plus ACM and DNS inputs stay privately gated;
   no actual identifiers are invented in this pack.
 - Access boundary: the user asked for isolated KoruShield resources. The
-  exact stack NAME in this pack is a proposal, NOT an existing stack ID,
-  and account identity is UNVERIFIED: this pack distinguishes an isolated
-  ACCOUNT from a separate STACK in the same existing account, and does NOT
-  claim the account is empty or that unrelated production never existed,
-  because no actual inventory was performed. Same-account CostFilters are
-  absent, so an AWS Budget MONTHLY aggregate may cover other account costs.
+  exact stack NAME in this pack is a proposal, NOT an existing stack ID.
+  Account identity was confirmed privately; no account ID appears here.
+  This pack distinguishes an isolated ACCOUNT from a separate STACK in the
+  same existing account, and does NOT claim the account is empty: the
+  account is already in use, not fresh and empty, and unrelated spend
+  already exists above the demo threshold, so the demo budget must stay
+  Project filtered and must never reuse a same-account global aggregate.
   Human credentials stay outside the repository and images.
+- Outside-stack inputs stay gated: the ACM certificate and the 4 Secrets
+  Manager values (runtime DB URL, migration DB URL, TLS material, master
+  password) are created only under a later explicit authorization, and
+  domain DNS is still absent. Actual ACM and DNS validation, cloud IAM
+  bindings, image publication, RDS master creation, and live TLS remain
+  gated and are not proven by reviewing this source. Source eligibility is
+  not cloud API permission proof, and recording and submission gates stay
+  intact.
 
 ## Gates the user must clear at the authorization tap
 
-No generic TBD approval is asked here; each gate below names its exact
-owner and evidence. Cloud credential availability and account read-only
-validation itself is still gated, and no Cloud API command runs in any CLI
-before that tap.
+No generic TBD question is asked here; each gate below names its exact
+owner and evidence, for approval only after this pack is reviewed.
 
 1. Figures above are already refreshed Oct 28, 2026 from primary evidence;
    at the tap, confirm the region is us-east-1 or record the confirmed
    region, with no new figure assumed.
-2. User fills BudgetLimitUsd (recommended 45) and BudgetNotifyEmail.
-3. Separate explicit authorization for the Cloudflare DNS record.
+2. User fills BudgetLimitUsd (recommended 45 monthly, Project filtered)
+   and BudgetNotifyEmail. Separate billing approval is needed to activate
+   the Project key as a user defined resource cost allocation tag; that
+   activation is never done by the template or script and can take about
+   24 hours for key appearance plus about 24 hours for activation.
+3. Separate explicit authorization for the Cloudflare DNS record, the ACM
+   certificate, and the 4 Secrets Manager values; none are created by
+   reviewing this source.
 4. Images built from containers/*.Containerfile on Linux CI
    (podman-local.sh build covers db, api, migrate, web, web-proxy, and
    bootstrap) and published to the owned ECR repositories by a separate
@@ -223,10 +282,27 @@ before that tap.
    definition reference with owned secret and execution role bindings,
    bootstrap role binding STOPPED exit 0, migration
    STOPPED exit 0 with verify-mode proof from the separate verify task
-   definition, then enable re-proving images, bindings, and the verify
+   definition, then enable runs the budget readiness preflight (refuses an
+   unfiltered budget, reports tag activation as UNVERIFIED until Billing
+   shows it, never activates tags, never claims no data or 0 as zero
+   spend) and re-proves images, bindings, and the verify
    proof from live state before updating to fixed 1 each with desired and
    running counts read back (configuration check; serving health needs
    ALB targets after DNS, which this script never claims).
 6. Live verification only after that tap: WEB 200, API 200 through the
    public base, HTTPS chain and container TLS hop, database verify-full,
    and keyless synthetic behavior with no paid inference reachable.
+
+## Tests still needed, not run in this source pass
+
+No test, build, network, or cloud call was run to prepare this source
+change. A later verifier must add and run focused offline checks that do
+not mirror implementation strings and never fake provider proof: VPC CIDR
+nonoverlap with the existing 10.0.0.0/16 range plus all four demo subnets
+inside 10.42.0.0/16 with preserved AZ order, masks, and public IP policy;
+DemoBudget FilterExpression Tags Project LaunchCrew EQUALS present with
+no legacy CostFilters; priced resources carrying Project LaunchCrew tags
+with ECS PropagateTags SERVICE and ECR, RDS, ALB, and log coverage where
+supported; and budget readiness failing closed on an unfiltered budget and
+on UNVERIFIED tag activation without claiming zero spend. No AWS API is
+used by those checks.

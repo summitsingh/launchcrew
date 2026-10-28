@@ -31,7 +31,10 @@
 # Cloudflare DNS, manual snapshots) need a separate approval with exact
 # identifiers and are reported as remaining work. Teardown stays separate in
 # deploy/aws/teardown.sh. An AWS Budget is an alert and estimate mechanism,
-# not an enforced hard spend cap.
+# not an enforced hard spend cap. A budget filter with no data or 0 is not
+# proof of zero spend. Cost allocation tag activation is never done here:
+# the Project key must be activated in Billing under a separate approval,
+# which can take 24h for the key to appear plus 24h for activation.
 # One-off jobs run in the public subnets with a public IP and a security
 # group that allows no inbound traffic at all. That is the honest minimal
 # egress path: private subnets here have no NAT gateway and no VPC endpoints,
@@ -120,9 +123,11 @@ phase_plan() {
   echo "     after the bootstrap task definition secrets and execution role are proven owned"
   echo "  5. migrate: isolated migration task STOPPED exit 0, then separate verify task proof of"
   echo "     expected head revision, runtime identity, rolled-back write, and DDL refusal"
-  echo "  6. enable: re-prove images, bindings, and the runtime-only verify proof from live state,"
-  echo "     then update stack with EnableServices=true, verify desired 1 and running 1 each"
-  echo "     (configuration check only; serving health is proven by ALB targets after DNS)"
+  echo "  6. enable: budget readiness preflight (filter present, tag activation reported,"
+  echo "     never activated here), then re-prove images, bindings, and the runtime-only"
+  echo "     verify proof from live state, then update stack with EnableServices=true,"
+  echo "     verify desired 1 and running 1 each (configuration check only; serving"
+  echo "     health is proven by ALB targets after DNS)"
   echo "Per-phase inputs: infra needs stack, account, region, parameters file only;"
   echo "  images needs the five image URIs plus the four secret ARNs for the API and web bindings;"
   echo "  dbroles needs the bootstrap image and three secret ARNs;"
@@ -134,6 +139,7 @@ phase_plan() {
   echo "- Secrets Manager secret values, ACM certificate, Cloudflare DNS, manual snapshots: separate approval with exact identifiers."
   echo "- Teardown: deploy/aws/teardown.sh after Nov 4 and no later than Nov 9, 2026."
   echo "- Budget alerts are notifications only, not an enforced hard spend cap."
+  echo "- Cost allocation tag activation: Billing console approval only, never this script; allow 24h for the key plus 24h for activation."
 }
 
 if [ "$CONFIRM" -ne 1 ]; then
@@ -911,10 +917,56 @@ if wants_phase migrate; then
   echo "Phase migrate complete: migration STOPPED exit 0 with schema and runtime read-only proof"
 fi
 
+# Budget readiness preflight, read-only and fail-closed. It never activates
+# a cost allocation tag and never changes billing. It refuses enable when
+# the owned DemoBudget lacks the Project=LaunchCrew EQUALS filter, because
+# an unfiltered budget would count the whole account. It then reports tag
+# activation and filtered spend state without claiming proof: resource tags
+# alone do not scope a budget, the Project key must be activated as a user
+# defined resource cost allocation tag in Billing (24h for the key to
+# appear plus 24h for activation), a filter with no data or 0 is not proof
+# of zero spend, spend starts at infra, RDS, and ALB creation even at
+# DesiredCount 0, and there is no hard cap. If activation needs the tag key
+# to appear first, the operator may proceed with staged infra only under a
+# controlled stop, cost estimate, and billing lag note, then rerun this gate.
+check_budget_readiness() {
+  BUDGET_JSON="$(mktemp /tmp/launchcrew-budget-XXXXXX)"
+  if ! "$AWS_BIN" budgets describe-budget --account-id "$EXPECTED_ACCOUNT" --budget-name launchcrew-demo --output json >"$BUDGET_JSON" 2>"$TMP_ERR"; then
+    rm -f "$BUDGET_JSON"
+    echo "budget readiness unreadable, project spend monitoring UNVERIFIED, no claim made." >&2
+    phase_failed enable
+  fi
+  BUDGET_PROOF="$(python3 - "$BUDGET_JSON" 2>/dev/null <<'PYEOF'
+import json, sys
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+budget = (doc.get("Budget") or {})
+expr = (budget.get("BudgetFilters") or budget.get("FilterExpression") or budget.get("CostFilters") or {})
+tags = (expr.get("Tags") or {})
+key = tags.get("Key", "") or ""
+values = tags.get("Values", []) or []
+match = tags.get("MatchOptions", []) or []
+if key == "Project" and "LaunchCrew" in values and "EQUALS" in match:
+    print("FILTER_OK")
+else:
+    print("FILTER_MISSING")
+PYEOF
+)" || { rm -f "$BUDGET_JSON"; echo "budget filter unreadable, project spend monitoring UNVERIFIED." >&2; phase_failed enable; }
+  rm -f "$BUDGET_JSON"
+  BUDGET_PROOF="$(printf '%s' "$BUDGET_PROOF" | tr -d '[:space:]')"
+  [ "$BUDGET_PROOF" = "FILTER_OK" ] || { echo "refused: DemoBudget lacks the Project=LaunchCrew EQUALS filter, project spend monitoring UNVERIFIED." >&2; phase_failed enable; }
+  echo "Verified DemoBudget filter: Tags Project=LaunchCrew EQUALS present."
+  echo "Budget readiness: Project tag activation UNVERIFIED in this run. Activate the Project key as a user defined resource cost allocation tag in Billing under separate approval (24h key appearance plus 24h activation). This script never activates tags."
+  echo "Budget readiness: filtered spend with no data or 0 is NOT proof of zero spend and NOT a hard cap. Spend starts at infra, RDS, and ALB creation even at DesiredCount 0. Manual billing guard stays on the operator."
+}
+
 if wants_phase enable; then
   echo "Phase enable: update stack with EnableServices=true for fixed count 1 each"
   [ "$STACK_EXISTS" -eq 1 ] || { echo "refused: no stack to enable; run --phase infra first" >&2; phase_failed enable; }
   require_stack_complete enable
+  check_budget_readiness
   # Resume guard: a standalone enable re-proves everything boot would rely
   # on, because nothing is assumed from memory. Refresh the full image
   # digest and task definition ref proof, the owned secrets and execution

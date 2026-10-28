@@ -1,12 +1,19 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
   LaunchCrew demo, Fargate plus ALB, review only, NOT applied.
-  No AWS account access, no apply, no DNS, no secrets in this file.
+  No apply, no DNS, no secrets in this file.
   Region, domain, certificate ARN, image URIs, database password secret
   ARN, and budget limit are parameters with no approved defaults.
   Recommended region us-east-1 is NOT confirmed, see deploy README.
   Cost cap is a user choice after seeing the estimate, not a default here.
   Teardown is required after Nov 4 and no later than Nov 9, 2026.
+  Fresh demo VPC 10.42.0.0/16 avoids overlap with the existing
+  nondefault 10.0.0.0/16 network. No existing network changes, routes,
+  or peering. DemoBudget filters to user defined resource cost
+  allocation tag Project=LaunchCrew only, never the whole account.
+  Filter with no data or 0 is not proof of zero spend and not a hard
+  cap. Tag activation status is UNVERIFIED in source, see deploy
+  README and docs/aws-approval-pack.md.
 Parameters:
   AcmCertificateArn:
     Type: String
@@ -41,7 +48,7 @@ Parameters:
     Description: Master database username, for initial creation only. Runtime and migration identities are created separately by deploy/aws/db-roles.sql and are never the master identity.
   BudgetLimitUsd:
     Type: Number
-    Description: AWS Budget limit in USD, for the demo period only. No approved default, supply after Summit chooses a cap. A value of 0 is not an approval, it is a placeholder that must be replaced. An AWS Budget is an alert and estimate mechanism, not an enforced hard spend cap.
+    Description: AWS Budget limit in USD, for the demo period only. No approved default, supply after Summit chooses a cap. A value of 0 is not an approval, it is a placeholder that must be replaced. The budget filters to user defined resource cost allocation tag Project=LaunchCrew with MatchOptions EQUALS, never the whole account. Legacy CostFilters are deprecated and not used. An AWS Budget is an alert and estimate mechanism, not an enforced hard spend cap. A filter returning no data or 0 is not proof of zero spend. Cost allocation tag activation is UNVERIFIED in source and needs a separate billing approval, never activated by this template or script.
   EnableServices:
     Type: String
     Default: 'false'
@@ -61,7 +68,10 @@ Resources:
   Vpc:
     Type: AWS::EC2::VPC
     Properties:
-      CidrBlock: 10.0.0.0/16
+      # Fresh demo range. Existing nondefault network uses 10.0.0.0/16,
+      # so this template uses 10.42.0.0/16 with no overlap, no peering,
+      # and no changes to any existing network, route, or attachment.
+      CidrBlock: 10.42.0.0/16
       EnableDnsSupport: true
       EnableDnsHostnames: true
       Tags:
@@ -83,7 +93,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref Vpc
-      CidrBlock: 10.0.1.0/24
+      CidrBlock: 10.42.1.0/24
       AvailabilityZone: !Select [0, !GetAZs '']
       MapPublicIpOnLaunch: true
       Tags:
@@ -93,7 +103,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref Vpc
-      CidrBlock: 10.0.2.0/24
+      CidrBlock: 10.42.2.0/24
       AvailabilityZone: !Select [1, !GetAZs '']
       MapPublicIpOnLaunch: true
       Tags:
@@ -103,7 +113,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref Vpc
-      CidrBlock: 10.0.11.0/24
+      CidrBlock: 10.42.11.0/24
       AvailabilityZone: !Select [0, !GetAZs '']
       MapPublicIpOnLaunch: false
       Tags:
@@ -113,7 +123,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref Vpc
-      CidrBlock: 10.0.12.0/24
+      CidrBlock: 10.42.12.0/24
       AvailabilityZone: !Select [1, !GetAZs '']
       MapPublicIpOnLaunch: false
       Tags:
@@ -147,6 +157,9 @@ Resources:
       SecurityGroupIngress:
         - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0 }
         - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0 }
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
   ApiSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -157,6 +170,9 @@ Resources:
           FromPort: 8443
           ToPort: 8443
           SourceSecurityGroupId: !Ref AlbSecurityGroup
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
   WebSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -167,6 +183,9 @@ Resources:
           FromPort: 8443
           ToPort: 8443
           SourceSecurityGroupId: !Ref AlbSecurityGroup
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
   DbSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -177,6 +196,9 @@ Resources:
           FromPort: 5432
           ToPort: 5432
           SourceSecurityGroupId: !Ref ApiSecurityGroup
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
   JobSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -268,6 +290,9 @@ Resources:
     Properties:
       LogGroupName: /launchcrew/demo/api
       RetentionInDays: 7
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
   WebLogGroup:
     Type: AWS::Logs::LogGroup
     DeletionPolicy: Delete
@@ -275,6 +300,9 @@ Resources:
     Properties:
       LogGroupName: /launchcrew/demo/web
       RetentionInDays: 7
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
   MigrationLogGroup:
     Type: AWS::Logs::LogGroup
     DeletionPolicy: Delete
@@ -282,6 +310,9 @@ Resources:
     Properties:
       LogGroupName: /launchcrew/demo/migration
       RetentionInDays: 7
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
   DbSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
@@ -478,6 +509,9 @@ Resources:
       Memory: '512'
       ExecutionRoleArn: !GetAtt ApiExecutionRole.Arn
       TaskRoleArn: !GetAtt ApiTaskRole.Arn
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
       ContainerDefinitions:
         - Name: api
           Image: !Ref ApiImageUri
@@ -507,6 +541,9 @@ Resources:
       Memory: '512'
       ExecutionRoleArn: !GetAtt WebExecutionRole.Arn
       TaskRoleArn: !GetAtt WebTaskRole.Arn
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
       ContainerDefinitions:
         - Name: web-app
           Image: !Ref WebImageUri
@@ -547,6 +584,9 @@ Resources:
       Memory: '512'
       ExecutionRoleArn: !GetAtt MigrationExecutionRole.Arn
       TaskRoleArn: !GetAtt MigrationTaskRole.Arn
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
       ContainerDefinitions:
         - Name: migration
           Image: !Ref MigrationImageUri
@@ -571,6 +611,9 @@ Resources:
       Memory: '512'
       ExecutionRoleArn: !GetAtt BootstrapExecutionRole.Arn
       TaskRoleArn: !GetAtt BootstrapTaskRole.Arn
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
       ContainerDefinitions:
         - Name: bootstrap-db-roles
           Image: !Ref BootstrapImageUri
@@ -603,6 +646,9 @@ Resources:
       Memory: '512'
       ExecutionRoleArn: !GetAtt VerifyExecutionRole.Arn
       TaskRoleArn: !GetAtt VerifyTaskRole.Arn
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
       ContainerDefinitions:
         - Name: bootstrap-db-roles
           Image: !Ref BootstrapImageUri
@@ -642,6 +688,9 @@ Resources:
       HealthCheckPath: /api/health
       HealthCheckProtocol: HTTPS
       Matcher: { HttpCode: '200' }
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
   WebTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
@@ -652,6 +701,9 @@ Resources:
       HealthCheckPath: /
       HealthCheckProtocol: HTTPS
       Matcher: { HttpCode: '200' }
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
   HttpsListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
     Properties:
@@ -689,6 +741,10 @@ Resources:
       TaskDefinition: !Ref ApiTaskDefinition
       DesiredCount: !If [ServicesEnabled, 1, 0]
       LaunchType: FARGATE
+      PropagateTags: SERVICE
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
       NetworkConfiguration:
         AwsvpcConfiguration:
           AssignPublicIp: ENABLED
@@ -705,6 +761,10 @@ Resources:
       TaskDefinition: !Ref WebTaskDefinition
       DesiredCount: !If [ServicesEnabled, 1, 0]
       LaunchType: FARGATE
+      PropagateTags: SERVICE
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
       NetworkConfiguration:
         AwsvpcConfiguration:
           AssignPublicIp: ENABLED
@@ -724,6 +784,18 @@ Resources:
         BudgetLimit: { Amount: !Ref BudgetLimitUsd, Unit: USD }
         TimeUnit: MONTHLY
         BudgetType: COST
+        # Project scoped filter only. Legacy CostFilters are deprecated
+        # and not used. Resource Project tags alone do not scope a
+        # budget: the Project key must also be activated as a user
+        # defined resource cost allocation tag in Billing, otherwise
+        # this filter sees no data. No data or 0 is not proof of zero
+        # spend and never a hard cap. Activation status is UNVERIFIED
+        # in source and needs a separate billing approval.
+        FilterExpression:
+          Tags:
+            Key: Project
+            Values: [LaunchCrew]
+            MatchOptions: [EQUALS]
       NotificationsWithSubscribers: !If
         - BudgetNotifyConfigured
         - - Notification: { NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 80, ThresholdType: PERCENTAGE }
