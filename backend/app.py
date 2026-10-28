@@ -69,9 +69,29 @@ class Draft(BaseModel):
 
 
 class Approval(BaseModel):
+    model_config = ConfigDict(extra='allow')
     approved_by: str
     action: str
     timestamp: str
+    revision: int | None = None
+
+
+class HumanDraft(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    post: str
+    email: str
+    claims: list[str] = []
+    revised_by: str | None = None
+    revision: int | None = None
+
+
+class RevisionHistoryEntry(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    revision: int | None = None
+    approvals: list[Approval] = []
+    approved_revision: int | None = None
+    superseded_by: int | None = None
+    outcome: str | None = None
 
 
 class ScoutFact(BaseModel):
@@ -118,6 +138,13 @@ class Receipt(BaseModel):
     status: str
     approval_state: Literal['pending_approval', 'approved_for_export']
     approvals: list[Approval]
+    revision: int = 0
+    approved_revision: int | None = None
+    human_draft: HumanDraft | None = None
+    human_check: Check | None = None
+    revision_history: list[RevisionHistoryEntry] = []
+    exported_draft: Draft | HumanDraft | None = None
+    exported_revision: int | None = None
     maker_draft_v1: Draft | None = None
     maker_draft_v2: Draft | None = None
     checker_v1: Check | None = None
@@ -338,11 +365,53 @@ def get_run(run_id: str, actor: str = Depends(auth.actor)):
         return get_receipt(db, run_id)
 
 
-@app.post('/api/runs/{run_id}/approve', response_model=Receipt)
-def approve(run_id: str, body: Empty, actor: str = Depends(auth.actor)):
+class ReviseIn(Strict):
+    post: str = Field(min_length=1, max_length=2000)
+    email: str = Field(min_length=1, max_length=2000)
+    base_revision: int = Field(default=0, ge=0)
+
+
+@app.post('/api/runs/{run_id}/revise', response_model=Receipt)
+def revise(run_id: str, body: ReviseIn, actor: str = Depends(auth.actor)):
+    from launchcrew import human_review
     with store.connect() as db:
         receipt = get_receipt(db, run_id, True)
-        receipts.approve_receipt(receipt, actor)
+        try:
+            revised = human_review.apply_revision(receipt, body.post.strip(), body.email.strip(), actor, int(body.base_revision))
+        except human_review.NeedsRevision as error:
+            raise HTTPException(422, {'message': str(error), 'blocked_claims': error.check['blocked_claims'],
+                                      'revision_instructions': error.check['revision_instructions'],
+                                      'blocked_count': error.check['blocked_count'],
+                                      'verified_count': error.check['verified_count']})
+        except ValueError as error:
+            message = str(error)
+            if 'stale' in message.lower():
+                raise HTTPException(409, message)
+            raise HTTPException(422, message)
+        db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id'), {'receipt': json.dumps(revised), 'state': revised['approval_state'], 'id': run_id})
+        store.audit(db, run_id, 'human_revised', actor)
+    return revised
+
+
+@app.post('/api/runs/{run_id}/approve', response_model=Receipt)
+def approve(run_id: str, body: dict, actor: str = Depends(auth.actor)):
+    with store.connect() as db:
+        receipt = get_receipt(db, run_id, True)
+        expected = body.get('expected_revision') if isinstance(body, dict) else None
+        if expected is not None:
+            try:
+                expected = int(expected)
+            except (TypeError, ValueError):
+                raise HTTPException(422, 'expected_revision must be an integer')
+            if expected < 0:
+                raise HTTPException(422, 'expected_revision must be an integer')
+        try:
+            receipts.approve_receipt(receipt, actor, expected)
+        except ValueError as error:
+            message = str(error)
+            if 'stale' in message.lower():
+                raise HTTPException(409, message)
+            raise HTTPException(422, message)
         db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id'), {'receipt': json.dumps(receipt), 'state': receipt['approval_state'], 'id': run_id})
         db.execute(text('INSERT INTO approvals(run_id,approved_by) VALUES (:id,:actor)'), {'id': run_id, 'actor': actor})
         store.audit(db, run_id, 'approved_for_export', actor)
@@ -350,9 +419,22 @@ def approve(run_id: str, body: Empty, actor: str = Depends(auth.actor)):
 
 
 @app.post('/api/runs/{run_id}/export', response_model=Receipt)
-def export(run_id: str, body: Empty, actor: str = Depends(auth.actor)):
+def export(run_id: str, body: dict, actor: str = Depends(auth.actor)):
     with store.connect() as db:
-        data = json.loads(adapter.export_pack(get_receipt(db, run_id, True)))
+        from launchcrew import human_review
+        receipt = get_receipt(db, run_id, True)
+        expected = body.get('expected_revision') if isinstance(body, dict) else None
+        if expected is not None:
+            try:
+                expected = int(expected)
+            except (TypeError, ValueError):
+                raise HTTPException(422, 'expected_revision must be an integer')
+            if expected != human_review.current_revision(receipt):
+                raise HTTPException(409, 'Export is stale; the draft changed')
+        try:
+            data = json.loads(adapter.export_pack(receipt))
+        except ValueError as error:
+            raise HTTPException(422, str(error))
         store.audit(db, run_id, 'exported', actor)
     return JSONResponse(data, headers={'Content-Disposition': 'attachment; filename="launchcrew-pack.json"'})
 
@@ -440,10 +522,14 @@ def delete_memory(item_id: str, actor: str = Depends(auth.actor)):
 @app.post('/api/memory/from-run/{run_id}', response_model=MemoryItemOut, status_code=201)
 def learn_memory(run_id: str, body: LearnMemory, actor: str = Depends(auth.actor)):
     with store.connect() as db:
+        from launchcrew import human_review
         receipt = get_receipt(db, run_id, True)
         if receipt['approval_state'] != 'approved_for_export':
             raise HTTPException(409, 'Learning requires explicit run approval')
-        content = ({'idea': receipt['idea'], 'post': receipt['maker_draft_v2']['post'], 'email': receipt['maker_draft_v2']['email']}
+        if not human_review.exportable(receipt):
+            raise HTTPException(409, 'Learning requires approval of the latest revision')
+        draft = human_review.current_draft(receipt)
+        content = ({'idea': receipt['idea'], 'post': draft['post'], 'email': draft['email']}
                    if body.kind == 'approval_example' else {'blocked_claims': receipt['checker_v1']['blocked_claims']})
         item = MemoryItemIn(kind=body.kind, title=f'{body.kind}: {run_id}', content=content)
         return insert_memory(db, item, actor, 'memory_item_learned', run_id)
@@ -581,11 +667,14 @@ def campaign_detail(db, campaign_id):
     result = dict(row)
     result['days'] = []
     for day, receipt in db.execute(text('SELECT d.day,r.receipt FROM campaign_days d JOIN runs r ON r.id=d.run_id WHERE d.campaign_id=:id ORDER BY d.day'), {'id': campaign_id}):
+        from launchcrew import human_review
         angle, brief, _claim = CAMPAIGN_BRIEF_BY_DAY.get(day, ('', '', ''))
+        current = human_review.current_draft(receipt)
+        check = human_review.current_check(receipt)
         result['days'].append({'day': day, 'run_id': receipt['run_id'], 'approval_state': receipt['approval_state'],
-                               'status': receipt['status'], 'checker_v2_blocked_count': (receipt.get('checker_v2') or {}).get('blocked_count'),
+                               'status': receipt['status'], 'checker_v2_blocked_count': (check or {}).get('blocked_count'),
                                'idea': receipt.get('idea', ''), 'angle': angle, 'brief': brief,
-                               'draft_v2_post': (receipt.get('maker_draft_v2') or {}).get('post')})
+                               'draft_v2_post': (current or {}).get('post')})
     return result
 
 
@@ -633,10 +722,10 @@ def campaign_run(campaign_id, day):
 
 
 @app.post('/api/campaigns/{campaign_id}/days/{day}/approve', response_model=Receipt)
-def approve_campaign_day(campaign_id: str, day: int, body: Empty, actor: str = Depends(auth.actor)):
+def approve_campaign_day(campaign_id: str, day: int, body: dict, actor: str = Depends(auth.actor)):
     return approve(campaign_run(campaign_id, day), body, actor)
 
 
 @app.post('/api/campaigns/{campaign_id}/days/{day}/export', response_model=Receipt)
-def export_campaign_day(campaign_id: str, day: int, body: Empty, actor: str = Depends(auth.actor)):
+def export_campaign_day(campaign_id: str, day: int, body: dict, actor: str = Depends(auth.actor)):
     return export(campaign_run(campaign_id, day), body, actor)

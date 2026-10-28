@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { api, unwrap } from '@/lib/api';
@@ -171,4 +171,73 @@ export function CampaignView({ profiles }: { profiles: components['schemas']['Pr
   } });
   const error = create.error || campaign.error || weeks.error || approve.error || download.error;
   return <section aria-label="Campaign"><section className="panel"><h2>Campaign Week</h2><p>Nothing publishes automatically. Review and approve each day individually.</p><form onSubmit={e => { e.preventDefault(); create.mutate(); }}><label htmlFor="campaign-idea">Idea</label><textarea id="campaign-idea" required maxLength={2000} value={idea} onChange={e => setIdea(e.target.value)} /><label htmlFor="campaign-scout">Scout agent</label><select id="campaign-scout" value={scout} onChange={e => setScout(e.target.value)}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</select><label htmlFor="campaign-maker">Maker profile</label><select id="campaign-maker" value={agent} onChange={e => setAgent(e.target.value)}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</select><label htmlFor="campaign-checker-agent">Checker agent</label><select id="campaign-checker-agent" value={checkerAgent} onChange={e => setCheckerAgent(e.target.value)}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</select><p className="hint">Each agent runs its own stage. Original names and rules are kept in each day receipt.</p><label htmlFor="campaign-checker">Checker profile</label><select id="campaign-checker" value={checkerProfile} onChange={e => setCheckerProfile(e.target.value)}><option>standard</option><option>strict</option></select><p className="hint">Supported Checker policies: veto_scope superlatives or price_claims; decision_rules Block superlatives or Block price claims (exact match). Other rules are advisory only.</p><label className="checkbox"><input type="checkbox" checked={seed} onChange={e => setSeed(e.target.checked)} />Include unsupported claim demo</label><Button type="submit" disabled={create.isPending || !profiles.length}>{create.isPending ? 'Creating week...' : 'Create week'}</Button></form><label htmlFor="campaign-select">Open a campaign</label><select id="campaign-select" value={id} onChange={e => setId(e.target.value)}><option value="">Select a week</option>{weeks.data?.map(week => <option key={week.id} value={week.id}>{week.idea} ({week.id})</option>)}</select></section>{error && <p role="alert">{error.message}</p>}{notice && <p role="status">{notice}</p>}{campaign.isFetching && <p>Refreshing week...</p>}{campaign.data && <section><h2>{campaign.data.idea}</h2><p className="run-id">{campaign.data.id}</p>{campaign.data.days.map(day => <CampaignDayCard key={day.day} day={day} busy={approve.isPending || download.isPending} approve={() => approve.mutate(day.day)} download={() => download.mutate(day.day)} />)}</section>}</section>;
+}
+
+export function currentDraftOf(receipt: Receipt) {
+  const revision = (receipt as unknown as { revision?: number }).revision ?? 0;
+  const human = (receipt as unknown as { human_draft?: { post?: string; email?: string } | null }).human_draft;
+  if (revision > 0 && human && typeof human.post === 'string' && typeof human.email === 'string') {
+    return { post: human.post, email: human.email, revision, human: true };
+  }
+  return { post: receipt.maker_draft_v2?.post ?? '', email: receipt.maker_draft_v2?.email ?? '', revision, human: false };
+}
+
+export function currentCheckOf(receipt: Receipt) {
+  const revision = (receipt as unknown as { revision?: number }).revision ?? 0;
+  const human = (receipt as unknown as { human_check?: Receipt['checker_v2'] }).human_check;
+  if (revision > 0 && human) return human;
+  return receipt.checker_v2;
+}
+
+export function revisionStatusOf(receipt: Receipt) {
+  const revision = (receipt as unknown as { revision?: number }).revision ?? 0;
+  const approved = (receipt as unknown as { approved_revision?: number | null }).approved_revision;
+  if (receipt.status === 'failed') return 'failed';
+  if (revision > 0 && receipt.approval_state === 'pending_approval') return 'pending fresh approval';
+  if (receipt.approval_state === 'approved_for_export' && revision > 0 && approved !== revision) return 'pending fresh approval';
+  return receipt.approval_state === 'approved_for_export' ? 'approved' : 'pending approval';
+}
+
+export function FailedRunNotice({ receipt }: { receipt: Receipt }) {
+  if (receipt.status !== 'failed') return null;
+  const audit = (receipt.audit ?? {}) as { event_log?: unknown[]; stopped_reason?: unknown };
+  const log = Array.isArray(audit.event_log) ? audit.event_log : [];
+  const stopped = typeof audit.stopped_reason === 'string' ? audit.stopped_reason : 'unavailable';
+  const failedAt = log.length > 0 ? (log[log.length - 1] as { step?: string }).step ?? stopped : stopped;
+  return <section className="panel" aria-label="Failed run"><p className="eyebrow">RUN STATUS</p><h2>Pipeline stopped safely.</h2><p>This run failed before a complete draft existed, so there is nothing to edit, approve, or export.</p><dl><div><dt>Status</dt><dd>failed</dd></div><div><dt>Failure stage</dt><dd>{String(failedAt)}</dd></div><div><dt>Error type</dt><dd>{(receipt as unknown as { error_type?: string }).error_type ?? 'unavailable'}</dd></div><div><dt>Completed steps</dt><dd>{((receipt as unknown as { completed_steps?: string[] }).completed_steps ?? []).join(', ') || 'none'}</dd></div></dl><p className="hint">No approval or export is offered on failed runs. The stored record is kept as evidence.</p></section>;
+}
+
+export function ReceiptTimeline({ receipt }: { receipt: Receipt }) {
+  const audit = (receipt.audit ?? {}) as { event_log?: Array<{ step?: string; agent?: string; profile?: string; action?: string; timestamp?: string }> };
+  const log = Array.isArray(audit.event_log) ? audit.event_log : [];
+  const history = ((receipt as unknown as { revision_history?: Array<{ revision?: number; approved_revision?: number | null; superseded_by?: number; outcome?: string; approvals?: Array<{ approved_by?: string; revision?: number; timestamp?: string }> }> }).revision_history ?? []);
+  return <section className="panel" aria-label="Receipt timeline"><p className="eyebrow">TIMELINE</p><h2>Recorded events</h2><p className="hint">Every entry below comes from the stored receipt. No times are invented and no live model activity is claimed.</p><ol>{log.map((entry, i) => <li key={i}><strong>{entry.step ?? 'event'}</strong><span> · {entry.agent ?? 'unknown'}{entry.profile ? ` (${entry.profile})` : ''}</span><br /><small>{entry.action ?? ''}</small><br /><small className="run-id">{entry.timestamp ?? 'timestamp unavailable'}</small></li>)}</ol>{history.length > 0 && <div><h3>Superseded approvals</h3>{history.map((entry, i) => <p key={i} className="hint">Revision {entry.revision ?? '?'} superseded by revision {entry.superseded_by ?? '?'} · approvals kept as audit: {(entry.approvals ?? []).map(a => `${a.approved_by ?? 'unknown'}${a.revision != null ? ` (rev ${a.revision})` : ''}`).join(', ') || 'none'}</p>)}</div>}{receipt.approvals.map((approval, i) => <p key={i} className="hint">Approval {i + 1}: {approval.approved_by}{approval.revision != null ? ` · revision ${approval.revision}` : ''} · {approval.timestamp}</p>)}</section>;
+}
+
+export function HumanRevisionEditor({ receipt }: { receipt: Receipt }) {
+  const client = useQueryClient();
+  const failed = receipt.status === 'failed';
+  const base = currentDraftOf(receipt);
+  const [post, setPost] = useState(base.post);
+  const [email, setEmail] = useState(base.email);
+  const [savedAtRevision, setSavedAtRevision] = useState(base.revision);
+  useEffect(() => { setPost(base.post); setEmail(base.email); }, [receipt.run_id, base.revision, base.post, base.email]);
+  const dirty = post !== base.post || email !== base.email;
+  const save = useMutation({
+    mutationFn: async () => {
+      const result = await api.POST('/api/runs/{run_id}/revise', { params: { path: { run_id: receipt.run_id } }, body: { post, email, base_revision: base.revision } });
+      if (!result.response.ok || result.data === undefined) {
+        const detail = (result.error as unknown as { detail?: unknown })?.detail;
+        const blocked = detail && typeof detail === 'object' && Array.isArray((detail as { blocked_claims?: unknown[] }).blocked_claims)
+          ? (detail as { blocked_claims: Array<{ claim?: string; reason?: string }> }).blocked_claims.map(entry => `${entry.claim ?? 'unsupported text'}: ${entry.reason ?? 'needs revision'}`).join('; ')
+          : null;
+        throw new Error(blocked ? `Unsupported text rejected (${result.response.status}). ${blocked}` : `Request failed (${result.response.status}). Check the API and try again.`);
+      }
+      return result.data;
+    },
+    onSuccess: updated => { setSavedAtRevision(updated.revision ?? base.revision + 1); client.invalidateQueries({ queryKey: ['run'] }); client.invalidateQueries({ queryKey: ['queue'] }); },
+  });
+  const needsRevision = save.error ? String((save.error as Error).message) : '';
+  const saved = !dirty && !save.isPending && savedAtRevision === base.revision && base.revision > 0;
+  return <section className="panel" aria-label="Edit drafts"><p className="eyebrow">HUMAN REVIEW</p><h2>Edit post and email</h2><p className="hint">Rechecking compares your edited text against the same verified facts, blocked rules, and Checker policies saved on this run. Unsupported text is rejected and not saved. Saved text clears the prior export approval until you approve the latest revision.</p><p className="hint">Current revision: {base.revision}{base.human ? ' (human revision)' : ' (Maker draft)'} · Status: {revisionStatusOf(receipt)}</p><form onSubmit={e => { e.preventDefault(); save.reset(); save.mutate(); }}><label htmlFor={`human-post-${receipt.run_id}`}>Post text</label><textarea id={`human-post-${receipt.run_id}`} rows={4} required maxLength={2000} value={post} onChange={e => { setPost(e.target.value); }} disabled={failed || save.isPending} /><label htmlFor={`human-email-${receipt.run_id}`}>Email text</label><textarea id={`human-email-${receipt.run_id}`} rows={4} required maxLength={2000} value={email} onChange={e => { setEmail(e.target.value); }} disabled={failed || save.isPending} /><div className="queue-actions"><Button type="submit" disabled={failed || save.isPending || !dirty || !post.trim() || !email.trim()}>{save.isPending ? 'Rechecking...' : 'Save human revision'}</Button></div></form>{dirty && <p role="status">Unsaved changes. Save runs the deterministic recheck.</p>}{saved && <p role="status">Saved revision {base.revision}. This pack needs fresh approval before export.</p>}{save.error && <p role="alert">Needs revision: {needsRevision}. The invalid text was not saved.</p>}</section>;
 }

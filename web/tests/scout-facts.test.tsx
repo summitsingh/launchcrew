@@ -28,6 +28,8 @@ function receipt(overrides: Record<string, unknown> = {}): Receipt {
     memory_used: [],
     approval_state: 'pending_approval',
     approvals: [],
+    revision: 0,
+    revision_history: [],
     summary: { submit_attempted: false },
     audit: {},
     stage_bindings: { scout: 'Scout', maker: 'Maker', checker: 'Checker' },

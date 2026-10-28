@@ -418,6 +418,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/revise": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Revise */
+        post: operations["revise_api_runs__run_id__revise_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -428,8 +445,12 @@ export interface components {
             action: string;
             /** Approved By */
             approved_by: string;
+            /** Revision */
+            revision?: number | null;
             /** Timestamp */
             timestamp: string;
+        } & {
+            [key: string]: unknown;
         };
         /** CampaignDay */
         CampaignDay: {
@@ -524,12 +545,28 @@ export interface components {
             /** Post */
             post: string;
         };
-        /** Empty */
-        Empty: Record<string, never>;
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /** HumanDraft */
+        HumanDraft: {
+            /**
+             * Claims
+             * @default []
+             */
+            claims: string[];
+            /** Email */
+            email: string;
+            /** Post */
+            post: string;
+            /** Revised By */
+            revised_by?: string | null;
+            /** Revision */
+            revision?: number | null;
+        } & {
+            [key: string]: unknown;
         };
         /** Idea */
         Idea: {
@@ -732,6 +769,8 @@ export interface components {
             approval_state: "pending_approval" | "approved_for_export";
             /** Approvals */
             approvals: components["schemas"]["Approval"][];
+            /** Approved Revision */
+            approved_revision?: number | null;
             /** Audit */
             audit: {
                 [key: string]: unknown;
@@ -753,6 +792,12 @@ export interface components {
             checker_profile: string;
             checker_v1?: components["schemas"]["Check"] | null;
             checker_v2?: components["schemas"]["Check"] | null;
+            /** Exported Draft */
+            exported_draft?: components["schemas"]["Draft"] | components["schemas"]["HumanDraft"] | null;
+            /** Exported Revision */
+            exported_revision?: number | null;
+            human_check?: components["schemas"]["Check"] | null;
+            human_draft?: components["schemas"]["HumanDraft"] | null;
             /**
              * Idea
              * @default
@@ -768,6 +813,16 @@ export interface components {
                 [key: string]: unknown;
             }[];
             model_usage?: components["schemas"]["ModelUsage"] | null;
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+            /**
+             * Revision History
+             * @default []
+             */
+            revision_history: components["schemas"]["RevisionHistoryEntry"][];
             /** Run Id */
             run_id: string;
             /** @description Scout facts, sources, demo risks, and synthesis mode. Absent on historical or failed receipts. */
@@ -786,6 +841,36 @@ export interface components {
             summary: {
                 [key: string]: unknown;
             };
+        } & {
+            [key: string]: unknown;
+        };
+        /** ReviseIn */
+        ReviseIn: {
+            /**
+             * Base Revision
+             * @default 0
+             */
+            base_revision: number;
+            /** Email */
+            email: string;
+            /** Post */
+            post: string;
+        };
+        /** RevisionHistoryEntry */
+        RevisionHistoryEntry: {
+            /**
+             * Approvals
+             * @default []
+             */
+            approvals: components["schemas"]["Approval"][];
+            /** Approved Revision */
+            approved_revision?: number | null;
+            /** Outcome */
+            outcome?: string | null;
+            /** Revision */
+            revision?: number | null;
+            /** Superseded By */
+            superseded_by?: number | null;
         } & {
             [key: string]: unknown;
         };
@@ -1387,7 +1472,9 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["Empty"];
+                "application/json": {
+                    [key: string]: unknown;
+                };
             };
         };
         responses: {
@@ -1423,7 +1510,9 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["Empty"];
+                "application/json": {
+                    [key: string]: unknown;
+                };
             };
         };
         responses: {
@@ -1799,7 +1888,9 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["Empty"];
+                "application/json": {
+                    [key: string]: unknown;
+                };
             };
         };
         responses: {
@@ -1834,7 +1925,9 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["Empty"];
+                "application/json": {
+                    [key: string]: unknown;
+                };
             };
         };
         responses: {
@@ -1868,6 +1961,41 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Receipt"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revise_api_runs__run_id__revise_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReviseIn"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

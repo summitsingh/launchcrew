@@ -49,9 +49,15 @@ def load_receipt(path):
 
 
 def export_receipt(receipt, path):
-    if receipt.get('status') == 'failed' or receipt['approval_state'] != 'approved_for_export' or receipt['checker_v2']['blocked_count']:
-        raise ValueError('Export requires approval and a clean final check')
-    return save_receipt(copy.deepcopy(receipt), path)
+    from .human_review import current_check, current_draft, current_revision, exportable
+    if not exportable(receipt):
+        raise ValueError('Export requires approval of the latest revision and a clean final check')
+    payload = copy.deepcopy(receipt)
+    payload['exported_draft'] = current_draft(receipt)
+    payload['exported_revision'] = current_revision(receipt)
+    # Keep original Maker drafts as evidence; the exported draft is explicit.
+    _ = current_check(receipt)
+    return save_receipt(payload, path)
 
 
 def failed_receipt(run_id, events, step, error):
@@ -65,11 +71,9 @@ def failed_receipt(run_id, events, step, error):
             'audit': {'event_log': events, 'stopped_reason': step}}
 
 
-def approve_receipt(receipt, approved_by):
-    if (receipt.get('status') == 'failed' or receipt.get('approval_state') != 'pending_approval'
-            or receipt.get('checker_v2', {}).get('blocked_count', 1) != 0):
-        raise ValueError('Approval requires a pending receipt and a clean final check')
-    receipt['approvals'].append({'approved_by': approved_by, 'action': 'approved_for_export',
-                                'timestamp': timestamp()})
-    receipt['approval_state'] = 'approved_for_export'
+def approve_receipt(receipt, approved_by, expected_revision=None):
+    from .human_review import approve_current
+    revised = approve_current(receipt, approved_by, expected_revision)
+    receipt.clear()
+    receipt.update(revised)
     return receipt

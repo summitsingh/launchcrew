@@ -2,6 +2,7 @@
   "components": {
     "schemas": {
       "Approval": {
+        "additionalProperties": true,
         "properties": {
           "action": {
             "title": "Action",
@@ -10,6 +11,17 @@
           "approved_by": {
             "title": "Approved By",
             "type": "string"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
           },
           "timestamp": {
             "title": "Timestamp",
@@ -266,12 +278,6 @@
         "title": "Draft",
         "type": "object"
       },
-      "Empty": {
-        "additionalProperties": false,
-        "properties": {},
-        "title": "Empty",
-        "type": "object"
-      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -283,6 +289,55 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HumanDraft": {
+        "additionalProperties": true,
+        "properties": {
+          "claims": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Claims",
+            "type": "array"
+          },
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "post": {
+            "title": "Post",
+            "type": "string"
+          },
+          "revised_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revised By"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          }
+        },
+        "required": [
+          "post",
+          "email"
+        ],
+        "title": "HumanDraft",
         "type": "object"
       },
       "Idea": {
@@ -703,6 +758,17 @@
             "title": "Approvals",
             "type": "array"
           },
+          "approved_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved Revision"
+          },
           "audit": {
             "additionalProperties": true,
             "title": "Audit",
@@ -781,6 +847,51 @@
               }
             ]
           },
+          "exported_draft": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Draft"
+              },
+              {
+                "$ref": "#/components/schemas/HumanDraft"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exported Draft"
+          },
+          "exported_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exported Revision"
+          },
+          "human_check": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Check"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "human_draft": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HumanDraft"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "idea": {
             "default": "",
             "title": "Idea",
@@ -824,6 +935,19 @@
                 "type": "null"
               }
             ]
+          },
+          "revision": {
+            "default": 0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "revision_history": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/RevisionHistoryEntry"
+            },
+            "title": "Revision History",
+            "type": "array"
           },
           "run_id": {
             "title": "Run Id",
@@ -885,6 +1009,94 @@
           "audit"
         ],
         "title": "Receipt",
+        "type": "object"
+      },
+      "ReviseIn": {
+        "additionalProperties": false,
+        "properties": {
+          "base_revision": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Base Revision",
+            "type": "integer"
+          },
+          "email": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Email",
+            "type": "string"
+          },
+          "post": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Post",
+            "type": "string"
+          }
+        },
+        "required": [
+          "post",
+          "email"
+        ],
+        "title": "ReviseIn",
+        "type": "object"
+      },
+      "RevisionHistoryEntry": {
+        "additionalProperties": true,
+        "properties": {
+          "approvals": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/Approval"
+            },
+            "title": "Approvals",
+            "type": "array"
+          },
+          "approved_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved Revision"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "superseded_by": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Superseded By"
+          }
+        },
+        "title": "RevisionHistoryEntry",
         "type": "object"
       },
       "RunDiff": {
@@ -1942,7 +2154,9 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/Empty"
+                "additionalProperties": true,
+                "title": "Body",
+                "type": "object"
               }
             }
           },
@@ -2000,7 +2214,9 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/Empty"
+                "additionalProperties": true,
+                "title": "Body",
+                "type": "object"
               }
             }
           },
@@ -2459,7 +2675,9 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/Empty"
+                "additionalProperties": true,
+                "title": "Body",
+                "type": "object"
               }
             }
           },
@@ -2508,7 +2726,9 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/Empty"
+                "additionalProperties": true,
+                "title": "Body",
+                "type": "object"
               }
             }
           },
@@ -2576,6 +2796,55 @@
           }
         },
         "summary": "Get Run"
+      }
+    },
+    "/api/runs/{run_id}/revise": {
+      "post": {
+        "operationId": "revise_api_runs__run_id__revise_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviseIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Receipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revise"
       }
     }
   }
