@@ -10,6 +10,7 @@ COPY backend ./backend
 COPY agents ./agents
 COPY facts ./facts
 COPY alembic.ini ./
+COPY containers/api-entrypoint.sh /usr/local/bin/api-entrypoint.sh
 USER 10001:10001
-EXPOSE 8000
-CMD ["sh", "-c", "/opt/venv/bin/alembic upgrade head && exec /opt/venv/bin/python -m uvicorn backend.app:app --host 0.0.0.0 --port 8000 --no-access-log"]
+EXPOSE 8000 8443
+CMD ["/usr/local/bin/api-entrypoint.sh"]

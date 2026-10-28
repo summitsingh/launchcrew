@@ -1,0 +1,465 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  LaunchCrew demo, Fargate plus ALB, review only, NOT applied.
+  No AWS account access, no apply, no DNS, no secrets in this file.
+  Region, domain, certificate ARN, image URIs, database password secret
+  ARN, and budget limit are parameters with no approved defaults.
+  Recommended region us-east-1 is NOT confirmed, see deploy README.
+  Cost cap is a user choice after seeing the estimate, not a default here.
+  Teardown is required after Nov 4 and no later than Nov 9, 2026.
+Parameters:
+  DomainName:
+    Type: String
+    Description: Demo hostname only, for example launchcrew.summitsingh.com. No default, supply at provisioning time after explicit Cloudflare record authorization.
+  AcmCertificateArn:
+    Type: String
+    Description: ACM public certificate ARN for DomainName, for the ALB HTTPS listener. No default, no certificate value in this file.
+  ApiImageUri:
+    Type: String
+    Description: ECR URI for the API image, built from containers/api.Containerfile, with no migration at runtime startup.
+  WebImageUri:
+    Type: String
+    Description: ECR URI for the web image. Web target TLS is a remaining gap, see README, and WebTlsReady must be true before provisioning.
+  MigrationImageUri:
+    Type: String
+    Description: ECR URI for the migration image, built from containers/migrate.Containerfile, used only by the one-off migration task.
+  DatabasePasswordSecretArn:
+    Type: String
+    Description: Secrets Manager ARN for the database password, placeholder only, no value in this file. Runtime and migration roles read only their own secret.
+  DatabaseUsername:
+    Type: String
+    Default: launchcrew_runtime
+    Description: Runtime database username. Migration uses a separate database identity, supplied at provisioning time, not in this file.
+  BudgetLimitUsd:
+    Type: Number
+    Description: AWS Budget limit in USD, for the demo period only. No approved default, supply after Summit chooses a cap. A value of 0 is not an approval, it is a placeholder that must be replaced.
+  WebTlsReady:
+    Type: String
+    AllowedValues: ['true']
+    Description: Fail-closed gate. Must be true, meaning a TLS-capable web image has been built and tested for an ALB HTTPS target group. Any other value fails template validation, so the web target group cannot be provisioned as plain HTTP by accident.
+  ApiTlsReady:
+    Type: String
+    AllowedValues: ['true']
+    Description: Fail-closed gate. Must be true, meaning the API image has been tested with containers/api-entrypoint.sh, TLS cert and key mounted from Secrets Manager, serving TLS on port 8443 for an ALB HTTPS target group.
+Mappings: {}
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
+        - { Key: TeardownBy, Value: '2026-11-09' }
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.0.11.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: 10.0.12.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+  PublicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  PublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+  PublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ALB ingress only, HTTPS from internet, HTTP redirect only
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - { IpProtocol: tcp, FromPort: 443, ToPort: 443, CidrIp: 0.0.0.0/0 }
+        - { IpProtocol: tcp, FromPort: 80, ToPort: 80, CidrIp: 0.0.0.0/0 }
+  ApiSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: API tasks, inbound only from ALB, TLS port 8443 only
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8443
+          ToPort: 8443
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+  WebSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Web tasks, inbound only from ALB, TLS port 8443 only, after WebTlsReady is true
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8443
+          ToPort: 8443
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+  DbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: RDS, inbound only from API and migration tasks, Postgres port only, no public port
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref ApiSecurityGroup
+  ApiEcrRepo:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: launchcrew-api
+      ImageScanningConfiguration: { ScanOnPush: true }
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
+  WebEcrRepo:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: launchcrew-web
+      ImageScanningConfiguration: { ScanOnPush: true }
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
+  MigrationEcrRepo:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: launchcrew-migration
+      ImageScanningConfiguration: { ScanOnPush: true }
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /launchcrew/demo/api
+      RetentionInDays: 7
+  WebLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /launchcrew/demo/web
+      RetentionInDays: 7
+  MigrationLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /launchcrew/demo/migration
+      RetentionInDays: 7
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: LaunchCrew demo RDS, private subnets only
+      SubnetIds: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
+  Database:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceClass: db.t4g.micro
+      Engine: postgres
+      AllocatedStorage: '20'
+      StorageType: gp3
+      MultiAZ: false
+      BackupRetentionPeriod: 1
+      DeleteAutomatedBackups: true
+      DeletionProtection: false
+      PubliclyAccessible: false
+      StorageEncrypted: true
+      DBSubnetGroupName: !Ref DbSubnetGroup
+      VPCSecurityGroups: [!Ref DbSecurityGroup]
+      MasterUsername: !Ref DatabaseUsername
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${DatabasePasswordSecretArn}:SecretString:password}}'
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
+        - { Key: TeardownBy, Value: '2026-11-09' }
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: launchcrew-demo
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+  ApiTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: api-runtime-config-only
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [secretsmanager:GetSecretValue]
+                Resource: [!Ref DatabasePasswordSecretArn]
+  WebTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies: []
+  MigrationTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: migration-config-only
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [secretsmanager:GetSecretValue]
+                Resource: [!Ref DatabasePasswordSecretArn]
+  ApiTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: '256'
+      Memory: '512'
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt ApiTaskRole.Arn
+      ContainerDefinitions:
+        - Name: api
+          Image: !Ref ApiImageUri
+          Essential: true
+          PortMappings: [{ ContainerPort: 8443, Protocol: tcp }]
+          Environment:
+            - { Name: LAUNCHCREW_REQUIRE_CONTAINER_TLS, Value: '1' }
+            - { Name: AUTH_ENABLED, Value: 'false' }
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ApiLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: api
+  WebTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: '256'
+      Memory: '512'
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt WebTaskRole.Arn
+      ContainerDefinitions:
+        - Name: web
+          Image: !Ref WebImageUri
+          Essential: true
+          PortMappings: [{ ContainerPort: 8443, Protocol: tcp }]
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref WebLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: web
+  MigrationTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: '256'
+      Memory: '512'
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt MigrationTaskRole.Arn
+      ContainerDefinitions:
+        - Name: migration
+          Image: !Ref MigrationImageUri
+          Essential: true
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref MigrationLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: migration
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      Type: application
+      Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB]
+      SecurityGroups: [!Ref AlbSecurityGroup]
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
+  ApiTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref Vpc
+      Port: 8443
+      Protocol: HTTPS
+      TargetType: ip
+      HealthCheckPath: /api/health
+      HealthCheckProtocol: HTTPS
+      Matcher: { HttpCode: '200' }
+  WebTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref Vpc
+      Port: 8443
+      Protocol: HTTPS
+      TargetType: ip
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTPS
+      Matcher: { HttpCode: '200' }
+  HttpsListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      Certificates: [{ CertificateArn: !Ref AcmCertificateArn }]
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref WebTargetGroup
+  ApiListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref HttpsListener
+      Priority: 10
+      Conditions:
+        - Field: path-pattern
+          Values: [/api/*]
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref ApiTargetGroup
+  HttpRedirectListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: redirect
+          RedirectConfig: { Protocol: HTTPS, Port: '443', StatusCode: HTTP_301 }
+  ApiService:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref ApiTaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB]
+          SecurityGroups: [!Ref ApiSecurityGroup]
+      LoadBalancers:
+        - ContainerName: api
+          ContainerPort: 8443
+          TargetGroupArn: !Ref ApiTargetGroup
+  WebService:
+    Type: AWS::ECS::Service
+    Properties:
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref WebTaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB]
+          SecurityGroups: [!Ref WebSecurityGroup]
+      LoadBalancers:
+        - ContainerName: web
+          ContainerPort: 8443
+          TargetGroupArn: !Ref WebTargetGroup
+  DemoBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: launchcrew-demo
+        BudgetLimit: { Amount: !Ref BudgetLimitUsd, Unit: USD }
+        TimeUnit: MONTHLY
+        BudgetType: COST
+      NotificationsWithSubscribers: []
+Outputs:
+  LoadBalancerDnsName:
+    Description: ALB DNS name, placeholder target only, Cloudflare record requires separate explicit authorization
+    Value: !GetAtt LoadBalancer.DNSName
+  ApiServiceName:
+    Value: !Ref ApiService
+  WebServiceName:
+    Value: !Ref WebService
