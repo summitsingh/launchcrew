@@ -31,13 +31,15 @@ export type PhotoTransportNote = {
 export function readStoredPhoto(receipt: Receipt): StoredPhoto | null {
   const raw = (receipt as unknown as { photo_status?: unknown }).photo_status;
   if (raw === null || raw === undefined) return null;
-  if (typeof raw !== 'object') return null;
+  if (typeof raw !== 'object') {
+    return { state: 'unknown', label: null, reason: 'unrecognized photo state', revision: 0, actor: '', checkedAt: '' };
+  }
   const status = raw as Record<string, unknown>;
-  const state = typeof status.state === 'string' ? status.state : 'no_photo';
+  const state = typeof status.state === 'string' && status.state.length > 0 ? status.state : 'unknown';
   return {
     state,
     label: typeof status.label === 'string' ? status.label : null,
-    reason: typeof status.reason === 'string' ? status.reason : '',
+    reason: typeof status.reason === 'string' ? status.reason : (state === 'unknown' ? 'unrecognized photo state' : ''),
     revision: typeof status.revision === 'number' ? status.revision : 0,
     actor: typeof status.actor === 'string' ? status.actor : '',
     checkedAt: typeof status.checked_at === 'string' ? status.checked_at : '',
@@ -72,8 +74,14 @@ export function photoStatusCopy(stored: StoredPhoto | null, currentRevision: num
   if (stored.state === 'check_requested') {
     return `Photo check in flight: ${stored.reason || 'check_requested'}.${revNote}`;
   }
+  if (stored.state === 'unknown') {
+    return `Photo state is unknown and blocking: ${stored.reason || 'unrecognized photo state'}.${revNote} Approval and export stay refused. Remove the photo or check a better one.`;
+  }
   if (stored.state === 'checked') {
     if (stored.label === 'detected') {
+      if (stale) {
+        return `Photo check passed an earlier revision and is superseded: one in-frame candidate had passed the size and edge gates, but the pack has since changed so this is not a pass on the current revision.${revNote} Fresh human approval is still required before export, after a fresh check.`;
+      }
       return `Photo check passed on this revision: one in-frame candidate passed the size and edge gates. A crop suggestion below only subsets existing pixels; cut-off pixels cannot be recovered.${revNote} Fresh human approval is still required before export.`;
     }
     if (stored.label === 'not_detected') {
@@ -107,8 +115,13 @@ export function validateSelection(
   if (file.size > MAX_PHOTO_BYTES) {
     return 'Photo is larger than 1 MiB of raw bytes.';
   }
-  if (natural && natural.width * natural.height > MAX_PHOTO_PIXELS) {
-    return 'Photo is larger than 8 megapixels.';
+  if (natural) {
+    if (!Number.isFinite(natural.width) || !Number.isFinite(natural.height) || natural.width <= 0 || natural.height <= 0) {
+      return 'Photo could not be validated: the decoded size is invalid, so nothing can be checked.';
+    }
+    if (natural.width * natural.height > MAX_PHOTO_PIXELS) {
+      return 'Photo is larger than 8 megapixels.';
+    }
   }
   return null;
 }
@@ -199,7 +212,7 @@ export function PhotoCheckPanel(props: PhotoPanelProps) {
               id={`photo-file-${props.runId}`}
               type="file"
               accept="image/png,image/jpeg"
-              disabled={props.pending || props.failed}
+              disabled={props.pending || props.removePending || props.failed}
               onChange={e => {
                 const file = e.target.files?.[0];
                 if (file && props.onFile) props.onFile(file);
@@ -214,7 +227,7 @@ export function PhotoCheckPanel(props: PhotoPanelProps) {
                 not approved and not exportable until an explicit check passes.
               </p>
               {props.previewUrl && (
-                <img src={props.previewUrl} alt="Selected photo preview (local only, not yet checked)" />
+                <img className="photo-preview-img" src={props.previewUrl} alt="Selected photo preview (local only, not yet checked)" />
               )}
             </div>
           )}
@@ -222,7 +235,7 @@ export function PhotoCheckPanel(props: PhotoPanelProps) {
             <p className="hint">Loaded image: {props.naturalW} by {props.naturalH} pixels (browser-decoded, EXIF-oriented).</p>
           )}
           <div className="queue-actions">
-            <Button onClick={props.onCheck} disabled={props.pending || !props.hasPayload || props.failed}>
+            <Button onClick={props.onCheck} disabled={props.pending || props.removePending || !props.hasPayload || props.failed}>
               {props.pending ? 'Checking photo...' : 'Check photo'}
             </Button>
             {attached && (
@@ -231,12 +244,12 @@ export function PhotoCheckPanel(props: PhotoPanelProps) {
               </Button>
             )}
             {props.selectionName && !attached && (
-              <Button variant="outline" onClick={props.onClearLocal} disabled={props.pending}>
+              <Button variant="outline" onClick={props.onClearLocal} disabled={props.pending || props.removePending}>
                 Clear selection
               </Button>
             )}
             {props.selectionName && attached && (
-              <Button variant="outline" onClick={props.onClearLocal} disabled={props.pending}>
+              <Button variant="outline" onClick={props.onClearLocal} disabled={props.pending || props.removePending}>
                 Clear selection
               </Button>
             )}
@@ -244,20 +257,26 @@ export function PhotoCheckPanel(props: PhotoPanelProps) {
           {props.pending && <p role="status">Check in flight. Duplicate checks are disabled until it settles.</p>}
           {props.error && <p role="alert">{props.error}</p>}
           {props.notice && <p role="status">{props.notice}</p>}
-          {showCropOffer && props.cropDrawn && (
+          {showCropOffer && (
             <div>
               <p role="status">
                 Crop suggestion subsets existing pixels only (server pad and clamp). The original file is preserved.
               </p>
-              <canvas ref={props.cropCanvasRef} data-testid="photo-crop-canvas" />
+              <canvas
+                ref={props.cropCanvasRef}
+                data-testid="photo-crop-canvas"
+                className="photo-crop-canvas"
+                style={props.cropDrawn ? undefined : { display: 'none' }}
+              />
+              {!props.cropDrawn && props.cropHint && <p role="status">{props.cropHint}</p>}
+              {!props.cropDrawn && !props.cropHint && <p role="status">Preparing the crop preview. Download unlocks after the preview draws.</p>}
               <div className="queue-actions">
-                <Button variant="outline" onClick={props.onDownloadCrop}>
+                <Button variant="outline" onClick={props.onDownloadCrop} disabled={!props.cropDrawn}>
                   Download crop
                 </Button>
               </div>
             </div>
           )}
-          {showCropOffer && !props.cropDrawn && props.cropHint && <p role="status">{props.cropHint}</p>}
         </>
       )}
     </section>
@@ -306,10 +325,14 @@ export function PhotoCheck({ receipt, onReceipt }: { receipt: Receipt; onReceipt
   // Run changes drop every transient pixel and notice. Revision bumps that
   // this component did not acknowledge (text edits, removals elsewhere, or a
   // superseded check) also drop the local bytes so nothing stale can resend.
+  // Both branches advance the request generation so deferred FileReader,
+  // image, check, remove, and crop callbacks from the older generation are
+  // dropped instead of resurrecting old pixels or notices.
   useEffect(() => {
     if (trackedRun.current !== runId) {
       trackedRun.current = runId;
       lastAckedRevision.current = revision;
+      seq.current += 1;
       clearLocalImage();
       setNotice(null);
       setError(null);
@@ -319,6 +342,7 @@ export function PhotoCheck({ receipt, onReceipt }: { receipt: Receipt; onReceipt
     }
     if (revision !== lastAckedRevision.current) {
       lastAckedRevision.current = revision;
+      seq.current += 1;
       clearLocalImage();
       setNotice(null);
       setPending(false);
@@ -327,6 +351,15 @@ export function PhotoCheck({ receipt, onReceipt }: { receipt: Receipt; onReceipt
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId, revision]);
 
+  // Unmount invalidates the request generation so deferred callbacks that
+  // resolve after navigation cannot apply an old receipt or notice.
+  useEffect(() => {
+    return () => {
+      seq.current += 1;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Revoke the previous object URL when it is replaced or unmounted.
   useEffect(() => {
     const url = selection?.url ?? null;
@@ -334,7 +367,7 @@ export function PhotoCheck({ receipt, onReceipt }: { receipt: Receipt; onReceipt
   }, [selection?.url]);
 
   const handleFile = (file: File) => {
-    if (pending || failed) return;
+    if (pending || removePending || failed) return;
     seq.current += 1;
     const mySeq = seq.current;
     const myRun = runId;
@@ -345,6 +378,9 @@ export function PhotoCheck({ receipt, onReceipt }: { receipt: Receipt; onReceipt
     setCropHint(null);
     const early = validateSelection(file, null);
     if (early) {
+      // A rejected file must not leave an older valid selection sendable as
+      // if it were the new file: drop the stale payload and report the block.
+      clearLocalImage();
       setError(early);
       return;
     }
@@ -399,6 +435,13 @@ export function PhotoCheck({ receipt, onReceipt }: { receipt: Receipt; onReceipt
     };
     probe.onerror = () => {
       if (isStaleReply(myRun, trackedRun.current, mySeq, seq.current)) return;
+      // An unloadable image must not stay sendable on a previously read payload.
+      const current = selectionRef.current;
+      if (current && current.url === url) {
+        const updated = { ...current, width: 0, height: 0, dataUri: null };
+        selectionRef.current = updated;
+        setSelection(updated);
+      }
       setError('Could not load that file as a PNG or JPEG image.');
     };
     probe.src = url;
@@ -406,7 +449,16 @@ export function PhotoCheck({ receipt, onReceipt }: { receipt: Receipt; onReceipt
 
   const handleCheck = async () => {
     const current = selectionRef.current;
-    if (pending || failed || !current?.dataUri) return;
+    // Only the current fully validated selection may be sent: payload bytes
+    // plus decoded dims that pass the bounds. Anything else stays local.
+    if (pending || removePending || failed || !current?.dataUri) return;
+    if (
+      current.width === null || current.height === null ||
+      validateSelection(current.file, { width: current.width, height: current.height }) !== null
+    ) {
+      setError('Select a valid photo before checking: the current selection failed validation.');
+      return;
+    }
     seq.current += 1;
     const mySeq = seq.current;
     const myRun = runId;
@@ -447,10 +499,12 @@ export function PhotoCheck({ receipt, onReceipt }: { receipt: Receipt; onReceipt
         setNotice(`Photo check returned ${check.label ?? 'unknown'}: ${check.reason}. There is no override.`);
       }
       onReceipt(body.receipt as Receipt);
-    } catch (e) {
+    } catch {
       if (isStaleReply(myRun, trackedRun.current, mySeq, seq.current)) return;
       clearLocalImage();
-      setError(e instanceof Error ? e.message : 'Photo check failed before reaching the server. Nothing was sent.');
+      // Ambiguous transport failure: never claim nothing was sent and never
+      // retry blindly. The receipt decides the next step.
+      setError('Photo check result is unconfirmed. Reload the receipt before deciding; nothing was retried.');
     } finally {
       if (!isStaleReply(myRun, trackedRun.current, mySeq, seq.current)) setPending(false);
     }
@@ -505,17 +559,22 @@ export function PhotoCheck({ receipt, onReceipt }: { receipt: Receipt; onReceipt
   };
 
   const handleClearLocal = () => {
-    if (pending) return;
+    if (pending || removePending) return;
     const wasSubmitted = !!stored && stored.state !== 'no_photo';
     clearLocalImage();
-    setNotice(wasSubmitted ? null : 'Unsubmitted selection cleared locally. Nothing was sent.');
+    // An unsubmitted local selection was never attached, so this message must
+    // never read as a server removal. An attached photo stays untouched here.
+    setNotice(wasSubmitted ? null : 'Unsubmitted selection cleared locally. Nothing was sent and nothing was removed.');
     if (wasSubmitted) setNotice('Local preview cleared. The attached photo on the server is unchanged; use Remove photo to detach it.');
   };
 
   const handleDownloadCrop = () => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas || !cropDrawn) return;
+    const mySeq = seq.current;
+    const myRun = runId;
     canvas.toBlob(blob => {
+      if (isStaleReply(myRun, trackedRun.current, mySeq, seq.current)) return;
       if (!blob) {
         setError('Crop download failed. The suggestion is unchanged.');
         return;
@@ -554,8 +613,15 @@ export function PhotoCheck({ receipt, onReceipt }: { receipt: Receipt; onReceipt
     const crop = preview.crop;
     const width = crop.x2 - crop.x1 + 1;
     const height = crop.y2 - crop.y1 + 1;
+    const mySeq = seq.current;
+    const myRun = runId;
+    const myUrl = selection.url;
     const image = new Image();
     image.onload = () => {
+      // A newer selection, check, removal, revision, or unmount invalidates
+      // this draw: never resurrect pixels from an older generation.
+      if (isStaleReply(myRun, trackedRun.current, mySeq, seq.current)) return;
+      if (selectionRef.current?.url !== myUrl) return;
       const target = canvasRef.current;
       if (!target) return;
       if (image.naturalWidth !== selection.width || image.naturalHeight !== selection.height) {
@@ -576,16 +642,28 @@ export function PhotoCheck({ receipt, onReceipt }: { receipt: Receipt; onReceipt
       setCropHint(null);
     };
     image.onerror = () => {
+      if (isStaleReply(myRun, trackedRun.current, mySeq, seq.current)) return;
+      if (selectionRef.current?.url !== myUrl) return;
       setCropDrawn(false);
       setCropHint('Crop unavailable: the selected image could not be reloaded. The original file is unchanged.');
     };
-    image.src = selection.url;
+    image.src = myUrl;
   }, [preview, selection]);
 
   const selectionMeta =
     selection !== null
       ? `${selection.file.type === 'image/jpeg' ? 'JPEG' : 'PNG'}, ${(selection.file.size / 1024).toFixed(1)} KiB`
       : null;
+
+  // The Check control only arms for the current fully validated selection:
+  // payload bytes present plus decoded dims that pass the bounds. A pending
+  // FileReader without dims, an errored load, or invalid dims stay unarmed.
+  const selectionValidated =
+    selection !== null &&
+    selection.dataUri !== null &&
+    selection.width !== null &&
+    selection.height !== null &&
+    validateSelection(selection.file, { width: selection.width, height: selection.height }) === null;
 
   return (
       <PhotoCheckPanel
@@ -598,7 +676,7 @@ export function PhotoCheck({ receipt, onReceipt }: { receipt: Receipt; onReceipt
         selectionMeta={selectionMeta}
         previewUrl={selection?.url ?? null}
         cropCanvasRef={canvasRef}
-        hasPayload={!!selection?.dataUri}
+        hasPayload={selectionValidated}
         pending={pending}
         removePending={removePending}
         notice={notice}

@@ -189,7 +189,9 @@ function syntheticPng(width: number, height: number): Buffer {
 
 test('keyless photo check leaves pack unapproved and unexported', async ({ page, request }) => {
   test.setTimeout(180_000);
-  await page.setViewportSize({ width: 1024, height: 1000 });
+  // Narrow viewport with an actual large decoded photo: the preview must stay
+  // bounded by CSS while the bytes stay untouched. Never a personal photo.
+  await page.setViewportSize({ width: 375, height: 1000 });
   const suffix = String(Date.now());
   await page.goto('/');
   await expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
@@ -206,19 +208,27 @@ test('keyless photo check leaves pack unapproved and unexported', async ({ page,
   await expect(page.getByText('No photo attached. Text-only approval and export rules apply.')).toBeVisible();
 
   // Synthetic static PNG hand fixture written outside the repo, never a personal photo.
+  // Actual decoded 1600 by 1067 photo bytes under 1 MiB exercise the responsive path.
   const fixture = `/tmp/launchcrew-photo-fixture-${suffix}.png`;
-  writeFileSync(fixture, syntheticPng(48, 32));
+  writeFileSync(fixture, syntheticPng(1600, 1067));
 
   // Select and preview: still unchecked, never implied approved or exported.
   await page.getByLabel(/Select photo \(PNG or JPEG/).setInputFiles(fixture);
   await expect(page.getByText(/Unchecked:/)).toBeVisible();
-  await expect(page.getByAltText('Selected photo preview (local only, not yet checked)')).toBeVisible();
+  const previewImg = page.getByAltText('Selected photo preview (local only, not yet checked)');
+  await expect(previewImg).toBeVisible();
+  expect(await previewImg.evaluate(el => el.getBoundingClientRect().width)).toBeLessThanOrEqual(375);
+  await expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
   // Explicit check against the real keyless API returns not_run honesty.
+  // The full notice is unique on the page: the status and alert paragraphs
+  // carry different not_run prefixes, so only the explicit-check notice matches.
   const checkButton = page.getByRole('button', { name: 'Check photo', exact: true });
   await expect(checkButton).toBeEnabled();
   await checkButton.click();
-  await expect(page.getByText('SAM not configured, photo unchecked')).toBeVisible();
+  await expect(page.getByText('SAM not configured, photo unchecked. The pack stays unapproved and unexported;')).toBeVisible();
+  await expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: '../.local/keyless-375-proof.png' });
 
   const receipt = (await (await request.get(`/api/runs/${runId}/receipt`)).json()) as {
     revision: number; photo_status: { state: string };

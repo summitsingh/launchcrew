@@ -24,6 +24,11 @@ export function textSourceOf(receipt: { human_draft?: { post?: unknown; email?: 
   return 'Maker';
 }
 
+/** Short text-source label for approval queue cards: Maker unless a saved human draft exists. */
+export function queueTextSource(receipt: { human_draft?: { post?: unknown; email?: unknown } | null }): 'Maker' | 'human' {
+  return textSourceOf(receipt) === 'human revision' ? 'human' : 'Maker';
+}
+
 /** Additive photo suffix for revision copy; empty on the no-photo legacy path. */
 export function photoRevisionSuffix(receipt: { photo_status?: { state?: unknown } | null }): string {
   const state = receipt.photo_status?.state;

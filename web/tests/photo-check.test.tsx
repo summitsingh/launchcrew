@@ -7,12 +7,16 @@ import {
   isStaleReply,
   photoBlocksApproval,
   photoStatusCopy,
+  readStoredPhoto,
   revokePreviewUrl,
   validateSelection,
   type PhotoPanelProps,
   type StoredPhoto,
 } from '../src/components/photo-check';
-import { photoRevisionSuffix, textSourceOf } from '../src/lib/v2';
+import { photoRevisionSuffix, queueTextSource, textSourceOf } from '../src/lib/v2';
+import type { components } from '../src/lib/schema';
+
+type Receipt = components['schemas']['Receipt'];
 
 function panel(overrides: Partial<PhotoPanelProps> = {}): string {
   const props: PhotoPanelProps = {
@@ -163,13 +167,64 @@ describe('photo check guards', () => {
     expect(cropFitsFrame(32, 16, preview)).toBe(true);
     expect(cropWithinFrame({ ...preview, crop: { x1: 0, y1: 0, x2: 32, y2: 12 } })).toBe(false);
     expect(cropWithinFrame({ ...preview, crop: null })).toBe(false);
+    // The canvas mounts with the crop offer so the draw effect has a target,
+    // but it stays hidden and the download stays disabled until a real draw.
     const html = panel({ stored: detected, revision: 1, preview, naturalW: 16, naturalH: 32, cropDrawn: false, cropHint: 'Crop unavailable: the loaded image is 16 by 32 but the approved oriented frame is 32 by 16. No crop was drawn and no pixels were invented.' });
-    expect(html).not.toContain('photo-crop-canvas');
+    expect(html).toContain('photo-crop-canvas');
+    expect(html).toContain('display:none');
+    expect(html).toContain('disabled');
     expect(html).toContain('No crop was drawn and no pixels were invented');
+  });
+
+  it('mounts the crop canvas with the offer, hidden until a real draw completes', () => {
+    const preview = { frame_w: 32, frame_h: 16, crop: { x1: 4, y1: 4, x2: 20, y2: 12 }, label: 'detected' as const };
+    const hidden = panel({ stored: detected, revision: 1, preview, naturalW: 32, naturalH: 16, cropDrawn: false });
+    expect(hidden).toContain('photo-crop-canvas');
+    expect(hidden).toContain('display:none');
+    expect(hidden).toContain('Preparing the crop preview. Download unlocks after the preview draws.');
+    const drawn = panel({ stored: detected, revision: 1, preview, naturalW: 32, naturalH: 16, cropDrawn: true });
+    expect(drawn).toContain('photo-crop-canvas');
+    expect(drawn).not.toContain('display:none');
+    expect(drawn).toContain('Download crop');
+  });
+
+  it('treats a present but malformed photo state as blocking unknown, never no_photo', () => {
+    const malformed = readStoredPhoto({ photo_status: { bogus: true } } as unknown as Receipt);
+    expect(malformed?.state).toBe('unknown');
+    expect(photoBlocksApproval(malformed, 0)).not.toBe(null);
+    const missingState = readStoredPhoto({ photo_status: {} } as unknown as Receipt);
+    expect(missingState?.state).toBe('unknown');
+    const nonObject = readStoredPhoto({ photo_status: 'checked' } as unknown as Receipt);
+    expect(nonObject?.state).toBe('unknown');
+    const html = panel({ stored: malformed, revision: 0 });
+    expect(html).toContain('unknown');
+    expect(html).toContain('Approval and export are refused');
+  });
+
+  it('marks a stale detected check superseded, never passed on the current revision', () => {
+    const copy = photoStatusCopy({ ...detected, revision: 1 }, 2);
+    expect(copy).toContain('superseded');
+    expect(copy).not.toContain('passed on this revision');
+    expect(photoBlocksApproval({ ...detected, revision: 1 }, 2)).not.toBe(null);
+    expect(photoBlocksApproval({ ...detected, revision: 1 }, 1)).toBe(null);
+  });
+
+  it('rejects errored zero or invalid decoded dims before any send', () => {
+    expect(validateSelection({ type: 'image/png', size: 100 }, { width: 0, height: 32 })).toContain('invalid');
+    expect(validateSelection({ type: 'image/png', size: 100 }, { width: -4, height: 32 })).toContain('invalid');
+    expect(validateSelection({ type: 'image/png', size: 100 }, { width: Number.NaN, height: 32 })).toContain('invalid');
+    expect(validateSelection({ type: 'image/png', size: 100 }, { width: 32, height: 16 })).toBe(null);
   });
 });
 
 describe('photo revision copy', () => {
+  it('labels queue cards Revision N (human) while detail copy keeps human revision', () => {
+    expect(queueTextSource({ human_draft: null })).toBe('Maker');
+    expect(queueTextSource({})).toBe('Maker');
+    expect(queueTextSource({ human_draft: { post: 'H', email: 'E' } })).toBe('human');
+    expect(textSourceOf({ human_draft: { post: 'H', email: 'E' } })).toBe('human revision');
+  });
+
   it('keeps Maker and human text sources distinct and never fabricates human_draft', () => {
     expect(textSourceOf({ human_draft: null })).toBe('Maker');
     expect(textSourceOf({})).toBe('Maker');

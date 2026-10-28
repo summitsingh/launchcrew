@@ -121,3 +121,7 @@ pre { max-width: 100%; overflow: auto; background: #f3f5ef; padding: 18px; font-
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; } }
 /* Long user-chosen agent names must shrink inside narrow profile cards. */
 .agent-choice > span:last-child { min-width: 0; overflow-wrap: anywhere; }
+/* Selected photo previews and the crop canvas must never overflow narrow
+   viewports. Display size is bounded by CSS only; the underlying crop buffer
+   keeps the exact server crop dims and the source file is never altered. */
+.photo-preview-img, canvas.photo-crop-canvas { max-width: 100%; height: auto; display: block; }
