@@ -5,10 +5,22 @@ barrier tests below prove ordering through a stage gate, not live Meta
 proof. Keyless deterministic fallback keeps every stage fast and local.
 """
 import time
+from datetime import datetime, timezone
 from unittest.mock import patch
 import pytest
 from backend import run_jobs
 from launchcrew import run
+
+
+def parse_instant(value):
+    """Parse an ISO-8601 timestamp as an aware instant, keeping offsets."""
+    text = str(value)
+    if text.endswith('Z'):
+        text = text[:-1] + '+00:00'
+    parsed = datetime.fromisoformat(text)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 IDEA = 'Vegan leather wallet, $49, for Austin commuters, launch on Instagram'
 
@@ -114,7 +126,13 @@ def test_first_completion_arrives_before_later_stage_released(client, monkeypatc
     logged = {entry['step']: entry for entry in receipt['audit']['event_log']}
     for stage in ['deterministic_checks', 'scout', 'maker_draft_v1', 'checker_v1',
                   'maker_draft_v2', 'checker_v2']:
-        assert by_stage[stage]['observed_at'] == logged[stage]['timestamp']
+        # Same observed completion instant, portable across database
+        # TimeZone settings: Postgres renders timestamptz in the session
+        # zone, so compare aware instants, not raw strings.
+        stored = parse_instant(by_stage[stage]['observed_at'])
+        prepared = parse_instant(logged[stage]['timestamp'])
+        assert stored == prepared
+        assert stored.microsecond == prepared.microsecond
         assert by_stage[stage]['profile'] == logged[stage]['profile']
         assert by_stage[stage]['profile']
     assert 'receipt' in logged
@@ -122,6 +140,7 @@ def test_first_completion_arrives_before_later_stage_released(client, monkeypatc
     # Every stored row carries a distinct server timestamp.
     observed = [row['observed_at'] for row in steps['steps']]
     assert len(set(observed)) == len(observed)
+    assert len({parse_instant(value) for value in observed}) == len(observed)
     assert receipt['stage_bindings'] == {'scout': 'Scout', 'maker': 'Maker', 'checker': 'Checker'}
     assert receipt['checker_v2']['blocked_count'] == 0
     # Completion was claimed only with the stored receipt: the terminal
@@ -201,11 +220,30 @@ def test_unknown_run_steps_are_not_found(client):
     assert client.get('/api/runs/run_missing/steps').status_code == 404
 
 
+def test_observed_at_is_canonical_utc_across_zone_offsets():
+    """Step timestamps stay comparable when the database zone changes.
+
+    A Chicago rendering (-05:00) and a UTC rendering (+00:00) of one
+    instant must parse to the same aware instant, and the API canonical
+    form must always be UTC with its zone retained.
+    """
+    from datetime import timedelta
+    from backend.app import canonical_observed_at
+
+    chicago = timezone(timedelta(hours=-5))
+    same = datetime(2026, 10, 28, 5, 18, 37, 890757, tzinfo=chicago)
+    assert parse_instant('2026-10-28T05:18:37.890757-05:00') == parse_instant('2026-10-28T10:18:37.890757+00:00')
+    assert parse_instant(canonical_observed_at(same)) == same
+    assert str(canonical_observed_at(same)).endswith('+00:00')
+    assert canonical_observed_at(None) is None
+
+
 def test_accept_journal_failure_rolls_back_run_and_starts_no_worker(client, monkeypatch):
-    """The run row and its accepted step commit together, or not at all."""
+    """An unjournaled accept stays unconfirmed with a bounded response."""
     from backend import store
     from sqlalchemy import text
 
+    sentinel = 'SENTINEL_PRIVATE_IDEA_do_not_echo_9f3a'
     real_record = run_jobs.record_step_in
 
     def failing_record(db, run_id, stage, *args, **kwargs):
@@ -215,8 +253,14 @@ def test_accept_journal_failure_rolls_back_run_and_starts_no_worker(client, monk
 
     monkeypatch.setattr(run_jobs, 'record_step_in', failing_record)
     before = set(run_jobs._workers)
-    with pytest.raises(run_jobs.StepJournalError):
-        client.post('/api/runs/async', json={'idea': IDEA, 'agent_name': 'Maker'})
+    response = client.post('/api/runs/async', json={'idea': IDEA + ' ' + sentinel, 'agent_name': 'Maker'})
+    assert response.status_code == 503, response.text
+    body = response.json()
+    assert body == {'detail': 'Run acceptance unconfirmed; retry with a new request'}
+    lowered = response.text.lower()
+    assert sentinel.lower() not in lowered
+    assert 'select' not in lowered and 'insert' not in lowered
+    assert 'traceback' not in lowered and 'operationalerror' not in lowered
     with store.connect() as db:
         assert db.execute(text('SELECT COUNT(*) FROM runs')).scalar() == 0
         assert db.execute(text('SELECT COUNT(*) FROM run_steps')).scalar() == 0

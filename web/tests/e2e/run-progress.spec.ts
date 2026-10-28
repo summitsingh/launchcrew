@@ -60,6 +60,8 @@ test('async run shows live stage receipts before the final review', async ({ pag
   }
   const observed = rows.map(row => row.observed_at);
   expect(new Set(observed).size).toBe(observed.length);
+  const instants = rows.map(row => new Date(row.observed_at).getTime());
+  expect(new Set(instants).size).toBe(instants.length);
   const stored = await request.get(`/api/runs/${runId}/receipt`);
   const receipt = await stored.json();
   expect(receipt.status).toBe('completed');
@@ -67,7 +69,7 @@ test('async run shows live stage receipts before the final review', async ({ pag
   for (const row of rows) {
     if (row.state !== 'completed' || row.stage === 'accepted' || row.stage === 'receipt') continue;
     const entry = logged.get(row.stage) as { timestamp: string; profile: string };
-    expect(entry.timestamp).toBe(row.observed_at);
+    expect(new Date(entry.timestamp).getTime()).toBe(new Date(row.observed_at).getTime());
     expect(entry.profile).toBe(row.profile);
   }
   expect(rows.at(-1)?.evidence.stored).toBe(true);

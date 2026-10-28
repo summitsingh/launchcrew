@@ -1,7 +1,7 @@
 """Typed FastAPI demo API over the preserved Python pipeline."""
 from contextlib import asynccontextmanager
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal, Any
 from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Request, Depends
@@ -450,23 +450,33 @@ def create_run_async(body: RunInput, actor: str = Depends(auth.actor)):
     """
     from launchcrew import receipts as receipt_mod
     from backend import run_jobs
-    with store.connect() as db:
-        legacy, scout, maker, checker = load_stage_profiles(db, body)
-        items = load_memory_selection(db, body.memory_ids)
-        scout_name, maker_name, checker_name = stage_names(body)
-        run_id = 'run_' + uuid4().hex
-        pending = receipt_mod.pending_receipt(run_id, body.idea,
-                                              {'scout': scout_name, 'maker': maker_name, 'checker': checker_name})
-        db.execute(text('INSERT INTO runs(id,receipt,agent_name,state) VALUES (:id,CAST(:receipt AS jsonb),:agent,:state)'),
-                   {'id': run_id, 'receipt': json.dumps(pending), 'agent': maker_name.lower(), 'state': pending['approval_state']})
-        db.execute(text('INSERT INTO memory(run_id,facts) VALUES (:id,CAST(:facts AS jsonb))'),
-                   {'id': run_id, 'facts': json.dumps([])})
-        store.audit(db, run_id, 'run_created', actor)
-        # The accepted step commits in this same transaction as the run
-        # row: a run is never accepted without its journal row, and a
-        # journal failure rolls the whole accept back before any worker
-        # starts, so no worker ever runs on an unjournaled accept.
-        run_jobs.record_step_in(db, run_id, 'accepted', 'completed', 'LaunchCrew', {'idea_chars': len(body.idea)})
+    try:
+        with store.connect() as db:
+            legacy, scout, maker, checker = load_stage_profiles(db, body)
+            items = load_memory_selection(db, body.memory_ids)
+            scout_name, maker_name, checker_name = stage_names(body)
+            run_id = 'run_' + uuid4().hex
+            pending = receipt_mod.pending_receipt(run_id, body.idea,
+                                                  {'scout': scout_name, 'maker': maker_name, 'checker': checker_name})
+            db.execute(text('INSERT INTO runs(id,receipt,agent_name,state) VALUES (:id,CAST(:receipt AS jsonb),:agent,:state)'),
+                       {'id': run_id, 'receipt': json.dumps(pending), 'agent': maker_name.lower(), 'state': pending['approval_state']})
+            db.execute(text('INSERT INTO memory(run_id,facts) VALUES (:id,CAST(:facts AS jsonb))'),
+                       {'id': run_id, 'facts': json.dumps([])})
+            store.audit(db, run_id, 'run_created', actor)
+            # The accepted step commits in this same transaction as the run
+            # row: a run is never accepted without its journal row, and a
+            # journal failure rolls the whole accept back before any worker
+            # starts, so no worker ever runs on an unjournaled accept.
+            run_jobs.record_step_in(db, run_id, 'accepted', 'completed', 'LaunchCrew', {'idea_chars': len(body.idea)})
+    except HTTPException:
+        raise
+    except Exception:
+        # Bounded acceptance failure: the commit is unconfirmed, so report
+        # it as such without SQL, params, receipt, secret, chain, or
+        # traceback. No worker starts on an unconfirmed accept and nothing
+        # is retried here; the caller retries with a new request. The
+        # context manager above already rolled the transaction back.
+        raise HTTPException(503, 'Run acceptance unconfirmed; retry with a new request') from None
     started = run_jobs.start_async_run(run_id, body.idea, legacy, body.seed_unverified_claim, items,
                                        body.checker_profile, scout, maker, checker, maker_name, actor)
     if not started:
@@ -503,6 +513,22 @@ def get_run(run_id: str, actor: str = Depends(auth.actor)):
         return get_receipt(db, run_id)
 
 
+def canonical_observed_at(value):
+    """Serialize a stored timestamptz as canonical UTC ISO-8601.
+
+    Postgres returns timestamptz in the session TimeZone, so a host
+    cluster on America/Chicago yields -05:00 while CI yields +00:00 for
+    the same instant. Canonicalizing to UTC keeps hosts portable without
+    stripping timezone information.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, datetime):
+        return None
+    aware = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    return aware.astimezone(timezone.utc).isoformat()
+
+
 @app.get('/api/runs/{run_id}/steps', response_model=RunStepsOut)
 def get_run_steps(run_id: str, actor: str = Depends(auth.actor)):
     """Stored stage receipts for a run, in pipeline order.
@@ -519,7 +545,7 @@ def get_run_steps(run_id: str, actor: str = Depends(auth.actor)):
                                ' FROM run_steps WHERE run_id=:id ORDER BY seq,id'),
                           {'id': run_id}).mappings().all()
     steps = [{'seq': row['seq'], 'stage': row['stage'], 'state': row['state'],
-              'observed_at': row['observed_at'].isoformat() if row['observed_at'] is not None else None,
+              'observed_at': canonical_observed_at(row['observed_at']),
               'profile': row['profile'] or '', 'evidence': row['evidence'] or {}} for row in rows]
     return {'run_id': run_id, 'worker_live': run_jobs.is_worker_live(run_id), 'steps': steps}
 
