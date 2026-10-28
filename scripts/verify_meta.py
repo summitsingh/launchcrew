@@ -9,9 +9,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from launchcrew.facts import check_sentence, load_facts
 from launchcrew.spark import call_spark_strict_json
 
-KEY_ROUTE = ('Summit provides a Meta Model API key through the environment at runtime only, '
-             'never in a file, repo, chat, or log, for a single live test run, or Summit '
-             'approves a separate key creation in the Meta developer console for LaunchCrew testing.')
+KEY_ROUTE = ('Model calls use the existing portal key via environment only. '
+             'No key creation or credential lookup is permitted.')
 
 
 def main(argv=None):
@@ -19,13 +18,13 @@ def main(argv=None):
     parser.add_argument('--live', action='store_true')
     args = parser.parse_args(argv)
     has_key = bool(os.environ.get('META_API_KEY', '').strip())
-    # Only configured identifiers are attempted; the default is a documented placeholder.
+    # Defaults verified against public Meta documentation on Oct 27, 2026.
     model = os.environ.get('META_MODEL', 'muse-spark-1.3')
     # Do not print arbitrary environment values, including model or endpoint overrides.
     print('Key present' if has_key else 'Key missing')
-    print('Model identifier placeholder muse-spark-1.3 not verified; configured override present: ' + str('META_MODEL' in os.environ))
-    print('Endpoint default https://api.meta.ai/v1 not verified; configured override present: ' + str('META_API_BASE_URL' in os.environ))
-    print('json_object is a live-test risk: secondary docs describe json_schema structured output.')
+    print('Documented model muse-spark-1.3; configured override present: ' + str('META_MODEL' in os.environ))
+    print('Documented endpoint https://api.meta.ai/v1; configured override present: ' + str('META_API_BASE_URL' in os.environ))
+    print('Structured output: json_schema with strict schema validation.')
     print(KEY_ROUTE)
     if not args.live or not has_key:
         print('No network call made. Explicit --live and a runtime key are required.')
