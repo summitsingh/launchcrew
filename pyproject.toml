@@ -10,3 +10,4 @@ dependencies = [
 dev = ["pytest==9.2.0"]
 [tool.pytest.ini_options]
 testpaths = ["backend/tests"]
+pythonpath = ["."]

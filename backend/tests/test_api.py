@@ -170,3 +170,56 @@ def test_identity_only_scopes(monkeypatch):
             auth.oauth_client(provider)
             scope = oauth.return_value.register.call_args.kwargs['client_kwargs']['scope']
             assert set(scope.split()) == ({'openid', 'profile', 'email'} if provider == 'google' else {'public_profile', 'email'})
+
+
+def test_auth_mocked_state_callback_rotation(client, monkeypatch):
+    """Exercise our session bridge with mocked Authlib, without provider access."""
+    from unittest.mock import AsyncMock
+    monkeypatch.setenv('AUTH_ENABLED', 'true')
+    monkeypatch.setenv('PUBLIC_BASE_URL', 'https://testserver')
+    monkeypatch.setenv('GOOGLE_CLIENT_ID', 'demo-provider')
+    monkeypatch.setenv('GOOGLE_CLIENT_SECRET', 'demo-provider')
+    async def redirect(request, uri):
+        assert uri == 'https://testserver/api/auth/google/callback'
+        request.session['demo_state'] = 'nonce'
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse('https://accounts.google.com/')
+    async def exchange(request):
+        assert request.session['demo_state'] == 'nonce'
+        return {'userinfo': {'sub': 'demo-test-subject'}, 'access_token': 'demo-transient-value'}
+    with patch('backend.auth.oauth_client') as factory:
+        factory.return_value.authorize_redirect = AsyncMock(side_effect=redirect)
+        factory.return_value.authorize_access_token = AsyncMock(side_effect=exchange)
+        response = client.get('/api/auth/google/login', follow_redirects=False)
+        assert response.status_code == 307
+        first = client.cookies.get(auth.COOKIE)
+        response = client.get('/api/auth/google/callback', follow_redirects=False)
+        assert response.status_code == 303
+        assert client.cookies.get(auth.COOKIE) != first
+        assert client.get('/api/auth/status').json()['user'] == 'google:demo-test-subject'
+    with store.connect() as db:
+        sessions = db.execute(text('SELECT data FROM auth_sessions')).scalars().all()
+    assert sessions == [{'actor': 'google:demo-test-subject'}]
+    assert 'demo-transient-value' not in json.dumps(sessions)
+
+
+def test_auth_expired_cookie_refused(client, monkeypatch):
+    monkeypatch.setenv('AUTH_ENABLED', 'true')
+    response = Response()
+    auth.save_session({'actor': 'google:demo-test-subject'}, response)
+    opaque = response.headers['set-cookie'].split(';')[0].split('=', 1)[1]
+    client.cookies.set(auth.COOKIE, opaque)
+    with store.connect() as db:
+        db.execute(text("UPDATE auth_sessions SET expires_at=now()-interval '1 second'"))
+    assert client.get('/api/queue').status_code == 401
+
+
+def test_pipeline_failure_is_stored_and_not_exportable(client):
+    with patch('launchcrew.run.make_draft', side_effect=RuntimeError('private input not retained')):
+        response = client.post('/api/runs', json={'idea': 'Demo', 'agent_name': 'Maker'})
+    assert response.status_code == 201
+    data = response.json()
+    assert data['status'] == 'failed'
+    assert data['error_type'] == 'RuntimeError'
+    assert 'private input' not in json.dumps(data)
+    assert client.post(f"/api/runs/{data['run_id']}/approve", json={}).status_code == 422
