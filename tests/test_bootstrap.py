@@ -289,6 +289,8 @@ if [ "$1" = "ce" ] && [ "$2" = "list-cost-allocation-tags" ]; then
     absent) printf '{"CostAllocationTags":[{"TagKey":"Status","Type":"AWSGenerated","Status":"Active"}]}\\n'; exit 0 ;;
     duplicate) printf '{"CostAllocationTags":[{"TagKey":"Project","Type":"UserDefined","Status":"Active"},{"TagKey":"Project","Type":"UserDefined","Status":"Inactive"}]}\\n'; exit 0 ;;
     wrongtype) printf '{"CostAllocationTags":[{"TagKey":"Project","Type":"AWSGenerated","Status":"Active"}]}\\n'; exit 0 ;;
+    mixed) printf '{"CostAllocationTags":[{"TagKey":"Project","Type":"UserDefined","Status":"Active"},{"TagKey":"Project","Type":"AWSGenerated","Status":"Active"}]}\\n'; exit 0 ;;
+    nonobject) printf '[{"TagKey":"Project","Type":"UserDefined","Status":"Active"}]\\n'; exit 0 ;;
     unknown) printf '{"CostAllocationTags":[{"TagKey":"Project","Type":"UserDefined","Status":"Pending"}]}\\n'; exit 0 ;;
     *) echo "fake-aws: unknown FAKE_CE: $CE_MODE" >&2; exit 2 ;;
   esac
@@ -769,8 +771,10 @@ class CostTagAdmissionTests(BootstrapHarness):
         "error": "UNVERIFIED",
         "auth": "ce:ListCostAllocationTags",
         "duplicate": "duplicate",
+        "mixed": "duplicate",
         "wrongtype": "not UserDefined",
         "malformed": "not Active",
+        "nonobject": "not Active",
         "unknown": "not Active",
     }
 
@@ -837,8 +841,7 @@ class CostTagAdmissionTests(BootstrapHarness):
         self.assertFalse(any("EnableServices=true" in call for call in calls))
 
     def test_ce_never_activates_and_reads_no_values(self):
-        root = BOOTSTRAP.parent.parent
-        code = (root / "deploy" / "aws" / "bootstrap.sh").read_text(encoding="utf-8")
+        code = BOOTSTRAP.read_text(encoding="utf-8")
         self.assertIn("ce list-cost-allocation-tags", code)
         self.assertNotIn("update-cost-allocation-tags", code.lower())
         self.assertNotIn("UpdateCostAllocationTags", code)
@@ -889,12 +892,27 @@ class BudgetFilterTests(BootstrapHarness):
         self.assertIn("budgets:DescribeBudget", result.stdout + result.stderr)
 
     def test_budget_refusal_carries_no_secret_or_account_detail(self):
-        result, _ = self.run_bootstrap(
+        result, calls = self.run_bootstrap(
             [*self.base_args(), "--phase", "enable"],
             extra_env={"FAKE_BUDGET": "multi"})
         combined = result.stdout + result.stderr
-        self.assertNotIn(":secret:", combined)
-        self.assertNotIn("Prod", combined)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("UNVERIFIED", combined)
+        self.assertIn("DemoBudget lacks the exact", result.stderr)
+        refusal_lines = [line for line in result.stderr.splitlines()
+                         if "DemoBudget" in line or "UNVERIFIED" in line]
+        self.assertTrue(refusal_lines)
+        refusal_text = "\n".join(refusal_lines)
+        self.assertNotIn("get-secret-value", refusal_text.lower())
+        self.assertNotIn("GetSecretValue", refusal_text)
+        self.assertNotIn("get_secret_value", refusal_text)
+        self.assertNotIn("get-secret-value", combined.lower())
+        self.assertNotIn("GetSecretValue", combined)
+        self.assertNotIn("get_secret_value", combined)
+        self.assertFalse(any("get-secret-value" in call.lower()
+                             for call in calls))
+        self.assertIn("Ownership check", combined)
+        self.assertIn("Verified secret metadata ownership", combined)
 
 
 class FixtureJsonTests(BootstrapHarness):

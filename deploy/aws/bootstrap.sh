@@ -503,27 +503,34 @@ try:
 except Exception:
     print("MALFORMED")
     sys.exit(0)
-entries = doc.get("CostAllocationTags", None)
-if not isinstance(entries, list):
-    print("MALFORMED")
-    sys.exit(0)
-project_entries = [e for e in entries
-                   if isinstance(e, dict) and e.get("TagKey") == "Project"]
-user_entries = [e for e in project_entries if e.get("Type") == "UserDefined"]
-if not project_entries:
-    print("ABSENT")
-elif not user_entries:
-    print("WRONGTYPE")
-elif len(user_entries) > 1:
-    print("AMBIGUOUS")
-else:
-    status = user_entries[0].get("Status", "")
+try:
+    if not isinstance(doc, dict):
+        print("MALFORMED")
+        sys.exit(0)
+    entries = doc.get("CostAllocationTags", None)
+    if not isinstance(entries, list):
+        print("MALFORMED")
+        sys.exit(0)
+    project_entries = [e for e in entries
+                       if isinstance(e, dict) and e.get("TagKey") == "Project"]
+    if not project_entries:
+        print("TAG_ABSENT")
+        sys.exit(0)
+    if len(project_entries) > 1:
+        print("TAG_AMBIGUOUS")
+        sys.exit(0)
+    if project_entries[0].get("Type") != "UserDefined":
+        print("TAG_WRONGTYPE")
+        sys.exit(0)
+    status = project_entries[0].get("Status", "")
     if status == "Active":
         print("TAG_ACTIVE")
     elif status == "Inactive":
         print("TAG_INACTIVE")
     else:
         print("UNKNOWN")
+except Exception:
+    print("MALFORMED")
 PYEOF
 )"
   rm -f "$TAG_JSON"
