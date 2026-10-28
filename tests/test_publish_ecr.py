@@ -225,6 +225,21 @@ if [ "$1" = "ecr" ] && [ "$2" = "describe-images" ]; then
       existing_denied_late_image)
         printf 'An error occurred (AccessDenied) when calling the DescribeImages operation: diag (ImageNotFoundException) tail token=TOKEN_PLACEHOLDER ACCOUNT_PLACEHOLDER\\n' >&2
         exit 254 ;;
+      existing_modern_absent)
+        printf '\\naws: [ERROR]: An error occurred (ImageNotFoundException) when calling the DescribeImages operation: tag absent\\n' >&2
+        exit 254 ;;
+      existing_legacy_blank_absent)
+        printf '\\nAn error occurred (ImageNotFoundException) when calling the DescribeImages operation: tag absent\\n' >&2
+        exit 254 ;;
+      existing_modern_denied_late_image)
+        printf '\\naws: [ERROR]: An error occurred (AccessDenied) when calling the DescribeImages operation: diag (ImageNotFoundException) tail token=TOKEN_PLACEHOLDER ACCOUNT_PLACEHOLDER\\n' >&2
+        exit 254 ;;
+      existing_modern_unknown_late_image)
+        printf '\\naws: [ERROR]: An error occurred (WeirdUnknownProblem) when calling the DescribeImages operation: diag (ImageNotFoundException) tail token=TOKEN_PLACEHOLDER ACCOUNT_PLACEHOLDER\\n' >&2
+        exit 254 ;;
+      existing_modern_malformed_late_image)
+        printf 'junk-prefix-before\\naws: [ERROR]: An error occurred (ImageNotFoundException) when calling the DescribeImages operation: tag absent token=TOKEN_PLACEHOLDER ACCOUNT_PLACEHOLDER\\n' >&2
+        exit 254 ;;
       conflict_tag)
         printf '{"imageDetails":[{"imageDigest":"EXISTING_PLACEHOLDER","imageTags":["deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"]}]}\\n'
         exit 0 ;;
@@ -778,6 +793,88 @@ class PublishEcrTests(unittest.TestCase):
     def test_existing_denied_with_late_image_refused_before_any_build(self):
         result, _, podman_calls, _, manifest_text, _ = self.run_helper(
             ["--confirm"], mode="existing_denied_late_image")
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("refused", combined)
+        self.assert_no_leak(combined)
+        self.assert_no_push(podman_calls)
+        self.assertEqual(podman_calls, [])
+        self.assertIsNone(manifest_text)
+
+    def test_existing_modern_framing_reaches_five_pushes(self):
+        result, _, podman_calls, authfiles, manifest_text, fixture_sha = self.run_helper(
+            ["--confirm"], mode="existing_modern_absent")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        builds = [call for call in podman_calls if " build " in f" {call} "]
+        self.assertEqual(len(builds), 6)
+        pushes = [call for call in podman_calls if " push " in f" {call} "]
+        self.assertEqual(len(pushes), 5)
+        self.assertIsNotNone(manifest_text)
+        manifest = json.loads(manifest_text)
+        self.assertEqual(manifest["source_sha"], fixture_sha)
+        self.assertEqual(
+            [image["repository"] for image in manifest["images"]],
+            ["launchcrew-api", "launchcrew-web", "launchcrew-web-proxy",
+             "launchcrew-migration", "launchcrew-bootstrap"])
+        for image in manifest["images"]:
+            self.assertEqual(image["digest"], GOOD_DIGEST)
+            self.assertEqual(set(image), {"repository", "digest"})
+        self.assertNotIn(ACCOUNT, manifest_text)
+        self.assertNotIn(TOKEN_SENTINEL, manifest_text)
+        combined = result.stdout + result.stderr
+        self.assertIn("confirmed publication", combined)
+        self.assert_no_leak(combined)
+        for authfile in authfiles:
+            self.assertFalse(Path(authfile).exists())
+
+    def test_existing_legacy_blank_framing_reaches_five_pushes(self):
+        result, _, podman_calls, authfiles, manifest_text, fixture_sha = self.run_helper(
+            ["--confirm"], mode="existing_legacy_blank_absent")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        builds = [call for call in podman_calls if " build " in f" {call} "]
+        self.assertEqual(len(builds), 6)
+        pushes = [call for call in podman_calls if " push " in f" {call} "]
+        self.assertEqual(len(pushes), 5)
+        self.assertIsNotNone(manifest_text)
+        manifest = json.loads(manifest_text)
+        self.assertEqual(manifest["source_sha"], fixture_sha)
+        self.assertEqual(len(manifest["images"]), 5)
+        for image in manifest["images"]:
+            self.assertEqual(image["digest"], GOOD_DIGEST)
+            self.assertEqual(set(image), {"repository", "digest"})
+        self.assertNotIn(ACCOUNT, manifest_text)
+        self.assertNotIn(TOKEN_SENTINEL, manifest_text)
+        combined = result.stdout + result.stderr
+        self.assertIn("confirmed publication", combined)
+        self.assert_no_leak(combined)
+        for authfile in authfiles:
+            self.assertFalse(Path(authfile).exists())
+
+    def test_existing_modern_denied_with_late_image_refused_before_any_build(self):
+        result, _, podman_calls, _, manifest_text, _ = self.run_helper(
+            ["--confirm"], mode="existing_modern_denied_late_image")
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("refused", combined)
+        self.assert_no_leak(combined)
+        self.assert_no_push(podman_calls)
+        self.assertEqual(podman_calls, [])
+        self.assertIsNone(manifest_text)
+
+    def test_existing_modern_unknown_with_late_image_refused_before_any_build(self):
+        result, _, podman_calls, _, manifest_text, _ = self.run_helper(
+            ["--confirm"], mode="existing_modern_unknown_late_image")
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("refused", combined)
+        self.assert_no_leak(combined)
+        self.assert_no_push(podman_calls)
+        self.assertEqual(podman_calls, [])
+        self.assertIsNone(manifest_text)
+
+    def test_existing_modern_malformed_with_late_image_refused_before_any_build(self):
+        result, _, podman_calls, _, manifest_text, _ = self.run_helper(
+            ["--confirm"], mode="existing_modern_malformed_late_image")
         self.assertNotEqual(result.returncode, 0)
         combined = result.stdout + result.stderr
         self.assertIn("refused", combined)

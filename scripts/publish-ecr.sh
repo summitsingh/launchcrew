@@ -74,19 +74,24 @@ refuse() {
 }
 
 # Strict allowlist of recognized AWS error classes, else empty.
-# Only the genuine AWS CLI error position on the first line counts:
+# Only the genuine AWS CLI error position counts, after skipping
+# leading blank lines: optional exact modern prefix then
 # An error occurred (Class) when calling the Operation operation:
-# with bounded tokens. Unknown class, malformed prefix, multiple
-# error lines, or any other shape yields empty. Later body tokens
-# are never searched, and private fragments never return.
+# with bounded tokens. Unknown class, malformed prefix, junk before
+# the report, multiple error lines, or any other shape yields empty.
+# Later body tokens are never searched, and private fragments never
+# return.
 aws_class() {
-  _line="$(head -n 1 "$1" 2>/dev/null || true)"
+  _line="$(sed -n '/^$/!{p;q;}' "$1" 2>/dev/null || true)"
+  case "$_line" in
+    "aws: [ERROR]: "*) _line="${_line#aws: [ERROR]: }" ;;
+  esac
   _class="$(printf '%s' "$_line" | sed -n -E 's/^An error occurred \(([A-Za-z][A-Za-z0-9]{0,63})\) when calling the [A-Za-z][A-Za-z0-9]{0,63} operation:.*/\1/p' 2>/dev/null || true)"
   if [ -z "${_class:-}" ]; then
     printf ''
     return 0
   fi
-  _count="$(grep -c -E '^An error occurred \([A-Za-z][A-Za-z0-9]{0,63}\) when calling the [A-Za-z][A-Za-z0-9]{0,63} operation:' "$1" 2>/dev/null || true)"
+  _count="$(grep -c -E '^(aws: \[ERROR\]: )?An error occurred \([A-Za-z][A-Za-z0-9]{0,63}\) when calling the [A-Za-z][A-Za-z0-9]{0,63} operation:' "$1" 2>/dev/null || true)"
   if [ "${_count:-0}" != "1" ]; then
     printf ''
     return 0
