@@ -88,11 +88,15 @@ def photo_status_of(receipt):
         return blank_photo_status()
     if not isinstance(status, dict):
         return _invalid_photo_status(receipt, 'photo status is not an object')
+    if not status:
+        return _invalid_photo_status(receipt, 'photo status is empty')
+    if status.get('state') not in (STATE_NO_PHOTO, STATE_REQUESTED_UNCHECKED,
+                                    STATE_CHECK_REQUESTED, STATE_CHECKED):
+        if 'state' not in status:
+            return _invalid_photo_status(receipt, 'photo status has no state')
+        return _invalid_photo_status(receipt, 'unknown photo state')
     merged = blank_photo_status()
     merged.update({k: status.get(k, merged[k]) for k in merged})
-    if merged['state'] not in (STATE_NO_PHOTO, STATE_REQUESTED_UNCHECKED,
-                               STATE_CHECK_REQUESTED, STATE_CHECKED):
-        return _invalid_photo_status(receipt, 'unknown photo state')
     return merged
 
 
@@ -173,10 +177,15 @@ def apply_photo_event(receipt, *, event, actor, status):
     revised['approvals'] = []
     revised['approved_revision'] = None
     revised['approval_state'] = 'pending_approval'
+    # The pending receipt entry is a request, not a completed check: the
+    # DB audit already records 'photo_check_requested' here, and the
+    # terminal verdict (if any) appends its own 'photo_checked' step in
+    # attach_verdict. History keeps the 'photo_checked' photo_event name.
+    receipt_step = 'photo_check_requested' if event == PHOTO_EVENT_CHECKED else event
     events = list((revised.get('audit') or {}).get('event_log') or [])
-    events.append({'step': event, 'agent': 'human',
+    events.append({'step': receipt_step, 'agent': 'human',
                    'profile': actor or 'human',
-                   'action': 'Photo event %s at revision %d' % (event, previous + 1),
+                   'action': 'Photo event %s at revision %d' % (receipt_step, previous + 1),
                    'timestamp': now, 'revision': previous + 1, 'revised_by': actor,
                    'photo': sanitized_summary(status)})
     revised.setdefault('audit', {})['event_log'] = events
@@ -222,9 +231,9 @@ def attach_verdict(receipt, *, label, reason, actor, uploads=0, segmentations=0,
                 'text-model usage above is unchanged and covers text models only.')
     elif uploads or segmentations:
         handling = 'delivery_failed'
-        note = ('The photo transport was attempted but the segmentation sequence did not '
-                'complete; nothing was segmented. Text-model usage above is unchanged '
-                'and covers text models only.')
+        note = ('The photo transport was attempted but no completed segmentation result '
+                'was confirmed; no automatic retry was made. Text-model usage above is '
+                'unchanged and covers text models only.')
     else:
         handling = 'delivery_failed'
         note = ('No photo bytes were sent for this verdict; nothing was segmented. '

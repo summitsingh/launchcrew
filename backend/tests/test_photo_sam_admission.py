@@ -430,6 +430,35 @@ def test_moved_revision_finalization_attaches_nothing(client, monkeypatch):
     assert client.post('/api/runs/%s/approve' % run_id, json={'expected_revision': 2}).status_code == 422
 
 
+def test_preview_suppressed_when_revision_moves_after_finalize(client, monkeypatch):
+    run_id = _make_run(client)
+    raw = _png_bytes()
+    _approve_bytes(monkeypatch, raw)
+    _grant(1)
+    calls = []
+    real_finalize = photo_admission.finalize_photo_check
+
+    def moving_finalize(db, call_id, verdict, expected_revision, **kwargs):
+        final = real_finalize(db, call_id, verdict, expected_revision, **kwargs)
+        with store.connect() as conn:
+            receipt = conn.execute(
+                text('SELECT receipt FROM runs WHERE id=:id'), {'id': run_id}).scalar()
+            receipt['revision'] = receipt.get('revision', 0) + 1
+            conn.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb) WHERE id=:id'),
+                         {'receipt': json.dumps(receipt), 'id': run_id})
+        return final
+
+    with patch('backend.sam.urlopen', side_effect=_transport(CLEAR_TAG, calls)):
+        with patch.object(photo_admission, 'finalize_photo_check', side_effect=moving_finalize):
+            response = client.post('/api/runs/%s/photo-check' % run_id,
+                                   json={'image_data_uri': _data_uri(raw), 'expected_revision': 0})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body['check']['label'] == 'detected'
+    assert body['preview'] is None
+    assert 'stale' not in json.dumps(body).lower()
+
+
 def test_forged_fields_and_stale_versions(client):
     run_id = _make_run(client)
     raw = _png_bytes()

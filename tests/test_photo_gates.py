@@ -63,6 +63,15 @@ def test_present_malformed_and_unknown_states_fail_closed():
         receipt = _receipt(photo_status=bad)
         assert photo_review.photo_status_of(receipt)['state'] != 'no_photo'
         assert photo_review.photo_block_reason(receipt) is not None
+    for bad in ({}, {'label': 'detected', 'reason': 'x',
+                     'policy_version': 'photo-geometry/v1',
+                     'revision': 1, 'actor': '', 'checked_at': ''},
+                {'state': None, 'label': 'detected', 'reason': 'x',
+                 'policy_version': 'photo-geometry/v1',
+                 'revision': 1, 'actor': '', 'checked_at': ''}):
+        receipt = _receipt(photo_status=bad)
+        assert photo_review.photo_status_of(receipt)['state'] != 'no_photo'
+        assert photo_review.photo_block_reason(receipt) is not None
     receipt = _receipt(photo_status={'state': 'mystery', 'label': 'detected',
                                      'reason': 'x', 'policy_version': 'photo-geometry/v1',
                                      'revision': 1, 'actor': '', 'checked_at': ''})
@@ -111,6 +120,21 @@ def test_history_snapshot_keeps_prior_photo_state_and_text_source():
     assert 'human_draft' not in revised or revised.get('human_draft') is None
 
 
+def test_pending_receipt_audit_step_is_requested_not_checked():
+    receipt = _receipt(revision=0)
+    revised = photo_review.apply_photo_event(
+        receipt, event=photo_review.PHOTO_EVENT_CHECKED, actor='a',
+        status={'state': 'check_requested', 'label': None,
+                'reason': 'check_requested: segmentation in flight',
+                'policy_version': 'photo-geometry/v1'})
+    assert revised['audit']['event_log'][-1]['step'] == 'photo_check_requested'
+    assert revised['revision_history'][-1]['photo_event'] == 'photo_checked'
+    terminal = photo_review.attach_verdict(
+        revised, label='detected', reason='clear_single', actor='a',
+        uploads=1, segmentations=1, segmented=True)
+    assert terminal['audit']['event_log'][-1]['step'] == 'photo_checked'
+
+
 def test_attach_verdict_reports_actual_attempts():
     done = photo_review.attach_verdict(_receipt(revision=1), label='detected',
                                        reason='clear_single', actor='a',
@@ -126,7 +150,9 @@ def test_attach_verdict_reports_actual_attempts():
     assert failed['photo_transport']['uploads'] == 1
     assert failed['photo_transport']['segmentations'] == 0
     text = str(failed['photo_transport']['note'])
-    assert 'attempted' in text and 'nothing was segmented' in text
+    assert 'attempted' in text
+    assert 'no completed segmentation result was confirmed' in text
+    assert 'nothing was segmented' not in text
     assert 'sent to the segmentation provider' not in text
     untouched = photo_review.attach_verdict(_receipt(revision=1), label='unknown',
                                             reason='fix_photo', actor='a')

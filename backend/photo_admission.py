@@ -29,8 +29,10 @@ from backend import sam, store
 from backend.photo_review import (
     PHOTO_EVENT_CHECKED,
     STATE_CHECK_REQUESTED,
+    STATE_CHECKED,
     apply_photo_event,
     attach_verdict,
+    photo_status_of,
 )
 from launchcrew import human_review
 from launchcrew.photo_policy import (
@@ -141,6 +143,15 @@ def admit_photo_check(db, run_id, revision, photo_sha256, expected_revision, *, 
                 text('SELECT receipt FROM runs WHERE id=:id FOR UPDATE'), {'id': run_id}).fetchone()
             if holder is None:
                 raise AdmissionRejected('run not found')
+            # A concurrent same-key arrival may have committed while this
+            # transaction waited on the run lock. Re-read the ledger now
+            # that the run row is held, before any staleness decision, so
+            # the waiter replays pending instead of going stale.
+            existing = _read_call(connection, run_id, revision)
+            if existing is not None:
+                if (existing['photo_sha256'] or '').lower() != digest:
+                    raise AdmissionConflict('a different photo already holds this revision')
+                return _row_to_call(existing, is_owner=False)
             receipt = holder[0]
             ok, context_reason = human_review.valid_revision_context(receipt)
             if not ok:
@@ -148,14 +159,6 @@ def admit_photo_check(db, run_id, revision, photo_sha256, expected_revision, *, 
             current = human_review.current_revision(receipt)
             if expected_revision != current:
                 raise AdmissionStale('the draft changed; reload the latest revision')
-            # A concurrent same-key arrival may have committed while this
-            # transaction waited on the run lock. Re-read the ledger now
-            # that the run row is held, before any staleness decision.
-            existing = _read_call(connection, run_id, revision)
-            if existing is not None:
-                if (existing['photo_sha256'] or '').lower() != digest:
-                    raise AdmissionConflict('a different photo already holds this revision')
-                return _row_to_call(existing, is_owner=False)
             budget = connection.execute(
                 text("SELECT remaining_images FROM sam_budget WHERE id='global' FOR UPDATE")).scalar()
             if budget is None or budget <= 0:
@@ -320,4 +323,17 @@ def run_photo_check(db, run_id, raw_bytes, mime, revision, expected_revision, *,
     with db.begin() as connection:
         receipt = connection.execute(
             text('SELECT receipt FROM runs WHERE id=:id'), {'id': run_id}).fetchone()[0]
+    # The preview is a volatile hint computed before finalization. If a
+    # remove or text revision landed between finalization and this re-read,
+    # the hint would describe a superseded revision, so suppress it unless
+    # the re-read receipt is still exactly the admitted revision + 1 with
+    # a current detected status. No stale hint is added.
+    if preview is not None:
+        kept = photo_status_of(receipt)
+        current = human_review.current_revision(receipt)
+        if not (current == row['revision'] + 1
+                and kept['state'] == STATE_CHECKED
+                and kept['label'] == 'detected'
+                and kept.get('revision') == current):
+            preview = None
     return final, preview, receipt
