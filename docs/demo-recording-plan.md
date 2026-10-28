@@ -87,9 +87,9 @@ Section 7, 2:35 to 2:50, 15 seconds, Close, what LaunchCrew is, and what it is n
 ## Gates, before recording tap
 
 - TODO: live SAM pass, or explicit removal of SAM pass from the final video claims, with the demo plan updated first. SAM is held at the time of this plan, so recording is gated.
-- TODO: CI pass, VERIFIED at main 4bb295d, run 40618077504, success, 5m 5s, plus integrated candidate CI or test evidence, if the final video shows integrated code.
-- TODO: integrated pytest, unittest discover, frontend tests, typecheck, build, and clean regenerated contracts, from integration candidate, with actual counts and exit codes.
-- TODO: keyless browser acceptance, rendered, across V1 and V2, as in the checklist above, with ports, steps, and evidence.
+- Integrated test evidence, from candidate f70d107 closeout: backend pytest 67 passed, original unittest discover 38 passed, Vitest 14 passed, typecheck and build passed, contract paths 23 with clean regeneration, counts as reported in closeout. CI pass VERIFIED at main 4bb295d, run 40618077504, success, 5m 5s.
+- Keyless browser acceptance, from candidate f70d107 closeout plus audit: Playwright 1 passed in 9.1s on isolated ports (API 8021, web 3021), all checklist flows rendered across V1 and V2, 8 screenshots plus 2 export receipts plus summary.json, no attempted publication. Audit confirmed no route interception and all 11 artifacts present with matching contents.
+- Pending, not verified: post-f70d107 acceptance spec additions (seven distinct rendered campaign brief texts, campaign day export refusal before approval) and deployment role corrections await an independent verification run in the local Mac fallback. The f70d107 evidence above is the last verified result, and recording stays gated on a live SAM pass regardless.
 - TODO: Summit approval to record, separate from all prior taps, with the timed script above approved, and with the decision on whether V2 is included, based on integrated verification at that time.
 - TODO: Summit approval of the final video version, separate from approval to record, before submission.
 
