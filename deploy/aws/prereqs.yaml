@@ -1,0 +1,87 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  LaunchCrew prereqs, four Secrets plus one exportable ACM cert,
+  authorized for Codex execution after verification, not applied in this
+  terminal. No SecretString plaintext in this file. Master, runtime, and
+  migration passwords are AWS managed with nonsecret username metadata
+  plus a generated password key. TLS starts as empty metadata. All
+  secrets use Retain so stack delete never force deletes without
+  recovery; recovery is a separately reviewed exact ARN DeleteSecret
+  with 7 day recovery and no force. Teardown is required after Nov 4
+  and no later than Nov 9, 2026.
+Resources:
+  MasterSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: LaunchCrew master DB password, managed generation, JSON key password. Used only for RDS creation.
+      # Nonsecret username plus generated password key, per official
+      # GenerateSecretString template and key. Excludes double quote,
+      # at-sign, slash, backslash, and space for RDS rules and URL
+      # safety after percent-encoding.
+      GenerateSecretString:
+        SecretStringTemplate: '{"username":"launchcrew_master"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludeCharacters: '"@/\ '
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
+        - { Key: TeardownBy, Value: '2026-11-09' }
+  RuntimeSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: LaunchCrew runtime DB URL, managed password at creation, database-url added later by init.
+      GenerateSecretString:
+        SecretStringTemplate: '{"username":"launchcrew_runtime"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludeCharacters: '"@/\ '
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
+        - { Key: TeardownBy, Value: '2026-11-09' }
+  MigrationSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: LaunchCrew migration DB URL, managed password at creation, database-url added later by init.
+      GenerateSecretString:
+        SecretStringTemplate: '{"username":"launchcrew_migration"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludeCharacters: '"@/\ '
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
+        - { Key: TeardownBy, Value: '2026-11-09' }
+  TlsSecret:
+    Type: AWS::SecretsManager::Secret
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: LaunchCrew TLS material, empty metadata at creation, tls-cert-b64 and tls-key-b64 added later by init export.
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
+        - { Key: TeardownBy, Value: '2026-11-09' }
+  DemoCertificate:
+    Type: AWS::CertificateManager::Certificate
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      DomainName: launchcrew.summitsingh.com
+      ValidationMethod: DNS
+      # Exportable public cert for ALB listener plus sidecar export.
+      # Host confirms the exact property spelling against the template
+      # reference. No wildcard, no Route53 assumed. Delete requires the
+      # app stack listener to be gone first.
+      CertificateExport: ENABLED
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
+        - { Key: TeardownBy, Value: '2026-11-09' }

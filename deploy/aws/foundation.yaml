@@ -1,0 +1,86 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  LaunchCrew foundation, Budget plus SNS, authorized for Codex execution
+  after verification, not applied in this terminal. No secrets in this
+  file. Budget limit and notify email are parameters with no approved
+  defaults. Empty email means no subscription and paid stages refuse.
+  Teardown is required after Nov 4 and no later than Nov 9, 2026.
+  DemoBudget filters to user defined resource cost allocation tag
+  Project=LaunchCrew only, never the whole account. Filter with no data
+  or 0 is not proof of zero spend and not a hard cap. Tag activation
+  is verified read-only before any paid phase.
+Parameters:
+  BudgetLimitUsd:
+    Type: Number
+    Description: AWS Budget limit in USD, for the demo period only. No approved default, supply after Summit chooses a cap. A value of 0 is not an approval, it is a placeholder that must be replaced. The budget filters to user defined resource cost allocation tag Project=LaunchCrew with MatchOptions EQUALS, never the whole account. Legacy CostFilters are deprecated and not used. An AWS Budget is an alert and estimate mechanism, not an enforced hard spend cap. A filter returning no data or 0 is not proof of zero spend. Cost allocation tag activation is verified read-only before any paid phase and is never activated by this template or script.
+  BudgetNotifyEmail:
+    Type: String
+    Default: ''
+    Description: Owner contact email for demo budget alerts, supplied privately at deploy review, never committed with a real address. Empty means no email subscription is created and the budget has no subscribers, and paid prereq stages refuse. Alerts are notifications only, not an enforced hard spend cap.
+Conditions:
+  BudgetNotifyConfigured: !Not [!Equals ['', !Ref BudgetNotifyEmail]]
+Resources:
+  DemoBudget:
+    Type: AWS::Budgets::Budget
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      Budget:
+        BudgetName: launchcrew-demo
+        BudgetLimit: { Amount: !Ref BudgetLimitUsd, Unit: USD }
+        TimeUnit: MONTHLY
+        BudgetType: COST
+        # Project scoped filter only. Legacy CostFilters are deprecated
+        # and not used. Resource Project tags alone do not scope a
+        # budget: the Project key must also be Active as a user
+        # defined resource cost allocation tag in Billing, otherwise
+        # this filter sees no data. No data or 0 is not proof of zero
+        # spend and never a hard cap.
+        FilterExpression:
+          Tags:
+            Key: Project
+            Values: [LaunchCrew]
+            MatchOptions: [EQUALS]
+      NotificationsWithSubscribers: !If
+        - BudgetNotifyConfigured
+        - - Notification: { NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 80, ThresholdType: PERCENTAGE }
+            Subscribers: [{ SubscriptionType: SNS, Address: !Ref BudgetTopic }]
+          - Notification: { NotificationType: FORECASTED, ComparisonOperator: GREATER_THAN, Threshold: 100, ThresholdType: PERCENTAGE }
+            Subscribers: [{ SubscriptionType: SNS, Address: !Ref BudgetTopic }]
+        - []
+  BudgetTopic:
+    Type: AWS::SNS::Topic
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      DisplayName: launchcrew-demo-budget
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
+        - { Key: TeardownBy, Value: '2026-11-09' }
+  BudgetTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      Topics: [!Ref BudgetTopic]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowBudgetsPublishOnly
+            Effect: Allow
+            Principal: { Service: budgets.amazonaws.com }
+            Action: sns:Publish
+            Resource: !Ref BudgetTopic
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:aws:budgets::${AWS::AccountId}:budget/launchcrew-demo'
+  BudgetEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: BudgetNotifyConfigured
+    Properties:
+      Protocol: email
+      Endpoint: !Ref BudgetNotifyEmail
+      TopicArn: !Ref BudgetTopic

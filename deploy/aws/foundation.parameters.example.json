@@ -1,0 +1,10 @@
+[
+  {
+    "ParameterKey": "BudgetLimitUsd",
+    "ParameterValue": "REPLACE_WITH_SUMMIT_CHOSEN_CAP_AFTER_ESTIMATE"
+  },
+  {
+    "ParameterKey": "BudgetNotifyEmail",
+    "ParameterValue": ""
+  }
+]

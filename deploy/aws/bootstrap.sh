@@ -21,6 +21,14 @@
 #                 runtime-only verify proof, then update the stack with
 #                 EnableServices=true for fixed count 1 each, then verify both
 #                 services report desired 1 and running 1
+# Opt-in prereq phases are explicit only and never run under all until Phase C:
+#   phase foundation deploy the foundation stack with Project filtered Budget
+#                 plus SNS topic, policy, and conditional email subscription,
+#                 then report subscription status with no paid Secrets yet
+#   phase prereqs enforce the exact SNS gate plus CE Active plus expiry guard,
+#                 then deploy four Secrets plus the exportable ACM cert, with
+#                 staged CREATE_IN_PROGRESS pending yielding a private DNS
+#                 receipt and a public CNAME operator step
 # The migration task definition is the only schema change path; the bootstrap
 # task never runs alembic, and runtime tasks never run alembic or role binds,
 # so there are no duplicate migration controllers. This controller never calls
@@ -65,12 +73,21 @@ RUNTIME_SECRET_ARN=""
 MIGRATION_SECRET_ARN=""
 MASTER_SECRET_ARN=""
 TLS_SECRET_ARN=""
+FOUNDATION_STACK_NAME=""
+PREREQS_STACK_NAME=""
+FOUNDATION_TEMPLATE_FILE=""
+PREREQS_TEMPLATE_FILE=""
+FOUNDATION_PARAMETERS_FILE=""
+DNS_RECEIPT_FILE=""
 
 usage() {
-  echo "Usage: $0 [--confirm --stack-name NAME --expected-account ID --expected-region REGION ...] [--phase infra|images|dbroles|migrate|enable|all]"
+  echo "Usage: $0 [--confirm --stack-name NAME --expected-account ID --expected-region REGION ...] [--phase infra|images|dbroles|migrate|enable|all|foundation|prereqs]"
   echo "Dry-run default makes no AWS call and prints the ordered phase plan."
   echo "Confirm path requires --stack-name, --expected-account (12 digits), --expected-region,"
   echo "  --parameters-file, plus per-phase image URIs and secret ARNs (see phase plan)."
+  echo "Opt-in prereq phases are explicit only and never run under all until Phase C:"
+  echo "  --phase foundation needs --foundation-stack-name plus --foundation-parameters-file"
+  echo "  --phase prereqs needs --prereqs-stack-name plus --foundation-stack-name plus --foundation-parameters-file plus --dns-receipt-file"
 }
 
 while [ $# -gt 0 ]; do
@@ -108,6 +125,18 @@ while [ $# -gt 0 ]; do
     --master-secret-arn=*) MASTER_SECRET_ARN="${1#--master-secret-arn=}"; shift ;;
     --tls-secret-arn) TLS_SECRET_ARN="${2:-}"; shift 2 ;;
     --tls-secret-arn=*) TLS_SECRET_ARN="${1#--tls-secret-arn=}"; shift ;;
+    --foundation-stack-name) FOUNDATION_STACK_NAME="${2:-}"; shift 2 ;;
+    --foundation-stack-name=*) FOUNDATION_STACK_NAME="${1#--foundation-stack-name=}"; shift ;;
+    --prereqs-stack-name) PREREQS_STACK_NAME="${2:-}"; shift 2 ;;
+    --prereqs-stack-name=*) PREREQS_STACK_NAME="${1#--prereqs-stack-name=}"; shift ;;
+    --foundation-template-file) FOUNDATION_TEMPLATE_FILE="${2:-}"; shift 2 ;;
+    --foundation-template-file=*) FOUNDATION_TEMPLATE_FILE="${1#--foundation-template-file=}"; shift ;;
+    --prereqs-template-file) PREREQS_TEMPLATE_FILE="${2:-}"; shift 2 ;;
+    --prereqs-template-file=*) PREREQS_TEMPLATE_FILE="${1#--prereqs-template-file=}"; shift ;;
+    --foundation-parameters-file) FOUNDATION_PARAMETERS_FILE="${2:-}"; shift 2 ;;
+    --foundation-parameters-file=*) FOUNDATION_PARAMETERS_FILE="${1#--foundation-parameters-file=}"; shift ;;
+    --dns-receipt-file) DNS_RECEIPT_FILE="${2:-}"; shift 2 ;;
+    --dns-receipt-file=*) DNS_RECEIPT_FILE="${1#--dns-receipt-file=}"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown arg: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -140,6 +169,10 @@ phase_plan() {
   echo "  enable needs the five image URIs and all four secret ARNs to re-prove refs, bindings, and verify."
   echo "Each phase re-verifies its own preconditions from live state, so a single phase can resume"
   echo "after earlier phases completed in a previous run; nothing is assumed from memory."
+  echo "Opt-in prereq phases, explicit only, never under all until Phase C atomic integration:"
+  echo "  foundation: deploy Budget plus SNS with Project filter, report subscription status, no paid Secrets yet"
+  echo "  prereqs: exact SNS gate plus CE Active plus expiry guard, then deploy four Secrets plus exportable ACM,"
+  echo "     staged CREATE_IN_PROGRESS pending yields private DNS receipt and public CNAME operator step"
   echo "Remaining work, never done by this script:"
   echo "- Secrets Manager secret values, ACM certificate, Cloudflare DNS, manual snapshots: separate approval with exact identifiers."
   echo "- Teardown: deploy/aws/teardown.sh after Nov 4 and no later than Nov 9, 2026."
@@ -156,18 +189,31 @@ if [ "$CONFIRM" -ne 1 ]; then
 fi
 
 case "$PHASE" in
-  infra|images|dbroles|migrate|enable|all) ;;
+  infra|images|dbroles|migrate|enable|all|foundation|prereqs) ;;
   *) echo "refused: unknown phase $PHASE" >&2; exit 2 ;;
 esac
-[ -n "$STACK_NAME" ] || { echo "confirm requires --stack-name with the exact stack name" >&2; exit 2; }
 [ -n "$EXPECTED_ACCOUNT" ] || { echo "confirm requires --expected-account with a 12-digit account" >&2; exit 2; }
 [ -n "$EXPECTED_REGION" ] || { echo "confirm requires --expected-region" >&2; exit 2; }
 case "$EXPECTED_ACCOUNT" in
   [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;;
   *) echo "refused: expected account must be 12 digits" >&2; exit 2 ;;
 esac
-[ -n "$PARAMETERS_FILE" ] || { echo "confirm requires --parameters-file" >&2; exit 2; }
-[ -f "$PARAMETERS_FILE" ] || { echo "refused: parameters file not found: $PARAMETERS_FILE" >&2; exit 2; }
+case "$PHASE" in
+  foundation)
+    [ -n "$FOUNDATION_STACK_NAME" ] || { echo "confirm requires --foundation-stack-name with the exact foundation stack name" >&2; exit 2; }
+    [ -n "$FOUNDATION_PARAMETERS_FILE" ] || { echo "confirm requires --foundation-parameters-file" >&2; exit 2; }
+    [ -f "$FOUNDATION_PARAMETERS_FILE" ] || { echo "refused: foundation parameters file not found: $FOUNDATION_PARAMETERS_FILE" >&2; exit 2; } ;;
+  prereqs)
+    [ -n "$PREREQS_STACK_NAME" ] || { echo "confirm requires --prereqs-stack-name with the exact prereqs stack name" >&2; exit 2; }
+    [ -n "$FOUNDATION_STACK_NAME" ] || { echo "confirm requires --foundation-stack-name for the exact SNS gate" >&2; exit 2; }
+    [ -n "$FOUNDATION_PARAMETERS_FILE" ] || { echo "confirm requires --foundation-parameters-file for the approved notify value" >&2; exit 2; }
+    [ -f "$FOUNDATION_PARAMETERS_FILE" ] || { echo "refused: foundation parameters file not found: $FOUNDATION_PARAMETERS_FILE" >&2; exit 2; }
+    [ -n "$DNS_RECEIPT_FILE" ] || { echo "confirm requires --dns-receipt-file for the private validation receipt" >&2; exit 2; } ;;
+  *)
+    [ -n "$STACK_NAME" ] || { echo "confirm requires --stack-name with the exact stack name" >&2; exit 2; }
+    [ -n "$PARAMETERS_FILE" ] || { echo "confirm requires --parameters-file" >&2; exit 2; }
+    [ -f "$PARAMETERS_FILE" ] || { echo "refused: parameters file not found: $PARAMETERS_FILE" >&2; exit 2; } ;;
+esac
 
 require_images_args() {
   [ -n "$API_IMAGE" ] || { echo "confirm requires --api-image for this phase" >&2; exit 2; }
@@ -189,6 +235,7 @@ require_tls_arg() {
 
 case "$PHASE" in
   infra) ;;
+  foundation|prereqs) ;;
   images) require_images_args; require_secret_args; require_tls_arg ;;
   dbroles)
     [ -n "$BOOTSTRAP_IMAGE" ] || { echo "confirm requires --bootstrap-image for this phase" >&2; exit 2; }
@@ -208,11 +255,19 @@ needs_secret_checks() {
   [ -n "$RUNTIME_SECRET_ARN" ] || [ -n "$MIGRATION_SECRET_ARN" ] || [ -n "$MASTER_SECRET_ARN" ] || [ -n "$TLS_SECRET_ARN" ]
 }
 
-if [ -z "$TEMPLATE_FILE" ]; then
-  SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-  TEMPLATE_FILE="$SCRIPT_DIR/fargate.yaml"
-fi
-[ -f "$TEMPLATE_FILE" ] || { echo "refused: template file not found: $TEMPLATE_FILE" >&2; exit 2; }
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+case "$PHASE" in
+  foundation)
+    if [ -z "$FOUNDATION_TEMPLATE_FILE" ]; then FOUNDATION_TEMPLATE_FILE="$SCRIPT_DIR/foundation.yaml"; fi
+    [ -f "$FOUNDATION_TEMPLATE_FILE" ] || { echo "refused: foundation template file not found: $FOUNDATION_TEMPLATE_FILE" >&2; exit 2; } ;;
+  prereqs)
+    if [ -z "$PREREQS_TEMPLATE_FILE" ]; then PREREQS_TEMPLATE_FILE="$SCRIPT_DIR/prereqs.yaml"; fi
+    [ -f "$PREREQS_TEMPLATE_FILE" ] || { echo "refused: prereqs template file not found: $PREREQS_TEMPLATE_FILE" >&2; exit 2; }
+    if [ -z "$FOUNDATION_TEMPLATE_FILE" ]; then FOUNDATION_TEMPLATE_FILE="$SCRIPT_DIR/foundation.yaml"; fi ;;
+  *)
+    if [ -z "$TEMPLATE_FILE" ]; then TEMPLATE_FILE="$SCRIPT_DIR/fargate.yaml"; fi
+    [ -f "$TEMPLATE_FILE" ] || { echo "refused: template file not found: $TEMPLATE_FILE" >&2; exit 2; } ;;
+esac
 if [ -n "${AWS_REGION:-}" ] && [ "$AWS_REGION" != "$EXPECTED_REGION" ]; then
   echo "refused: AWS_REGION $AWS_REGION does not match expected $EXPECTED_REGION" >&2; exit 1
 fi
@@ -248,6 +303,32 @@ is_absent_error() {
   return 1
 }
 
+is_absent_for_stack() {
+  case "$1" in
+    *"does not exist"*)
+      case "$1" in
+        *"$2"*) return 0 ;;
+      esac
+      return 1 ;;
+  esac
+  return 1
+}
+
+check_prereq_expiry() {
+  TODAY_VALUE="${LAUNCHCREW_TODAY:-}"
+  if [ -z "$TODAY_VALUE" ]; then
+    TODAY_VALUE="$(date -u +%F 2>/dev/null || echo "")"
+  fi
+  case "$TODAY_VALUE" in
+    ????-??-??) ;;
+    *) echo "refused: expiry guard date unreadable, no change made" >&2; phase_failed "$PHASE" ;;
+  esac
+  if [ "$TODAY_VALUE" \> "2026-11-09" ]; then
+    echo "refused: prereq provisioning expired after 2026-11-09 as a source guard only, never a billing stop, no change made" >&2
+    phase_failed "$PHASE"
+  fi
+}
+
 COMPLETED=""
 
 mark_done() {
@@ -270,6 +351,9 @@ wants_phase() {
   fi
   return 1
 }
+case "$PHASE" in
+  foundation|prereqs) check_prereq_expiry ;;
+esac
 # Ownership gate one: caller identity must match the expected account before
 # any stack, secret, image, task, or service call.
 echo "Ownership check: caller account must equal $EXPECTED_ACCOUNT in $EXPECTED_REGION"
@@ -282,16 +366,19 @@ fi
 CALLER_ACCOUNT="$(printf '%s' "$CALLER_ACCOUNT" | tr -d '[:space:]')"
 [ "$CALLER_ACCOUNT" = "$EXPECTED_ACCOUNT" ] || { echo "refused: caller $CALLER_ACCOUNT does not match expected $EXPECTED_ACCOUNT, no change made" >&2; exit 1; }
 
-# Ownership gate two: the exact stack must carry the demo tags before any
-# mutation, and its StackId region and account must match the expectation.
-# A stack that reports absent (ValidationError, does not exist) is a fresh
-# create path, not ownership proof: only infra or all may proceed, and the
-# create deploys with the demo tags. An authorization failure is never
-# treated as absence.
+# Ownership gate two: the exact app stack must carry the demo tags before
+# any mutation, and its StackId region and account must match the
+# expectation. Skipped for explicit foundation and prereqs phases, which
+# own separate stacks with their own gates below. A stack that reports
+# absent (ValidationError, does not exist) is a fresh create path, not
+# ownership proof: only infra or all may proceed, and the create deploys
+# with the demo tags. An authorization failure is never treated as
+# absence.
 STACK_EXISTS=0
 STACK_STATUS=""
 STACK_ID=""
 CURRENT_ENABLE="false"
+if [ "$PHASE" != "foundation" ] && [ "$PHASE" != "prereqs" ]; then
 if STACK_JSON="$("$AWS_BIN" cloudformation describe-stacks --stack-name "$STACK_NAME" --region "$EXPECTED_REGION" --output json 2>"$TMP_ERR")"; then
   STACK_EXISTS=1
   printf '%s' "$STACK_JSON" >"$TMP_JSON"
@@ -342,6 +429,7 @@ else
     echo "stack check failed, no change made." >&2
     exit 1
   fi
+fi
 fi
 
 # Ownership gate three: each referenced secret ARN must use the exact Secrets
@@ -557,7 +645,7 @@ PYEOF
 }
 
 case "$PHASE" in
-  infra|dbroles|migrate|enable|all) check_cost_tag_activation ;;
+  infra|dbroles|migrate|enable|all|foundation|prereqs) check_cost_tag_activation ;;
 esac
 
 # cloudformation deploy has no --parameter-file option. Overrides travel as
@@ -638,6 +726,575 @@ require_stack_complete() {
 stack_resource() {
   "$AWS_BIN" cloudformation describe-stack-resource --stack-name "$STACK_NAME" --logical-resource-id "$1" --region "$EXPECTED_REGION" --query "StackResourceDetail.PhysicalResourceId" --output text 2>"$TMP_ERR"
 }
+
+# Phase A prereq helpers, additive and explicit only. Legacy all never calls
+# these. All ownership uses exact account, region, stack, and tag checks with
+# exact API errors only. No secret value ever appears in argv, files, or logs.
+prereq_stack_resource() {
+  "$AWS_BIN" cloudformation describe-stack-resource --stack-name "$1" --logical-resource-id "$2" --region "$EXPECTED_REGION" --query "StackResourceDetail.PhysicalResourceId" --output text 2>"$TMP_ERR"
+}
+
+FOUNDATION_EXISTS=0
+FOUNDATION_STATUS=""
+FOUNDATION_ID=""
+PREREQS_EXISTS=0
+PREREQS_STATUS=""
+PREREQS_ID=""
+
+check_foundation_stack() {
+  if FOUNDATION_JSON="$("$AWS_BIN" cloudformation describe-stacks --stack-name "$FOUNDATION_STACK_NAME" --region "$EXPECTED_REGION" --output json 2>"$TMP_ERR")"; then
+    FOUNDATION_EXISTS=1
+    printf '%s' "$FOUNDATION_JSON" >"$TMP_JSON"
+    FOUNDATION_PARSED="$(python3 - "$TMP_JSON" 2>/dev/null <<'PYEOF'
+import json, sys
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+stacks = doc.get("Stacks", [])
+if not stacks:
+    print("EMPTY")
+    sys.exit(0)
+stack = stacks[0]
+tags = {t.get("Key"): t.get("Value") for t in stack.get("Tags", []) if isinstance(t, dict)}
+print("STACKID\t%s" % stack.get("StackId", ""))
+print("STATUS\t%s" % stack.get("StackStatus", ""))
+print("PROJECT\t%s" % tags.get("Project", ""))
+print("ENV\t%s" % tags.get("Environment", ""))
+PYEOF
+)" || { echo "refused: foundation stack metadata unreadable, no change made" >&2; exit 1; }
+    FOUNDATION_ID="$(printf '%s\n' "$FOUNDATION_PARSED" | awk -F'\t' '$1=="STACKID"{print $2}')"
+    FOUNDATION_STATUS="$(printf '%s\n' "$FOUNDATION_PARSED" | awk -F'\t' '$1=="STATUS"{print $2}')"
+    FOUNDATION_PROJECT="$(printf '%s\n' "$FOUNDATION_PARSED" | awk -F'\t' '$1=="PROJECT"{print $2}')"
+    FOUNDATION_ENV="$(printf '%s\n' "$FOUNDATION_PARSED" | awk -F'\t' '$1=="ENV"{print $2}')"
+    [ "$FOUNDATION_PROJECT" = "LaunchCrew" ] || { echo "refused: foundation Project tag mismatch, expected LaunchCrew, no change made" >&2; exit 1; }
+    [ "$FOUNDATION_ENV" = "demo" ] || { echo "refused: foundation Environment tag mismatch, expected demo, no change made" >&2; exit 1; }
+    case "$FOUNDATION_ID" in
+      "arn:aws:cloudformation:$EXPECTED_REGION:$EXPECTED_ACCOUNT:"*) ;;
+      *) echo "refused: foundation StackId is not owned by the expected account in the expected region, no change made" >&2; exit 1 ;;
+    esac
+    echo "Verified foundation stack tags Project LaunchCrew Environment demo status $FOUNDATION_STATUS"
+  else
+    ERR="$(cat "$TMP_ERR" 2>/dev/null || true)"
+    if is_auth_error "$ERR"; then
+      echo "foundation stack check authorization or API failure, not absence, no change made." >&2
+      exit 1
+    fi
+    if is_absent_for_stack "$ERR" "$FOUNDATION_STACK_NAME"; then
+      FOUNDATION_EXISTS=0
+      echo "Foundation stack absent: fresh create path, foundation will deploy with demo tags"
+    else
+      echo "foundation stack check failed, no change made." >&2
+      exit 1
+    fi
+  fi
+}
+
+check_prereqs_stack() {
+  if PREREQS_JSON="$("$AWS_BIN" cloudformation describe-stacks --stack-name "$PREREQS_STACK_NAME" --region "$EXPECTED_REGION" --output json 2>"$TMP_ERR")"; then
+    PREREQS_EXISTS=1
+    printf '%s' "$PREREQS_JSON" >"$TMP_JSON"
+    PREREQS_PARSED="$(python3 - "$TMP_JSON" 2>/dev/null <<'PYEOF'
+import json, sys
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+stacks = doc.get("Stacks", [])
+if not stacks:
+    print("EMPTY")
+    sys.exit(0)
+stack = stacks[0]
+tags = {t.get("Key"): t.get("Value") for t in stack.get("Tags", []) if isinstance(t, dict)}
+print("STACKID\t%s" % stack.get("StackId", ""))
+print("STATUS\t%s" % stack.get("StackStatus", ""))
+print("PROJECT\t%s" % tags.get("Project", ""))
+print("ENV\t%s" % tags.get("Environment", ""))
+PYEOF
+)" || { echo "refused: prereqs stack metadata unreadable, no change made" >&2; exit 1; }
+    PREREQS_ID="$(printf '%s\n' "$PREREQS_PARSED" | awk -F'\t' '$1=="STACKID"{print $2}')"
+    PREREQS_STATUS="$(printf '%s\n' "$PREREQS_PARSED" | awk -F'\t' '$1=="STATUS"{print $2}')"
+    PREREQS_PROJECT="$(printf '%s\n' "$PREREQS_PARSED" | awk -F'\t' '$1=="PROJECT"{print $2}')"
+    PREREQS_ENV="$(printf '%s\n' "$PREREQS_PARSED" | awk -F'\t' '$1=="ENV"{print $2}')"
+    [ "$PREREQS_PROJECT" = "LaunchCrew" ] || { echo "refused: prereqs Project tag mismatch, expected LaunchCrew, no change made" >&2; exit 1; }
+    [ "$PREREQS_ENV" = "demo" ] || { echo "refused: prereqs Environment tag mismatch, expected demo, no change made" >&2; exit 1; }
+    case "$PREREQS_ID" in
+      "arn:aws:cloudformation:$EXPECTED_REGION:$EXPECTED_ACCOUNT:"*) ;;
+      *) echo "refused: prereqs StackId is not owned by the expected account in the expected region, no change made" >&2; exit 1 ;;
+    esac
+    echo "Verified prereqs stack tags Project LaunchCrew Environment demo status $PREREQS_STATUS"
+  else
+    ERR="$(cat "$TMP_ERR" 2>/dev/null || true)"
+    if is_auth_error "$ERR"; then
+      echo "prereqs stack check authorization or API failure, not absence, no change made." >&2
+      exit 1
+    fi
+    if is_absent_for_stack "$ERR" "$PREREQS_STACK_NAME"; then
+      PREREQS_EXISTS=0
+      echo "Prereqs stack absent: fresh create path, prereqs will deploy with demo tags"
+    else
+      echo "prereqs stack check failed, no change made." >&2
+      exit 1
+    fi
+  fi
+}
+
+foundation_deploy() {
+  DEPLOY_TAGS=""
+  if [ "$FOUNDATION_EXISTS" -eq 0 ]; then DEPLOY_TAGS="yes"; fi
+  if ! python3 - "$FOUNDATION_PARAMETERS_FILE" "$AWS_BIN" "$FOUNDATION_STACK_NAME" \
+      "$FOUNDATION_TEMPLATE_FILE" "$EXPECTED_REGION" "$DEPLOY_TAGS" <<'PYEOF'
+import json, subprocess, sys
+params_file = sys.argv[1]
+aws_bin, stack, template, region, tags = sys.argv[2:7]
+try:
+    with open(params_file) as handle:
+        doc = json.load(handle)
+except Exception:
+    raise SystemExit("parameters file is not valid JSON")
+if isinstance(doc, dict) and "Parameters" in doc:
+    doc = doc["Parameters"]
+if not isinstance(doc, list):
+    raise SystemExit("parameters file must be a JSON list")
+seen = set()
+overrides = []
+for entry in doc:
+    if not isinstance(entry, dict) or "ParameterKey" not in entry:
+        raise SystemExit("parameters file has a malformed entry")
+    key = entry["ParameterKey"]
+    if key in seen:
+        raise SystemExit("parameters file has a duplicate ParameterKey")
+    seen.add(key)
+    if key not in ("BudgetLimitUsd", "BudgetNotifyEmail"):
+        raise SystemExit("foundation parameters file has an unrecognized key")
+    if "ParameterValue" not in entry:
+        raise SystemExit("parameters file entry has no explicit ParameterValue")
+    value = entry.get("ParameterValue", "")
+    if not isinstance(value, str):
+        raise SystemExit("parameters file value must be a string")
+    if "\n" in value or "\r" in value or "://" in value:
+        raise SystemExit("parameters file value has a refused shape")
+    overrides.append("%s=%s" % (key, value))
+if "BudgetLimitUsd" not in seen or "BudgetNotifyEmail" not in seen:
+    raise SystemExit("foundation parameters file must carry BudgetLimitUsd and BudgetNotifyEmail")
+cmd = [aws_bin, "cloudformation", "deploy",
+       "--stack-name", stack, "--template-file", template,
+       "--parameter-overrides"] + overrides + ["--region", region]
+if tags == "yes":
+    cmd += ["--tags", "Project=LaunchCrew", "Environment=demo"]
+proc = subprocess.run(cmd, capture_output=True, text=True)
+sys.exit(proc.returncode)
+PYEOF
+  then
+    echo "refused: foundation parameters file unusable or deploy failed, no claim made" >&2
+    phase_failed foundation
+  fi
+}
+
+require_foundation_complete() {
+  if ! FOUNDATION_STATUS_NOW="$("$AWS_BIN" cloudformation describe-stacks --stack-name "$FOUNDATION_STACK_NAME" --region "$EXPECTED_REGION" --query "Stacks[0].StackStatus" --output text 2>"$TMP_ERR")"; then
+    echo "foundation stack status unreadable after wait, not treated as success." >&2
+    phase_failed foundation
+  fi
+  FOUNDATION_STATUS_NOW="$(printf '%s' "$FOUNDATION_STATUS_NOW" | tr -d '[:space:]')"
+  case "$FOUNDATION_STATUS_NOW" in
+    CREATE_COMPLETE|UPDATE_COMPLETE) echo "Foundation stack status verified: $FOUNDATION_STATUS_NOW" ;;
+    *) echo "refused: foundation stack status is $FOUNDATION_STATUS_NOW, expected CREATE_COMPLETE or UPDATE_COMPLETE" >&2; phase_failed foundation ;;
+  esac
+  FOUNDATION_STATUS="$FOUNDATION_STATUS_NOW"
+  FOUNDATION_EXISTS=1
+}
+
+check_foundation_budget_filter() {
+  BUDGET_JSON="$(mktemp /tmp/launchcrew-fbudget-XXXXXX)"
+  if ! "$AWS_BIN" budgets describe-budget --account-id "$EXPECTED_ACCOUNT" --budget-name launchcrew-demo --output json >"$BUDGET_JSON" 2>"$TMP_ERR"; then
+    rm -f "$BUDGET_JSON"
+    ERR="$(cat "$TMP_ERR" 2>/dev/null || true)"
+    echo "foundation budget unreadable, project spend monitoring UNVERIFIED, no claim made." >&2
+    if is_auth_error "$ERR"; then
+      echo "authorization or API failure, not absence: budgets:DescribeBudget read permission is required." >&2
+    fi
+    phase_failed foundation
+  fi
+  BUDGET_PROOF="$(python3 - "$BUDGET_JSON" 2>/dev/null <<'PYEOF'
+import json, sys
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    print("MALFORMED")
+    sys.exit(0)
+budget = doc.get("Budget", None)
+if not isinstance(budget, dict):
+    print("MALFORMED")
+    sys.exit(0)
+if "CostFilters" in budget or "BudgetFilters" in budget:
+    print("LEGACY")
+    sys.exit(0)
+expr = budget.get("FilterExpression", None)
+if not isinstance(expr, dict) or set(expr.keys()) != {"Tags"}:
+    print("FILTER_MISSING")
+    sys.exit(0)
+tags = expr.get("Tags", None)
+if not isinstance(tags, dict):
+    print("FILTER_MISSING")
+    sys.exit(0)
+if (tags.get("Key", "") == "Project"
+        and tags.get("Values", None) == ["LaunchCrew"]
+        and tags.get("MatchOptions", None) == ["EQUALS"]):
+    print("FILTER_OK")
+else:
+    print("FILTER_MISSING")
+PYEOF
+)" || { rm -f "$BUDGET_JSON"; echo "foundation budget filter unreadable, project spend monitoring UNVERIFIED." >&2; phase_failed foundation; }
+  rm -f "$BUDGET_JSON"
+  BUDGET_PROOF="$(printf '%s' "$BUDGET_PROOF" | tr -d '[:space:]')"
+  [ "$BUDGET_PROOF" = "FILTER_OK" ] || { echo "refused: foundation DemoBudget lacks the exact Project=LaunchCrew EQUALS-only filter, project spend monitoring UNVERIFIED." >&2; phase_failed foundation; }
+  echo "Verified foundation DemoBudget filter: Tags Project=LaunchCrew EQUALS only, read back from live state."
+}
+
+check_sns_exact_gate() {
+  TOPIC_ARN="$(prereq_stack_resource "$FOUNDATION_STACK_NAME" BudgetTopic 2>"$TMP_ERR")" || { echo "foundation topic lookup failed, no paid prereqs started." >&2; phase_failed prereqs; }
+  TOPIC_ARN="$(printf '%s' "$TOPIC_ARN" | tr -d '[:space:]')"
+  [ -n "$TOPIC_ARN" ] && [ "$TOPIC_ARN" != "None" ] || { echo "refused: foundation topic ARN missing, no paid prereqs started." >&2; phase_failed prereqs; }
+  case "$TOPIC_ARN" in
+    arn:aws:sns:*:*:*) ;;
+    *) echo "refused: foundation topic ARN is malformed, no paid prereqs started." >&2; phase_failed prereqs ;;
+  esac
+  TOPIC_COLONS="$(printf '%s' "$TOPIC_ARN" | tr -cd ':' | wc -c)"
+  [ "$TOPIC_COLONS" -eq 5 ] || { echo "refused: foundation topic ARN is malformed, no paid prereqs started." >&2; phase_failed prereqs; }
+  [ "$(printf '%s' "$TOPIC_ARN" | cut -d: -f3)" = "sns" ] || { echo "refused: foundation topic ARN is malformed, no paid prereqs started." >&2; phase_failed prereqs; }
+  TOPIC_REGION="$(printf '%s' "$TOPIC_ARN" | cut -d: -f4)"
+  TOPIC_ACCOUNT="$(printf '%s' "$TOPIC_ARN" | cut -d: -f5)"
+  [ "$TOPIC_REGION" = "$EXPECTED_REGION" ] || { echo "refused: foundation topic region mismatch, no paid prereqs started." >&2; phase_failed prereqs; }
+  [ "$TOPIC_ACCOUNT" = "$EXPECTED_ACCOUNT" ] || { echo "refused: foundation topic account mismatch, no paid prereqs started." >&2; phase_failed prereqs; }
+  SNS_JSON="$(mktemp /tmp/launchcrew-sns-XXXXXX)"
+  if ! "$AWS_BIN" sns list-subscriptions-by-topic --topic-arn "$TOPIC_ARN" --region "$EXPECTED_REGION" --output json >"$SNS_JSON" 2>"$TMP_ERR"; then
+    rm -f "$SNS_JSON"
+    ERR="$(cat "$TMP_ERR" 2>/dev/null || true)"
+    echo "SNS subscription read failed, no paid prereqs started." >&2
+    if is_auth_error "$ERR"; then echo "authorization or API failure, not absence." >&2; fi
+    phase_failed prereqs
+  fi
+  SNS_PROOF="$(python3 - "$SNS_JSON" "$FOUNDATION_PARAMETERS_FILE" "$TOPIC_ARN" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" 2>/dev/null <<'PYEOF'
+import json, sys
+sns_file, params_file, expected_topic, expected_account, expected_region = sys.argv[1:6]
+try:
+    doc = json.load(open(sns_file))
+except Exception:
+    print("MALFORMED")
+    sys.exit(0)
+try:
+    with open(params_file) as handle:
+        params = json.load(handle)
+except Exception:
+    print("MALFORMED")
+    sys.exit(0)
+if isinstance(params, dict) and "Parameters" in params:
+    params = params["Parameters"]
+expected_email = ""
+if isinstance(params, list):
+    for entry in params:
+        if isinstance(entry, dict) and entry.get("ParameterKey") == "BudgetNotifyEmail":
+            value = entry.get("ParameterValue", "")
+            if isinstance(value, str):
+                expected_email = value
+if not expected_email:
+    print("EMPTY_EMAIL")
+    sys.exit(0)
+subs = doc.get("Subscriptions", None)
+if not isinstance(subs, list):
+    print("MALFORMED")
+    sys.exit(0)
+if not subs:
+    print("EMPTY")
+    sys.exit(0)
+try:
+    expected_parts = expected_topic.split(":")
+    expected_name = expected_parts[5] if len(expected_parts) == 6 else ""
+except Exception:
+    expected_name = ""
+def owned_sub_arn(value):
+    if not isinstance(value, str) or not value or value == "PendingConfirmation":
+        return False
+    parts = value.split(":")
+    if len(parts) != 7:
+        return False
+    if parts[0] != "arn" or parts[1] != "aws" or parts[2] != "sns":
+        return False
+    if parts[3] != expected_region or parts[4] != expected_account:
+        return False
+    if not expected_name or parts[5] != expected_name:
+        return False
+    return bool(parts[6])
+exact = 0
+confirmed_other = 0
+pending_expected = False
+for entry in subs:
+    if not isinstance(entry, dict):
+        continue
+    endpoint = entry.get("Endpoint", "")
+    protocol = entry.get("Protocol", "")
+    topic = entry.get("TopicArn", "")
+    sub_arn = entry.get("SubscriptionArn", "")
+    is_exact = (endpoint == expected_email and protocol == "email"
+                and topic == expected_topic and owned_sub_arn(sub_arn))
+    if is_exact:
+        exact += 1
+        continue
+    if isinstance(sub_arn, str) and sub_arn and sub_arn != "PendingConfirmation":
+        confirmed_other += 1
+    elif (endpoint == expected_email and protocol == "email"
+          and topic == expected_topic and sub_arn == "PendingConfirmation"):
+        pending_expected = True
+if exact == 1 and confirmed_other == 0:
+    print("EXACT_OK")
+elif exact > 1:
+    print("DUPLICATE")
+elif exact == 1:
+    print("AMBIGUOUS")
+elif confirmed_other > 0:
+    print("WRONG")
+elif pending_expected:
+    print("PENDING")
+else:
+    print("NO_EXACT")
+PYEOF
+)" || { rm -f "$SNS_JSON"; echo "SNS subscription proof unreadable, no paid prereqs started." >&2; phase_failed prereqs; }
+  rm -f "$SNS_JSON"
+  SNS_PROOF="$(printf '%s' "$SNS_PROOF" | tr -d '[:space:]')"
+  case "$SNS_PROOF" in
+    EXACT_OK) echo "Verified exact confirmed budget email subscription on the owned topic" ;;
+    EMPTY_EMAIL) echo "refused: approved notify value is empty, no subscription exists, no paid prereqs started." >&2; phase_failed prereqs ;;
+    EMPTY|PENDING|NO_EXACT) echo "refused: no confirmed exact budget email subscription, confirm the approved address before paid prereqs, no change made." >&2; phase_failed prereqs ;;
+    DUPLICATE) echo "refused: duplicate budget email subscriptions, status ambiguous, no change made." >&2; phase_failed prereqs ;;
+    AMBIGUOUS) echo "refused: ambiguous budget subscriptions with extra confirmed entries, no change made." >&2; phase_failed prereqs ;;
+    WRONG) echo "refused: confirmed subscription is not the approved exact endpoint and protocol, no change made." >&2; phase_failed prereqs ;;
+    *) echo "refused: SNS subscription status unreadable, treated as not confirmed, no change made." >&2; phase_failed prereqs ;;
+  esac
+}
+
+prereqs_deploy() {
+  if [ "$PREREQS_EXISTS" -eq 0 ]; then
+    if ! "$AWS_BIN" cloudformation create-stack --stack-name "$PREREQS_STACK_NAME" --template-body "file://$PREREQS_TEMPLATE_FILE" --tags Project=LaunchCrew Environment=demo --region "$EXPECTED_REGION" 2>"$TMP_ERR"; then
+      echo "refused: prereqs create failed, no claim made" >&2
+      phase_failed prereqs
+    fi
+  else
+    if ! "$AWS_BIN" cloudformation update-stack --stack-name "$PREREQS_STACK_NAME" --template-body "file://$PREREQS_TEMPLATE_FILE" --region "$EXPECTED_REGION" 2>"$TMP_ERR"; then
+      ERR="$(cat "$TMP_ERR" 2>/dev/null || true)"
+      case "$ERR" in
+        *"No updates to be performed"*) echo "Prereqs template unchanged, proceeding to verification" ;;
+        *) echo "refused: prereqs update failed, no claim made" >&2; phase_failed prereqs ;;
+      esac
+    fi
+  fi
+}
+
+if [ "$PHASE" = "foundation" ]; then
+  echo "Phase foundation: deploy Budget plus SNS"
+  check_foundation_stack
+  WAS_NEW="$FOUNDATION_EXISTS"
+  if ! foundation_deploy; then
+    echo "foundation deploy failed, no later phase started." >&2
+    phase_failed foundation
+  fi
+  if [ "$WAS_NEW" -eq 0 ]; then
+    if ! "$AWS_BIN" cloudformation wait stack-create-complete --stack-name "$FOUNDATION_STACK_NAME" --region "$EXPECTED_REGION" 2>"$TMP_ERR"; then
+      echo "foundation create wait reported, verifying stack status before any claim." >&2
+    fi
+  else
+    if ! "$AWS_BIN" cloudformation wait stack-update-complete --stack-name "$FOUNDATION_STACK_NAME" --region "$EXPECTED_REGION" 2>"$TMP_ERR"; then
+      ERR="$(cat "$TMP_ERR" 2>/dev/null || true)"
+      if is_auth_error "$ERR"; then
+        echo "foundation wait authorization failure, state unknown, no later phase started." >&2
+        phase_failed foundation
+      fi
+      echo "foundation wait reported, verifying stack status before any claim." >&2
+    fi
+  fi
+  require_foundation_complete
+  check_foundation_budget_filter
+  echo "Phase foundation complete: Budget plus SNS deployed, subscription confirmation stays an explicit operator step before paid prereqs"
+  mark_done foundation
+fi
+
+if [ "$PHASE" = "prereqs" ]; then
+  echo "Phase prereqs: exact SNS gate, then Secrets plus exportable ACM"
+  check_foundation_stack
+  check_sns_exact_gate
+  check_prereqs_stack
+  prereqs_deploy
+  if ! PREREQS_STATUS_NOW="$("$AWS_BIN" cloudformation describe-stacks --stack-name "$PREREQS_STACK_NAME" --region "$EXPECTED_REGION" --query "Stacks[0].StackStatus" --output text 2>"$TMP_ERR")"; then
+    echo "prereqs stack status unreadable after deploy, not treated as success." >&2
+    phase_failed prereqs
+  fi
+  PREREQS_STATUS_NOW="$(printf '%s' "$PREREQS_STATUS_NOW" | tr -d '[:space:]')"
+  PREREQS_STATUS="$PREREQS_STATUS_NOW"
+  CERT_ARN="$(prereq_stack_resource "$PREREQS_STACK_NAME" DemoCertificate 2>"$TMP_ERR")" || { echo "prereqs certificate lookup failed, no claim made." >&2; phase_failed prereqs; }
+  CERT_ARN="$(printf '%s' "$CERT_ARN" | tr -d '[:space:]')"
+  [ -n "$CERT_ARN" ] && [ "$CERT_ARN" != "None" ] || { echo "refused: prereqs certificate ARN missing, no claim made." >&2; phase_failed prereqs; }
+  case "$CERT_ARN" in
+    arn:aws:acm:*:*:certificate/*) ;;
+    *) echo "refused: prereqs certificate ARN is malformed, no claim made." >&2; phase_failed prereqs ;;
+  esac
+  [ "$(printf '%s' "$CERT_ARN" | cut -d: -f4)" = "$EXPECTED_REGION" ] || { echo "refused: prereqs certificate region mismatch, no claim made." >&2; phase_failed prereqs; }
+  [ "$(printf '%s' "$CERT_ARN" | cut -d: -f5)" = "$EXPECTED_ACCOUNT" ] || { echo "refused: prereqs certificate account mismatch, no claim made." >&2; phase_failed prereqs; }
+  MASTER_ARN="$(prereq_stack_resource "$PREREQS_STACK_NAME" MasterSecret 2>"$TMP_ERR")" || { echo "prereqs master secret lookup failed, no claim made." >&2; phase_failed prereqs; }
+  RUNTIME_ARN="$(prereq_stack_resource "$PREREQS_STACK_NAME" RuntimeSecret 2>"$TMP_ERR")" || { echo "prereqs runtime secret lookup failed, no claim made." >&2; phase_failed prereqs; }
+  MIGRATION_ARN="$(prereq_stack_resource "$PREREQS_STACK_NAME" MigrationSecret 2>"$TMP_ERR")" || { echo "prereqs migration secret lookup failed, no claim made." >&2; phase_failed prereqs; }
+  TLS_ARN="$(prereq_stack_resource "$PREREQS_STACK_NAME" TlsSecret 2>"$TMP_ERR")" || { echo "prereqs TLS secret lookup failed, no claim made." >&2; phase_failed prereqs; }
+  MASTER_ARN="$(printf '%s' "$MASTER_ARN" | tr -d '[:space:]')"
+  RUNTIME_ARN="$(printf '%s' "$RUNTIME_ARN" | tr -d '[:space:]')"
+  MIGRATION_ARN="$(printf '%s' "$MIGRATION_ARN" | tr -d '[:space:]')"
+  TLS_ARN="$(printf '%s' "$TLS_ARN" | tr -d '[:space:]')"
+  check_secret_arn "$MASTER_ARN" "prereqs-master"
+  check_secret_arn "$RUNTIME_ARN" "prereqs-runtime"
+  check_secret_arn "$MIGRATION_ARN" "prereqs-migration"
+  check_secret_arn "$TLS_ARN" "prereqs-tls"
+  CERT_JSON="$(mktemp /tmp/launchcrew-cert-XXXXXX)"
+  if ! "$AWS_BIN" acm describe-certificate --certificate-arn "$CERT_ARN" --region "$EXPECTED_REGION" --output json >"$CERT_JSON" 2>"$TMP_ERR"; then
+    rm -f "$CERT_JSON"
+    echo "certificate state unreadable, not treated as issued." >&2
+    phase_failed prereqs
+  fi
+  CERT_PARSED="$(python3 - "$CERT_JSON" 2>/dev/null <<'PYEOF'
+import json, sys
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+cert = doc.get("Certificate", {})
+print("STATUS\t%s" % cert.get("Status", ""))
+print("DOMAIN\t%s" % cert.get("DomainName", ""))
+name = ""
+value = ""
+try:
+    options = cert.get("DomainValidationOptions", []) or []
+    if options and isinstance(options[0], dict):
+        record = (options[0].get("ResourceRecord", {}) or {})
+        name = record.get("Name", "") or ""
+        value = record.get("Value", "") or ""
+except Exception:
+    name = ""
+    value = ""
+print("NAME\t%s" % name)
+print("VALUE\t%s" % value)
+PYEOF
+)" || { rm -f "$CERT_JSON"; echo "certificate state unreadable, not treated as issued." >&2; phase_failed prereqs; }
+  rm -f "$CERT_JSON"
+  CERT_STATUS="$(printf '%s\n' "$CERT_PARSED" | awk -F'\t' '$1=="STATUS"{print $2}')"
+  CERT_DOMAIN="$(printf '%s\n' "$CERT_PARSED" | awk -F'\t' '$1=="DOMAIN"{print $2}')"
+  VALIDATION_NAME="$(printf '%s\n' "$CERT_PARSED" | awk -F'\t' '$1=="NAME"{print $2}')"
+  VALIDATION_VALUE="$(printf '%s\n' "$CERT_PARSED" | awk -F'\t' '$1=="VALUE"{print $2}')"
+  CERT_STATUS="$(printf '%s' "$CERT_STATUS" | tr -d '[:space:]')"
+  [ "$CERT_DOMAIN" = "launchcrew.summitsingh.com" ] || { echo "refused: certificate domain mismatch, expected the exact demo hostname, no claim made." >&2; phase_failed prereqs; }
+  if [ "$CERT_STATUS" = "PENDING_VALIDATION" ]; then
+    [ -n "$VALIDATION_NAME" ] && [ -n "$VALIDATION_VALUE" ] || { echo "refused: validation CNAME missing while pending, no claim made." >&2; phase_failed prereqs; }
+    if ! (umask 077; python3 - "$DNS_RECEIPT_FILE" "$PREREQS_STACK_NAME" "$FOUNDATION_STACK_NAME" "$EXPECTED_REGION" "$CERT_ARN" "$CERT_STATUS" "$CERT_DOMAIN" "$VALIDATION_NAME" "$VALIDATION_VALUE" "$MASTER_ARN" "$RUNTIME_ARN" "$MIGRATION_ARN" "$TLS_ARN" "$PREREQS_STATUS_NOW" <<'PYEOF'
+import json, os, sys
+(path, prereqs_stack, foundation_stack, region, cert_arn, cert_status,
+ cert_domain, v_name, v_value, master_arn, runtime_arn,
+ migration_arn, tls_arn, stack_status) = sys.argv[1:14]
+doc = {
+    "prereqs_stack": prereqs_stack,
+    "foundation_stack": foundation_stack,
+    "region": region,
+    "stack_status": stack_status,
+    "certificate_arn": cert_arn,
+    "certificate_status": cert_status,
+    "domain": cert_domain,
+    "validation_name": v_name,
+    "validation_value": v_value,
+    "secrets": {
+        "master": master_arn,
+        "runtime": runtime_arn,
+        "migration": migration_arn,
+        "tls": tls_arn,
+    },
+}
+flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+handle = os.open(path, flags, 0o600)
+with os.fdopen(handle, "w", encoding="utf-8") as out:
+    json.dump(doc, out, indent=2, sort_keys=True)
+    out.write("\n")
+PYEOF
+); then
+      echo "refused: private DNS receipt write failed, no claim made." >&2
+      phase_failed prereqs
+    fi
+    chmod 600 "$DNS_RECEIPT_FILE" 2>/dev/null || { echo "refused: private DNS receipt mode failed, no claim made." >&2; phase_failed prereqs; }
+    echo "Public DNS validation CNAME name: $VALIDATION_NAME"
+    echo "Public DNS validation CNAME value: $VALIDATION_VALUE"
+    echo "Prereqs stack $PREREQS_STATUS_NOW with PENDING_VALIDATION is expected, add the CNAME via Codex DNS, then rerun --phase prereqs after validation"
+    echo "Private DNS receipt written with bounded metadata and no secret values"
+    mark_done prereqs
+  elif [ "$CERT_STATUS" = "ISSUED" ]; then
+    case "$PREREQS_STATUS_NOW" in
+      CREATE_COMPLETE|UPDATE_COMPLETE) ;;
+      *) echo "Certificate ISSUED but prereqs stack is $PREREQS_STATUS_NOW, rerun --phase prereqs to observe completion" >&2; phase_failed prereqs ;;
+    esac
+    if ! CERT_TAGS_JSON="$("$AWS_BIN" acm list-tags-for-certificate --certificate-arn "$CERT_ARN" --region "$EXPECTED_REGION" --output json 2>"$TMP_ERR")"; then
+      echo "certificate tag check failed, not treated as owned." >&2
+      phase_failed prereqs
+    fi
+    printf '%s' "$CERT_TAGS_JSON" >"$TMP_JSON"
+    CERT_TAGS="$(python3 - "$TMP_JSON" 2>/dev/null <<'PYEOF'
+import json, sys
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+tags = {t.get("Key"): t.get("Value") for t in doc.get("Tags", []) if isinstance(t, dict)}
+print("PROJECT\t%s" % tags.get("Project", ""))
+print("ENV\t%s" % tags.get("Environment", ""))
+PYEOF
+)" || { echo "certificate tag check failed, not treated as owned." >&2; phase_failed prereqs; }
+    CERT_PROJECT="$(printf '%s\n' "$CERT_TAGS" | awk -F'\t' '$1=="PROJECT"{print $2}')"
+    CERT_ENV="$(printf '%s\n' "$CERT_TAGS" | awk -F'\t' '$1=="ENV"{print $2}')"
+    [ "$CERT_PROJECT" = "LaunchCrew" ] || { echo "refused: certificate Project tag mismatch, no claim made." >&2; phase_failed prereqs; }
+    [ "$CERT_ENV" = "demo" ] || { echo "refused: certificate Environment tag mismatch, no claim made." >&2; phase_failed prereqs; }
+    if ! (umask 077; python3 - "$DNS_RECEIPT_FILE" "$PREREQS_STACK_NAME" "$FOUNDATION_STACK_NAME" "$EXPECTED_REGION" "$CERT_ARN" "$CERT_STATUS" "$CERT_DOMAIN" "$VALIDATION_NAME" "$VALIDATION_VALUE" "$MASTER_ARN" "$RUNTIME_ARN" "$MIGRATION_ARN" "$TLS_ARN" "$PREREQS_STATUS_NOW" <<'PYEOF'
+import json, os, sys
+(path, prereqs_stack, foundation_stack, region, cert_arn, cert_status,
+ cert_domain, v_name, v_value, master_arn, runtime_arn,
+ migration_arn, tls_arn, stack_status) = sys.argv[1:14]
+doc = {
+    "prereqs_stack": prereqs_stack,
+    "foundation_stack": foundation_stack,
+    "region": region,
+    "stack_status": stack_status,
+    "certificate_arn": cert_arn,
+    "certificate_status": cert_status,
+    "domain": cert_domain,
+    "validation_name": v_name,
+    "validation_value": v_value,
+    "secrets": {
+        "master": master_arn,
+        "runtime": runtime_arn,
+        "migration": migration_arn,
+        "tls": tls_arn,
+    },
+}
+flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+handle = os.open(path, flags, 0o600)
+with os.fdopen(handle, "w", encoding="utf-8") as out:
+    json.dump(doc, out, indent=2, sort_keys=True)
+    out.write("\n")
+PYEOF
+); then
+      echo "refused: private DNS receipt write failed, no claim made." >&2
+      phase_failed prereqs
+    fi
+    chmod 600 "$DNS_RECEIPT_FILE" 2>/dev/null || { echo "refused: private DNS receipt mode failed, no claim made." >&2; phase_failed prereqs; }
+    echo "Prereqs ready: ISSUED cert plus four owned secret metadata records"
+    echo "Private DNS receipt written with bounded metadata and no secret values"
+    mark_done prereqs
+  else
+    echo "refused: certificate status is $CERT_STATUS, expected ISSUED or PENDING_VALIDATION, no claim made." >&2
+    phase_failed prereqs
+  fi
+fi
+
 if wants_phase infra; then
   echo "Phase infra: deploy stack"
   if [ "$STACK_EXISTS" -eq 1 ]; then
