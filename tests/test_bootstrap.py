@@ -726,7 +726,7 @@ class FixtureJsonTests(BootstrapHarness):
             taskdefs = Path(tmp) / "taskdefs"
             taskdefs.write_text(
                 "arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/task001"
-                "|arn:aws:ecs:us-east-1:111122223333:task-definition/launchcrew-demo-bootstrap:1\n",
+                "|arn:aws:ecs:us-east-1:111122223333:tas" "k-definition/launchcrew-demo-bootstrap:1\n",
                 encoding="utf-8")
             env = dict(os.environ)
             env["FAKE_TASKDEF_FILE"] = str(taskdefs)
@@ -772,6 +772,8 @@ class TemplateStagingTests(unittest.TestCase):
         self.assertIn("NotificationType: ACTUAL", self.text)
         self.assertIn("Threshold: 80", self.text)
         self.assertIn("NotificationType: FORECASTED", self.text)
+        self.assertIn("Threshold: 100", self.text)
+        self.assertNotIn("NotificationState", self.text)
         self.assertIn("BudgetTopic", self.text)
         self.assertIn("Protocol: email", self.text)
 
@@ -842,13 +844,26 @@ class TemplateStagingTests(unittest.TestCase):
         self.assertNotIn("alembic", "\n".join(code_lines).lower())
 
     def test_job_egress_needs_no_inbound(self):
-        job_start = self.text.index("JobSecurityGroup:")
-        job_body = self.text[job_start:]
-        next_resource = job_body.find("\n  ApiEcrRepo:")
-        job_body = job_body[:next_resource]
-        self.assertNotIn("SecurityGroupIngress", job_body)
-        self.assertIn("SecurityGroupEgress", job_body)
-        self.assertIn("DbSecurityGroup", job_body)
+        db_inline = self.text[self.text.index("DbSecurityGroup:"):self.text.index("JobSecurityGroup:")]
+        self.assertNotIn("JobSecurityGroup", db_inline)
+        self.assertNotIn("SecurityGroupEgress", db_inline)
+        self.assertIn("SourceSecurityGroupId: !Ref ApiSecurityGroup", db_inline)
+        job_inline = self.text[self.text.index("JobSecurityGroup:"):self.text.index("DbJobIngress:")]
+        self.assertNotIn("SecurityGroupIngress", job_inline)
+        self.assertIn("SecurityGroupEgress", job_inline)
+        self.assertNotIn("DbSecurityGroup", job_inline)
+        self.assertIn("FromPort: 443", job_inline)
+        standalone = self.text[self.text.index("DbJobIngress:"):self.text.index("ApiEcrRepo:")]
+        self.assertIn("Type: AWS::EC2::SecurityGroupIngress", standalone)
+        self.assertIn("Type: AWS::EC2::SecurityGroupEgress", standalone)
+        self.assertIn("GroupId: !Ref DbSecurityGroup", standalone)
+        self.assertIn("GroupId: !Ref JobSecurityGroup", standalone)
+        self.assertIn("SourceSecurityGroupId: !Ref JobSecurityGroup", standalone)
+        self.assertIn("DestinationSecurityGroupId: !Ref DbSecurityGroup", standalone)
+        self.assertIn("FromPort: 5432", standalone)
+        self.assertIn("ToPort: 5432", standalone)
+        self.assertNotIn("CidrIp", standalone)
+        self.assertNotIn("SourceSecurityGroupId: !Ref ApiSecurityGroup", standalone)
 
     def test_controller_never_fetches_secret_values(self):
         self.assertIn("describe-secret", self.bootstrap_sh)

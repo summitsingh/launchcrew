@@ -177,10 +177,6 @@ Resources:
           FromPort: 5432
           ToPort: 5432
           SourceSecurityGroupId: !Ref ApiSecurityGroup
-        - IpProtocol: tcp
-          FromPort: 5432
-          ToPort: 5432
-          SourceSecurityGroupId: !Ref JobSecurityGroup
   JobSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -191,13 +187,25 @@ Resources:
           FromPort: 443
           ToPort: 443
           CidrIp: 0.0.0.0/0
-        - IpProtocol: tcp
-          FromPort: 5432
-          ToPort: 5432
-          DestinationSecurityGroupId: !Ref DbSecurityGroup
       Tags:
         - { Key: Project, Value: LaunchCrew }
         - { Key: Environment, Value: demo }
+  DbJobIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref DbSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      SourceSecurityGroupId: !Ref JobSecurityGroup
+  JobDbEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref JobSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      DestinationSecurityGroupId: !Ref DbSecurityGroup
   ApiEcrRepo:
     Type: AWS::ECR::Repository
     DeletionPolicy: Delete
@@ -718,9 +726,9 @@ Resources:
         BudgetType: COST
       NotificationsWithSubscribers: !If
         - BudgetNotifyConfigured
-        - - Notification: { NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 80, ThresholdType: PERCENTAGE, NotificationState: ALARM }
+        - - Notification: { NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 80, ThresholdType: PERCENTAGE }
             Subscribers: [{ SubscriptionType: SNS, Address: !Ref BudgetTopic }]
-          - Notification: { NotificationType: FORECASTED, ComparisonOperator: GREATER_THAN, Threshold: 100, ThresholdType: PERCENTAGE, NotificationState: ALARM }
+          - Notification: { NotificationType: FORECASTED, ComparisonOperator: GREATER_THAN, Threshold: 100, ThresholdType: PERCENTAGE }
             Subscribers: [{ SubscriptionType: SNS, Address: !Ref BudgetTopic }]
         - []
   BudgetTopic:
