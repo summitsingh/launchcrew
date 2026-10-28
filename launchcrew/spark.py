@@ -3,19 +3,17 @@ import json
 import os
 from urllib.request import Request, urlopen
 
+from .model_meta import request_provider_from_base_url
+
 TOKEN_FIELDS = ('prompt_tokens', 'completion_tokens', 'total_tokens')
-
-
-STANDARD_SPARK_MODELS = frozenset({'muse-spark-1.3', 'muse-spark-1.2', 'muse-spark-1.1'})
-CONTRIBUTOR_SPARK_MODELS = frozenset({'muse-spark-1.3-contributor', 'muse-spark-1.2-contributor'})
-STANDARD_WONDER_MODELS = frozenset({'muse-wonder-1.0'})
 
 
 def _call(system_prompt, user_prompt, schema_hint, model):
     key = os.environ.get('META_API_KEY', '').strip()
     if not key:
         return {'mode': 'deterministic_fallback', 'model_used': 'none', 'attempted': False,
-                'attempted_model': 'none'}
+                'attempted_model': 'none', 'request_provider': 'none'}
+    provider = request_provider_from_base_url(os.environ.get('META_API_BASE_URL'))
     usage = {}
     try:
         # All current candidates are objects whose required values are string arrays.
@@ -40,11 +38,12 @@ def _call(system_prompt, user_prompt, schema_hint, model):
                        for value in raw.values())):
             raise ValueError('Invalid candidate schema')
         return {'mode': 'spark', 'model_used': model, 'attempted': True, 'attempted_model': model,
-                'raw_json': raw, 'usage': usage}
+                'raw_json': raw, 'usage': usage, 'request_provider': provider}
     except Exception as error:
         # Never include exception text, response bodies, or authorization headers.
         return {'mode': 'deterministic_fallback', 'model_used': 'none', 'attempted': True,
-                'attempted_model': model, 'error_type': type(error).__name__, 'usage': usage}
+                'attempted_model': model, 'error_type': type(error).__name__, 'usage': usage,
+                'request_provider': provider}
 
 
 def call_spark_strict_json(system_prompt, user_prompt, schema_hint):

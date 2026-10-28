@@ -664,6 +664,11 @@
       "ModelUsage": {
         "additionalProperties": true,
         "properties": {
+          "data_basis": {
+            "default": "",
+            "title": "Data Basis",
+            "type": "string"
+          },
           "data_mode": {
             "default": "unknown",
             "title": "Data Mode",
@@ -699,6 +704,11 @@
             },
             "title": "Models Used",
             "type": "array"
+          },
+          "request_provider": {
+            "default": "unknown",
+            "title": "Request Provider",
+            "type": "string"
           },
           "spark_calls": {
             "default": 0,

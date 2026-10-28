@@ -719,6 +719,11 @@ export interface components {
         /** ModelUsage */
         ModelUsage: {
             /**
+             * Data Basis
+             * @default
+             */
+            data_basis: string;
+            /**
              * Data Mode
              * @default unknown
              */
@@ -748,6 +753,11 @@ export interface components {
              * @default []
              */
             models_used: string[];
+            /**
+             * Request Provider
+             * @default unknown
+             */
+            request_provider: string;
             /**
              * Spark Calls
              * @default 0

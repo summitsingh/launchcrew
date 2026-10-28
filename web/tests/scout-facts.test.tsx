@@ -45,7 +45,8 @@ function receipt(overrides: Record<string, unknown> = {}): Receipt {
       spark_calls: 0, spark_mode: 'deterministic_fallback', mode: 'deterministic_fallback',
       model_used: 'none', models_used: [], error_types: [], wonder_used: false,
       wonder_attempts: 0, token_counts: {}, tokens_known: false,
-      data_mode: 'standard_no_train', data_mode_note: 'Stated intent for user data, not a verified API setting.',
+      data_mode: 'not_sent', data_mode_note: 'No model request was attempted on this run, so nothing was sent.',
+      data_basis: 'v2', request_provider: 'none',
     },
     ...overrides,
   } as Receipt;

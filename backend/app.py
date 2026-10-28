@@ -13,6 +13,9 @@ from sqlalchemy.exc import IntegrityError
 from backend import adapter, store, auth
 from launchcrew import agents, receipts
 from launchcrew.checker_policies import FLOOR_NOTE, MATCHING_NOTE, describe_supported
+from launchcrew.model_meta import (CONTRIBUTOR_SPARK_MODELS as CONTRIBUTOR_SPARK_IDS,
+                                   STANDARD_SPARK_MODELS as STANDARD_SPARK_IDS,
+                                   STANDARD_WONDER_MODELS as STANDARD_WONDER_IDS)
 
 
 class Strict(BaseModel):
@@ -143,6 +146,8 @@ class ModelUsage(BaseModel):
     tokens_known: bool = False
     data_mode: str = 'unknown'
     data_mode_note: str = ''
+    data_basis: str = ''
+    request_provider: str = 'unknown'
 
 
 class ModelCapabilities(Strict):
@@ -273,11 +278,6 @@ def health() -> dict[str, str]:
 @app.get('/api/checker-policies', response_model=CheckerPoliciesOut)
 def checker_policies(actor: str = Depends(auth.actor)):
     return {'supported': describe_supported(), 'floor_note': FLOOR_NOTE, 'matching': MATCHING_NOTE}
-
-
-STANDARD_SPARK_IDS = frozenset({'muse-spark-1.3', 'muse-spark-1.2', 'muse-spark-1.1'})
-CONTRIBUTOR_SPARK_IDS = frozenset({'muse-spark-1.3-contributor', 'muse-spark-1.2-contributor'})
-STANDARD_WONDER_IDS = frozenset({'muse-wonder-1.0'})
 
 
 def _capability_snapshot():

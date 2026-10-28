@@ -9,6 +9,8 @@ from . import agents
 from .checker_policies import effective_policies, parse_checker_agent, policy_blocks, policy_reason
 from .facts import check_sentence, check_claims, check_draft, load_facts, normalize
 from .receipts import create_receipt, save_receipt, timestamp, failed_receipt
+from .model_meta import (DATA_BASIS_V2, data_mode_for_attempts, sanitize_model_name,
+                         variant_for_attempt)
 from .spark import spark_for_agent
 from .wonder import wonder_synthesize_for_scout
 
@@ -72,17 +74,8 @@ def make_draft(claims):
     return {'post': text, 'email': text, 'claims': list(claims)}
 
 
-STANDARD_SPARK_MODELS = frozenset({'muse-spark-1.3', 'muse-spark-1.2', 'muse-spark-1.1'})
-CONTRIBUTOR_SPARK_MODELS = frozenset({'muse-spark-1.3-contributor', 'muse-spark-1.2-contributor'})
-STANDARD_WONDER_MODELS = frozenset({'muse-wonder-1.0'})
-
-
 def _sanitized_model_name(name):
-    if isinstance(name, str) and (name in STANDARD_SPARK_MODELS
-                                  or name in CONTRIBUTOR_SPARK_MODELS
-                                  or name in STANDARD_WONDER_MODELS):
-        return name
-    return 'unknown'
+    return sanitize_model_name(name)
 
 
 def _attempt_variant(kind, result):
@@ -92,31 +85,25 @@ def _attempt_variant(kind, result):
         name = result.get('model_used')
     else:
         name = result.get('attempted_model', result.get('model_used'))
-    if kind == 'wonder':
-        return 'standard' if name in STANDARD_WONDER_MODELS else 'unknown'
-    if name in STANDARD_SPARK_MODELS or name in STANDARD_WONDER_MODELS:
-        return 'standard'
-    if name in CONTRIBUTOR_SPARK_MODELS:
-        return 'contributor'
-    return 'unknown'
+    return variant_for_attempt(kind, name)
+
+
+def _attempt_pair(kind, result):
+    variant = _attempt_variant(kind, result)
+    if variant is None:
+        return None
+    provider = result.get('request_provider')
+    if not isinstance(provider, str) or provider not in ('meta', 'unknown', 'none'):
+        provider = 'unknown'
+    if provider == 'none':
+        provider = 'unknown'
+    return (variant, provider)
 
 
 def _data_mode_for_attempts(attempted_variants):
-    if not attempted_variants:
-        return ('not_sent', 'No model request was attempted on this run, so nothing was sent.')
-    unique = set(attempted_variants)
-    if unique == {'standard'}:
-        return ('standard_no_train',
-                'Standard model requests only on this run. Official pricing and rate limits '
-                'document Standard as not used for training. Applies to actual requests on this '
-                'run, not to current configuration.')
-    if unique == {'contributor'}:
-        return ('contributor',
-                'Contributor model requests on this run. No training guarantee is claimed.')
-    if unique == {'standard', 'contributor'}:
-        return ('mixed',
-                'Mixed Standard and Contributor requests on this run. No single training guarantee applies.')
-    return ('unknown', 'Unknown model variant on this run. No training guarantee is claimed.')
+    pairs = [(v, 'meta') for v in attempted_variants]
+    mode, note, _ = data_mode_for_attempts(pairs)
+    return (mode, note)
 
 
 def model_usage(attempts):
@@ -125,9 +112,9 @@ def model_usage(attempts):
     attempted_pairs = [(kind, r) for kind, r in attempts if r.get('attempted', False)]
     attempted = [r for _, r in attempted_pairs]
     errors = [r['error_type'] for _, r in attempts if r.get('error_type')]
-    variants = [_attempt_variant(kind, r) for kind, r in attempted_pairs]
-    variants = [v for v in variants if v is not None]
-    data_mode, data_mode_note = _data_mode_for_attempts(variants)
+    pairs = [_attempt_pair(kind, r) for kind, r in attempted_pairs]
+    pairs = [p for p in pairs if p is not None]
+    data_mode, data_mode_note, aggregate = data_mode_for_attempts(pairs)
     sanitized_successful = [_sanitized_model_name(r.get('model_used')) for r in successful]
     first_model = successful[0].get('model_used') if successful else 'none'
     first_model = first_model if first_model == 'none' or _sanitized_model_name(first_model) != 'unknown' else 'unknown'
@@ -142,7 +129,9 @@ def model_usage(attempts):
                              for name in ('prompt_tokens', 'completion_tokens', 'total_tokens')},
             'tokens_known': bool(attempted) and all('total_tokens' in r.get('usage', {}) for r in attempted),
             'data_mode': data_mode,
-            'data_mode_note': data_mode_note}
+            'data_mode_note': data_mode_note,
+            'data_basis': DATA_BASIS_V2,
+            'request_provider': aggregate}
 
 
 def _snapshot_examples(profile):
