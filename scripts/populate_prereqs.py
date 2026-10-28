@@ -20,8 +20,8 @@ Environment, metadata only, no secret values in env names or argv:
   Required:
     LAUNCHCREW_EXPECTED_ACCOUNT    12 digit owner account, validated via STS.
     LAUNCHCREW_EXPECTED_REGION     owner region, validated in every ARN.
-    LAUNCHCREW_EXPECTED_ROLE       expected task role name substring, must
-                                   appear in the STS caller Arn.
+    LAUNCHCREW_EXPECTED_ROLE       exact expected task role name, must
+                                   equal the STS assumed-role name exactly.
     LAUNCHCREW_MASTER_SECRET_ARN   master metadata only, Describe only,
                                    never GetSecretValue.
     LAUNCHCREW_RUNTIME_SECRET_ARN  runtime secret ARN, Describe plus scoped
@@ -40,7 +40,11 @@ Environment, metadata only, no secret values in env names or argv:
 
 Order of validation, before any secret value is read:
   1. Local env shape, ARN shape, distinct ARNs, remote host, CA file.
-  2. STS GetCallerIdentity account plus expected role substring.
+  2. STS GetCallerIdentity with strict assumed-role ARN match: aws
+     partition, empty region, exact account, service sts, resource
+     assumed-role plus the exact expected role name plus a nonempty
+     session name. Substring, prefix, suffix, session, root,
+     federated, partition, and account impostors are refused.
   3. Secrets Manager DescribeSecret metadata for all four secrets in
      populate (three non-master in verify), with returned ARN equal to
      the input ARN plus Project and Environment tags.
@@ -67,12 +71,17 @@ Idempotency and drift:
   digest. Same accepted payload is a no-op with no new Put. Endpoint,
   certificate, or secret material drift never creates automatic new
   versions or tokens; the job fails closed with rotation-required and a
-  later explicit rotation gate handles it. Partial resume reuses
-  successful secrets unchanged and retries only the missing ones.
+  later explicit rotation gate handles it. A well-formed database URL
+  for a different valid remote host reports endpoint drift with
+  rotation-required; a malformed URL or one with rerouting query keys
+  or a local host is refused as malformed with no rotation. Partial
+  resume reuses successful secrets unchanged and retries only the
+  missing ones.
 
 Crash semantics, bounded, no blind retry:
   PutSecretValue and ExportCertificate run at most once per secret per
-  invocation with SDK retries disabled and short timeouts. On a Put
+  invocation with SDK total max attempts 1 (standard mode, no retry)
+  and short timeouts. On a Put
   failure the job performs exactly one readback GetSecretValue: if the
   readback SecretString equals the attempted canonical payload the write
   counts as success, otherwise the job fails closed with no new version
@@ -93,8 +102,12 @@ Crypto, deployment only:
   within 4 to 128. Export returns an encrypted PKCS8 key which is
   decrypted in RAM with the pinned third party cryptography backend
   because Python stdlib cannot decrypt PKCS8. The job verifies key
-  match, exact SAN, time bounds, and chain shape. Synthetic materials
-  in tests are generated in RAM and are never user keys.
+  match, exact SAN, time bounds, and chain link shape with
+  cryptographic child signature verification against the parent plus
+  issuer DN link plus parent CA constraint. This proves the presented
+  chain links together; it is not a full truststore path validation.
+  Synthetic materials in tests are generated in RAM and are never
+  user keys.
 
 ACM leaf equality without Export:
   The verifier and the populate reuse path compare the stored leaf to
@@ -131,11 +144,12 @@ IAM expectations for Phase C integration (exact, no wildcards):
 Deploy-only dependencies, host installed after the terminal:
   boto3==1.43.119 plus cryptography==50.0.2 with transitive pins and
   hashes in containers/bootstrap-deploy-requirements.lock, installed in
-  the bootstrap image with pip --require-hashes only. Core stays stdlib
-  plus psycopg for the distinct backend. No install or network runs in
-  authoring. Import of boto3 and cryptography is lazy inside the
-  functions that need them so pure validation helpers stay stdlib only
-  for offline unit tests.
+  the bootstrap image with uv pip install --python /opt/venv/bin/python
+  --require-hashes only. The uv created venv is unseeded and has no pip
+  binary. Core stays stdlib plus psycopg for the distinct backend. No
+  install or network runs in authoring. Import of boto3 and cryptography
+  is lazy inside the functions that need them so pure validation helpers
+  stay stdlib only for offline unit tests.
 
 Stdlib plus boto3 plus cryptography only. No backend import, no psycopg
 here, no file writes, no raw exception text in output.
@@ -271,6 +285,8 @@ def _load_config():
     role = _env("LAUNCHCREW_EXPECTED_ROLE").strip()
     if not role or len(role) > 256:
         raise ValueError("invalid expected role")
+    if "/" in role or ":" in role or any(char.isspace() for char in role):
+        raise ValueError("invalid expected role")
     master = _env("LAUNCHCREW_MASTER_SECRET_ARN").strip()
     runtime = _env("LAUNCHCREW_RUNTIME_SECRET_ARN").strip()
     migration = _env("LAUNCHCREW_MIGRATION_SECRET_ARN").strip()
@@ -331,14 +347,24 @@ def _check_owned_tags(label, tags):
     return mapping
 
 
-def _make_clients(region):
-    import boto3
-    from botocore.config import Config
-    cfg = Config(connect_timeout=5, read_timeout=10,
-                 retries={'max_attempts': 1})
-    sts = boto3.client("sts", region_name=region, config=cfg)
-    sm = boto3.client("secretsmanager", region_name=region, config=cfg)
-    acm = boto3.client("acm", region_name=region, config=cfg)
+def _make_clients(region, _client_factory=None, _config_cls=None):
+    # One total attempt, no retry: total_max_attempts includes the initial
+    # request, so 1 means zero retries. The older max_attempts key counts
+    # retries after the initial request, so max_attempts 1 would permit one
+    # retry. Standard mode honors total_max_attempts. The factory and
+    # config seams exist only for offline tests to capture the effective
+    # Config without network or credentials; production passes neither.
+    if _config_cls is None:
+        from botocore.config import Config as _config_cls
+    if _client_factory is None:
+        import boto3
+        _client_factory = boto3.client
+    cfg = _config_cls(connect_timeout=5, read_timeout=10,
+                      retries={'total_max_attempts': 1,
+                               'mode': 'standard'})
+    sts = _client_factory("sts", region_name=region, config=cfg)
+    sm = _client_factory("secretsmanager", region_name=region, config=cfg)
+    acm = _client_factory("acm", region_name=region, config=cfg)
     return {"sts": sts, "sm": sm, "acm": acm}
 
 
@@ -353,12 +379,28 @@ def _validate_caller(sts_client, expected_account, expected_role):
     arn = str(resp.get("Arn", "")).strip()
     if account != expected_account:
         raise ValueError("sts account mismatch")
-    if expected_account not in arn:
-        raise ValueError("sts ARN account mismatch")
-    if expected_role not in arn:
-        raise ValueError("sts role mismatch")
-    if not arn.startswith("arn:aws:"):
+    parts = arn.split(":", 5)
+    if len(parts) != 6:
         raise ValueError("sts ARN malformed")
+    if parts[0] != "arn" or parts[1] != "aws":
+        raise ValueError("sts ARN partition mismatch")
+    if parts[2] != "sts":
+        raise ValueError("sts ARN service mismatch")
+    if parts[3] != "":
+        raise ValueError("sts ARN region must be empty")
+    if parts[4] != expected_account:
+        raise ValueError("sts ARN account mismatch")
+    resource = parts[5]
+    if not resource.startswith("assumed-role/"):
+        raise ValueError("sts ARN not assumed-role")
+    segments = resource.split("/")
+    if len(segments) != 3:
+        raise ValueError("sts ARN role shape mismatch")
+    _prefix, role_name, session_name = segments
+    if role_name != expected_role:
+        raise ValueError("sts role mismatch")
+    if not session_name:
+        raise ValueError("sts session missing")
     return {"account": account, "arn": arn}
 
 
@@ -734,7 +776,13 @@ def _validate_key_match(cert, private_key):
 
 
 def _validate_chain_shape(leaf, chain_certs, now=None):
+    # Chain link proof, not full truststore validation: time bounds for
+    # every presented cert, then per link the issuer DN match, the parent
+    # CA constraint, and the cryptographic child signature against the
+    # parent key. Same subject with the wrong key fails the signature
+    # check even though the DN matches.
     import datetime
+    from cryptography import x509
     current = now
     if current is None:
         current = datetime.datetime.now(datetime.timezone.utc)
@@ -748,6 +796,17 @@ def _validate_chain_shape(leaf, chain_certs, now=None):
         parent = ordered[index + 1]
         if child.issuer != parent.subject:
             raise ValueError("chain issuer mismatch")
+        try:
+            constraints = parent.extensions.get_extension_for_class(
+                x509.BasicConstraints).value
+        except Exception:
+            raise ValueError("chain parent not a CA")
+        if not constraints.ca:
+            raise ValueError("chain parent not a CA")
+        try:
+            child.verify_directly_issued_by(parent)
+        except Exception:
+            raise ValueError("chain issuer signature mismatch")
 
 
 def _canonical_tls_payload(certificate_pem, chain_pem, private_key):
@@ -819,6 +878,33 @@ def _get_public_leaf(acm_client, cert_arn):
     return {"pem": leaf_pem, "cert": certs[0]}
 
 
+def _parse_acm_serial_to_int(raw):
+    # ACM reports the serial as hex with optional colon separators and
+    # optional leading zeros, for example 0A:12 for serial 0x0A12. Compare
+    # as bounded integers so leading zeros survive; string comparison of
+    # format(serial X would drop them. Rejects empty, non-hex, zero,
+    # negative, and oversize values instead of guessing.
+    text = str(raw or "").strip()
+    if not text:
+        raise ValueError("acm serial missing")
+    cleaned = text.replace(":", "").strip()
+    if cleaned.lower().startswith("0x"):
+        cleaned = cleaned[2:]
+    if not cleaned:
+        raise ValueError("acm serial malformed")
+    if len(cleaned) > 40:
+        raise ValueError("acm serial out of bounds")
+    if not re.fullmatch(r"[0-9a-fA-F]+", cleaned):
+        raise ValueError("acm serial malformed")
+    try:
+        value = int(cleaned, 16)
+    except ValueError:
+        raise ValueError("acm serial malformed")
+    if value <= 0 or value >= 1 << 159:
+        raise ValueError("acm serial out of bounds")
+    return value
+
+
 def _populate_db_secret(sm_client, arn, label, expected_user, config):
     current, _version = _get_secret_string(sm_client, arn, label)
     if current is None:
@@ -849,7 +935,28 @@ def _populate_db_secret(sm_client, arn, label, expected_user, config):
             parsed = _parse_db_url_strict(
                 label, existing_url, expected_user, config["host"],
                 config["dbname"])
-        except ValueError:
+        except ValueError as exc:
+            # A well-formed URL for a different valid remote host is
+            # endpoint drift for the rotation gate. Anything else that
+            # fails strict parse, including rerouting keys, bad scheme,
+            # local hosts, and bad users, stays a malformed refusal with
+            # no rotation. Both paths make zero Put calls.
+            if "host does not match" in str(exc):
+                try:
+                    parts = urllib.parse.urlparse(existing_url)
+                    actual_host = (parts.hostname or "").strip().lower()
+                    _check_remote_host(actual_host)
+                    drift_parsed = _parse_db_url_strict(
+                        label, existing_url, expected_user, actual_host,
+                        config["dbname"])
+                except ValueError:
+                    raise ValueError("%s database-url malformed, refusing"
+                                     % label)
+                if drift_parsed["password"] != password:
+                    raise ValueError("%s password drift, rotation required"
+                                     % label)
+                raise ValueError("%s endpoint drift, rotation required"
+                                 % label)
             raise ValueError("%s database-url malformed, refusing"
                              % label)
         if parsed["password"] != password:
@@ -899,10 +1006,11 @@ def _populate_tls_secret(sm_client, acm_client, config, cert_detail,
             raise ValueError("tls cert drift, rotation required")
         expected_serial = str(cert_detail.get("Serial", "") or "")
         if expected_serial:
-            stored_serial = format(stored["leaf"].serial_number, "X")
-            normalized_expected = expected_serial.replace(":", "").upper()
-            normalized_stored = stored_serial.replace(":", "").upper()
-            if normalized_expected != normalized_stored:
+            try:
+                expected_int = _parse_acm_serial_to_int(expected_serial)
+            except ValueError:
+                raise ValueError("tls serial malformed, refusing")
+            if stored["leaf"].serial_number != expected_int:
                 raise ValueError("tls cert drift, rotation required")
         return "reused"
     passphrase = _generate_passphrase(32)
@@ -1001,9 +1109,11 @@ def _verify_tls_secret(sm_client, acm_client, config, cert_detail,
         raise ValueError("tls leaf mismatch")
     expected_serial = str(cert_detail.get("Serial", "") or "")
     if expected_serial:
-        stored_serial = format(stored["leaf"].serial_number, "X")
-        if (expected_serial.replace(":", "").upper() !=
-                stored_serial.replace(":", "").upper()):
+        try:
+            expected_int = _parse_acm_serial_to_int(expected_serial)
+        except ValueError:
+            raise ValueError("tls serial malformed")
+        if stored["leaf"].serial_number != expected_int:
             raise ValueError("tls serial mismatch")
     return True
 

@@ -53,11 +53,11 @@ def _now():
     return datetime.datetime.now(datetime.timezone.utc)
 
 
-def _ca_pair(now=None):
+def _ca_pair(now=None, common_name="synthetic-test-ca"):
     now = now or _now()
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME,
-                                         "synthetic-test-ca")])
+                                         common_name)])
     cert = (x509.CertificateBuilder()
             .subject_name(name).issuer_name(name)
             .public_key(key.public_key())
@@ -283,15 +283,51 @@ class ChainTests(unittest.TestCase):
         leaf = _leaf_cert(ca_key, ca_cert, leaf_key, now=now)
         PP._validate_chain_shape(leaf, [ca_cert], now)
 
-    def test_issuer_mismatch_fails(self):
+    def test_same_dn_wrong_key_fails_signature(self):
+        # Both CAs share the synthetic subject on purpose. The DN link
+        # matches, so only the cryptographic signature check refuses the
+        # wrong issuer key. This is not a DN mismatch.
         now = _now()
         ca_key, ca_cert = _ca_pair(now)
-        other_key, other_cert = _ca_pair(now)
+        _other_key, other_cert = _ca_pair(now)
         leaf_key = rsa.generate_private_key(public_exponent=65537,
                                             key_size=2048)
         leaf = _leaf_cert(ca_key, ca_cert, leaf_key, now=now)
-        with self.assertRaisesRegex(ValueError, "issuer"):
+        self.assertEqual(leaf.issuer, other_cert.subject)
+        with self.assertRaisesRegex(ValueError, "signature"):
             PP._validate_chain_shape(leaf, [other_cert], now)
+
+    def test_different_dn_issuer_mismatch_fails(self):
+        now = _now()
+        ca_key, ca_cert = _ca_pair(now, "synthetic-test-ca-one")
+        _other_key, other_cert = _ca_pair(now, "synthetic-test-ca-two")
+        leaf_key = rsa.generate_private_key(public_exponent=65537,
+                                            key_size=2048)
+        leaf = _leaf_cert(ca_key, ca_cert, leaf_key, now=now)
+        with self.assertRaisesRegex(ValueError, "chain issuer mismatch"):
+            PP._validate_chain_shape(leaf, [other_cert], now)
+
+    def test_non_ca_parent_fails(self):
+        now = _now()
+        ca_key, ca_cert = _ca_pair(now)
+        leaf_key = rsa.generate_private_key(public_exponent=65537,
+                                            key_size=2048)
+        leaf = _leaf_cert(ca_key, ca_cert, leaf_key, now=now)
+        impostor_key = rsa.generate_private_key(public_exponent=65537,
+                                                key_size=2048)
+        impostor = (x509.CertificateBuilder()
+                    .subject_name(ca_cert.subject)
+                    .issuer_name(ca_cert.subject)
+                    .public_key(impostor_key.public_key())
+                    .serial_number(x509.random_serial_number())
+                    .not_valid_before(now - datetime.timedelta(days=1))
+                    .not_valid_after(now + datetime.timedelta(days=90))
+                    .add_extension(x509.BasicConstraints(ca=False,
+                                                         path_length=None),
+                                   critical=True)
+                    .sign(ca_key, hashes.SHA256()))
+        with self.assertRaisesRegex(ValueError, "not a CA"):
+            PP._validate_chain_shape(leaf, [impostor], now)
 
     def test_expired_chain_cert_fails(self):
         now = _now()

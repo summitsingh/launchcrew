@@ -48,6 +48,12 @@ try:
 except Exception:
     HAS_CRYPTO = False
 
+try:
+    import botocore.config  # noqa: F401
+    HAS_BOTOCORE = True
+except Exception:
+    HAS_BOTOCORE = False
+
 
 def load_script():
     spec = importlib.util.spec_from_file_location("populate_prereqs",
@@ -67,20 +73,26 @@ class FakeClientError(Exception):
 
 
 class FakeSTS:
-    def __init__(self, account=ACCOUNT, role="InitTaskRole"):
+    def __init__(self, account=ACCOUNT, role="InitTaskRole",
+                 session="session123", arn_override=None):
         self.calls = []
         self.account = account
         self.role = role
+        self.session = session
+        self.arn_override = arn_override
         self.fail = False
 
     def get_caller_identity(self):
         self.calls.append(("get_caller_identity", {}))
         if self.fail:
             raise FakeClientError("AccessDenied", "not authorized")
-        arn = ("arn:aws:sts::%s:assumed-role/%s/session123"
-               % (self.account, self.role))
+        if self.arn_override is not None:
+            arn = self.arn_override
+        else:
+            arn = ("arn:aws:sts::%s:assumed-role/%s/%s"
+                   % (self.account, self.role, self.session))
         return {"Account": self.account, "Arn": arn,
-                "UserId": "ARO123:session123"}
+                "UserId": "ARO123:%s" % self.session}
 
 
 class FakeSM:
@@ -420,6 +432,91 @@ class CallerTests(EnvHarness):
         self.assertIsInstance(exc, ValueError)
         self.assertEqual(self.value_calls(sm, acm), 0)
 
+    def test_session_containing_expected_role_is_refused(self):
+        sm, acm = FakeSM(), FakeACM()
+        self.seed_all(sm, runtime_value="x", migration_value="y")
+        sts = FakeSTS(role="OtherRole", session="InitTaskRole")
+        _code, _text, exc = self.capture(
+            PP.do_populate, self.make_clients(sts=sts, sm=sm, acm=acm))
+        self.assertIsInstance(exc, ValueError)
+        self.assertEqual(sm.calls, [])
+        self.assertEqual(acm.calls, [])
+        self.assertEqual(self.value_calls(sm, acm), 0)
+
+    def test_role_prefix_and_suffix_impostors_are_refused(self):
+        for impostor in ("EvilInitTaskRole", "InitTaskRoleEvil",
+                         "InitTaskRole/Admin"):
+            sm, acm = FakeSM(), FakeACM()
+            self.seed_all(sm, runtime_value="x", migration_value="y")
+            sts = FakeSTS(role=impostor)
+            _code, _text, exc = self.capture(
+                PP.do_populate, self.make_clients(sts=sts, sm=sm, acm=acm))
+            self.assertIsInstance(exc, ValueError)
+            self.assertEqual(sm.calls, [])
+            self.assertEqual(acm.calls, [])
+            self.assertEqual(self.value_calls(sm, acm), 0)
+
+    def test_root_federated_and_shape_impostors_are_refused(self):
+        bad_arns = [
+            "arn:aws:iam::%s:root" % ACCOUNT,
+            "arn:aws:sts::%s:federated-user/Bob" % ACCOUNT,
+            "arn:aws:sts::%s:assumed-role/InitTaskRole/" % ACCOUNT,
+            "arn:aws:sts::%s:assumed-role/InitTaskRole/s1/extra" % ACCOUNT,
+            "arn:aws-cn:sts::%s:assumed-role/InitTaskRole/s1" % ACCOUNT,
+            "arn:aws:sts:us-east-1:%s:assumed-role/InitTaskRole/s1" % ACCOUNT,
+            "arn:aws:iam::%s:assumed-role/InitTaskRole/s1" % ACCOUNT,
+            "not-an-arn",
+        ]
+        for bad in bad_arns:
+            sm, acm = FakeSM(), FakeACM()
+            self.seed_all(sm, runtime_value="x", migration_value="y")
+            sts = FakeSTS(arn_override=bad)
+            _code, _text, exc = self.capture(
+                PP.do_populate, self.make_clients(sts=sts, sm=sm, acm=acm))
+            self.assertIsInstance(exc, ValueError)
+            self.assertEqual(sm.calls, [])
+            self.assertEqual(acm.calls, [])
+            self.assertEqual(self.value_calls(sm, acm), 0)
+
+    def test_arn_account_mismatch_is_refused(self):
+        sm, acm = FakeSM(), FakeACM()
+        self.seed_all(sm, runtime_value="x", migration_value="y")
+        bad = ("arn:aws:sts::999988887777:assumed-role/"
+               "InitTaskRole/session123")
+        sts = FakeSTS(arn_override=bad)
+        _code, _text, exc = self.capture(
+            PP.do_populate, self.make_clients(sts=sts, sm=sm, acm=acm))
+        self.assertIsInstance(exc, ValueError)
+        self.assertEqual(sm.calls, [])
+        self.assertEqual(acm.calls, [])
+        self.assertEqual(self.value_calls(sm, acm), 0)
+
+
+@unittest.skipUnless(HAS_BOTOCORE, "requires deploy-only botocore, "
+                     "host installs isolated lock after terminal")
+class MakeClientsTests(unittest.TestCase):
+    def test_effective_config_is_total_one_attempt(self):
+        from botocore.config import Config as RealConfig
+        captured = {}
+
+        def fake_client(service, region_name=None, config=None):
+            captured[service] = config
+            return ("fake-%s" % service, region_name)
+
+        clients = PP._make_clients(
+            REGION, _client_factory=fake_client,
+            _config_cls=RealConfig)
+        self.assertEqual(set(clients.keys()), {"sts", "sm", "acm"})
+        self.assertEqual(set(captured.keys()), {"sts", "sm", "acm"})
+        for service, cfg in captured.items():
+            self.assertIsInstance(cfg, RealConfig)
+            retries = cfg.retries
+            self.assertEqual(retries.get("total_max_attempts"), 1)
+            self.assertEqual(retries.get("mode"), "standard")
+            self.assertNotIn("max_attempts", retries)
+            self.assertEqual(cfg.connect_timeout, 5)
+            self.assertEqual(cfg.read_timeout, 10)
+
 
 class SecretMetadataTests(EnvHarness):
     def test_arn_mismatch_makes_zero_value_calls(self):
@@ -679,6 +776,29 @@ class DbPopulateTests(EnvHarness):
             PP._populate_db_secret(sm, SECRET_RUNTIME, "runtime",
                                    RT_USER, config)
         self.assertEqual(sm.count("put_secret_value"), 0)
+
+    def test_malformed_url_refuses_without_rotation(self):
+        config = self.config()
+        bad_urls = [
+            "postgresql://%s:%s@%s:5432/launchcrew"
+            "?sslmode=verify-full&host=evil.example.test"
+            % (RT_USER, RT_PW, config["host"]),
+            "http://%s:%s@%s:5432/launchcrew?sslmode=verify-full"
+            % (RT_USER, RT_PW, config["host"]),
+            "postgresql://%s:%s@localhost:5432/launchcrew"
+            "?sslmode=verify-full" % (RT_USER, RT_PW),
+        ]
+        for bad_url in bad_urls:
+            fresh = FakeSM()
+            drifted = PP._canonical_secret_string(
+                {"database-url": bad_url, "password": RT_PW,
+                 "username": RT_USER})
+            fresh.seed(SECRET_RUNTIME, "launchcrew-runtime",
+                       secret_string=drifted, version="v-current")
+            with self.assertRaisesRegex(ValueError, "malformed"):
+                PP._populate_db_secret(fresh, SECRET_RUNTIME, "runtime",
+                                       RT_USER, config)
+            self.assertEqual(fresh.count("put_secret_value"), 0)
 
     def test_password_drift_refuses_with_zero_put(self):
         sm = FakeSM()
@@ -1166,6 +1286,158 @@ class TlsCryptoScopingTests(EnvHarness):
         self.assertEqual(acm.count("export_certificate"), 0)
         self.assertNotIn(RT_PW, text)
         self.assertNotIn("BEGIN PRIVATE KEY", text)
+
+    def _leading_zero_material(self):
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.x509.oid import NameOID
+        now = self.now
+        ca_key = rsa.generate_private_key(public_exponent=65537,
+                                          key_size=2048)
+        ca_name = x509.Name(
+            [x509.NameAttribute(NameOID.COMMON_NAME,
+                                "synthetic-serial-ca")])
+        ca_cert = (x509.CertificateBuilder()
+                   .subject_name(ca_name).issuer_name(ca_name)
+                   .public_key(ca_key.public_key())
+                   .serial_number(x509.random_serial_number())
+                   .not_valid_before(now - datetime.timedelta(days=1))
+                   .not_valid_after(now + datetime.timedelta(days=365))
+                   .add_extension(x509.BasicConstraints(ca=True,
+                                                        path_length=0),
+                                  critical=True)
+                   .sign(ca_key, hashes.SHA256()))
+        leaf_key = rsa.generate_private_key(public_exponent=65537,
+                                            key_size=2048)
+        leaf_cert = (x509.CertificateBuilder()
+                     .subject_name(x509.Name([x509.NameAttribute(
+                         NameOID.COMMON_NAME, DOMAIN)]))
+                     .issuer_name(ca_name)
+                     .public_key(leaf_key.public_key())
+                     .serial_number(0x0A12)
+                     .not_valid_before(
+                         now - datetime.timedelta(days=1))
+                     .not_valid_after(
+                         now + datetime.timedelta(days=335))
+                     .add_extension(x509.SubjectAlternativeName(
+                         [x509.DNSName(DOMAIN)]), critical=False)
+                     .sign(ca_key, hashes.SHA256()))
+        leaf_pem = leaf_cert.public_bytes(
+            serialization.Encoding.PEM).decode("ascii")
+        chain_pem = ca_cert.public_bytes(
+            serialization.Encoding.PEM).decode("ascii")
+        key_pem = leaf_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption()).decode("ascii")
+        return leaf_pem, chain_pem, key_pem
+
+    def test_leading_zero_serial_reuses_with_colon_form(self):
+        sm = FakeSM()
+        acm = FakeACM(serial="0A:12", now=self.now)
+        self._seed_db(sm)
+        leaf_pem, chain_pem, key_pem = self._leading_zero_material()
+        tls_payload = PP._canonical_secret_string({
+            "tls-cert-b64": base64.b64encode(
+                (leaf_pem + chain_pem).encode("ascii")).decode("ascii"),
+            "tls-key-b64": base64.b64encode(
+                key_pem.encode("ascii")).decode("ascii")})
+        sm.store[SECRET_TLS]["SecretString"] = tls_payload
+        sm.store[SECRET_TLS]["VersionId"] = "v-tls-1"
+        acm.leaf_pem = leaf_pem
+        acm.chain_pem = chain_pem
+        code, text, exc = self.capture(
+            PP.do_populate,
+            self.make_clients(sm=sm, acm=acm), self.now)
+        self.assertIsNone(exc)
+        self.assertEqual(code, 0)
+        self.assertEqual(acm.count("export_certificate"), 0)
+        self.assertEqual(acm.count("get_certificate"), 1)
+        self.assertEqual(sm.count_for("put_secret_value",
+                                      SECRET_TLS), 0)
+        self.assertNotIn("BEGIN PRIVATE KEY", text)
+
+    def test_leading_zero_serial_verifies_with_colon_form(self):
+        os.environ["LAUNCHCREW_EXPECTED_ROLE"] = "VerifyTaskRole"
+        from cryptography.hazmat.primitives import serialization  # noqa: F401
+        sm = FakeSM()
+        acm = FakeACM(serial="0A:12", now=self.now)
+        config = PP._load_config()
+        runtime_url = PP._build_canonical_db_url(
+            RT_USER, RT_PW, config["host"], config["port"],
+            config["dbname"])
+        migration_url = PP._build_canonical_db_url(
+            MG_USER, MG_PW, config["host"], config["port"],
+            config["dbname"])
+        runtime_json = PP._canonical_secret_string(
+            {"database-url": runtime_url, "password": RT_PW,
+             "username": RT_USER})
+        migration_json = PP._canonical_secret_string(
+            {"database-url": migration_url, "password": MG_PW,
+             "username": MG_USER})
+        leaf_pem, chain_pem, key_pem = self._leading_zero_material()
+        tls_json = PP._canonical_secret_string({
+            "tls-cert-b64": base64.b64encode(
+                (leaf_pem + chain_pem).encode("ascii")).decode("ascii"),
+            "tls-key-b64": base64.b64encode(
+                key_pem.encode("ascii")).decode("ascii")})
+        self.seed_all(sm, runtime_value=runtime_json,
+                      migration_value=migration_json,
+                      tls_value=tls_json, tls_version="v-tls-1")
+        acm.leaf_pem = leaf_pem
+        acm.chain_pem = chain_pem
+        sts = FakeSTS(role="VerifyTaskRole")
+        code, _text, exc = self.capture(
+            PP.do_verify_material,
+            {"sts": sts, "sm": sm, "acm": acm}, self.now)
+        self.assertIsNone(exc)
+        self.assertEqual(code, 0)
+        self.assertEqual(sm.count("put_secret_value"), 0)
+        self.assertEqual(acm.count("export_certificate"), 0)
+
+    def test_malformed_acm_serial_refuses_without_put_or_export(self):
+        from cryptography.hazmat.primitives import serialization
+        sm = FakeSM()
+        acm = FakeACM(serial="ZZ:ZZ", now=self.now)
+        self._seed_db(sm)
+        key_pem = self.leaf_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption()).decode("ascii")
+        tls_payload = PP._canonical_secret_string({
+            "tls-cert-b64": base64.b64encode(
+                (self.leaf_pem + self.chain_pem).encode("ascii")).decode(
+                    "ascii"),
+            "tls-key-b64": base64.b64encode(
+                key_pem.encode("ascii")).decode("ascii")})
+        sm.store[SECRET_TLS]["SecretString"] = tls_payload
+        sm.store[SECRET_TLS]["VersionId"] = "v-tls-1"
+        acm.leaf_pem = self.leaf_pem
+        acm.chain_pem = self.chain_pem
+        _code, _text, exc = self.capture(
+            PP.do_populate,
+            self.make_clients(sm=sm, acm=acm), self.now)
+        self.assertIsInstance(exc, ValueError)
+        self.assertIn("serial", str(exc))
+        self.assertEqual(acm.count("export_certificate"), 0)
+        self.assertEqual(sm.count_for("put_secret_value",
+                                      SECRET_TLS), 0)
+
+
+class SerialParserTests(unittest.TestCase):
+    def test_colon_and_case_forms_parse_to_same_int(self):
+        self.assertEqual(PP._parse_acm_serial_to_int("0A:12"), 0x0A12)
+        self.assertEqual(PP._parse_acm_serial_to_int("0a:12"), 0x0A12)
+        self.assertEqual(PP._parse_acm_serial_to_int("0A12"), 0x0A12)
+        self.assertEqual(PP._parse_acm_serial_to_int("12AB34CD"),
+                         0x12AB34CD)
+
+    def test_malformed_and_out_of_bounds_serials_refuse(self):
+        for bad in ("", "   ", "ZZ:ZZ", "0x", "GG", "12:34:ZZ",
+                    "0", "00:00", "F" * 41):
+            with self.assertRaises(ValueError, msg=bad):
+                PP._parse_acm_serial_to_int(bad)
 
 
 if __name__ == "__main__":

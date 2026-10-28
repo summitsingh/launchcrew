@@ -7,7 +7,9 @@
 #     --python-version 3.14 --output-file
 #     containers/bootstrap-deploy-requirements.lock -
 # Full hashed output is in containers/bootstrap-deploy-requirements.lock.
-# Installed with pip --require-hashes in containers/bootstrap-db.Containerfile
-# only. Core app UV deps in pyproject.toml and uv.lock are unchanged.
+# Installed with uv pip install --python /opt/venv/bin/python
+# --require-hashes in containers/bootstrap-db.Containerfile only. The uv
+# created venv is unseeded and has no pip binary. Core app UV deps in
+# pyproject.toml and uv.lock are unchanged.
 boto3==1.43.119
 cryptography==50.0.2

@@ -6,13 +6,15 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv UV_CACHE_DIR=/tmp/uv-cache PYTHONDONTWRITEB
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project && useradd --uid 10001 --create-home crew && mkdir .local && chown crew:crew .local
 # Deploy-only SDK for prereq provisioning (Phase B). Pinned boto3 plus
-# cryptography with hashes, installed with pip --require-hashes in this
-# image only. Core app UV deps unchanged. This reuses the existing
-# bootstrap image with no new ECR repo; Phase C adds task definitions
-# that override the command to run populate_prereqs.py --populate or
-# --verify-material on this same image.
+# cryptography with hashes, installed with uv pip --python
+# /opt/venv/bin/python --require-hashes in this image only. The uv
+# created venv is unseeded and has no pip binary, so the existing uv
+# binary installs into that venv via --python. Core app UV deps
+# unchanged. This reuses the existing bootstrap image with no new ECR
+# repo; Phase C adds task definitions that override the command to run
+# populate_prereqs.py --populate or --verify-material on this same image.
 COPY containers/bootstrap-deploy-requirements.lock /tmp/bootstrap-deploy-requirements.lock
-RUN /opt/venv/bin/pip install --require-hashes -r /tmp/bootstrap-deploy-requirements.lock \
+RUN uv pip install --python /opt/venv/bin/python --require-hashes -r /tmp/bootstrap-deploy-requirements.lock \
  && rm /tmp/bootstrap-deploy-requirements.lock
 # Public RDS CA bundle for verified database TLS. No private key material here.
 # scripts/bootstrap_db_roles.py requires DATABASE_SSL_ROOTCERT to point at an

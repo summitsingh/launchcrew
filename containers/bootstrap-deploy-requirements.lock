@@ -3,9 +3,11 @@
 # Source inputs: boto3==1.43.119 cryptography==50.0.2 from host public facts
 # (parent .local boto3-1.43.119-public.json and cryptography-50.0.2-public.json,
 # actual TLS verified PyPI, universal Python 3.14). Pins and hashes below are
-# exact host resolver output, not invented. Deploy-only, installed with pip
-# --require-hashes in containers/bootstrap-db.Containerfile only. Core app UV
-# deps in pyproject.toml and uv.lock are unchanged.
+# exact host resolver output, not invented. Deploy-only, installed with
+# uv pip install --python /opt/venv/bin/python --require-hashes in
+# containers/bootstrap-db.Containerfile only. The uv created venv is
+# unseeded and has no pip binary. Core app UV deps in pyproject.toml
+# and uv.lock are unchanged.
 boto3==1.43.119 \
     --hash=sha256:d1718edae48c3241d289c0ece8a515399a7242c406e35328b9685c4d24039186 \
     --hash=sha256:e12c3b1d81713e14bd6947b7412d9d0ea49b320642d795ded1d64d6483ca6f49
