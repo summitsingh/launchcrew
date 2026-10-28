@@ -93,3 +93,17 @@ class ScanTests(unittest.TestCase):
             copied = Path(directory) / 'scan_repo.py'
             copied.write_text('summit' + 'singh')
             self.assertEqual([r[1] for r in scan_repo(directory)], ['personal_name'])
+
+    def test_package_versions_are_not_email_addresses(self):
+        for value in ('pnpm@10.20.0', 'react@19.1.4', '@tanstack/react-query@5.90.5'):
+            self.assertIsNone(CHECKS['email'].search(value))
+        self.assertIsNotNone(CHECKS['email'].search('demo' + '@' + 'example.invalid'))
+
+    def test_dependency_cache_excluded_source_still_scanned(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'node_modules').mkdir()
+            (root / 'node_modules' / 'vendor.txt').write_text(chr(0x2014))
+            (root / 'app.py').write_text(chr(0x2014))
+            findings = scan_repo(root)
+            self.assertEqual([(p.name, kind) for p, kind, _ in findings], [('app.py', 'em_dash')])

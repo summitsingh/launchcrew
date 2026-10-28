@@ -1,0 +1,67 @@
+name: Verify LaunchCrew
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql://postgres@127.0.0.1:5432/launchcrew
+      AUTH_ENABLED: 'false'
+      NEXT_TELEMETRY_DISABLED: '1'
+      PUBLIC_BASE_URL: http://127.0.0.1:3000
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.local/browsers
+      UV_CACHE_DIR: ${{ github.workspace }}/.local/uv-cache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.11.32'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '10.20.0'
+      - name: Install Podman tooling
+        run: sudo apt-get update && sudo apt-get install -y podman slirp4netns
+      - name: Local Postgres through Podman
+        run: |
+          podman run -d --name launchcrew-test-db -e POSTGRES_DB=launchcrew -e POSTGRES_HOST_AUTH_METHOD=trust -p 127.0.0.1:5432:5432 docker.io/library/postgres:17-alpine
+          for attempt in {1..60}; do if podman exec launchcrew-test-db pg_isready -U postgres -d launchcrew; then break; fi; sleep 1; done
+          podman exec launchcrew-test-db pg_isready -U postgres -d launchcrew
+      - run: uv sync --frozen
+      - run: uv run python -m unittest discover -s tests -v
+      - run: uv run pytest -q
+      - run: uv run python -m scripts.generate_client && git diff --exit-code backend/openapi.json
+      - run: pnpm --dir web install --frozen-lockfile
+      - run: pnpm --dir web client:generate && git diff --exit-code web/src/lib/schema.d.ts
+      - run: pnpm --dir web test && pnpm --dir web typecheck
+      - run: python3 scripts/scan_repo.py && python3 scripts/check-repo-text.py
+      - run: pnpm --dir web build
+      - run: pnpm --dir web exec playwright install --with-deps chromium
+      - name: Headless browser smoke
+        run: |
+          mkdir -p .local
+          uv run alembic upgrade head
+          uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --no-access-log > .local/api.log 2>&1 &
+          pnpm --dir web start > .local/web.log 2>&1 &
+          for attempt in {1..60}; do if curl -fsS http://127.0.0.1:3000/api/health; then break; fi; sleep 1; done
+          pnpm --dir web test:e2e
+      - name: Podman OCI build and run
+        run: |
+          podman --version
+          scripts/podman-local.sh build
+          scripts/podman-local.sh up
+          scripts/podman-local.sh check
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: verification-evidence
+          path: |
+            .local/*-375.png
+            .local/*-768.png
+            .local/*-1024.png
+            .local/*-1440.png
+            .local/playwright-results.json
+            web/test-results

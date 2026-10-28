@@ -14,11 +14,12 @@ import re
 
 # Only this script path is exempt from the personal-name check.
 SCRIPT_PATH = Path(__file__).resolve()
-EXCLUDED = {'.git', '__pycache__'}
+EXCLUDED = {'.git', '__pycache__', '.venv', 'node_modules', '.next', '.local',
+            '.pytest_cache', 'test-results', 'playwright-report'}
 CHECKS = {
     'em_dash': re.compile(chr(0x2014)),
     'legacy_brand': re.compile('Company' + ' OS', re.IGNORECASE),
-    'email': re.compile(r'(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+'),
+    'email': re.compile(r'(?<![\w.+-])[\w.+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,63}(?![\w.-])'),
     'phone': re.compile(
         r'(?<!\w)(?:\+?1[ .-]?)?(?:\([2-9]\d{2}\)|[2-9]\d{2})'
         r'[ .-]?[2-9]\d{2}[ .-]?\d{4}(?!\w)'),
@@ -51,7 +52,7 @@ def scan_repo(root):
     for directory, dirs, files in os.walk(root, onerror=walk_error):
         dirs[:] = sorted(name for name in dirs if name not in EXCLUDED)
         for name in sorted(files):
-            if name in EXCLUDED:
+            if name in EXCLUDED or name.endswith(('.tsbuildinfo', '.pyc')):
                 continue
             path = Path(directory) / name
             try:
