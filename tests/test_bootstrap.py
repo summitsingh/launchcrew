@@ -189,22 +189,91 @@ if [ "$1" = "budgets" ] && [ "$2" = "describe-notifications-for-budget" ]; then
     exit 254
   fi
   if [ "$NOTIF_MODE" = "malformed" ]; then printf 'not-json{{{\\n'; exit 0; fi
-  NOTIF_TOPIC="${FAKE_TOPIC_ARN:-arn:aws:sns:us-east-1:111122223333:launchcrew-foundation-BudgetTopic-ABC123}"
+  NOTIF_NEXT=""
+  NOTIF_PREV=""
+  for NOTIF_ARG in "$@"; do
+    if [ "$NOTIF_PREV" = "--next-token" ]; then NOTIF_NEXT="$NOTIF_ARG"; fi
+    NOTIF_PREV="$NOTIF_ARG"
+  done
+  if [ "$NOTIF_MODE" = "paginated_ok" ]; then
+    if [ -z "$NOTIF_NEXT" ]; then
+      printf '{"Notifications":[{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"PERCENTAGE"}],"NextToken":"page2"}\\n'
+      exit 0
+    fi
+    printf '{"Notifications":[{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100,"ThresholdType":"PERCENTAGE"}]}\\n'
+    exit 0
+  fi
+  if [ "$NOTIF_MODE" = "paginated_extra" ]; then
+    if [ -z "$NOTIF_NEXT" ]; then
+      printf '{"Notifications":[{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"PERCENTAGE"},{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100,"ThresholdType":"PERCENTAGE"}],"NextToken":"page2"}\\n'
+      exit 0
+    fi
+    printf '{"Notifications":[{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":90,"ThresholdType":"PERCENTAGE"}]}\\n'
+    exit 0
+  fi
+  if [ -n "$NOTIF_NEXT" ]; then
+    printf '{"Notifications":[]}\\n'
+    exit 0
+  fi
   if [ "$NOTIF_MODE" = "missing" ]; then
-    printf '{"NotificationsWithSubscribers":[{"Notification":{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"PERCENTAGE"},"Subscribers":[{"SubscriptionType":"SNS","Address":"%s"}]}]}\\n' "$NOTIF_TOPIC"
+    printf '{"Notifications":[{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"PERCENTAGE"}]}\\n'
     exit 0
   fi
   if [ "$NOTIF_MODE" = "wrong" ]; then
-    printf '{"NotificationsWithSubscribers":[{"Notification":{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":50,"ThresholdType":"PERCENTAGE"},"Subscribers":[{"SubscriptionType":"SNS","Address":"%s"}]},{"Notification":{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100,"ThresholdType":"PERCENTAGE"},"Subscribers":[{"SubscriptionType":"SNS","Address":"%s"}]}]}\\n' "$NOTIF_TOPIC" "$NOTIF_TOPIC"
+    printf '{"Notifications":[{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":50,"ThresholdType":"PERCENTAGE"},{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100,"ThresholdType":"PERCENTAGE"}]}\\n'
     exit 0
   fi
-  printf '{"NotificationsWithSubscribers":[{"Notification":{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"PERCENTAGE"},"Subscribers":[{"SubscriptionType":"SNS","Address":"%s"}]},{"Notification":{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100,"ThresholdType":"PERCENTAGE"},"Subscribers":[{"SubscriptionType":"SNS","Address":"%s"}]}]}\\n' "$NOTIF_TOPIC" "$NOTIF_TOPIC"
+  if [ "$NOTIF_MODE" = "duplicate" ]; then
+    printf '{"Notifications":[{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"PERCENTAGE"},{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"PERCENTAGE"},{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100,"ThresholdType":"PERCENTAGE"}]}\\n'
+    exit 0
+  fi
+  if [ "$NOTIF_MODE" = "extra" ]; then
+    printf '{"Notifications":[{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"PERCENTAGE"},{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100,"ThresholdType":"PERCENTAGE"},{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":90,"ThresholdType":"PERCENTAGE"}]}\\n'
+    exit 0
+  fi
+  printf '{"Notifications":[{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"PERCENTAGE"},{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100,"ThresholdType":"PERCENTAGE"}]}\\n'
+  exit 0
+fi
+if [ "$1" = "budgets" ] && [ "$2" = "describe-subscribers-for-notification" ]; then
+  SUB_MODE="${FAKE_SUB:-exact}"
+  if [ "$SUB_MODE" = "auth" ]; then
+    echo "An error occurred (AccessDenied) when calling the DescribeSubscribersForNotification operation: not authorized" >&2
+    exit 254
+  fi
+  if [ "$SUB_MODE" = "malformed" ]; then printf 'not-json{{{\\n'; exit 0; fi
+  SUB_TOPIC="${FAKE_TOPIC_ARN:-arn:aws:sns:us-east-1:111122223333:launchcrew-foundation-BudgetTopic-ABC123}"
+  SUB_IS_ACTUAL=0
+  case "$*" in
+    *ACTUAL*) SUB_IS_ACTUAL=1 ;;
+  esac
+  if [ "$SUB_MODE" = "mismatch_actual" ] && [ "$SUB_IS_ACTUAL" -eq 1 ]; then
+    printf '{"Subscribers":[{"SubscriptionType":"SNS","Address":"arn:aws:sns:us-east-1:111122223333:other-topic"}]}\\n'
+    exit 0
+  fi
+  if [ "$SUB_MODE" = "mismatch_forecasted" ] && [ "$SUB_IS_ACTUAL" -eq 0 ]; then
+    printf '{"Subscribers":[{"SubscriptionType":"EMAIL","Address":"%s"}]}\\n' "$SUB_TOPIC"
+    exit 0
+  fi
+  if [ "$SUB_MODE" = "retargeted" ]; then
+    printf '{"Subscribers":[{"SubscriptionType":"SNS","Address":"arn:aws:sns:us-east-1:111122223333:other-topic"}]}\\n'
+    exit 0
+  fi
+  if [ "$SUB_MODE" = "duplicate" ]; then
+    printf '{"Subscribers":[{"SubscriptionType":"SNS","Address":"%s"},{"SubscriptionType":"SNS","Address":"%s"}]}\\n' "$SUB_TOPIC" "$SUB_TOPIC"
+    exit 0
+  fi
+  if [ "$SUB_MODE" = "empty" ]; then
+    printf '{"Subscribers":[]}\\n'
+    exit 0
+  fi
+  printf '{"Subscribers":[{"SubscriptionType":"SNS","Address":"%s"}]}\\n' "$SUB_TOPIC"
   exit 0
 fi
 if [ "$1" = "sns" ] && [ "$2" = "list-subscriptions-by-topic" ]; then
   SNS_MODE="${FAKE_SNS:-exact}"
   SNS_TOPIC="${FAKE_TOPIC_ARN:-arn:aws:sns:us-east-1:111122223333:launchcrew-foundation-BudgetTopic-ABC123}"
-  SNS_EMAIL="${FAKE_NOTIFY_EMAIL:-owner@example.test}"
+  SNS_EMAIL="${FAKE_NOTIFY_EMAIL:-}"
+  [ -n "$SNS_EMAIL" ] || SNS_EMAIL=owner@"example.test"
   if [ "$SNS_MODE" = "auth" ]; then
     echo "An error occurred (AccessDenied) when calling the ListSubscriptionsByTopic operation: not authorized" >&2
     exit 254
@@ -226,6 +295,19 @@ if [ "$1" = "acm" ] && [ "$2" = "describe-certificate" ]; then
   exit 0
 fi
 if [ "$1" = "ecs" ] && [ "$2" = "list-tasks" ]; then
+  LIST_TOKEN=""
+  LIST_DESIRED=""
+  LIST_PREV=""
+  for LIST_ARG in "$@"; do
+    if [ "$LIST_PREV" = "--started-by" ]; then LIST_TOKEN="$LIST_ARG"; fi
+    if [ "$LIST_PREV" = "--desired-status" ]; then LIST_DESIRED="$LIST_ARG"; fi
+    LIST_PREV="$LIST_ARG"
+  done
+  if [ -n "$LIST_TOKEN" ] && [ -n "$LIST_DESIRED" ]; then
+    echo "An error occurred (InvalidParameterException) when calling the ListTasks operation: startedBy and desiredStatus cannot be combined" >&2
+    exit 254
+  fi
+  if [ -n "$LIST_TOKEN" ]; then printf '%s' "$LIST_TOKEN" >"${FAKE_TOKEN_FILE:-/dev/null}" 2>/dev/null || true; fi
   printf '{"taskArns":[]}\\n'
   exit 0
 fi
@@ -266,11 +348,14 @@ if [ "$1" = "ecs" ] && [ "$2" = "run-task" ]; then
   n=$((n + 1))
   printf '%s' "$n" >"$COUNT_FILE" 2>/dev/null || true
   TASKDEF=""
+  RUN_TOKEN=""
   PREV=""
   for ARG in "$@"; do
     if [ "$PREV" = "--task""-definition" ]; then TASKDEF="$ARG"; fi
+    if [ "$PREV" = "--started-by" ]; then RUN_TOKEN="$ARG"; fi
     PREV="$ARG"
   done
+  if [ -n "$RUN_TOKEN" ]; then printf '%s' "$RUN_TOKEN" >"${FAKE_TOKEN_FILE:-/dev/null}" 2>/dev/null || true; fi
   TASKARN="$(printf 'arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/task%03d' "$n")"
   printf '%s|%s\\n' "$TASKARN" "$TASKDEF" >>"${FAKE_TASKDEF_FILE:-/dev/null}" 2>/dev/null || true
   if [ "$MODE" = "runtask_empty" ]; then printf '{"tasks":[],"failures":[]}\\n'; exit 0; fi
@@ -307,7 +392,15 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-tasks" ]; then
     ENTRY="$(printf '{"name":"%s","lastStatus":"STOPPED","exitCode":%s}' "$NAME" "$EXIT0")"
     if [ -z "$CONTAINERS" ]; then CONTAINERS="$ENTRY"; else CONTAINERS="$CONTAINERS,$ENTRY"; fi
   done
-  printf '{"tasks":[{"taskArn":"%s","clusterArn":"arn:aws:ecs:us-east-1:111122223333:cluster/launchcrew-demo","taskDefinitionArn":"%s","lastStatus":"STOPPED","containers":[%s]}],"failures":[]}\\n' "$TASKARN" "$TASKDEF" "$CONTAINERS"
+  STARTED_BY=""
+  if [ -n "${FAKE_TOKEN_FILE:-}" ] && [ -f "$FAKE_TOKEN_FILE" ]; then
+    STARTED_BY="$(cat "$FAKE_TOKEN_FILE" 2>/dev/null || true)"
+  fi
+  if [ -n "$STARTED_BY" ]; then
+    printf '{"tasks":[{"taskArn":"%s","clusterArn":"arn:aws:ecs:us-east-1:111122223333:cluster/launchcrew-demo","taskDefinitionArn":"%s","lastStatus":"STOPPED","startedBy":"%s","containers":[%s]}],"failures":[]}\\n' "$TASKARN" "$TASKDEF" "$STARTED_BY" "$CONTAINERS"
+  else
+    printf '{"tasks":[{"taskArn":"%s","clusterArn":"arn:aws:ecs:us-east-1:111122223333:cluster/launchcrew-demo","taskDefinitionArn":"%s","lastStatus":"STOPPED","containers":[%s]}],"failures":[]}\\n' "$TASKARN" "$TASKDEF" "$CONTAINERS"
+  fi
   exit 0
 fi
 if [ "$1" = "ecs" ] && [ "$2" = "describe-task""-definition" ]; then
@@ -469,6 +562,8 @@ class BootstrapHarness(unittest.TestCase):
             count.write_text("0", encoding="utf-8")
             taskdefs = Path(tmp) / "taskdefs"
             taskdefs.write_text("", encoding="utf-8")
+            token_file = Path(tmp) / "token"
+            token_file.write_text("", encoding="utf-8")
             created = Path(tmp) / "created"
             journals = Path(tmp) / "journals"
             journals.mkdir()
@@ -511,6 +606,7 @@ class BootstrapHarness(unittest.TestCase):
             env["FAKE_MODE"] = mode
             env["FAKE_COUNT_FILE"] = str(count)
             env["FAKE_TASKDEF_FILE"] = str(taskdefs)
+            env["FAKE_TOKEN_FILE"] = str(token_file)
             env["FAKE_STACK_CREATED_FILE"] = str(created)
             env["FAKE_CERT_ARN"] = CERT_ARN
             env["FAKE_DB_HOST"] = DB_HOST
@@ -795,9 +891,14 @@ class PhaseOrderingTests(BootstrapHarness):
         self.assertNotEqual(result.returncode, 0)
         combined = result.stdout + result.stderr
         self.assertIn("ambiguous", combined)
-        self.assertIn("recovery confirms zero tasks", combined)
+        self.assertIn("empty remains AMBIGUOUS", combined)
+        self.assertNotIn("confirms zero tasks", combined)
+        self.assertNotIn("nothing started with token", combined)
         self.assertIn("No automatic resend", combined)
+        self.assertIn("no new token from absence", combined)
         self.assertTrue(any("list-tasks" in call for call in calls))
+        self.assertTrue(any("--desired-status STOPPED" in call for call in calls))
+        self.assertFalse(any("--started-by" in call and "--desired-status" in call for call in calls))
         runs = [call for call in calls if "run-task" in call]
         self.assertEqual(len(runs), 1)
         self.assertFalse(any("EnableServices=true" in call for call in calls))
@@ -823,8 +924,16 @@ class PhaseOrderingTests(BootstrapHarness):
         self.assertLess(material_run, verify_run)
 
     def test_infra_alone_needs_no_images_or_secrets(self):
-        result, calls = self.run_bootstrap([*self.minimal_infra_args(), "--phase", "infra"])
+        result, calls = self.run_bootstrap(
+            [*self.minimal_infra_args(), "--phase", "infra"],
+            extra_env={"FAKE_RT_ARN": SECRET_RT, "FAKE_MG_ARN": SECRET_MG,
+                       "FAKE_MASTER_ARN": SECRET_MASTER, "FAKE_TLS_ARN": SECRET_TLS},
+            params_overrides={"RuntimeDbUrlSecretArn": SECRET_RT,
+                              "MigrationDbUrlSecretArn": SECRET_MG,
+                              "MasterDbPasswordSecretArn": SECRET_MASTER,
+                              "TlsSecretArn": SECRET_TLS})
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertIn("Prereqs ready", result.stdout + result.stderr)
         self.assertTrue(any("deploy " in call and "EnableServices=false" in call for call in calls))
         self.assertFalse(any("run-task" in call for call in calls))
 
@@ -1311,6 +1420,29 @@ class TemplateStagingTests(unittest.TestCase):
         self.assertIn("describe-secret", code)
         self.assertNotIn("get-secret-value", code.lower())
         self.assertIn("value never fetched", self.bootstrap_sh)
+
+
+class BudgetSubscriberProofTests(BootstrapHarness):
+    def test_actual_subscriber_mismatch_refuses(self):
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "enable"],
+            extra_env={"FAKE_SUB": "mismatch_actual"})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("ACTUAL_80", combined)
+        self.assertIn("ACTUAL 80 plus FORECASTED 100", combined)
+        self.assertIn("UNVERIFIED", combined)
+        self.assertFalse(any("EnableServices=true" in call for call in calls))
+
+    def test_subscriber_auth_unreadable_refuses(self):
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "init"],
+            extra_env={"FAKE_SUB": "auth"})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("subscribers unreadable", combined)
+        self.assertIn("DescribeSubscribersForNotification", combined)
+        self.assertFalse(any("run-task" in call for call in calls))
 
 
 if __name__ == "__main__":

@@ -2,23 +2,15 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
   LaunchCrew demo, Fargate plus ALB, review only, NOT applied.
   No apply, no DNS, no secrets in this file.
-  Region, domain, certificate ARN, image URIs, and database password secret
-  ARN are parameters with no approved defaults. This stack owns no budget
-  and no SNS topic: the exact budget name launchcrew-demo plus its topic,
-  policy, and subscription live only in deploy/aws/foundation.yaml, and
-  every paid bootstrap phase verifies that owned foundation budget read-only
-  before any mutation. Recommended region us-east-1 is NOT confirmed, see
-  deploy README. Cost cap is a user choice after seeing the estimate, not a
-  default here. Teardown is required after Nov 4 and no later than Nov 9,
-  2026. Fresh demo VPC 10.42.0.0/16 avoids overlap with the existing
-  nondefault 10.0.0.0/16 network. No existing network changes, routes,
-  or peering. A budget filter with no data or 0 is not proof of zero spend
-  and not a hard cap. Tag activation status is UNVERIFIED in source, see
-  deploy README and docs/aws-approval-pack.md. Two one-off SDK job task
-  definitions (init populate plus material verify) share the bootstrap image
-  with explicit EntryPoint to populate_prereqs.py; the default image
-  entrypoint stays the binder with --bind, and Command alone would retain
-  that binder entrypoint.
+  Region, cert ARN, images, secrets are parameters with no approved defaults.
+  No budget or SNS here: launchcrew-demo budget plus topic live only in
+  foundation.yaml, verified read-only before paid phases. Region us-east-1
+  NOT confirmed, see deploy README. Cost cap is a user choice, not a default.
+  Teardown required after Nov 4 and no later than Nov 9, 2026.
+  Fresh VPC 10.42.0.0/16 avoids 10.0.0.0/16, no existing network changes.
+  Filter with no data or 0 is not proof of zero spend and not a hard cap.
+  Tag activation see deploy README. Two SDK jobs share bootstrap image
+  with explicit EntryPoint; default stays binder --bind.
 Parameters:
   AcmCertificateArn:
     Type: String

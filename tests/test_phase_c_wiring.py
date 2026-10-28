@@ -174,11 +174,14 @@ if [ "$1" = "ecs" ] && [ "$2" = "run-task" ]; then
   n=$((n + 1))
   printf '%s' "$n" >"$COUNT_FILE" 2>/dev/null || true
   TASKDEF=""
+  RUN_TOKEN=""
   PREV=""
   for ARG in "$@"; do
     if [ "$PREV" = "--task""-definition" ]; then TASKDEF="$ARG"; fi
+    if [ "$PREV" = "--started-by" ]; then RUN_TOKEN="$ARG"; fi
     PREV="$ARG"
   done
+  if [ -n "$RUN_TOKEN" ]; then printf '%s' "$RUN_TOKEN" >"${FAKE_TOKEN_FILE:-/dev/null}" 2>/dev/null || true; fi
   TASKARN="$(printf 'arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/task%03d' "$n")"
   printf '%s|%s\\n' "$TASKARN" "$TASKDEF" >>"${FAKE_TASKDEF_FILE:-/dev/null}" 2>/dev/null || true
   if [ "${FAKE_RUN:-ok}" = "fail" ]; then
@@ -193,13 +196,50 @@ if [ "$1" = "ecs" ] && [ "$2" = "wait" ]; then
 fi
 if [ "$1" = "ecs" ] && [ "$2" = "list-tasks" ]; then
   TOKEN=""
+  DESIRED=""
+  LIST_NEXT=""
   TOKEN_PREV=""
   for TOKEN_ARG in "$@"; do
     if [ "$TOKEN_PREV" = "--started-by" ]; then TOKEN="$TOKEN_ARG"; fi
+    if [ "$TOKEN_PREV" = "--desired-status" ]; then DESIRED="$TOKEN_ARG"; fi
+    if [ "$TOKEN_PREV" = "--next-token" ]; then LIST_NEXT="$TOKEN_ARG"; fi
     TOKEN_PREV="$TOKEN_ARG"
   done
-  printf '%s' "$TOKEN" >"${FAKE_TOKEN_FILE:-/dev/null}" 2>/dev/null || true
+  case "$*" in
+    *"--cluster launchcrew-demo"*|*"--cluster=launchcrew-demo"*) ;;
+    *"--cluster "*) echo "fake-aws: list-tasks outside owned cluster refused" >&2; exit 2 ;;
+  esac
+  if [ -n "$TOKEN" ] && [ -n "$DESIRED" ]; then
+    echo "An error occurred (InvalidParameterException) when calling the ListTasks operation: startedBy and desiredStatus cannot be combined" >&2
+    exit 254
+  fi
+  if [ -n "$TOKEN" ]; then printf '%s' "$TOKEN" >"${FAKE_TOKEN_FILE:-/dev/null}" 2>/dev/null || true; fi
   RECOVER_MODE="${FAKE_RECOVER:-none}"
+  if [ -n "$DESIRED" ]; then
+    if [ "$DESIRED" != "STOPPED" ]; then printf '{"taskArns":[]}\\n'; exit 0; fi
+    if [ "$RECOVER_MODE" = "stopped_adopt" ]; then
+      ADOPT_ARN="arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/task009"
+      printf '%s' "$ADOPT_ARN" >"${FAKE_ADOPT_FILE:-/dev/null}" 2>/dev/null || true
+      printf '{"taskArns":["%s"]}\\n' "$ADOPT_ARN"
+      exit 0
+    fi
+    if [ "$RECOVER_MODE" = "stopped_multiple" ]; then
+      printf '{"taskArns":["arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/task011","arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/task012"]}\\n'
+      exit 0
+    fi
+    if [ "$RECOVER_MODE" = "stopped_wrong" ]; then
+      ADOPT_ARN="arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/task013"
+      printf '{"taskArns":["%s"]}\\n' "$ADOPT_ARN"
+      exit 0
+    fi
+    if [ "$RECOVER_MODE" = "multiple" ]; then
+      printf '{"taskArns":[]}\\n'
+      exit 0
+    fi
+    printf '{"taskArns":[]}\\n'
+    exit 0
+  fi
+  if [ -n "$LIST_NEXT" ]; then printf '{"taskArns":[]}\\n'; exit 0; fi
   if [ "$RECOVER_MODE" = "multiple" ]; then
     printf '{"taskArns":["arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/task001","arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/task002"]}\\n'
     exit 0
@@ -224,8 +264,8 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-tasks" ]; then
     WANT_PREV="$WANT_ARG"
   done
   if [ -n "$WANT" ]; then TASKARN="$WANT"; fi
-  if [ "${FAKE_RECOVER:-none}" = "wrong" ]; then
-    TASKDEF="arn:aws:ecs:us-east-1:111122223333:task-definition/launchcrew-demo-other:9"
+  if [ "${FAKE_RECOVER:-none}" = "wrong" ] || [ "${FAKE_RECOVER:-none}" = "stopped_wrong" ]; then
+    TASKDEF='arn:aws:ecs:us-east-1:111122223333:task'"-definition"'/launchcrew-demo-other:9'
   fi
   case "$TASKDEF" in
     *launchcrew-demo-migration*) NAMES="migration" ;;
@@ -331,18 +371,92 @@ if [ "$1" = "budgets" ] && [ "$2" = "describe-notifications-for-budget" ]; then
     echo "An error occurred (AccessDenied) when calling the DescribeNotificationsForBudget operation: not authorized" >&2
     exit 254
   fi
-  NOTIF_TOPIC="${FAKE_TOPIC_ARN:-arn:aws:sns:us-east-1:111122223333:launchcrew-foundation-BudgetTopic-ABC123}"
-  if [ "$NOTIF_MODE" = "wrong" ]; then
-    printf '{"NotificationsWithSubscribers":[{"Notification":{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":50,"ThresholdType":"PERCENTAGE"},"Subscribers":[{"SubscriptionType":"SNS","Address":"%s"}]},{"Notification":{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100,"ThresholdType":"PERCENTAGE"},"Subscribers":[{"SubscriptionType":"SNS","Address":"%s"}]}]}\\n' "$NOTIF_TOPIC" "$NOTIF_TOPIC"
+  if [ "$NOTIF_MODE" = "malformed" ]; then printf 'not-json{{{\\n'; exit 0; fi
+  NOTIF_NEXT=""
+  NOTIF_PREV=""
+  for NOTIF_ARG in "$@"; do
+    if [ "$NOTIF_PREV" = "--next-token" ]; then NOTIF_NEXT="$NOTIF_ARG"; fi
+    NOTIF_PREV="$NOTIF_ARG"
+  done
+  if [ "$NOTIF_MODE" = "paginated_ok" ]; then
+    if [ -z "$NOTIF_NEXT" ]; then
+      printf '{"Notifications":[{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"PERCENTAGE"}],"NextToken":"page2"}\\n'
+      exit 0
+    fi
+    printf '{"Notifications":[{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100,"ThresholdType":"PERCENTAGE"}]}\\n'
     exit 0
   fi
-  printf '{"NotificationsWithSubscribers":[{"Notification":{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"PERCENTAGE"},"Subscribers":[{"SubscriptionType":"SNS","Address":"%s"}]},{"Notification":{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100,"ThresholdType":"PERCENTAGE"},"Subscribers":[{"SubscriptionType":"SNS","Address":"%s"}]}]}\\n' "$NOTIF_TOPIC" "$NOTIF_TOPIC"
+  if [ "$NOTIF_MODE" = "paginated_extra" ]; then
+    if [ -z "$NOTIF_NEXT" ]; then
+      printf '{"Notifications":[{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"PERCENTAGE"},{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100,"ThresholdType":"PERCENTAGE"}],"NextToken":"page2"}\\n'
+      exit 0
+    fi
+    printf '{"Notifications":[{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":90,"ThresholdType":"PERCENTAGE"}]}\\n'
+    exit 0
+  fi
+  if [ -n "$NOTIF_NEXT" ]; then
+    printf '{"Notifications":[]}\\n'
+    exit 0
+  fi
+  if [ "$NOTIF_MODE" = "missing" ]; then
+    printf '{"Notifications":[{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"PERCENTAGE"}]}\\n'
+    exit 0
+  fi
+  if [ "$NOTIF_MODE" = "wrong" ]; then
+    printf '{"Notifications":[{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":50,"ThresholdType":"PERCENTAGE"},{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100,"ThresholdType":"PERCENTAGE"}]}\\n'
+    exit 0
+  fi
+  if [ "$NOTIF_MODE" = "duplicate" ]; then
+    printf '{"Notifications":[{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"PERCENTAGE"},{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"PERCENTAGE"},{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100,"ThresholdType":"PERCENTAGE"}]}\\n'
+    exit 0
+  fi
+  if [ "$NOTIF_MODE" = "extra" ]; then
+    printf '{"Notifications":[{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"PERCENTAGE"},{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100,"ThresholdType":"PERCENTAGE"},{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":90,"ThresholdType":"PERCENTAGE"}]}\\n'
+    exit 0
+  fi
+  printf '{"Notifications":[{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"PERCENTAGE"},{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100,"ThresholdType":"PERCENTAGE"}]}\\n'
+  exit 0
+fi
+if [ "$1" = "budgets" ] && [ "$2" = "describe-subscribers-for-notification" ]; then
+  SUB_MODE="${FAKE_SUB:-exact}"
+  if [ "$SUB_MODE" = "auth" ]; then
+    echo "An error occurred (AccessDenied) when calling the DescribeSubscribersForNotification operation: not authorized" >&2
+    exit 254
+  fi
+  if [ "$SUB_MODE" = "malformed" ]; then printf 'not-json{{{\\n'; exit 0; fi
+  SUB_TOPIC="${FAKE_TOPIC_ARN:-arn:aws:sns:us-east-1:111122223333:launchcrew-foundation-BudgetTopic-ABC123}"
+  SUB_IS_ACTUAL=0
+  case "$*" in
+    *ACTUAL*) SUB_IS_ACTUAL=1 ;;
+  esac
+  if [ "$SUB_MODE" = "mismatch_actual" ] && [ "$SUB_IS_ACTUAL" -eq 1 ]; then
+    printf '{"Subscribers":[{"SubscriptionType":"SNS","Address":"arn:aws:sns:us-east-1:111122223333:other-topic"}]}\\n'
+    exit 0
+  fi
+  if [ "$SUB_MODE" = "mismatch_forecasted" ] && [ "$SUB_IS_ACTUAL" -eq 0 ]; then
+    printf '{"Subscribers":[{"SubscriptionType":"EMAIL","Address":"%s"}]}\\n' "$SUB_TOPIC"
+    exit 0
+  fi
+  if [ "$SUB_MODE" = "retargeted" ]; then
+    printf '{"Subscribers":[{"SubscriptionType":"SNS","Address":"arn:aws:sns:us-east-1:111122223333:other-topic"}]}\\n'
+    exit 0
+  fi
+  if [ "$SUB_MODE" = "duplicate" ]; then
+    printf '{"Subscribers":[{"SubscriptionType":"SNS","Address":"%s"},{"SubscriptionType":"SNS","Address":"%s"}]}\\n' "$SUB_TOPIC" "$SUB_TOPIC"
+    exit 0
+  fi
+  if [ "$SUB_MODE" = "empty" ]; then
+    printf '{"Subscribers":[]}\\n'
+    exit 0
+  fi
+  printf '{"Subscribers":[{"SubscriptionType":"SNS","Address":"%s"}]}\\n' "$SUB_TOPIC"
   exit 0
 fi
 if [ "$1" = "sns" ] && [ "$2" = "list-subscriptions-by-topic" ]; then
   SNS_MODE="${FAKE_SNS:-exact}"
   SNS_TOPIC="${FAKE_TOPIC_ARN:-arn:aws:sns:us-east-1:111122223333:launchcrew-foundation-BudgetTopic-ABC123}"
-  SNS_EMAIL="${FAKE_NOTIFY_EMAIL:-owner@example.test}"
+  SNS_EMAIL="${FAKE_NOTIFY_EMAIL:-}"
+  [ -n "$SNS_EMAIL" ] || SNS_EMAIL=owner@"example.test"
   if [ "$SNS_MODE" = "pending" ]; then
     printf '{"Subscriptions":[{"Owner":"111122223333","Protocol":"email","Endpoint":"%s","TopicArn":"%s","SubscriptionArn":"PendingConfirmation"}]}\\n' "$SNS_EMAIL" "$SNS_TOPIC"
     exit 0
@@ -688,21 +802,26 @@ class FoundationBudgetTests(PhaseCHarness):
 
 
 class AmbiguousLaunchTests(PhaseCHarness):
-    def test_confirmed_none_reports_zero_with_no_resend(self):
+    def test_empty_remains_ambiguous_with_no_resend(self):
         result, calls, journals = self.run_phase(
             [*self.base_args(), "--phase", "init"],
             extra_env={"FAKE_RUN": "fail", "FAKE_RECOVER": "none"})
         self.assertNotEqual(result.returncode, 0)
         combined = result.stdout + result.stderr
         self.assertIn("ambiguous", combined)
-        self.assertIn("recovery confirms zero tasks", combined)
+        self.assertIn("empty remains AMBIGUOUS", combined)
+        self.assertNotIn("confirms zero tasks", combined)
+        self.assertNotIn("nothing started with token", combined)
         self.assertIn("No automatic resend", combined)
+        self.assertIn("no new token from absence", combined)
         self.assertNotIn("nothing started beyond this point", combined)
         self.assertEqual(len(self.run_calls(calls)), 1)
         self.assertTrue(any("list-tasks" in call for call in calls))
+        self.assertTrue(any("--desired-status STOPPED" in call for call in calls))
+        self.assertFalse(any("--started-by" in call and "--desired-status" in call for call in calls))
         self.assertEqual(len(journals), 1)
         doc = next(iter(journals.values()))["doc"]
-        self.assertEqual(doc["outcome"], "confirmed_none")
+        self.assertEqual(doc["outcome"], "ambiguous_empty")
         self.assertEqual(doc["phase"], "init")
 
     def test_single_verified_task_adopted_with_no_resend(self):
@@ -754,18 +873,303 @@ class AmbiguousLaunchTests(PhaseCHarness):
         doc = entry["doc"]
         for key in ("version", "stack", "phase", "label",
                     "taskdef_logical", "taskdef_arn", "cluster",
-                    "client_token", "region", "account", "outcome",
-                    "task_arn"):
+                    "client_token", "config_digest", "region", "account",
+                    "outcome", "task_arn"):
             self.assertIn(key, doc)
         self.assertEqual(doc["outcome"], "complete")
         self.assertTrue(doc["client_token"].startswith("lc-"))
+        self.assertTrue(doc["config_digest"])
         blob = json.dumps(doc)
         self.assertNotIn(":secret:", blob)
         self.assertNotIn("password", blob.lower())
+        self.assertNotIn("database-url", blob.lower())
+        self.assertNotIn("tls-cert", blob.lower())
         calls_blob = " ".join(calls)
         self.assertNotIn("GetSecretValue", calls_blob)
         self.assertNotIn("PutSecretValue", calls_blob)
         self.assertNotIn("ExportCertificate", calls_blob)
+
+
+class BudgetSubscriberTests(PhaseCHarness):
+    def test_actual_subscriber_mismatch_refuses(self):
+        result, calls, _ = self.run_phase(
+            [*self.base_args(), "--phase", "enable"],
+            extra_env={"FAKE_SUB": "mismatch_actual"})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("ACTUAL_80", combined)
+        self.assertIn("ACTUAL 80 plus FORECASTED 100", combined)
+        self.assertIn("UNVERIFIED", combined)
+        self.assertFalse(any("EnableServices=true" in call for call in calls))
+        self.assertEqual(self.run_calls(calls), [])
+
+    def test_forecasted_subscriber_mismatch_refuses(self):
+        result, calls, _ = self.run_phase(
+            [*self.base_args(), "--phase", "enable"],
+            extra_env={"FAKE_SUB": "mismatch_forecasted"})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("FORECASTED_100", combined)
+        self.assertIn("ACTUAL 80 plus FORECASTED 100", combined)
+        self.assertIn("UNVERIFIED", combined)
+        self.assertEqual(self.run_calls(calls), [])
+
+    def test_subscriber_auth_unreadable_refuses(self):
+        result, calls, _ = self.run_phase(
+            [*self.base_args(), "--phase", "init"],
+            extra_env={"FAKE_SUB": "auth"})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("subscribers unreadable", combined)
+        self.assertIn("UNVERIFIED", combined)
+        self.assertIn("DescribeSubscribersForNotification", combined)
+        self.assertEqual(self.run_calls(calls), [])
+
+    def test_subscriber_malformed_refuses(self):
+        result, calls, _ = self.run_phase(
+            [*self.base_args(), "--phase", "init"],
+            extra_env={"FAKE_SUB": "malformed"})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("subscribers unreadable", combined)
+        self.assertIn("UNVERIFIED", combined)
+        self.assertEqual(self.run_calls(calls), [])
+
+    def test_duplicate_notification_refuses(self):
+        result, calls, _ = self.run_phase(
+            [*self.base_args(), "--phase", "enable"],
+            extra_env={"FAKE_NOTIF": "duplicate"})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("ACTUAL 80 plus FORECASTED 100", combined)
+        self.assertIn("UNVERIFIED", combined)
+        self.assertEqual(self.run_calls(calls), [])
+
+    def test_paginated_ok_passes_with_two_subscriber_calls(self):
+        result, calls, _ = self.run_phase(
+            [*self.base_args(), "--phase", "init"],
+            extra_env={"FAKE_NOTIF": "paginated_ok"})
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        subs = [call for call in calls if "describe-subscribers-for-notification" in call]
+        self.assertEqual(len(subs), 2)
+        self.assertTrue(all("--notification" in call for call in subs))
+
+
+class StoppedRecoveryTests(PhaseCHarness):
+    def test_stopped_candidate_adopted_with_no_resend(self):
+        result, calls, journals = self.run_phase(
+            [*self.base_args(), "--phase", "init"],
+            extra_env={"FAKE_RUN": "fail", "FAKE_RECOVER": "stopped_adopt"})
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertIn("adopted for terminal proof", result.stdout)
+        self.assertEqual(len(self.run_calls(calls)), 1)
+        self.assertTrue(any("--desired-status STOPPED" in call for call in calls))
+        self.assertFalse(any("--started-by" in call and "--desired-status" in call for call in calls))
+        doc = next(iter(journals.values()))["doc"]
+        self.assertEqual(doc["outcome"], "complete")
+
+    def test_stopped_multiple_refuses(self):
+        result, calls, journals = self.run_phase(
+            [*self.base_args(), "--phase", "init"],
+            extra_env={"FAKE_RUN": "fail", "FAKE_RECOVER": "stopped_multiple"})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("ambiguous", combined)
+        self.assertIn("No automatic resend", combined)
+        self.assertEqual(len(self.run_calls(calls)), 1)
+        doc = next(iter(journals.values()))["doc"]
+        self.assertEqual(doc["outcome"], "ambiguous_multiple")
+
+    def test_stopped_wrong_refuses_without_adoption(self):
+        result, calls, journals = self.run_phase(
+            [*self.base_args(), "--phase", "init"],
+            extra_env={"FAKE_RUN": "fail", "FAKE_RECOVER": "stopped_wrong"})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("ambiguous", combined)
+        self.assertIn("No automatic resend", combined)
+        self.assertEqual(len(self.run_calls(calls)), 1)
+        doc = next(iter(journals.values()))["doc"]
+        self.assertIn(doc["outcome"], ("ambiguous_empty", "ambiguous_unconfirmed"))
+
+
+class CrashResumeTests(PhaseCHarness):
+    def run_twice(self, phase, first_env, second_env, corrupt=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = Path(tmp) / "fake-aws"
+            fake.write_text(FAKE_AWS, encoding="utf-8")
+            fake.chmod(fake.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            log = Path(tmp) / "calls.log"
+            log.write_text("", encoding="utf-8")
+            count = Path(tmp) / "count"
+            count.write_text("0", encoding="utf-8")
+            taskdefs = Path(tmp) / "taskdefs"
+            taskdefs.write_text("", encoding="utf-8")
+            token_file = Path(tmp) / "token"
+            adopt_file = Path(tmp) / "adopt"
+            journals = Path(tmp) / "journals"
+            journals.mkdir()
+            given = {"AcmCertificateArn": CERT_ARN}
+            for flag, key in self.PARAM_KEYS.items():
+                for pos, item in enumerate(self.base_args()):
+                    if item == flag and pos + 1 < len(self.base_args()):
+                        given[key] = self.base_args()[pos + 1]
+            params = Path(tmp) / "params.json"
+            params.write_text(json.dumps(
+                [{"ParameterKey": k, "ParameterValue": v} for k, v in sorted(given.items())]),
+                encoding="utf-8")
+            foundation_params = Path(tmp) / "foundation-params.json"
+            foundation_params.write_text(json.dumps(
+                [{"ParameterKey": "BudgetLimitUsd", "ParameterValue": "45"},
+                 {"ParameterKey": "BudgetNotifyEmail", "ParameterValue": NOTIFY_EMAIL}]),
+                encoding="utf-8")
+            env_base = dict(os.environ)
+            for key in ("AWS_REGION", "AWS_DEFAULT_REGION", "AWS_PROFILE",
+                        "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+                env_base.pop(key, None)
+            env_base["AWS_BIN"] = str(fake)
+            env_base["FAKE_AWS_LOG"] = str(log)
+            env_base["FAKE_COUNT_FILE"] = str(count)
+            env_base["FAKE_TASKDEF_FILE"] = str(taskdefs)
+            env_base["FAKE_TOKEN_FILE"] = str(token_file)
+            env_base["FAKE_ADOPT_FILE"] = str(adopt_file)
+            env_base["FAKE_CERT_ARN"] = CERT_ARN
+            env_base["FAKE_DB_HOST"] = DB_HOST
+            env_base["FAKE_TOPIC_ARN"] = TOPIC_ARN
+            env_base["FAKE_NOTIFY_EMAIL"] = NOTIFY_EMAIL
+            base = self.base_args()
+            for table in (self.IMAGE_ENV, self.SECRET_ENV):
+                for flag, name in table.items():
+                    for pos, item in enumerate(base):
+                        if item == flag and pos + 1 < len(base):
+                            env_base[name] = base[pos + 1]
+            full = [*base, "--phase", phase,
+                    "--parameters-file", str(params),
+                    "--foundation-stack-name", FOUNDATION_STACK,
+                    "--foundation-parameters-file", str(foundation_params),
+                    "--prereqs-stack-name", PREREQS_STACK,
+                    "--launch-journal-dir", str(journals)]
+            env1 = dict(env_base)
+            env1.update(first_env or {})
+            result1 = subprocess.run([str(BOOTSTRAP), *full], capture_output=True,
+                                     text=True, env=env1, check=False)
+            if corrupt is not None:
+                corrupt(journals)
+            env2 = dict(env_base)
+            env2.update(second_env or {})
+            result2 = subprocess.run([str(BOOTSTRAP), *full], capture_output=True,
+                                     text=True, env=env2, check=False)
+            calls = [line for line in log.read_text(encoding="utf-8").splitlines() if line.strip()]
+            total_runs = int(count.read_text(encoding="utf-8").strip() or "0")
+            journal_docs = {}
+            for entry in sorted(journals.iterdir()):
+                if entry.is_file() and entry.suffix == ".json":
+                    journal_docs[entry.name] = {
+                        "mode": stat.S_IMODE(entry.stat().st_mode),
+                        "doc": json.loads(entry.read_text(encoding="utf-8")),
+                    }
+            dir_mode = stat.S_IMODE(journals.stat().st_mode)
+            temps = [entry.name for entry in journals.iterdir() if entry.name.startswith(".launch-journal-")]
+            return result1, result2, calls, journal_docs, total_runs, dir_mode, temps
+
+    def test_ambiguous_reentry_adopts_with_one_total_run(self):
+        result1, result2, calls, journals, total, dir_mode, temps = self.run_twice(
+            "init", {"FAKE_RUN": "fail", "FAKE_RECOVER": "none"},
+            {"FAKE_RUN": "ok", "FAKE_RECOVER": "adopt"})
+        self.assertNotEqual(result1.returncode, 0)
+        self.assertEqual(result2.returncode, 0, msg=result2.stdout + result2.stderr)
+        self.assertEqual(total, 1)
+        self.assertIn("adopted for terminal proof", result2.stdout + result1.stdout)
+        self.assertEqual(dir_mode, 0o700)
+        self.assertEqual(temps, [])
+        docs = [entry["doc"] for entry in journals.values() if entry["doc"].get("outcome") == "complete"]
+        self.assertEqual(len(docs), 1)
+
+    def test_success_reentry_preserves_one_shot_with_one_total_run(self):
+        result1, result2, calls, journals, total, dir_mode, temps = self.run_twice(
+            "init", {"FAKE_RUN": "ok"}, {"FAKE_RUN": "ok"})
+        self.assertEqual(result1.returncode, 0, msg=result1.stdout + result1.stderr)
+        self.assertEqual(result2.returncode, 0, msg=result2.stdout + result2.stderr)
+        self.assertEqual(total, 1)
+        self.assertIn("already complete", result2.stdout + result2.stderr)
+        self.assertIn("no new run-task", result2.stdout + result2.stderr)
+
+    def test_stopped_reentry_adopts_with_one_total_run(self):
+        result1, result2, calls, journals, total, dir_mode, temps = self.run_twice(
+            "init", {"FAKE_RUN": "fail", "FAKE_RECOVER": "none"},
+            {"FAKE_RUN": "ok", "FAKE_RECOVER": "stopped_adopt"})
+        self.assertNotEqual(result1.returncode, 0)
+        self.assertEqual(result2.returncode, 0, msg=result2.stdout + result2.stderr)
+        self.assertEqual(total, 1)
+
+    def test_empty_reentry_remains_ambiguous_with_one_total_run(self):
+        result1, result2, calls, journals, total, dir_mode, temps = self.run_twice(
+            "init", {"FAKE_RUN": "fail", "FAKE_RECOVER": "none"},
+            {"FAKE_RUN": "ok", "FAKE_RECOVER": "none"})
+        self.assertNotEqual(result1.returncode, 0)
+        self.assertNotEqual(result2.returncode, 0)
+        combined = result2.stdout + result2.stderr
+        self.assertIn("empty remains AMBIGUOUS", combined)
+        self.assertEqual(total, 1)
+
+    def test_changed_taskdef_refuses_without_new_run(self):
+        other = 'arn:aws:ecs:us-east-1:111122223333:task'"-definition"'/launchcrew-demo-other:9'
+        def corrupt(journals):
+            for entry in journals.iterdir():
+                if entry.is_file() and entry.name.endswith("-active.json"):
+                    doc = json.loads(entry.read_text(encoding="utf-8"))
+                    doc["taskdef_arn"] = other
+                    entry.write_text(json.dumps(doc), encoding="utf-8")
+                    entry.chmod(0o600)
+        result1, result2, calls, journals, total, dir_mode, temps = self.run_twice(
+            "init", {"FAKE_RUN": "ok"}, {"FAKE_RUN": "ok"}, corrupt=corrupt)
+        self.assertEqual(result1.returncode, 0)
+        self.assertNotEqual(result2.returncode, 0)
+        combined = result2.stdout + result2.stderr
+        self.assertIn("TASKDEF_MISMATCH", combined)
+        self.assertIn("never auto fresh", combined)
+        self.assertEqual(total, 1)
+
+
+class StandalonePrereqTests(PhaseCHarness):
+    def test_standalone_infra_pending_cert_stops_without_deploy(self):
+        result, calls, _ = self.run_phase(
+            [*self.base_args(), "--phase", "infra"],
+            extra_env={"FAKE_CERT": "pending"})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("PENDING", combined)
+        self.assertIn("No ready claim", combined)
+        self.assertFalse(any("deploy " in call for call in calls))
+
+    def test_standalone_infra_cert_mismatch_stops_without_deploy(self):
+        other_cert = "arn:aws:acm:us-east-1:111122223333:certificate/ffffffff-ffff-ffff-ffff-ffffffffffff"
+        result, calls, _ = self.run_phase(
+            [*self.base_args(), "--phase", "infra"],
+            params_overrides={"AcmCertificateArn": other_cert})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("AcmCertificateArn", combined)
+        self.assertIn("cert B", combined)
+        self.assertFalse(any("deploy " in call for call in calls))
+
+    def test_standalone_infra_each_secret_mismatch_stops_without_deploy(self):
+        other = "arn:aws:secretsmanager:us-east-1:111122223333:secret:other-secret-ZzZzZz"
+        for key in ("RuntimeDbUrlSecretArn", "MigrationDbUrlSecretArn",
+                    "MasterDbPasswordSecretArn", "TlsSecretArn"):
+            with self.subTest(key=key):
+                result, calls, _ = self.run_phase(
+                    [*self.base_args(), "--phase", "infra"],
+                    params_overrides={key: other})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("owned prereq ref", result.stdout + result.stderr)
+                self.assertFalse(any("deploy " in call for call in calls))
+
+    def test_standalone_infra_happy_owned_chain_passes(self):
+        result, calls, _ = self.run_phase([*self.base_args(), "--phase", "infra"])
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertIn("Prereqs ready", result.stdout)
+        self.assertTrue(any("deploy " in call and "EnableServices=false" in call for call in calls))
 
 
 if __name__ == "__main__":
