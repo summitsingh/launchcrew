@@ -42,6 +42,11 @@ describe('frontend contract and boundaries', () => {
   it('merges Tailwind utility conflicts predictably', () => {
     expect(cn('px-2', false, 'px-4')).toBe('px-4');
   });
+  it('proxies API calls through the baked API_URL rewrite', () => {
+    const config = readFileSync('next.config.ts', 'utf8');
+    expect(config).toContain('process.env.API_URL');
+    expect(config).toContain('/api/:path*');
+  });
   it('rejects failed API results without exposing server details', async () => {
     await expect(unwrap(Promise.resolve({ error: { private: 'hidden' }, response: new Response('', { status: 422 }) }))).rejects.toThrow('Request failed (422). Check the API and try again.');
   });

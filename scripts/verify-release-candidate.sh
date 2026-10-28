@@ -313,8 +313,9 @@ MIG_STATUS=$?
 set -e
 [ "$MIG_STATUS" -eq 0 ] || fail "playwright alembic upgrade failed with exit $MIG_STATUS"
 
-log "no live model calls: META_API_KEY empty, AUTH_ENABLED false, deterministic gates only"
-DATABASE_URL="$PW_URL" AUTH_ENABLED=false META_API_KEY="" nohup "${PY_RUN[@]}" -m uvicorn backend.app:app --host 127.0.0.1 --port "$API_PORT" >"$PG_ROOT/api.log" 2>&1 &
+EXPECTED_WEB_URL="http://127.0.0.1:$WEB_PORT"
+log "no live model calls: META_API_KEY empty, AUTH_ENABLED false, deterministic gates only, trusted frontend origin $EXPECTED_WEB_URL"
+DATABASE_URL="$PW_URL" AUTH_ENABLED=false META_API_KEY="" PUBLIC_BASE_URL="$EXPECTED_WEB_URL" nohup "${PY_RUN[@]}" -m uvicorn backend.app:app --host 127.0.0.1 --port "$API_PORT" >"$PG_ROOT/api.log" 2>&1 &
 API_PID=$!
 API_URL="$EXPECTED_API_URL" PORT="$WEB_PORT" nohup pnpm --dir web exec next start --hostname 127.0.0.1 --port "$WEB_PORT" >"$PG_ROOT/web.log" 2>&1 &
 WEB_PID=$!
@@ -324,7 +325,7 @@ for _ in $(seq 1 60); do
 done
 curl -fsS "http://127.0.0.1:$API_PORT/api/health" >/dev/null || { preserve_server_logs; fail "API did not become ready on 127.0.0.1:$API_PORT"; }
 curl -fsS "http://127.0.0.1:$WEB_PORT/api/health" >/dev/null || { preserve_server_logs; fail "web did not become ready on 127.0.0.1:$WEB_PORT (expected API_URL=$EXPECTED_API_URL baked at build)"; }
-log "servers ready: API 127.0.0.1:$API_PORT web 127.0.0.1:$WEB_PORT with API_URL=$EXPECTED_API_URL"
+log "servers ready: API 127.0.0.1:$API_PORT web 127.0.0.1:$WEB_PORT with API_URL=$EXPECTED_API_URL trusted origin $EXPECTED_WEB_URL"
 
 set +e
 WEB_URL="http://127.0.0.1:$WEB_PORT" DATABASE_URL="$PW_URL" pnpm --dir web test:e2e -- tests/e2e/integration-acceptance.spec.ts tests/e2e/stage-selection.spec.ts 2>&1 | tail -n 15

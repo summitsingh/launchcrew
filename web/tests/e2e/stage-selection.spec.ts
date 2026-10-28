@@ -58,7 +58,9 @@ test('custom Scout and Checker selection changes verdict and receipt identity', 
   await page.screenshot({ path: `${local}/02-agents.png`, fullPage: true });
 
   // Dry-run preview proves the supported policy is enforced, advisory-free.
-  await page.getByRole('button', { name: checkerName, exact: true }).first().click();
+  // Agent buttons read as letter plus name plus role (for example,
+  // C PriceGuard Strict Auditor), so match name with its role, not exact.
+  await page.getByRole('button', { name: `${checkerName} Strict Auditor`, exact: false }).first().click();
   await page.getByRole('button', { name: 'Dry-run preview', exact: true }).click();
   await expect(page.getByText('Enforced policies: price_claims')).toBeVisible();
   await page.screenshot({ path: `${local}/03-preview.png`, fullPage: true });
@@ -78,10 +80,13 @@ test('custom Scout and Checker selection changes verdict and receipt identity', 
     return runId;
   }
 
-  // Same input, default Checker first: price passes.
+  // Same input, default Checker first: price passes. The Run review
+  // check strip reads Approved facts sourced plus Scout name, and blocked
+  // count plus Checker name, so assert that rendered text, with the exact
+  // blocked count proved through the API receipt below.
   const runDefault = await runWithChecker('Checker');
-  await expect(page.getByText(`Scout · ${scoutName}`).first()).toBeVisible();
-  await expect(page.getByText('Checker · Checker').first()).toBeVisible();
+  await expect(page.getByText(`Approved facts sourced · ${scoutName}`).first()).toBeVisible();
+  await expect(page.getByText('0 blocked in v1 · Checker').first()).toBeVisible();
   const defaultReceiptRes = await request.get(`/api/runs/${runDefault}/receipt`);
   expect(defaultReceiptRes.status()).toBe(200);
   const defaultReceipt = await defaultReceiptRes.json();
@@ -95,8 +100,8 @@ test('custom Scout and Checker selection changes verdict and receipt identity', 
 
   // Same input, custom PriceGuard: price is blocked and revised out.
   const runGuarded = await runWithChecker(checkerName);
-  await expect(page.getByText(`Scout · ${scoutName}`).first()).toBeVisible();
-  await expect(page.getByText(`Checker · ${checkerName}`).first()).toBeVisible();
+  await expect(page.getByText(`Approved facts sourced · ${scoutName}`).first()).toBeVisible();
+  await expect(page.getByText(`blocked in v1 · ${checkerName}`).first()).toBeVisible();
   await expect(page.getByText('$49', { exact: false }).first()).toBeVisible();
   const guardedReceiptRes = await request.get(`/api/runs/${runGuarded}/receipt`);
   expect(guardedReceiptRes.status()).toBe(200);

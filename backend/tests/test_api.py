@@ -121,6 +121,22 @@ def test_cross_origin(client):
     assert client.post('/api/runs', headers={'Origin': 'https://other.invalid'}, json={}).status_code == 403
 
 
+def test_trusted_frontend_origin_allowed(client, monkeypatch):
+    # The disposable verifier trusts exactly its isolated web origin via
+    # PUBLIC_BASE_URL. A mutation from that origin passes the origin gate
+    # (it then fails validation with 422, which proves it was not refused
+    # with 403). A safe read from a foreign origin still passes.
+    monkeypatch.setenv('PUBLIC_BASE_URL', 'https://testserver')
+    assert client.post('/api/runs', headers={'Origin': 'https://testserver'}, json={}).status_code == 422
+    assert client.get('/api/agents', headers={'Origin': 'https://other.invalid'}).status_code == 200
+
+
+def test_same_host_origin_allowed_without_trusted_config(client, monkeypatch):
+    # Same-host rewrites pass even when no trusted origin is configured.
+    monkeypatch.delenv('PUBLIC_BASE_URL', raising=False)
+    assert client.post('/api/runs', headers={'Origin': 'https://testserver'}, json={}).status_code == 422
+
+
 def test_missing_resources(client):
     assert client.get('/api/agents/missing').status_code == 404
     assert client.get('/api/runs/missing').status_code == 404
