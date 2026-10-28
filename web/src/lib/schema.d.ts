@@ -418,6 +418,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/photo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Photo Remove */
+        delete: operations["photo_remove_api_runs__run_id__photo_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/photo-check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Photo Check */
+        post: operations["photo_check_api_runs__run_id__photo_check_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/receipt": {
         parameters: {
             query?: never;
@@ -793,6 +827,121 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** PhotoCheckIn */
+        PhotoCheckIn: {
+            /** Expected Revision */
+            expected_revision: number;
+            /** Image Data Uri */
+            image_data_uri: string;
+        };
+        /** PhotoCheckOut */
+        PhotoCheckOut: {
+            /** Label */
+            label: string | null;
+            /**
+             * Method
+             * @enum {string}
+             */
+            method: "sam-3.1" | "not_run";
+            /** Photo State */
+            photo_state: string;
+            /**
+             * Policy Version
+             * @default photo-geometry/v1
+             */
+            policy_version: string;
+            /** Reason */
+            reason: string;
+            /** Revision */
+            revision: number;
+        };
+        /** PhotoCheckResponse */
+        PhotoCheckResponse: {
+            check: components["schemas"]["PhotoCheckOut"];
+            preview?: components["schemas"]["PhotoPreview"] | null;
+            receipt: components["schemas"]["Receipt"];
+        };
+        /** PhotoCrop */
+        PhotoCrop: {
+            /** X1 */
+            x1: number;
+            /** X2 */
+            x2: number;
+            /** Y1 */
+            y1: number;
+            /** Y2 */
+            y2: number;
+        };
+        /** PhotoPreview */
+        PhotoPreview: {
+            crop: components["schemas"]["PhotoCrop"] | null;
+            /** Frame H */
+            frame_h: number;
+            /** Frame W */
+            frame_w: number;
+            /**
+             * Label
+             * @constant
+             */
+            label: "detected";
+        };
+        /** PhotoRemoveIn */
+        PhotoRemoveIn: {
+            /** Expected Revision */
+            expected_revision: number;
+        };
+        /** PhotoRemoveOut */
+        PhotoRemoveOut: {
+            /**
+             * Approval State
+             * @constant
+             */
+            approval_state: "pending_approval";
+            /**
+             * Photo State
+             * @constant
+             */
+            photo_state: "no_photo";
+            /** Revision */
+            revision: number;
+        };
+        /** PhotoStatus */
+        PhotoStatus: {
+            /**
+             * Actor
+             * @default
+             */
+            actor: string;
+            /**
+             * Checked At
+             * @default
+             */
+            checked_at: string;
+            /** Label */
+            label?: string | null;
+            /**
+             * Policy Version
+             * @default photo-geometry/v1
+             */
+            policy_version: string;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+            /**
+             * State
+             * @default no_photo
+             */
+            state: string;
+        } & {
+            [key: string]: unknown;
+        };
         /** Preview */
         Preview: {
             /** Checker Enforcement */
@@ -914,6 +1063,11 @@ export interface components {
                 [key: string]: unknown;
             }[];
             model_usage?: components["schemas"]["ModelUsage"] | null;
+            photo_status?: components["schemas"]["PhotoStatus"] | null;
+            /** Photo Transport */
+            photo_transport?: {
+                [key: string]: unknown;
+            } | null;
             /**
              * Revision
              * @default 0
@@ -2076,6 +2230,76 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Receipt"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    photo_remove_api_runs__run_id__photo_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PhotoRemoveIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PhotoRemoveOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    photo_check_api_runs__run_id__photo_check_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PhotoCheckIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PhotoCheckResponse"];
                 };
             };
             /** @description Validation Error */

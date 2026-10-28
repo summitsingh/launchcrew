@@ -187,7 +187,7 @@ def run_photo_check(db: Engine, run_id: str, raw_bytes: bytes, mime: str, revisi
 
 Admission order owned by this task: validate bytes bounds, magic, actual PNG/JPEG static structure, and EXIF-oriented dims via Pillow 13.0.0 (exact pin in `pyproject.toml` and `uv.lock`; bounds 1 MiB raw and 8 million decoded pixels; reject malformed, truncated, empty, animated, and decompression-bomb bytes) BEFORE opening the paid transaction is allowed, then in ONE transaction lock `sam_budget FOR UPDATE`, require `remaining_images > 0`, require `expected_revision` equals current pack revision, require sha256 equals the operator-approved digest allowlist, decrement budget by 1, insert `sam_calls` as `admitted`, bump pack revision and clear approvals, commit, and only then perform at most one Files plus at most one Responses (Responses only if Files returned a non-empty file ID held volatile in memory only and never persisted). Duplicate same `(run_id, revision)` while `admitted` returns the pending row (HTTP 200 pending); after terminal state returns the persisted summary; different sha same revision returns 409; stale `expected_revision` returns 409; exhausted budget or non-approved bytes returns 422. Accepted, ambiguous, crashed, timed-out, or revision-moved finalizations land `failed_terminal` and are never resent. Transport mocked at the HTTP seam; keyless returns `method: "not_run"`.
 
-- [ ] **Step 1: Write the failing test (uses only the existing `test_engine` and `client` fixtures; every helper below is defined in the test file itself)**
+- [x] **Step 1: Write the failing test (uses only the existing `test_engine` and `client` fixtures; every helper below is defined in the test file itself)**
 
 ```python
 import base64
@@ -245,7 +245,7 @@ def test_terminal_call_never_resent(client):
 Run: `cd "$REPO_ROOT" && "$REPO_ROOT/.venv/bin/python" -m pytest backend/tests/test_photo_sam_admission.py -v`
 Expected: FAIL (tables/functions/routes missing).
 
-- [ ] **Step 3: Implement migration `003_photo_sam_calls`, admission insert, bounded transport in `backend/sam.py`**
+- [x] **Step 3: Implement migration `003_photo_sam_calls`, admission insert, bounded transport in `backend/sam.py`**
 
 Unique `(run_id, revision)`; terminal states never re-admitted; budget default 0 server-side; transport mocked at the HTTP seam (mock `urlopen`/send, never live); magic-byte plus Pillow 13.0.0 decoded-format validation (no custom JPEG decoder); keyless gives `{"method": "not_run"}` with HTTP 200.
 
@@ -272,7 +272,7 @@ cd "$REPO_ROOT" && git add backend/migrations/versions/003_photo_sam_calls.py ba
 
 DTOs are the spec section 5 names (`PhotoCheckIn`, `PhotoCheckOut`, `PhotoRemoveIn`, `PhotoRemoveOut`, `PhotoCheckResponse` with volatile `preview`). The preview object carries only `{frame_w, frame_h, crop, label}` for client canvas use and is never stored. Finalization checks `expected_revision` plus the `(run_id, revision)` idempotency key under row lock; a concurrent clear or text edit that moved the revision first forces 409 and `failed_terminal` with nothing attached. Client-supplied geometry, verdict, actor, or budget is strictly rejected with 422 (extra=forbid); actor and time come from `auth.actor` server side. Missing/invalid `expected_revision` (bool, float, string) or unknown fields return 422; stale but valid `expected_revision` returns 409. Revision history keeps both `source` (`Maker`/`human`, text truth unchanged) and `photo_event` kind; `human_draft` post/email/claims are untouched by photo-only events.
 
-- [ ] **Step 1: Write the failing test (uses only `client`; helpers defined inline)**
+- [x] **Step 1: Write the failing test (uses only `client`; helpers defined inline)**
 
 ```python
 def _make_run(client):
@@ -305,7 +305,7 @@ def test_receipt_holds_only_sanitized_summary(client):
 Run: `cd "$REPO_ROOT" && "$REPO_ROOT/.venv/bin/python" -m pytest backend/tests/test_photo_review_api.py -v`
 Expected: FAIL (routes missing).
 
-- [ ] **Step 3: Implement strict DTOs, revision bump plus approval reset, `photo_event` history discriminator, exportable() clause**
+- [x] **Step 3: Implement strict DTOs, revision bump plus approval reset, `photo_event` history discriminator, exportable() clause**
 
 Same-transaction `UPDATE runs` plus `DELETE FROM approvals` plus audit row; row-lock plus `expected_revision`; superseded entries immutable; server-stamped actor/time. `checked_ok` is `detected` only; every other photo state returns 422 on approve and export; stale revision returns 409.
 

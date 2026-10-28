@@ -169,6 +169,9 @@ def exportable(receipt):
         return False
     if receipt.get('approval_state') != 'approved_for_export':
         return False
+    from backend.photo_review import photo_block_reason
+    if photo_block_reason(receipt) is not None:
+        return False
     check = current_check(receipt)
     if not isinstance(check, dict) or isinstance(check.get('blocked_count'), bool) or check.get('blocked_count', 1) != 0:
         return False
@@ -253,6 +256,10 @@ def approve_current(receipt, actor, expected_revision=None):
     check = current_check(receipt)
     if not isinstance(check, dict) or isinstance(check.get('blocked_count'), bool) or check.get('blocked_count', 1) != 0:
         raise ValueError('Approval requires a clean final check')
+    from backend.photo_review import photo_block_reason
+    photo_reason = photo_block_reason(receipt)
+    if photo_reason is not None:
+        raise ValueError(photo_reason)
     revised = copy.deepcopy(receipt)
     now = timestamp()
     revised['approvals'] = list(revised.get('approvals') or [])

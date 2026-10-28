@@ -747,6 +747,252 @@
         "title": "ModelUsage",
         "type": "object"
       },
+      "PhotoCheckIn": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "minimum": 0.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "image_data_uri": {
+            "title": "Image Data Uri",
+            "type": "string"
+          }
+        },
+        "required": [
+          "image_data_uri",
+          "expected_revision"
+        ],
+        "title": "PhotoCheckIn",
+        "type": "object"
+      },
+      "PhotoCheckOut": {
+        "properties": {
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "method": {
+            "enum": [
+              "sam-3.1",
+              "not_run"
+            ],
+            "title": "Method",
+            "type": "string"
+          },
+          "photo_state": {
+            "title": "Photo State",
+            "type": "string"
+          },
+          "policy_version": {
+            "default": "photo-geometry/v1",
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "method",
+          "label",
+          "reason",
+          "revision",
+          "photo_state"
+        ],
+        "title": "PhotoCheckOut",
+        "type": "object"
+      },
+      "PhotoCheckResponse": {
+        "properties": {
+          "check": {
+            "$ref": "#/components/schemas/PhotoCheckOut"
+          },
+          "preview": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PhotoPreview"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "receipt": {
+            "$ref": "#/components/schemas/Receipt"
+          }
+        },
+        "required": [
+          "check",
+          "receipt"
+        ],
+        "title": "PhotoCheckResponse",
+        "type": "object"
+      },
+      "PhotoCrop": {
+        "properties": {
+          "x1": {
+            "title": "X1",
+            "type": "integer"
+          },
+          "x2": {
+            "title": "X2",
+            "type": "integer"
+          },
+          "y1": {
+            "title": "Y1",
+            "type": "integer"
+          },
+          "y2": {
+            "title": "Y2",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "x1",
+          "y1",
+          "x2",
+          "y2"
+        ],
+        "title": "PhotoCrop",
+        "type": "object"
+      },
+      "PhotoPreview": {
+        "properties": {
+          "crop": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PhotoCrop"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "frame_h": {
+            "title": "Frame H",
+            "type": "integer"
+          },
+          "frame_w": {
+            "title": "Frame W",
+            "type": "integer"
+          },
+          "label": {
+            "const": "detected",
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "frame_w",
+          "frame_h",
+          "crop",
+          "label"
+        ],
+        "title": "PhotoPreview",
+        "type": "object"
+      },
+      "PhotoRemoveIn": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "minimum": 0.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_revision"
+        ],
+        "title": "PhotoRemoveIn",
+        "type": "object"
+      },
+      "PhotoRemoveOut": {
+        "properties": {
+          "approval_state": {
+            "const": "pending_approval",
+            "title": "Approval State",
+            "type": "string"
+          },
+          "photo_state": {
+            "const": "no_photo",
+            "title": "Photo State",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "revision",
+          "photo_state",
+          "approval_state"
+        ],
+        "title": "PhotoRemoveOut",
+        "type": "object"
+      },
+      "PhotoStatus": {
+        "additionalProperties": true,
+        "properties": {
+          "actor": {
+            "default": "",
+            "title": "Actor",
+            "type": "string"
+          },
+          "checked_at": {
+            "default": "",
+            "title": "Checked At",
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "policy_version": {
+            "default": "photo-geometry/v1",
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "revision": {
+            "default": 0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "state": {
+            "default": "no_photo",
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "title": "PhotoStatus",
+        "type": "object"
+      },
       "Preview": {
         "properties": {
           "checker_enforcement": {
@@ -1128,6 +1374,28 @@
                 "type": "null"
               }
             ]
+          },
+          "photo_status": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PhotoStatus"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "photo_transport": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Photo Transport"
           },
           "revision": {
             "default": 0,
@@ -3085,6 +3353,104 @@
           }
         },
         "summary": "Export"
+      }
+    },
+    "/api/runs/{run_id}/photo": {
+      "delete": {
+        "operationId": "photo_remove_api_runs__run_id__photo_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PhotoRemoveIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PhotoRemoveOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Photo Remove"
+      }
+    },
+    "/api/runs/{run_id}/photo-check": {
+      "post": {
+        "operationId": "photo_check_api_runs__run_id__photo_check_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PhotoCheckIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PhotoCheckResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Photo Check"
       }
     },
     "/api/runs/{run_id}/receipt": {

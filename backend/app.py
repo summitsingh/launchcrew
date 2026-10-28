@@ -132,6 +132,17 @@ class ScoutSection(BaseModel):
     model_note: str | None = None
 
 
+class PhotoStatus(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    state: str = 'no_photo'
+    label: str | None = None
+    reason: str = ''
+    policy_version: str = 'photo-geometry/v1'
+    revision: int = 0
+    actor: str = ''
+    checked_at: str = ''
+
+
 class ModelUsage(BaseModel):
     model_config = ConfigDict(extra='allow')
     spark_calls: int = 0
@@ -193,6 +204,8 @@ class Receipt(BaseModel):
     checker_enforcement: dict[str, Any] | None = None
     checker_policies: list[str] | None = None
     model_usage: ModelUsage | None = None
+    photo_status: PhotoStatus | None = None
+    photo_transport: dict[str, Any] | None = None
 
 
 class Preview(BaseModel):
@@ -285,7 +298,7 @@ def _capability_snapshot():
     key = bool(os.environ.get('META_API_KEY', '').strip())
     spark_raw = os.environ.get('META_MODEL', 'muse-spark-1.3').strip() if key else ''
     wonder_raw = os.environ.get('META_WONDER_MODEL', '').strip() if key else ''
-    sam_raw = os.environ.get('LAUNCHCREW_SAM_DEMO_PHOTO', '').strip() if key else ''
+    sam_raw = os.environ.get('LAUNCHCREW_PHOTO_SAM_ENABLED', '').strip() if key else ''
     if not key:
         spark_variant: str = 'not_configured'
     elif spark_raw in STANDARD_SPARK_IDS:
@@ -302,7 +315,7 @@ def _capability_snapshot():
         wonder_variant = 'unknown'
     return {'spark_configured': key,
             'wonder_configured': bool(key and wonder_raw),
-            'sam_configured': bool(key and sam_raw),
+            'sam_configured': bool(key and sam_raw.lower() == 'true'),
             'spark_variant': spark_variant,
             'wonder_variant': wonder_variant}
 
@@ -447,6 +460,50 @@ class ExportIn(Strict):
     expected_revision: StrictInt | None = Field(default=None, ge=0)
 
 
+class PhotoCheckIn(Strict):
+    image_data_uri: str
+    expected_revision: StrictInt = Field(ge=0)
+
+
+class PhotoCrop(BaseModel):
+    x1: int
+    y1: int
+    x2: int
+    y2: int
+
+
+class PhotoPreview(BaseModel):
+    frame_w: int
+    frame_h: int
+    crop: PhotoCrop | None
+    label: Literal['detected']
+
+
+class PhotoCheckOut(BaseModel):
+    method: Literal['sam-3.1', 'not_run']
+    label: str | None
+    reason: str
+    policy_version: str = 'photo-geometry/v1'
+    revision: int
+    photo_state: str
+
+
+class PhotoCheckResponse(BaseModel):
+    check: PhotoCheckOut
+    receipt: Receipt
+    preview: PhotoPreview | None = None
+
+
+class PhotoRemoveIn(Strict):
+    expected_revision: StrictInt = Field(ge=0)
+
+
+class PhotoRemoveOut(BaseModel):
+    revision: int
+    photo_state: Literal['no_photo']
+    approval_state: Literal['pending_approval']
+
+
 @app.post('/api/runs/{run_id}/revise', response_model=Receipt)
 def revise(run_id: str, body: ReviseIn, actor: str = Depends(auth.actor)):
     from launchcrew import human_review
@@ -508,6 +565,7 @@ def approve(run_id: str, body: ApproveIn, actor: str = Depends(auth.actor)):
 @app.post('/api/runs/{run_id}/export', response_model=Receipt)
 def export(run_id: str, body: ExportIn, actor: str = Depends(auth.actor)):
     with store.connect() as db:
+        from backend.photo_review import photo_block_reason
         from launchcrew import human_review
         receipt = get_receipt(db, run_id, True)
         expected = body.expected_revision
@@ -515,6 +573,9 @@ def export(run_id: str, body: ExportIn, actor: str = Depends(auth.actor)):
             raise HTTPException(409, 'Export is stale; expected_revision is required for edited revisions')
         if expected is not None and expected != human_review.current_revision(receipt):
             raise HTTPException(409, 'Export is stale; the draft changed')
+        photo_reason = photo_block_reason(receipt)
+        if photo_reason is not None:
+            raise HTTPException(422, photo_reason)
         try:
             exported = human_review.record_export(receipt, actor)
         except ValueError as error:
@@ -522,6 +583,92 @@ def export(run_id: str, body: ExportIn, actor: str = Depends(auth.actor)):
         db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id'), {'receipt': json.dumps(exported), 'state': exported['approval_state'], 'id': run_id})
         store.audit(db, run_id, 'exported', actor)
     return JSONResponse(exported, headers={'Content-Disposition': 'attachment; filename="launchcrew-pack.json"'})
+
+
+
+@app.post('/api/runs/{run_id}/photo-check', response_model=PhotoCheckResponse)
+def photo_check(run_id: str, body: PhotoCheckIn, actor: str = Depends(auth.actor)):
+    from backend import photo_admission, sam
+    from backend.photo_admission import AdmissionConflict, AdmissionRejected, AdmissionStale
+    from backend.photo_input import PhotoInputError, parse_photo_data_uri
+    from backend.photo_review import (PHOTO_EVENT_CHECKED,
+                                      STATE_REQUESTED_UNCHECKED, apply_photo_event,
+                                      photo_status_of, record_unattempted_transport)
+    from launchcrew import human_review
+    from launchcrew.photo_policy import PHOTO_POLICY_VERSION
+    try:
+        parsed = parse_photo_data_uri(body.image_data_uri)
+    except PhotoInputError as error:
+        raise HTTPException(422, 'Photo input rejected: ' + error.reason)
+    if not sam.photo_sam_operable():
+        with store.connect() as db:
+            receipt = get_receipt(db, run_id, True)
+            ok, context_reason = human_review.valid_revision_context(receipt)
+            if not ok:
+                raise HTTPException(422, context_reason)
+            if body.expected_revision != human_review.current_revision(receipt):
+                raise HTTPException(409, 'Photo check is stale; the draft changed')
+            status = {'state': STATE_REQUESTED_UNCHECKED, 'label': None,
+                      'reason': 'not_run: SAM not configured, photo unchecked',
+                      'policy_version': PHOTO_POLICY_VERSION,
+                      'revision': human_review.current_revision(receipt),
+                      'actor': actor, 'checked_at': ''}
+            revised = apply_photo_event(receipt, event=PHOTO_EVENT_CHECKED, actor=actor, status=status)
+            revised = record_unattempted_transport(
+                revised, handling='not_run',
+                note=('SAM is not configured, so the photo bytes were not sent anywhere. '
+                      'Text-model usage above is unchanged and covers text models only.'))
+            db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id'),
+                       {'receipt': json.dumps(revised), 'state': revised['approval_state'], 'id': run_id})
+            db.execute(text('DELETE FROM approvals WHERE run_id=:id'), {'id': run_id})
+            store.audit(db, run_id, 'photo_checked', actor)
+        kept = photo_status_of(revised)
+        check = PhotoCheckOut(method='not_run', label=None, reason=kept['reason'],
+                              policy_version=PHOTO_POLICY_VERSION,
+                              revision=revised['revision'], photo_state=kept['state'])
+        return PhotoCheckResponse(check=check, receipt=revised, preview=None)
+    try:
+        row, preview, receipt = photo_admission.run_photo_check(
+            store.engine(), run_id, parsed['raw'], parsed['mime'],
+            body.expected_revision, body.expected_revision, actor=actor,
+            frame=(parsed['width'], parsed['height']))
+    except AdmissionRejected as error:
+        raise HTTPException(422, str(error))
+    except AdmissionStale as error:
+        raise HTTPException(409, str(error))
+    except AdmissionConflict as error:
+        raise HTTPException(409, str(error))
+    kept = photo_status_of(receipt)
+    check = PhotoCheckOut(method='sam-3.1', label=row['label'], reason=row['reason'] or kept['reason'],
+                          policy_version=row['policy_version'] or PHOTO_POLICY_VERSION,
+                          revision=receipt.get('revision', 0), photo_state=kept['state'])
+    return PhotoCheckResponse(check=check, receipt=receipt,
+                              preview=PhotoPreview(**preview) if preview else None)
+
+
+@app.delete('/api/runs/{run_id}/photo', response_model=PhotoRemoveOut)
+def photo_remove(run_id: str, body: PhotoRemoveIn, actor: str = Depends(auth.actor)):
+    from backend.photo_review import (PHOTO_EVENT_REMOVED, STATE_NO_PHOTO,
+                                      apply_photo_event, blank_photo_status,
+                                      photo_status_of)
+    from launchcrew import human_review
+    with store.connect() as db:
+        receipt = get_receipt(db, run_id, True)
+        ok, context_reason = human_review.valid_revision_context(receipt)
+        if not ok:
+            raise HTTPException(422, context_reason)
+        if body.expected_revision != human_review.current_revision(receipt):
+            raise HTTPException(409, 'Photo remove is stale; the draft changed')
+        if photo_status_of(receipt)['state'] == STATE_NO_PHOTO:
+            raise HTTPException(422, 'No photo is attached to this revision')
+        revised = apply_photo_event(receipt, event=PHOTO_EVENT_REMOVED, actor=actor,
+                                    status=blank_photo_status())
+        db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id'),
+                   {'receipt': json.dumps(revised), 'state': revised['approval_state'], 'id': run_id})
+        db.execute(text('DELETE FROM approvals WHERE run_id=:id'), {'id': run_id})
+        store.audit(db, run_id, 'photo_removed', actor)
+    return PhotoRemoveOut(revision=revised['revision'], photo_state='no_photo',
+                          approval_state='pending_approval')
 
 
 MemoryKind = Literal['brand_fact', 'profile', 'approval_example', 'blocked_rule']
