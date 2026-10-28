@@ -290,8 +290,8 @@ expect_failure() {
     fail "$label as $as_user must fail but succeeded"
   fi
   case "$out" in
-    *"permission denied"*|*"must be owner"*|*"not permitted"*|*"ERROR"*) ;;
-    *) echo "$out" >&2; fail "$label as $as_user failed without a permission error" ;;
+    *"permission denied"*|*"must be owner"*|*"insufficient privilege"*|*"not permitted"*) ;;
+    *) echo "$out" >&2; fail "$label as $as_user failed without an insufficient-privilege error" ;;
   esac
   log "pass: $label as $as_user is rejected"
 }
