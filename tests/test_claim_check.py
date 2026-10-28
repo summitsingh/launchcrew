@@ -35,6 +35,14 @@ class ClaimTests(unittest.TestCase):
         self.assertEqual(check_pack(pack, self.facts)['blocked_count'], 1)
         self.assertTrue(check_draft('Designed in Texas, best in Texas.', self.facts))
 
+    def test_policy_blocks_draft_text_without_explicit_claim(self):
+        # Policy rules block draft sentences independently of the explicit
+        # claims list: a price sentence is blocked even with no claims passed.
+        pack = {'claims': [], 'post': 'Launch price $49 today.', 'email': ''}
+        result = check_pack(pack, self.facts, checker_policies=['price_claims'])
+        self.assertEqual(result['blocked_count'], 1)
+        self.assertIn('price_claims', result['blocked_claims'][0]['reason'])
+
     def test_approved_claim_containment(self):
         self.assertTrue(check_claim('This wallet is Designed in Texas', self.facts)['verified'])
         self.assertFalse(check_claim('Designed in Texas, best in Texas', self.facts)['verified'])

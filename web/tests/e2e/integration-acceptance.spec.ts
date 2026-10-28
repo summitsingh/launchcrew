@@ -109,10 +109,11 @@ test('integration acceptance V1 plus V2', async ({ page, request }) => {
   await expect(page.getByText('Handmade vegan wallet for commuters')).toHaveCount(0);
   await page.screenshot({ path: `${local}/05-memory-edit.png`, fullPage: true });
 
-  // V2 Memory delete: a blocked rule blocks, then after delete it does not.
+  // V2 Memory delete: a blocked rule filters the real $49 claim,
+  // then after delete it does not.
   await page.getByRole('button', { name: 'Memory', exact: false }).click();
   await page.getByLabel('Title', { exact: true }).fill(`NoSuperlative${suffix}`);
-  await page.getByLabel('Content JSON object', { exact: true }).fill('{"claim": "best in Texas"}');
+  await page.getByLabel('Content JSON object', { exact: true }).fill('{"claim": "$49"}');
   await page.getByLabel('Kind', { exact: true }).selectOption('blocked_rule');
   await page.getByRole('button', { name: 'Create memory', exact: true }).click();
   await expect(page.getByText('Memory item created.')).toBeVisible();

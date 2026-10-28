@@ -96,30 +96,70 @@ class MemoryEffectsTests(unittest.TestCase):
         self.assertEqual(claims, [])
         self.assertEqual(blocked, [])
 
-    def test_learned_blocked_rule_changes_keyless_verdict_and_delete_removes_it(self):
+    def test_learned_blocked_rule_filters_real_candidate_claim(self):
+        # The $49 price claim occurs naturally in the approved facts, so the
+        # learned rule filters a real candidate instead of a manufactured one.
         profile = agents.load_agent('Maker', ROOT / 'agents')
         env = {'META_API_KEY': '', 'META_WONDER_MODEL': ''}
         with patch.dict(os.environ, env):
             with patch('launchcrew.run.spark_for_agent', side_effect=AssertionError('no transport keyless')), \
                  patch('launchcrew.run.wonder_synthesize_for_scout', side_effect=AssertionError('no transport keyless')):
-                learned = {'id': 'mem_l', 'kind': 'blocked_rule', 'title': 'Learned',
-                           'content': {'blocked_claims': [{'claim': 'best in Texas', 'reason': 'Claim not found in facts file'}]}}
-                blocked_receipt = adapter.execute('run_blocked', IDEA, profile, False, memory_items=[learned])
-                self.assertEqual(blocked_receipt['checker_v1']['blocked_count'], 1)
-                self.assertIn('best in Texas', [c['claim'] for c in blocked_receipt['checker_v1']['blocked_claims']])
-                self.assertEqual(blocked_receipt['checker_v2']['blocked_count'], 0)
-                self.assertNotIn('best in Texas', blocked_receipt['maker_draft_v2']['post'])
-                self.assertEqual(blocked_receipt['memory_blocked_rules'][0]['claim'], 'best in Texas')
-                self.assertEqual(blocked_receipt['memory_examples'], [])
-                edited = {'id': 'mem_l', 'kind': 'blocked_rule', 'title': 'Learned',
-                          'content': {'blocked_claims': [{'claim': '$49', 'reason': 'Edited rule'}]}}
-                edited_receipt = adapter.execute('run_edited', IDEA, profile, False, memory_items=[edited])
-                self.assertIn('$49', [c['claim'] for c in edited_receipt['checker_v1']['blocked_claims']])
-                self.assertNotIn('$49', edited_receipt['maker_draft_v2']['post'])
                 clean = adapter.execute('run_clean', IDEA, profile, False, memory_items=[])
                 self.assertEqual(clean['checker_v1']['blocked_count'], 0)
+                self.assertIn('$49', clean['maker_draft_v1']['post'])
+                learned = {'id': 'mem_l', 'kind': 'blocked_rule', 'title': 'Learned',
+                           'content': {'blocked_claims': [{'claim': '$49', 'reason': 'Price out of scope'}]}}
+                blocked_receipt = adapter.execute('run_blocked', IDEA, profile, False, memory_items=[learned])
+                self.assertEqual(blocked_receipt['checker_v1']['blocked_count'], 1)
+                self.assertIn('$49', [c['claim'] for c in blocked_receipt['checker_v1']['blocked_claims']])
+                self.assertEqual(blocked_receipt['checker_v2']['blocked_count'], 0)
+                self.assertNotIn('$49', blocked_receipt['maker_draft_v2']['post'])
+                self.assertEqual(blocked_receipt['memory_blocked_rules'][0]['claim'], '$49')
+                self.assertEqual(blocked_receipt['memory_examples'], [])
+                # Editing the rule to another real approved claim changes the verdict identity.
+                edited = {'id': 'mem_l', 'kind': 'blocked_rule', 'title': 'Learned',
+                          'content': {'blocked_claims': [{'claim': 'Designed in Texas', 'reason': 'Edited rule'}]}}
+                edited_receipt = adapter.execute('run_edited', IDEA, profile, False, memory_items=[edited])
+                self.assertEqual([c['claim'] for c in edited_receipt['checker_v1']['blocked_claims']], ['Designed in Texas'])
+                self.assertNotIn('Designed in Texas', edited_receipt['maker_draft_v2']['post'])
+                self.assertIn('$49', edited_receipt['maker_draft_v2']['post'])
+                # The first draft still carries every real candidate; the
+                # verdict identity and the final revision change instead.
+                self.assertEqual(edited_receipt['maker_draft_v1']['post'], blocked_receipt['maker_draft_v1']['post'])
+                self.assertNotEqual(edited_receipt['maker_draft_v2']['post'], blocked_receipt['maker_draft_v2']['post'])
+                deleted = adapter.execute('run_deleted', IDEA, profile, False, memory_items=[])
+                self.assertEqual(deleted['checker_v1']['blocked_count'], 0)
+                self.assertIn('$49', deleted['maker_draft_v2']['post'])
                 # Past receipts are snapshots: the blocked receipt still records its rule.
-                self.assertEqual(blocked_receipt['memory_blocked_rules'][0]['claim'], 'best in Texas')
+                self.assertEqual(blocked_receipt['memory_blocked_rules'][0]['claim'], '$49')
+
+    def test_absent_blocked_claim_is_never_manufactured(self):
+        # A memory rule for a claim in no candidate stays recorded but active
+        # with zero blocks: it never enters the first draft or the counts.
+        profile = agents.load_agent('Maker', ROOT / 'agents')
+        env = {'META_API_KEY': '', 'META_WONDER_MODEL': ''}
+        with patch.dict(os.environ, env):
+            with patch('launchcrew.run.spark_for_agent', side_effect=AssertionError('no transport keyless')), \
+                 patch('launchcrew.run.wonder_synthesize_for_scout', side_effect=AssertionError('no transport keyless')):
+                learned = {'id': 'mem_absent', 'kind': 'blocked_rule', 'title': 'Learned',
+                           'content': {'blocked_claims': [{'claim': 'best in Texas', 'reason': 'Not in this catalog'}]}}
+                receipt = adapter.execute('run_absent', IDEA, profile, False, memory_items=[learned])
+                self.assertEqual(receipt['memory_blocked_rules'][0]['claim'], 'best in Texas')
+                self.assertEqual(receipt['checker_v1']['blocked_count'], 0)
+                self.assertEqual(receipt['checker_v2']['blocked_count'], 0)
+                self.assertNotIn('best in Texas', receipt['maker_draft_v1']['post'])
+                self.assertNotIn('best in Texas', receipt['maker_draft_v2']['post'])
+
+    def test_unsupported_brand_fact_cannot_become_approved_fact(self):
+        # An unsupported memory claim is refused by the deterministic floor,
+        # never extended into the approved facts.
+        import tempfile
+        from launchcrew.run import run_pipeline
+        with tempfile.TemporaryDirectory() as directory:
+            out = str(Path(directory) / 'bad.json')
+            with self.assertRaisesRegex(ValueError, 'Approved facts failed deterministic checks'):
+                run_pipeline(IDEA, ROOT / 'facts/demo_facts.json', ROOT / 'agents', out,
+                             memory_claims=['best in Texas'], model_enabled=False)
 
     def test_approval_example_changes_provider_request_not_keyless_draft(self):
         profile = agents.load_agent('Maker', ROOT / 'agents')

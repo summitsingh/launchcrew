@@ -56,14 +56,16 @@ def test_memory_brand_fact_edit_changes_next_run(client):
 
 
 def test_memory_blocked_rule_delete_removes_block(client):
-    item = memory(client, 'blocked_rule', 'No superlative', {'claim': 'best in Texas'})
+    item = memory(client, 'blocked_rule', 'No price', {'claim': '$49'})
     blocked = run_with(client, memory_ids=[item['id']])
     assert blocked['checker_v1']['blocked_count'] == 1
-    assert blocked['checker_v1']['blocked_claims'][0]['claim'] == 'best in Texas'
+    assert blocked['checker_v1']['blocked_claims'][0]['claim'] == '$49'
     assert blocked['checker_v2']['blocked_count'] == 0
+    assert '$49' not in blocked['maker_draft_v2']['post']
     assert client.delete('/api/memory/' + item['id']).status_code == 204
     clean = run_with(client)
     assert clean['checker_v1']['blocked_count'] == 0
+    assert '$49' in clean['maker_draft_v2']['post']
     assert client.post('/api/runs', json={'idea': IDEA, 'agent_name': 'Maker', 'memory_ids': [item['id']]}).status_code == 404
 
 

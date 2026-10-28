@@ -176,13 +176,16 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
             if isinstance(risks, list):
                 scout['risks'].extend('Unverified model risk: ' + r for r in risks if isinstance(r, str))
         event('scout', 'Scout', 'Produced sourced facts and demo risks; filtered optional model facts', profiles['Scout']['name'])
+        # Memory blocked rules never enter the Maker draft on their own: they
+        # filter the actual candidate claims and draft text in check_pack.
+        # Only the explicit demo seed below may add an unsupported claim, so a
+        # blocked rule for an absent claim records zero blocks and changes
+        # no draft text.
         v1_claims = list(claims)
         if seed_unverified_claim:
-            # Demo test seed only, not normal Maker behavior.
+            # Demo test seed only, never normal Maker behavior: a single
+            # unsupported claim so reviewers can inspect the block and revision.
             v1_claims.append('best in Texas')
-        for claim in (blocked_claims or []):
-            if isinstance(claim, str) and claim.strip() and normalize(claim) not in [normalize(c) for c in v1_claims]:
-                v1_claims.append(claim)
         step = 'maker_draft_v1'
         maker = model_candidate('Maker', task)
         if maker:
