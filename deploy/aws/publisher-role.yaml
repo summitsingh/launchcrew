@@ -1,0 +1,95 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  LaunchCrew manual ECR publisher role, review only, NOT applied.
+  No provider, role, secret, dispatch, push, or deployment is created by
+  this file. The role trusts one exact immutable GitHub OIDC subject on
+  the main ref plus the exact audience, and grants only ECR upload,
+  readback, describe, and list tags on the five exact app repositories,
+  plus metadata reads needed by scripts/publish-ecr.sh. No stack write,
+  no IAM mutation, no PassRole, no ECS, no SecretsManager, no S3, no
+  deployment access, no broad managed policy, no chaining, no runtime
+  secret. Region, account, provider, and image URIs stay parameters or
+  pseudo references, never committed values.
+Parameters:
+  GitHubOidcProviderArn:
+    Type: String
+    Description: >-
+      ARN of the existing account-global GitHub OIDC provider in this
+      account (token.actions.githubusercontent.com, client ID
+      sts.amazonaws.com). This template references it and never creates,
+      updates, or deletes shared provider state. Separate one-time
+      creation applies only if absent, under its own approval.
+  RoleName:
+    Type: String
+    Default: launchcrew-ecr-publisher
+    AllowedPattern: '[A-Za-z0-9+=,.@_-]+'
+    Description: Name of the publisher role. Supplied privately at apply review.
+Resources:
+  PublisherRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref RoleName
+      Description: Manual ECR publisher for the launchcrew-demo demo only. Assumed only by the exact immutable main subject through GitHub OIDC.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOidcProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:sub: repo:summitsingh@400621/launchcrew@1436365964:ref:refs/heads/main
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+      Policies:
+        - PolicyName: ecr-publish-readback
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: EcrUploadReadbackFiveRepos
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:BatchGetImage
+                  - ecr:CompleteLayerUpload
+                  - ecr:DescribeImages
+                  - ecr:DescribeRepositories
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:InitiateLayerUpload
+                  - ecr:ListTagsForResource
+                  - ecr:PutImage
+                  - ecr:UploadLayerPart
+                Resource:
+                  - !Sub 'arn:aws:ecr:us-east-1:${AWS::AccountId}:repository/launchcrew-api'
+                  - !Sub 'arn:aws:ecr:us-east-1:${AWS::AccountId}:repository/launchcrew-web'
+                  - !Sub 'arn:aws:ecr:us-east-1:${AWS::AccountId}:repository/launchcrew-web-proxy'
+                  - !Sub 'arn:aws:ecr:us-east-1:${AWS::AccountId}:repository/launchcrew-migration'
+                  - !Sub 'arn:aws:ecr:us-east-1:${AWS::AccountId}:repository/launchcrew-bootstrap'
+              - Sid: EcrGetAuthorizationToken
+                Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                Resource: '*'
+              - Sid: CostAllocationTagMetadataOnly
+                Effect: Allow
+                Action:
+                  - ce:ListCostAllocationTags
+                Resource: '*'
+              - Sid: OwnedStackReadsOnly
+                Effect: Allow
+                Action:
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackResources
+                Resource:
+                  - !Sub 'arn:aws:cloudformation:us-east-1:${AWS::AccountId}:stack/launchcrew-demo/*'
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
+Outputs:
+  PublisherRoleArn:
+    Description: >-
+      PRIVATE operator metadata. The role ARN is recorded privately at
+      apply review and stored only as a repository secret, never in
+      public source, dispatch inputs, manifests, logs, or artifacts.
+    Value: !GetAtt PublisherRole.Arn

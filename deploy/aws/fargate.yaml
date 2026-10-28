@@ -235,6 +235,7 @@ Resources:
     Properties:
       RepositoryName: launchcrew-api
       EmptyOnDelete: true
+      ImageTagMutability: IMMUTABLE
       ImageScanningConfiguration: { ScanOnPush: true }
       Tags:
         - { Key: Project, Value: LaunchCrew }
@@ -246,6 +247,7 @@ Resources:
     Properties:
       RepositoryName: launchcrew-web
       EmptyOnDelete: true
+      ImageTagMutability: IMMUTABLE
       ImageScanningConfiguration: { ScanOnPush: true }
       Tags:
         - { Key: Project, Value: LaunchCrew }
@@ -257,6 +259,7 @@ Resources:
     Properties:
       RepositoryName: launchcrew-web-proxy
       EmptyOnDelete: true
+      ImageTagMutability: IMMUTABLE
       ImageScanningConfiguration: { ScanOnPush: true }
       Tags:
         - { Key: Project, Value: LaunchCrew }
@@ -268,6 +271,7 @@ Resources:
     Properties:
       RepositoryName: launchcrew-migration
       EmptyOnDelete: true
+      ImageTagMutability: IMMUTABLE
       ImageScanningConfiguration: { ScanOnPush: true }
       Tags:
         - { Key: Project, Value: LaunchCrew }
@@ -279,6 +283,7 @@ Resources:
     Properties:
       RepositoryName: launchcrew-bootstrap
       EmptyOnDelete: true
+      ImageTagMutability: IMMUTABLE
       ImageScanningConfiguration: { ScanOnPush: true }
       Tags:
         - { Key: Project, Value: LaunchCrew }

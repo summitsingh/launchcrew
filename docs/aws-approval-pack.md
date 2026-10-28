@@ -299,3 +299,36 @@ multi-valued, broadened, Or-wrapped, legacy, malformed, and failed
 readbacks refuse with no EnableServices deploy). No AWS API is used by
 those checks. The shared PROJECT key activation stays a gated Billing
 approval with no resources changed by it.
+
+## Manual ECR publisher role and cleanup scope added in this source pass, not run here
+
+Source preparation only: `.github/workflows/publish-ecr.yml`
+(dispatch only, exact repo and main guard, one concurrent run without
+cancel of an active run, bounded timeout, contents read plus id-token
+write only, pinned official actions, private secrets for the expected
+account and the publisher role ARN), `scripts/publish-ecr.sh` (dry run
+default with zero calls, exact source SHA and clean tracked tree,
+assumed role identity with ROOT refused, owned stack tags, CE Project
+Active UserDefined, five stack bindings, IMMUTABLE everywhere,
+conflicting tag refused before any push with safe digest replay only,
+full SHA tags, five app pushes never db, stdin login with private auth
+file cleanup, sanitized errors, manifest only on five matching
+readbacks), `deploy/aws/publisher-role.yaml` (exact immutable main
+subject plus audience, existing provider ARN parameter with no shared
+provider change, five exact repo ARNs, GetAuthorizationToken on
+Resource star only, CE metadata read only, minimum reads on the owned
+stack ARN only, no stack write or IAM mutation or pass through or
+deployment access, 3600 second max session, Project and Environment
+demo tags), `ImageTagMutability: IMMUTABLE` on the five existing ECR
+resources in `deploy/aws/fargate.yaml`, and `docs/ecr-publication.md`
+for setup, publish, verify, and teardown. Read-only preflight fact:
+CloudShell already proves the operator identity is ROOT, so the helper
+refuses that identity before any push; no account ID appears here.
+Cleanup scope: publication creates no stack. The five repositories
+empty and delete with the demo stack delete. The publisher role and
+the two private secrets live outside the stack and are deleted by
+their own step after the demo window. No role, provider, secret,
+dispatch, push, deploy, DNS, spend, or recording action is approved or
+claimed by this pack. Host checks after the authoring terminal:
+focused offline tests in `tests/test_publish_ecr.py`, static parses of
+the role and workflow, and the full suite only if time allows.

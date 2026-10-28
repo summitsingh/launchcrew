@@ -1,0 +1,102 @@
+name: Publish ECR images (manual)
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: 'Full 40-char source SHA on origin/main to publish (no latest, no branch name)'
+        required: true
+        type: string
+      confirm_publish:
+        description: 'Explicit confirmation: must be true or the job stops before any cloud call'
+        required: true
+        default: false
+        type: boolean
+permissions:
+  contents: read
+jobs:
+  publish:
+    name: Publish five app images to ECR
+    if: github.repository == 'summitsingh/launchcrew' && github.ref == 'refs/heads/main' && inputs.confirm_publish == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: publish-ecr
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      EXPECTED_REPO: summitsingh/launchcrew
+      EXPECTED_REF: refs/heads/main
+      EXPECTED_REGION: us-east-1
+      STACK_NAME: launchcrew-demo
+    steps:
+      - name: Check out exact main source
+        uses: actions/checkout@11d5960a326750d58380738e36bfabf77265a # v4
+      - name: Install Podman tooling
+        run: sudo apt-get update && sudo apt-get install -y podman slirp4netns
+      - name: Validate source SHA and private secrets before any cloud call
+        env:
+          EXPECTED_AWS_ACCOUNT_ID: ${{ secrets.ECR_PUBLISH_EXPECTED_ACCOUNT_ID }}
+          PUBLISHER_ROLE_ARN: ${{ secrets.ECR_PUBLISHER_ROLE_ARN }}
+          GITHUB_SHA_VALUE: ${{ github.sha }}
+        run: |
+          set -eu
+          case "${SOURCE_SHA:-}" in
+            *[!0-9a-f]*|'') echo 'publish-ecr: refused: source SHA must be 40 lowercase hex chars' >&2; exit 1 ;;
+          esac
+          if [ "${#SOURCE_SHA}" -ne 40 ]; then
+            echo 'publish-ecr: refused: source SHA must be 40 lowercase hex chars' >&2
+            exit 1
+          fi
+          if [ "${SOURCE_SHA}" != "${GITHUB_SHA_VALUE}" ]; then
+            echo 'publish-ecr: refused: source SHA does not equal checked out origin/main' >&2
+            exit 1
+          fi
+          case "${EXPECTED_AWS_ACCOUNT_ID:-}" in
+            ''|*[!0-9]*)
+              echo 'publish-ecr: refused: expected account secret absent or malformed' >&2
+              exit 1 ;;
+          esac
+          if [ "${#EXPECTED_AWS_ACCOUNT_ID}" -ne 12 ]; then
+            echo 'publish-ecr: refused: expected account secret absent or malformed' >&2
+            exit 1
+          fi
+          case "${PUBLISHER_ROLE_ARN:-}" in
+            arn:aws:iam::????????????:role/?*) ;;
+            *)
+              echo 'publish-ecr: refused: publisher role secret absent or malformed' >&2
+              exit 1 ;;
+          esac
+          echo "source SHA format and checkout equality hold; secrets present with valid shapes."
+      - name: Assume publisher role with short lived OIDC
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ secrets.ECR_PUBLISHER_ROLE_ARN }}
+          aws-region: us-east-1
+          mask-aws-account-id: true
+          allowed-account-ids: ${{ secrets.ECR_PUBLISH_EXPECTED_ACCOUNT_ID }}
+          role-duration-seconds: 900
+          output-credentials: false
+          unset-current-credentials: true
+          translate-env-variables: false
+          retry-max-attempts: 3
+      - name: Build, push, and verify five app images
+        env:
+          EXPECTED_AWS_ACCOUNT_ID: ${{ secrets.ECR_PUBLISH_EXPECTED_ACCOUNT_ID }}
+          PUBLISHER_ROLE_ARN: ${{ secrets.ECR_PUBLISHER_ROLE_ARN }}
+        run: |
+          set -eu
+          scripts/publish-ecr.sh --confirm \
+            --expected-account "${EXPECTED_AWS_ACCOUNT_ID}" \
+            --expected-region "${EXPECTED_REGION}" \
+            --publisher-role-arn "${PUBLISHER_ROLE_ARN}" \
+            --stack-name "${STACK_NAME}"
+      - name: Upload publication manifest
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ecr-publication-manifest
+          path: .local/ecr-publication-manifest.json
+          if-no-files-found: error
