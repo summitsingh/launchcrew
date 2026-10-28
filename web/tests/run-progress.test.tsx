@@ -80,4 +80,23 @@ describe('incremental run progress', () => {
     await applyAcknowledgedReceipt(client, 'run_demo', receiptAt(3));
     expect((client.getQueryData(['run', 'run_demo']) as Receipt).revision).toBe(3);
   });
+
+  it('a deferred GET resolving after the ack cannot regress the cached receipt', async () => {
+    const client = new QueryClient();
+    client.setQueryData(['run', 'run_demo'], receiptAt(2));
+    // The poll started before the mutation and resolves late with the
+    // older acknowledged revision.
+    let resolveLate!: (value: Receipt) => void;
+    const lateGet = new Promise<Receipt>(resolve => {
+      resolveLate = resolve;
+    });
+    await applyAcknowledgedReceipt(client, 'run_demo', receiptAt(3));
+    resolveLate(receiptAt(2));
+    const late = await lateGet;
+    const cached = client.getQueryData(['run', 'run_demo']) as Receipt;
+    if (shouldApplyReceipt(cached.revision, late.revision)) {
+      client.setQueryData(['run', 'run_demo'], late);
+    }
+    expect((client.getQueryData(['run', 'run_demo']) as Receipt).revision).toBe(3);
+  });
 });

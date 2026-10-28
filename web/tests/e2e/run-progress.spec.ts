@@ -30,26 +30,47 @@ test('async run shows live stage receipts before the final review', async ({ pag
   const runId = await page.locator('.section-row .run-id').innerText();
   await page.screenshot({ path: `${local}/02-review.png`, fullPage: true });
 
-  // The stored steps agree with the final receipt: order, profiles, evidence.
+  // The stored steps agree with the final receipt: completed order,
+  // started history, distinct server timestamps, profiles, and evidence.
+  // The module contract stores started and completed rows, so the
+  // assertion filters completed rows for the finished order instead of
+  // pretending the history is a finished-only list.
   const steps = await request.get(`/api/runs/${runId}/steps`);
   expect(steps.status()).toBe(200);
   const body = await steps.json();
   expect(body.run_id).toBe(runId);
-  expect(body.steps.map((row: { stage: string; state: string }) => `${row.stage}:${row.state}`)).toEqual([
-    'accepted:completed',
-    'deterministic_checks:completed',
-    'scout:completed',
-    'maker_draft_v1:completed',
-    'checker_v1:completed',
-    'maker_draft_v2:completed',
-    'checker_v2:completed',
-    'receipt:completed',
+  type Row = { stage: string; state: string; observed_at: string; profile: string; evidence: Record<string, unknown> };
+  const rows = body.steps as Row[];
+  expect(rows.filter(row => row.state === 'completed').map(row => row.stage)).toEqual([
+    'accepted',
+    'deterministic_checks',
+    'scout',
+    'maker_draft_v1',
+    'checker_v1',
+    'maker_draft_v2',
+    'checker_v2',
+    'receipt',
   ]);
-  const observed = body.steps.map((row: { observed_at: string }) => row.observed_at);
+  for (const stage of ['deterministic_checks', 'scout', 'maker_draft_v1', 'checker_v1', 'maker_draft_v2', 'checker_v2', 'receipt']) {
+    expect(rows.some(row => row.stage === stage && row.state === 'started')).toBe(true);
+  }
+  for (const row of rows) {
+    expect(row.observed_at).toBeTruthy();
+    expect(row.profile).toBeTruthy();
+  }
+  const observed = rows.map(row => row.observed_at);
   expect(new Set(observed).size).toBe(observed.length);
-  const receipt = await request.get(`/api/runs/${runId}/receipt`);
-  expect((await receipt.json()).status).toBe('completed');
-  expect(body.steps.at(-1).evidence.stored).toBe(true);
+  const stored = await request.get(`/api/runs/${runId}/receipt`);
+  const receipt = await stored.json();
+  expect(receipt.status).toBe('completed');
+  const logged = new Map(receipt.audit.event_log.map((entry: { step: string }) => [entry.step, entry]));
+  for (const row of rows) {
+    if (row.state !== 'completed' || row.stage === 'accepted' || row.stage === 'receipt') continue;
+    const entry = logged.get(row.stage) as { timestamp: string; profile: string };
+    expect(entry.timestamp).toBe(row.observed_at);
+    expect(entry.profile).toBe(row.profile);
+  }
+  expect(rows.at(-1)?.evidence.stored).toBe(true);
 
   // Approval still needs a fresh human decision on the completed pack.
   await page.getByRole('button', { name: 'Go to approval queue', exact: true }).click();

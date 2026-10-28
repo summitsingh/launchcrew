@@ -35,22 +35,44 @@ Polling over short transactions, no SSE, no worker process.
 `checker_v2`, `receipt`, plus terminal `failed`. Each row carries the
 server-observed timestamp, the bound run id, the stage profile name, and
 sanitized evidence only (counts, blocked counts, fact/risk/draft sizes).
-Never raw provider payloads, prompts, or keys. The final stored receipt
-`event_log` must agree with the step rows in order, timestamps, and
-profile evidence; the completion transaction writes the finished step
-row and the final receipt together, so success is never claimed before
-the DB commit.
+Never raw provider payloads, prompts, or keys. Each completed pipeline
+stage shares one clock reading and profile between its stored step row
+and the receipt `event_log` entry for the same observed completion;
+started notes keep their own earlier readings, and the prepared receipt
+audit entry stays distinct from the stored terminal row (prepared vs
+committed). The terminal transaction writes the finished step row and
+the final receipt together, so success is never claimed before the DB
+commit. A failed outcome persists the pipeline's original failed receipt
+with its actual stopped stage, exactly one failed step row, and a
+`run_failed` audit; no `receipt` completed row and no `run_completed`
+audit are written for failures.
 
 ## Guards
 
 - Approve/revise/export/photo-check on a running receipt return 409
-  with an explicit "still running" reason.
-- One worker per run id (registry dict); duplicate POSTs create separate
-  run ids, never a second worker for the same id.
+  with an explicit "still running" reason; failed receipts refuse with
+  409/422 and offer no approval or export.
+- At most one live worker per run id: claim and thread start happen
+  under one lock, so concurrent starters serialize and only the first
+  starts. Public creation mints a fresh id per POST and never restarts;
+  GET polling never starts or restarts work. A sequential private start
+  after a finished worker is explicit, never automatic recovery.
+- The run row and its `accepted` step row commit in one transaction: a
+  journal failure rolls the whole accept back before any worker starts.
+  A step row that cannot be persisted mid-run raises a bounded journal
+  error that stops the pipeline with an honest failed receipt; later
+  inference never runs blind after required journal loss, and the
+  failed receipt keeps the known completed stage audit. No provider
+  work is retried and no new queue is introduced.
 - Polls, reconnects, and navigation never call the provider and never
-  restart work. Ambiguous transport failure leaves the run `running`
-  with an `unconfirmed` note; the UI says the result is unknown and
-  offers reload, never silent retry.
+  restart work. Ambiguous terminal persistence (the finalize transaction
+  cannot be confirmed) leaves the stored receipt as it is: a still
+  running receipt with no live worker is reported as unconfirmed, with
+  a best-effort bounded-type audit marker and no params or receipt
+  contents. A possibly committed success is never overwritten with a
+  synthetic failure; the UI says the result is unknown and offers
+  reload, never silent retry. No raw thread tracebacks escape: errors
+  are reduced to bounded type names.
 - Host restart loses in-flight workers by design (no supervisor). A
   `running` receipt older than its steps is evidence of
   accepted-but-unfinished work, never success; docs state this plainly.
@@ -58,24 +80,34 @@ the DB commit.
 ## Frontend
 
 - Desk `Create draft` uses `POST /api/runs/async`, opens a pending Run
-  view immediately, polls steps + receipt, renders each completed stage
-  from stored evidence as it lands, marks pending/failed/unconfirmed,
-  and only shows approve/export on a completed receipt after the final
-  poll agrees with the steps.
-- Related Desk lifecycle fixes in the same edit: selected-photo
-  caption/alt always reads Unchecked until a check passes; honest
-  selected/checked/current/stale/unconfirmed states; crop copy drops
-  server pad/clamp wording; acknowledged mutation receipts cancel
-  in-flight GET polls and order by revision so a stale GET never
-  overwrites a newer mutation receipt.
+  view immediately, polls steps + receipt, renders each stage from
+  stored evidence as it lands (started, completed, pending, failed),
+  marks unconfirmed when the worker is gone but the receipt is still
+  running, and only shows approve/export on a completed receipt after
+  the final poll agrees with the steps.
+- Related Desk lifecycle fixes in the same edit: the selected-photo
+  caption/alt derives from the actual current verdict (no verdict,
+  current detected check, superseded, in flight, or other stored state),
+  so the same unchanged local bytes are not called forever unchecked
+  once the current revision has a detected check; new local pixels are
+  still never implied checked. Crop copy drops server pad/clamp
+  wording; acknowledged mutation receipts cancel in-flight GET polls
+  and order by revision so a stale GET never overwrites a newer
+  mutation receipt.
 
 ## Proofs
 
 - `backend/tests/test_run_progress.py`: barrier test (scout completion
-  observed before maker release), final receipt matches step order and
-  timestamps and persists before completion is claimed, failure keeps
-  completed steps and blocks approval/export, re-poll causes no
-  duplicate provider work.
+  observed before maker release), final receipt matches completed
+  order with started history, shared timestamps and profiles per
+  completed stage, and persists before completion is claimed; failure
+  keeps the original failed receipt, exactly one failed row at the
+  actual stopped stage, and blocks approval/export; accept journal
+  failure rolls back with no worker; mid-run journal loss fails
+  honestly with no further model work; terminal persist failure leaves
+  stored state unconfirmed without synthetic overwrite; concurrent
+  starters claim at most one live worker; re-poll causes no duplicate
+  provider work.
 - Real keyless browser flow through the new pending/step view with the
   real API and Postgres (no route interception); offline barrier tests
   are labelled as timing proofs, not live Meta proof.

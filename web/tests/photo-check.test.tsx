@@ -10,6 +10,7 @@ import {
   photoStatusCopy,
   readStoredPhoto,
   revokePreviewUrl,
+  selectionPhotoCopy,
   validateSelection,
   type PhotoPanelProps,
   type StoredPhoto,
@@ -106,6 +107,26 @@ describe('photo check review copy', () => {
     expect(html).toContain('not approved and not exportable until an explicit check passes');
     expect(html).toContain('Selected photo preview (local only, not yet checked)');
     expect(html).toContain('No photo attached');
+  });
+
+  it('selected pixels derive copy from the actual current verdict', () => {
+    const none = selectionPhotoCopy(null, 0);
+    expect(none.caption).toContain('Unchecked');
+    expect(none.alt).toBe('Selected photo preview (local only, not yet checked)');
+    const current = selectionPhotoCopy(detected, 1);
+    expect(current.caption).toContain('New selection, not yet checked');
+    expect(current.caption).toContain('already has a detected check');
+    expect(current.caption).toContain('not approved and not exportable until an explicit check passes');
+    expect(current.alt).toContain('current revision has a detected check');
+    const stale = selectionPhotoCopy(detected, 2);
+    expect(stale.caption).toContain('superseded on revision 2');
+    expect(stale.alt).toContain('superseded');
+    const inflight = selectionPhotoCopy({ ...detected, state: 'check_requested', label: null, revision: 1 }, 1);
+    expect(inflight.caption).toContain('check is already in flight');
+    // The panel renders the detected-revision copy, never the forever-unchecked line.
+    const html = panel({ stored: detected, revision: 1, selectionName: 'wallet.png', previewUrl: 'blob:local', hasPayload: true });
+    expect(html).toContain('already has a detected check');
+    expect(html).not.toContain('not yet checked)');
   });
 
   it('disables duplicate checks while a check is pending', () => {

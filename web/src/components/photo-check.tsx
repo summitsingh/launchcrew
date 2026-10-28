@@ -96,6 +96,43 @@ export function photoStatusCopy(stored: StoredPhoto | null, currentRevision: num
   return `Photo state ${stored.state}: ${stored.reason || 'unavailable'}.${revNote} Approval and export stay refused.`;
 }
 
+/** Caption and alt text for newly selected local pixels, derived from the
+ * actual current server verdict. Local pixels are never implied checked:
+ * the copy distinguishes a pack with no verdict from one whose current
+ * revision already has a detected check, a stale check, or an unconfirmed
+ * state. Plain product copy, no implementation noise. */
+export function selectionPhotoCopy(stored: StoredPhoto | null, currentRevision: number): { caption: string; alt: string } {
+  const base = 'These local pixels were not sent, and they are not approved and not exportable until an explicit check passes.';
+  if (!stored || stored.state === 'no_photo') {
+    return {
+      caption: `Unchecked: ${base}`,
+      alt: 'Selected photo preview (local only, not yet checked)',
+    };
+  }
+  if (stored.state === 'checked' && stored.label === 'detected' && stored.revision === currentRevision) {
+    return {
+      caption: `New selection, not yet checked: ${base} The current revision already has a detected check, and fresh human approval is still required before export.`,
+      alt: 'Selected photo preview (new local pixels, not yet checked; current revision has a detected check)',
+    };
+  }
+  if (stored.revision !== currentRevision) {
+    return {
+      caption: `New selection, not yet checked: ${base} The stored summary is from revision ${stored.revision} and is superseded on revision ${currentRevision}.`,
+      alt: 'Selected photo preview (new local pixels, not yet checked; stored summary is superseded)',
+    };
+  }
+  if (stored.state === 'check_requested') {
+    return {
+      caption: `New selection, not yet checked: ${base} A check is already in flight on this revision.`,
+      alt: 'Selected photo preview (new local pixels, not yet checked; a check is in flight)',
+    };
+  }
+  return {
+    caption: `New selection, not yet checked: ${base} The stored photo state on this revision is ${stored.state}.`,
+    alt: 'Selected photo preview (new local pixels, not yet checked)',
+  };
+}
+
 /** Null when the pack may proceed; otherwise the honest photo reason. */
 export function photoBlocksApproval(stored: StoredPhoto | null, currentRevision: number): string | null {
   if (!stored || stored.state === 'no_photo') return null;
@@ -278,17 +315,19 @@ export function PhotoCheckPanel(props: PhotoPanelProps) {
               }}
             />
           </div>
-          {props.selectionName && (
-            <div>
-              <p role="status">
-                Selected {props.selectionName}{props.selectionMeta ? ` (${props.selectionMeta})` : ''}. Unchecked:
-                these local pixels were not sent, and they are not approved and not exportable until an explicit check passes.
-              </p>
-              {props.previewUrl && (
-                <img className="photo-preview-img" src={props.previewUrl} alt="Selected photo preview (local only, not yet checked)" />
-              )}
-            </div>
-          )}
+          {props.selectionName && (() => {
+            const selection = selectionPhotoCopy(props.stored, props.revision);
+            return (
+              <div>
+                <p role="status">
+                  Selected {props.selectionName}{props.selectionMeta ? ` (${props.selectionMeta})` : ''}. {selection.caption}
+                </p>
+                {props.previewUrl && (
+                  <img className="photo-preview-img" src={props.previewUrl} alt={selection.alt} />
+                )}
+              </div>
+            );
+          })()}
           {props.naturalW !== null && props.naturalH !== null && (
             <p className="hint">Loaded image: {props.naturalW} by {props.naturalH} pixels (browser-decoded, EXIF-oriented).</p>
           )}

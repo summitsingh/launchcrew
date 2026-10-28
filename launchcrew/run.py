@@ -167,12 +167,17 @@ def _stage_snapshot(profile):
 
 
 def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverified_claim=False, receipt_writer=save_receipt, model_enabled=True, visual_verifier=None, memory_claims=None, blocked_claims=None, checker_profile='standard', brief=None, campaign_day=None, scout_profile=None, maker_profile=None, checker_agent=None, progress=None, stage_gate=None):
-    """Optional progress(stage, state, profile_name, evidence) is called at
-    real stage boundaries only: each call corresponds to pipeline work that
-    already happened (completed) or is about to happen (started). Optional
-    stage_gate(stage) is called before each stage's work; it exists for
-    controlled timing tests and defaults to unused. Both stay plain
-    stdlib callables so the core gains no transport dependency."""
+    """Optional progress(event) is called at real stage boundaries only: each
+    call corresponds to pipeline work that already happened (completed) or
+    is about to happen (started). The event dict carries stage, state,
+    profile, evidence, and timestamp. Each completed stage emits one event
+    and one receipt audit entry for the same observed moment, so the two
+    share their timestamp and profile; started notes keep their own earlier
+    readings. The prepared receipt event and the completed note are
+    different observations (prepared vs stored) with distinct readings.
+    Optional stage_gate(stage) is called before each stage's work; it
+    exists for controlled timing tests and defaults to unused. Both stay
+    plain stdlib callables so the core gains no transport dependency."""
     model_enabled = model_enabled and bool(os.environ.get('META_API_KEY', '').strip())
     events = []
     attempts = []
@@ -203,15 +208,27 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
         facts['memory_claims'] = list(memory_claims or [])
         blocked_names = _blocked_names(blocked_claims)
 
-        def event(step, agent, action, profile_name=None):
+        def event(step, agent, action, profile_name=None, at=None):
             events.append({'step': step, 'agent': agent, 'profile': profile_name or agent,
-                           'action': action, 'timestamp': timestamp()})
+                           'action': action, 'timestamp': at or timestamp()})
 
-        def note(stage, state, profile_name=None, evidence=None):
+        def note(stage, state, profile_name=None, evidence=None, at=None):
             if progress is None:
                 return
             progress({'stage': stage, 'state': state, 'profile': profile_name or stage,
-                      'evidence': dict(evidence or {}), 'timestamp': timestamp()})
+                      'evidence': dict(evidence or {}),
+                      'timestamp': at if isinstance(at, str) and at else timestamp()})
+
+        def reached(stage, agent, action, profile_name=None, evidence=None):
+            # One observed completion, one shared clock reading: the stored
+            # step row and the receipt event describe the same moment, so
+            # they carry the same timestamp and profile. Started notes keep
+            # their own earlier readings. The prepared receipt event and the
+            # stored terminal row are different observations (prepared vs
+            # committed) and stay distinct.
+            at = timestamp()
+            event(stage, agent, action, profile_name, at=at)
+            note(stage, 'completed', profile_name, evidence, at=at)
 
         def gate(stage):
             if stage_gate is not None:
@@ -224,8 +241,8 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
         initial = check_claims(claims, facts)
         if initial['blocked_count']:
             raise ValueError('Approved facts failed deterministic checks')
-        event('deterministic_checks', 'Scout', 'Checked facts file before optional synthesis', profiles['Scout']['name'])
-        note('deterministic_checks', 'completed', profiles['Scout']['name'], {'facts': len(claims)})
+        reached('deterministic_checks', 'Scout', 'Checked facts file before optional synthesis', profiles['Scout']['name'],
+                {'facts': len(claims)})
         task = json.dumps({'idea': idea, 'approved_claims': claims, 'sources': facts['sources']})
         step = 'scout'
         gate('scout')
@@ -264,9 +281,8 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
             risks = raw.get('risks', [])
             if isinstance(risks, list):
                 scout['risks'].extend('Unverified model risk: ' + r for r in risks if isinstance(r, str))
-        event('scout', 'Scout', 'Produced sourced facts and demo risks; filtered optional model facts', profiles['Scout']['name'])
-        note('scout', 'completed', profiles['Scout']['name'],
-             {'facts_used': len(scout['facts_used']), 'risks': len(scout['risks']), 'model_mode': model['mode']})
+        reached('scout', 'Scout', 'Produced sourced facts and demo risks; filtered optional model facts', profiles['Scout']['name'],
+                {'facts_used': len(scout['facts_used']), 'risks': len(scout['risks']), 'model_mode': model['mode']})
         # Memory blocked rules never enter the Maker draft on their own: they
         # filter the actual candidate claims and draft text in check_pack.
         # Only the explicit demo seed below may add an unsupported claim, so a
@@ -288,9 +304,8 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
             if proposed and not check_pack(proposed, facts, blocked_claims, checker_profile, effective)['blocked_count']:
                 v1_claims = safe + (['best in Texas'] if seed_unverified_claim else [])
         v1 = make_draft(v1_claims)
-        event('maker_draft_v1', 'Maker', 'Prepared local post and email drafts', profiles['Maker']['name'])
-        note('maker_draft_v1', 'completed', profiles['Maker']['name'],
-             {'claims': len(v1_claims), 'draft_chars': len(v1['post'])})
+        reached('maker_draft_v1', 'Maker', 'Prepared local post and email drafts', profiles['Maker']['name'],
+                {'claims': len(v1_claims), 'draft_chars': len(v1['post'])})
         step = 'checker_v1'
         gate('checker_v1')
         note('checker_v1', 'started', profiles['Checker']['name'])
@@ -299,9 +314,9 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
             # Candidate claims are checked but cannot change the actual draft verdict.
             check_pack(make_draft(suggestion['claims']), facts, blocked_claims, checker_profile, effective)
         c1 = check_pack(v1, facts, blocked_claims, checker_profile, effective)
-        event('checker_v1', 'Checker', 'Checked explicit claims and draft text; blocked_count=' + str(c1['blocked_count']), profiles['Checker']['name'])
-        note('checker_v1', 'completed', profiles['Checker']['name'],
-             {'blocked_count': c1.get('blocked_count'), 'verified_count': c1.get('verified_count')})
+        reached('checker_v1', 'Checker', 'Checked explicit claims and draft text; blocked_count=' + str(c1['blocked_count']),
+                profiles['Checker']['name'],
+                {'blocked_count': c1.get('blocked_count'), 'verified_count': c1.get('verified_count')})
         # Rebuild from verified allowlist sentences, removing every blocked sentence.
         # Blocked and policy-blocked claims are excluded here, so the final draft
         # stays clean while v1 still records the verdict difference.
@@ -312,16 +327,14 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
                      if normalize(c) not in blocked_names
                      and _policy_block_for_claim(c, effective) is None]
         v2 = make_draft(v2_claims)
-        event('maker_draft_v2', 'Maker', 'Revised using approved facts file claims', profiles['Maker']['name'])
-        note('maker_draft_v2', 'completed', profiles['Maker']['name'],
-             {'claims': len(v2_claims), 'draft_chars': len(v2['post'])})
+        reached('maker_draft_v2', 'Maker', 'Revised using approved facts file claims', profiles['Maker']['name'],
+                {'claims': len(v2_claims), 'draft_chars': len(v2['post'])})
         step = 'checker_v2'
         gate('checker_v2')
         note('checker_v2', 'started', profiles['Checker']['name'])
         c2 = check_pack(v2, facts, blocked_claims, checker_profile, effective)
-        event('checker_v2', 'Checker', 'Rechecked revised drafts; blocked_count=' + str(c2['blocked_count']), profiles['Checker']['name'])
-        note('checker_v2', 'completed', profiles['Checker']['name'],
-             {'blocked_count': c2.get('blocked_count'), 'verified_count': c2.get('verified_count')})
+        reached('checker_v2', 'Checker', 'Rechecked revised drafts; blocked_count=' + str(c2['blocked_count']), profiles['Checker']['name'],
+                {'blocked_count': c2.get('blocked_count'), 'verified_count': c2.get('verified_count')})
         if c2['blocked_count']:
             raise ValueError('Final draft has blocked claims')
         step = 'approval'

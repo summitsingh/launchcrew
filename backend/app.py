@@ -462,8 +462,11 @@ def create_run_async(body: RunInput, actor: str = Depends(auth.actor)):
         db.execute(text('INSERT INTO memory(run_id,facts) VALUES (:id,CAST(:facts AS jsonb))'),
                    {'id': run_id, 'facts': json.dumps([])})
         store.audit(db, run_id, 'run_created', actor)
-    # The run row is committed above, so the step row can reference it.
-    run_jobs.record_step(run_id, 'accepted', 'completed', 'LaunchCrew', {'idea_chars': len(body.idea)})
+        # The accepted step commits in this same transaction as the run
+        # row: a run is never accepted without its journal row, and a
+        # journal failure rolls the whole accept back before any worker
+        # starts, so no worker ever runs on an unjournaled accept.
+        run_jobs.record_step_in(db, run_id, 'accepted', 'completed', 'LaunchCrew', {'idea_chars': len(body.idea)})
     started = run_jobs.start_async_run(run_id, body.idea, legacy, body.seed_unverified_claim, items,
                                        body.checker_profile, scout, maker, checker, maker_name, actor)
     if not started:

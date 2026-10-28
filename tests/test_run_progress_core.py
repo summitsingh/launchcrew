@@ -50,6 +50,50 @@ class ProgressTests(unittest.TestCase):
         final = [event for event in seen if event['stage'] == 'checker_v2' and event['state'] == 'completed'][0]
         self.assertEqual(final['evidence']['blocked_count'], receipt['checker_v2']['blocked_count'])
 
+    def test_completed_events_share_timestamp_and_profile_with_receipt(self):
+        seen = []
+        receipt, _ = self.run_demo(progress=lambda event: seen.append(event))
+        logged = {entry['step']: entry for entry in receipt['audit']['event_log']}
+        for event in seen:
+            if event['state'] != 'completed' or event['stage'] == 'receipt':
+                continue
+            entry = logged[event['stage']]
+            self.assertEqual(event['timestamp'], entry['timestamp'])
+            self.assertEqual(event['profile'], entry['profile'])
+        # Started readings precede their own completion; the prepared
+        # receipt audit entry and the stored completion note are distinct
+        # observations with distinct readings.
+        by_stage = {}
+        for event in seen:
+            by_stage.setdefault((event['stage'], event['state']), event)
+        for stage in ORDER:
+            if stage == 'receipt':
+                continue
+            self.assertLessEqual(by_stage[(stage, 'started')]['timestamp'],
+                                 by_stage[(stage, 'completed')]['timestamp'])
+        # Both receipt observations exist; they are separate readings by
+        # construction (prepared event vs stored completion note), so no
+        # equality between them is claimed here.
+        self.assertTrue(logged['receipt']['timestamp'])
+        self.assertTrue(by_stage[('receipt', 'completed')]['timestamp'])
+
+    def test_gate_failure_keeps_shared_completed_clock_evidence(self):
+        seen = []
+
+        def gate(stage):
+            if stage == 'checker_v1':
+                raise RuntimeError('Simulated checker outage')
+
+        with self.assertRaises(RuntimeError):
+            self.run_demo(progress=lambda event: seen.append(event), stage_gate=gate)
+        completed = [event for event in seen if event['state'] == 'completed']
+        self.assertEqual([event['stage'] for event in completed],
+                         ['deterministic_checks', 'scout', 'maker_draft_v1'])
+        for event in completed:
+            started = [item for item in seen
+                       if item['stage'] == event['stage'] and item['state'] == 'started'][0]
+            self.assertLessEqual(started['timestamp'], event['timestamp'])
+
     def test_barrier_holds_later_stage_after_earlier_completion(self):
         seen = []
         lock = threading.Lock()
