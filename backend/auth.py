@@ -10,7 +10,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 from authlib.integrations.starlette_client import OAuth
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 from sqlalchemy import text
 from backend import store
@@ -125,9 +125,12 @@ async def callback(provider: str, request: Request):
 
 
 @router.post('/logout')
-def logout(request: Request) -> dict[str, bool]:
+def logout(request: Request, response: Response) -> dict[str, bool]:
     raw = request.cookies.get(COOKIE)
     if raw:
         with store.connect() as db:
             db.execute(text('DELETE FROM auth_sessions WHERE id=:id'), {'id': session_key(raw)})
+    # Expire the client cookie as well as deleting the server session row.
+    # Logout stays idempotent for a missing or already invalid cookie.
+    response.delete_cookie(COOKIE, path='/api')
     return {'signed_out': True}
