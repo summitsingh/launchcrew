@@ -332,7 +332,7 @@ cd "$REPO_ROOT" && git add backend/app.py launchcrew/human_review.py launchcrew/
 - Consumes: Task 3 routes and `photo_status` projection.
 - Produces: Select/Preview/Check/Clear controls in the dedicated `photo-check.tsx` component; `not_run` honest copy; single-`detected` pad/clamp canvas preview plus download; revision copy keeps `Revision N (Maker)` and `Revision N (human)` for text sources and adds photo-kind copy (for example `Revision 2 (photo check)`) only for photo-only bumps, with history showing both source and photo event.
 
-- [ ] **Step 1: Write the failing browser/unit test names**
+- [x] **Step 1: Write the failing browser/unit test names**
 
 `photo_keyless_blocks_approve_export`, `photo_remove_requires_reapprove`, `photo_single_detected_offers_crop_only_existing_pixels` in `web/tests/photo-check.test.tsx`, plus the 17th Playwright test `keyless photo check leaves pack unapproved and unexported` appended to `web/tests/e2e/human-review.spec.ts`.
 
@@ -341,7 +341,7 @@ cd "$REPO_ROOT" && git add backend/app.py launchcrew/human_review.py launchcrew/
 Run: `cd "$REPO_ROOT" && PNPM_BIN --dir "$REPO_ROOT/web" test photo 2>&1 | head -40`
 Expected: FAIL (component and controls missing).
 
-- [ ] **Step 3: Implement UI with objectURL/canvas transient only, revoke on change/unmount; no client verdict/geometry**
+- [x] **Step 3: Implement UI with objectURL/canvas transient only, revoke on change/unmount; no client verdict/geometry**
 
 Demo copy keeps approved concept separate from wallet facts. Photo copy never renames the 16 preserved assertions; photo-only history rows name the photo event kind alongside the unchanged text source.
 
@@ -350,7 +350,7 @@ Demo copy keeps approved concept separate from wallet facts. Photo copy never re
 Run: `cd "$REPO_ROOT" && PNPM_BIN --dir "$REPO_ROOT/web" test photo 2>&1 | tail -20`
 Expected: PASS; then re-run the full unit suite plus `human-review.test.tsx` and the `human-review.spec.ts` Playwright file so all 16 prior assertions plus the new 17th pass.
 
-- [ ] **Step 5: Commit (no omitted changed files)**
+- [x] **Step 5: Commit (no omitted changed files)**
 
 ```bash
 cd "$REPO_ROOT" && git add web/src/components/photo-check.tsx web/src/components/v2-views.tsx web/src/app/page.tsx web/src/lib/v2.ts web/src/lib/schema.d.ts web/tests/photo-check.test.tsx web/tests/e2e/human-review.spec.ts && git commit -m "feat: add run review photo check UI"

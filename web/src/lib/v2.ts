@@ -16,3 +16,17 @@ export function canApproveDay(day: Day) {
 export function canExportDay(day: Day) {
   return day.status === 'completed' && day.approval_state === 'approved_for_export';
 }
+
+/** Text-source truth for revision copy: Maker unless a saved human draft exists. Photo-only bumps never fabricate a human revision. */
+export function textSourceOf(receipt: { human_draft?: { post?: unknown; email?: unknown } | null }): 'Maker' | 'human revision' {
+  const human = receipt.human_draft;
+  if (human && typeof human.post === 'string' && typeof human.email === 'string') return 'human revision';
+  return 'Maker';
+}
+
+/** Additive photo suffix for revision copy; empty on the no-photo legacy path. */
+export function photoRevisionSuffix(receipt: { photo_status?: { state?: unknown } | null }): string {
+  const state = receipt.photo_status?.state;
+  if (typeof state !== 'string' || state === 'no_photo') return '';
+  return ` · photo ${state}`;
+}

@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { deflateSync } from 'node:zlib';
 
 // Human revision editing through the real desk UI and API, no route mocks.
 // The original Maker pack is approved first through the UI, then the run is
@@ -141,5 +142,109 @@ test('human revision editing and failed run review', async ({ page, request }) =
   await expect(page.getByLabel('Post text')).toBeDisabled();
   await expect(page.getByLabel('Email text')).toBeDisabled();
   await expect(page.getByText('No approval or export is offered on failed runs.')).toBeVisible();
+  await expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+// Hand-authored synthetic static PNG bytes: no personal photo bytes ever enter the repo.
+function crc32Bytes(value: Buffer): number {
+  let table = (crc32Bytes as unknown as { table?: number[] }).table;
+  if (!table) {
+    table = [];
+    for (let n = 0; n < 256; n += 1) {
+      let c = n;
+      for (let k = 0; k < 8; k += 1) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      table[n] = c >>> 0;
+    }
+    (crc32Bytes as unknown as { table: number[] }).table = table;
+  }
+  let crc = 0xffffffff;
+  for (const byte of value) crc = table[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(kind: string, payload: Buffer): Buffer {
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(payload.length);
+  const type = Buffer.from(kind, 'ascii');
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32Bytes(Buffer.concat([type, payload])));
+  return Buffer.concat([length, type, payload, crc]);
+}
+
+function syntheticPng(width: number, height: number): Buffer {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;
+  header[9] = 2;
+  const row = Buffer.concat([Buffer.from([0]), Buffer.alloc(width * 3, 140)]);
+  const rows = Buffer.concat(Array.from({ length: height }, () => row));
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk('IHDR', header),
+    pngChunk('IDAT', deflateSync(rows)),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+test('keyless photo check leaves pack unapproved and unexported', async ({ page, request }) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ width: 1024, height: 1000 });
+  const suffix = String(Date.now());
+  await page.goto('/');
+  await expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
+  // Clean run without the unsupported-claim demo.
+  await page.getByLabel('Maker profile', { exact: true }).selectOption('Maker');
+  await page.getByLabel('Include the unsupported claim demo').uncheck();
+  await page.getByRole('button', { name: 'Create draft', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Ready for your review.' })).toBeVisible();
+  const runId = await page.locator('.section-row .run-id').innerText();
+  expect(runId.startsWith('run_')).toBe(true);
+
+  // The optional photo path starts text-only and honest.
+  await expect(page.getByText('No photo attached. Text-only approval and export rules apply.')).toBeVisible();
+
+  // Synthetic static PNG hand fixture written outside the repo, never a personal photo.
+  const fixture = `/tmp/launchcrew-photo-fixture-${suffix}.png`;
+  writeFileSync(fixture, syntheticPng(48, 32));
+
+  // Select and preview: still unchecked, never implied approved or exported.
+  await page.getByLabel(/Select photo \(PNG or JPEG/).setInputFiles(fixture);
+  await expect(page.getByText(/Unchecked:/)).toBeVisible();
+  await expect(page.getByAltText('Selected photo preview (local only, not yet checked)')).toBeVisible();
+
+  // Explicit check against the real keyless API returns not_run honesty.
+  const checkButton = page.getByRole('button', { name: 'Check photo', exact: true });
+  await expect(checkButton).toBeEnabled();
+  await checkButton.click();
+  await expect(page.getByText('SAM not configured, photo unchecked')).toBeVisible();
+
+  const receipt = (await (await request.get(`/api/runs/${runId}/receipt`)).json()) as {
+    revision: number; photo_status: { state: string };
+  };
+  expect(receipt.photo_status.state).toBe('requested_unchecked');
+  const checkedRevision = receipt.revision;
+
+  // Approval and export are actually refused with the photo reason.
+  const approve = await request.post(`/api/runs/${runId}/approve`, { data: { expected_revision: checkedRevision } });
+  expect(approve.status()).toBe(422);
+  expect(JSON.stringify(await approve.json())).toContain('Photo');
+  const exported = await request.post(`/api/runs/${runId}/export`, { data: { expected_revision: checkedRevision } });
+  expect(exported.status()).toBe(422);
+  expect(JSON.stringify(await exported.json())).toContain('Photo');
+
+  // Explicit removal returns to the text-only path; fresh approval and export are allowed.
+  await page.getByRole('button', { name: 'Remove photo', exact: true }).click();
+  await expect(page.getByText(/Photo removed at revision/)).toBeVisible();
+  const reread = (await (await request.get(`/api/runs/${runId}/receipt`)).json()) as {
+    revision: number; approval_state: string; photo_status: { state: string };
+  };
+  expect(reread.photo_status.state).toBe('no_photo');
+  const freshApprove = await request.post(`/api/runs/${runId}/approve`, { data: { expected_revision: reread.revision } });
+  expect(freshApprove.status()).toBe(200);
+  const freshExport = await request.post(`/api/runs/${runId}/export`, { data: { expected_revision: reread.revision } });
+  expect(freshExport.status()).toBe(200);
+  expect((await freshExport.json()).exported_revision).toBe(reread.revision);
   await expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 });

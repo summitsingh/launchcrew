@@ -16,5 +16,5 @@ dependencies = [
 [dependency-groups]
 dev = ["pytest==9.2.0"]
 [tool.pytest.ini_options]
-testpaths = ["backend/tests"]
+testpaths = ["backend/tests", "tests/test_photo_gates.py"]
 pythonpath = ["."]
