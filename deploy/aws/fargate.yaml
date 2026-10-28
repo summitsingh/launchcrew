@@ -170,13 +170,34 @@ Resources:
   DbSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: RDS, inbound only from API and migration tasks, Postgres port only, no public port
+      GroupDescription: RDS, inbound only from API tasks and isolated one-off job tasks, Postgres port only, no public port
       VpcId: !Ref Vpc
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 5432
           ToPort: 5432
           SourceSecurityGroupId: !Ref ApiSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref JobSecurityGroup
+  JobSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: One-off bootstrap, migration, and verify tasks only, no inbound at all, public egress only for ECR Secrets Logs plus Postgres to RDS
+      VpcId: !Ref Vpc
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          DestinationSecurityGroupId: !Ref DbSecurityGroup
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
   ApiEcrRepo:
     Type: AWS::ECR::Repository
     DeletionPolicy: Delete
@@ -292,7 +313,7 @@ Resources:
       Tags:
         - { Key: Project, Value: LaunchCrew }
         - { Key: Environment, Value: demo }
-  ExecutionRole:
+  ApiExecutionRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
@@ -303,6 +324,93 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: api-execution-secrets-only
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [secretsmanager:GetSecretValue]
+                Resource: [!Ref RuntimeDbUrlSecretArn, !Ref TlsSecretArn]
+  WebExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: web-execution-secrets-only
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [secretsmanager:GetSecretValue]
+                Resource: [!Ref TlsSecretArn]
+  MigrationExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: migration-execution-secrets-only
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [secretsmanager:GetSecretValue]
+                Resource: [!Ref MigrationDbUrlSecretArn]
+  BootstrapExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: bootstrap-execution-secrets-only
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [secretsmanager:GetSecretValue]
+                Resource:
+                  - !Ref MasterDbPasswordSecretArn
+                  - !Ref RuntimeDbUrlSecretArn
+                  - !Ref MigrationDbUrlSecretArn
+  VerifyExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: verify-execution-secrets-only
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [secretsmanager:GetSecretValue]
+                Resource: [!Ref RuntimeDbUrlSecretArn]
   ApiTaskRole:
     Type: AWS::IAM::Role
     Properties:
@@ -312,14 +420,7 @@ Resources:
           - Effect: Allow
             Principal: { Service: ecs-tasks.amazonaws.com }
             Action: sts:AssumeRole
-      Policies:
-        - PolicyName: api-runtime-config-only
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action: [secretsmanager:GetSecretValue]
-                Resource: [!Ref RuntimeDbUrlSecretArn]
+      Policies: []
   WebTaskRole:
     Type: AWS::IAM::Role
     Properties:
@@ -339,14 +440,7 @@ Resources:
           - Effect: Allow
             Principal: { Service: ecs-tasks.amazonaws.com }
             Action: sts:AssumeRole
-      Policies:
-        - PolicyName: migration-config-only
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action: [secretsmanager:GetSecretValue]
-                Resource: [!Ref MigrationDbUrlSecretArn]
+      Policies: []
   BootstrapTaskRole:
     Type: AWS::IAM::Role
     Properties:
@@ -356,17 +450,17 @@ Resources:
           - Effect: Allow
             Principal: { Service: ecs-tasks.amazonaws.com }
             Action: sts:AssumeRole
-      Policies:
-        - PolicyName: bootstrap-db-roles-only
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action: [secretsmanager:GetSecretValue]
-                Resource:
-                  - !Ref MasterDbPasswordSecretArn
-                  - !Ref RuntimeDbUrlSecretArn
-                  - !Ref MigrationDbUrlSecretArn
+      Policies: []
+  VerifyTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies: []
   ApiTaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
@@ -374,7 +468,7 @@ Resources:
       NetworkMode: awsvpc
       Cpu: '256'
       Memory: '512'
-      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      ExecutionRoleArn: !GetAtt ApiExecutionRole.Arn
       TaskRoleArn: !GetAtt ApiTaskRole.Arn
       ContainerDefinitions:
         - Name: api
@@ -403,7 +497,7 @@ Resources:
       NetworkMode: awsvpc
       Cpu: '256'
       Memory: '512'
-      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      ExecutionRoleArn: !GetAtt WebExecutionRole.Arn
       TaskRoleArn: !GetAtt WebTaskRole.Arn
       ContainerDefinitions:
         - Name: web-app
@@ -443,7 +537,7 @@ Resources:
       NetworkMode: awsvpc
       Cpu: '256'
       Memory: '512'
-      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      ExecutionRoleArn: !GetAtt MigrationExecutionRole.Arn
       TaskRoleArn: !GetAtt MigrationTaskRole.Arn
       ContainerDefinitions:
         - Name: migration
@@ -467,7 +561,7 @@ Resources:
       NetworkMode: awsvpc
       Cpu: '256'
       Memory: '512'
-      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      ExecutionRoleArn: !GetAtt BootstrapExecutionRole.Arn
       TaskRoleArn: !GetAtt BootstrapTaskRole.Arn
       ContainerDefinitions:
         - Name: bootstrap-db-roles
@@ -492,6 +586,34 @@ Resources:
               awslogs-group: !Ref MigrationLogGroup
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: bootstrap-db-roles
+  VerifyTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: '256'
+      Memory: '512'
+      ExecutionRoleArn: !GetAtt VerifyExecutionRole.Arn
+      TaskRoleArn: !GetAtt VerifyTaskRole.Arn
+      ContainerDefinitions:
+        - Name: bootstrap-db-roles
+          Image: !Ref BootstrapImageUri
+          Essential: true
+          Command: ['--verify']
+          Environment:
+            - { Name: LAUNCHCREW_DB_TLS_MODE, Value: verify-full }
+            - { Name: DATABASE_SSL_ROOTCERT, Value: /app/rds-ca-bundle.pem }
+            - { Name: DB_NAME, Value: launchcrew }
+            - { Name: DB_HOST, Value: !GetAtt Database.Endpoint.Address }
+            - { Name: RUNTIME_USER, Value: launchcrew_runtime }
+          Secrets:
+            - { Name: RUNTIME_DB_URL, ValueFrom: !Sub '${RuntimeDbUrlSecretArn}:database-url::' }
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref MigrationLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: verify-db-roles
   LoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
@@ -610,6 +732,25 @@ Resources:
       Tags:
         - { Key: Project, Value: LaunchCrew }
         - { Key: Environment, Value: demo }
+  BudgetTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      Topics: [!Ref BudgetTopic]
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowBudgetsPublishOnly
+            Effect: Allow
+            Principal: { Service: budgets.amazonaws.com }
+            Action: sns:Publish
+            Resource: !Ref BudgetTopic
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub 'arn:aws:budgets::${AWS::AccountId}:budget/launchcrew-demo'
   BudgetEmailSubscription:
     Type: AWS::SNS::Subscription
     Condition: BudgetNotifyConfigured

@@ -29,37 +29,47 @@ def migration_url():
 
 
 class FakeError(Exception):
-    pass
+    def __init__(self, message, sqlstate=None):
+        super().__init__(message)
+        self.sqlstate = sqlstate
 
 
 class FakeCursor:
     def __init__(self, state):
         self.state = state
+        self.rowcount = 0
 
     def execute(self, sql, params=None):
         self.state.statements.append((sql, params))
         lowered = sql.strip().lower()
         if lowered.startswith("create table") and self.state.refuse_ddl:
-            raise FakeError("permission denied for schema public")
+            raise FakeError("permission denied for schema public",
+                            sqlstate=self.state.ddl_sqlstate)
         if lowered.startswith("alter table") and self.state.refuse_ddl:
-            raise FakeError("permission denied for schema public")
+            raise FakeError("permission denied for schema public",
+                            sqlstate=self.state.ddl_sqlstate)
         if lowered.startswith("drop table") and self.state.refuse_ddl:
-            raise FakeError("permission denied for schema public")
+            raise FakeError("permission denied for schema public",
+                            sqlstate=self.state.ddl_sqlstate)
         if "pg_roles" in lowered and "rolname" in lowered:
             return None
+        self.rowcount = 1
+        return None
 
     def fetchone(self):
         sql = self.state.statements[-1][0].strip().lower()
         if "pg_roles" in sql:
             if self.state.roles_exist:
-                return (1,)
+                return ("launchcrew_role", self.state.roles_superuser, True)
             return None
         if sql == "select 1":
             return (1,)
         if "alembic_version" in sql:
             if self.state.schema_present:
-                return ("004_head",)
+                return (self.state.schema_version,)
             return None
+        if sql == "select current_user":
+            return (self.state.current_identity,)
         return None
 
 
@@ -73,6 +83,11 @@ class FakeConn:
         return FakeCursor(self.state)
 
     def rollback(self):
+        self.state.rollbacks += 1
+        return None
+
+    def commit(self):
+        self.state.commits += 1
         return None
 
     def close(self):
@@ -83,10 +98,17 @@ class FakeDriverState:
     def __init__(self):
         self.statements = []
         self.roles_exist = False
+        self.roles_superuser = False
         self.refuse_ddl = True
+        self.ddl_sqlstate = "42501"
         self.schema_present = True
+        self.schema_version = "004"
+        self.current_identity = "launchcrew_runtime"
         self.connect_count = 0
         self.fail_connect = False
+        self.rollbacks = 0
+        self.commits = 0
+        self.used_client_cursor = False
 
 
 class FakePsycopg:
@@ -100,6 +122,10 @@ class FakePsycopg:
         if self.state.fail_connect:
             raise FakeError("could not connect")
         return FakeConn(self.state)
+
+    def ClientCursor(self, conn):
+        self.state.used_client_cursor = True
+        return FakeCursor(self.state)
 
 
 class BindJobTests(unittest.TestCase):
@@ -229,6 +255,55 @@ class BindJobTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertEqual(self.state.connect_count, 0)
 
+    def test_matching_runtime_migration_roles_refused(self):
+        code, out = self.run_main("--bind", {"RUNTIME_USER": "launchcrew_migration"})
+        self.assertNotEqual(code, 0)
+        self.assertEqual(self.state.connect_count, 0)
+        self.assertIn("FAIL", out)
+
+    def test_role_equal_to_master_refused(self):
+        code, out = self.run_main("--bind", {"RUNTIME_USER": "launchcrew_master"})
+        self.assertNotEqual(code, 0)
+        self.assertEqual(self.state.connect_count, 0)
+        self.assertIn("FAIL", out)
+
+    def test_existing_superuser_role_refused(self):
+        self.state.roles_exist = True
+        self.state.roles_superuser = True
+        code, out = self.run_main("--bind")
+        self.assertNotEqual(code, 0)
+        self.assertIn("role-safety", out)
+
+    def test_percent_encoded_password_decoded_for_binding(self):
+        encoded = "postgresql://launchcrew_runtime:p%40ss%3Aw0rd@dbhost:5432/launchcrew?sslmode=verify-full"
+        code, out = self.run_main("--bind", {"RUNTIME_DB_URL": encoded})
+        self.assertEqual(code, 0, msg=out)
+        alters = [(sql, params) for sql, params in self.state.statements
+                  if sql.startswith("ALTER ROLE")]
+        self.assertEqual(len(alters), 2)
+        self.assertIn("p@ss:w0rd", [params[0] for _, params in alters])
+        self.assertNotIn("p@ss:w0rd", out)
+        self.assertNotIn("p%40ss%3Aw0rd", out)
+
+    def test_rerouting_query_refused_before_connect(self):
+        bad = ("postgresql://launchcrew_runtime:%s@dbhost:5432/launchcrew"
+               "?sslmode=verify-full&host=evil.example") % "pw"
+        code, out = self.run_main("--bind", {"RUNTIME_DB_URL": bad})
+        self.assertNotEqual(code, 0)
+        self.assertEqual(self.state.connect_count, 0)
+        self.assertIn("FAIL", out)
+
+    def test_ambient_pghost_refused_before_connect(self):
+        code, out = self.run_main("--bind", {"PGHOST": "evil.example"})
+        self.assertNotEqual(code, 0)
+        self.assertEqual(self.state.connect_count, 0)
+        self.assertIn("FAIL", out)
+
+    def test_password_binding_uses_client_side_cursor(self):
+        code, _ = self.run_main("--bind")
+        self.assertEqual(code, 0)
+        self.assertTrue(self.state.used_client_cursor)
+
     def test_connect_failure_reports_no_secret(self):
         self.state.fail_connect = True
         code, out = self.run_main("--bind")
@@ -244,12 +319,13 @@ class VerifyJobTests(BindJobTests):
         code, out = self.run_main("--verify")
         self.assertEqual(code, 0, msg=out)
         for marker in ("verify-read ok", "verify-schema ok",
+                       "verify-identity ok", "verify-write ok",
                        "verify-runtime-no-create ok",
                        "verify-runtime-no-alter ok",
                        "verify-runtime-no-drop ok",
                        "VERIFY COMPLETE"):
             self.assertIn(marker, out)
-        self.assertIn("004_head", out)
+        self.assertIn("revision=004", out)
 
     def test_verify_fails_when_runtime_can_write(self):
         self.state.refuse_ddl = False
@@ -260,6 +336,34 @@ class VerifyJobTests(BindJobTests):
         self.state.schema_present = False
         code, _ = self.run_main("--verify")
         self.assertNotEqual(code, 0)
+
+    def test_verify_refuses_wrong_head(self):
+        self.state.schema_version = "003"
+        code, _ = self.run_main("--verify")
+        self.assertNotEqual(code, 0)
+
+    def test_verify_refuses_wrong_identity(self):
+        self.state.current_identity = "postgres"
+        code, _ = self.run_main("--verify")
+        self.assertNotEqual(code, 0)
+
+    def test_verify_refuses_non_permission_ddl_error(self):
+        self.state.ddl_sqlstate = "42P01"
+        code, out = self.run_main("--verify")
+        self.assertNotEqual(code, 0)
+        self.assertIn("not a permission refusal", out)
+
+    def test_verify_never_commits(self):
+        code, out = self.run_main("--verify")
+        self.assertEqual(code, 0, msg=out)
+        self.assertEqual(self.state.commits, [])
+        self.assertGreater(self.state.rollbacks, 0)
+
+    def test_verify_works_without_master_or_migration_env(self):
+        code, out = self.run_main("--verify", {"MASTER_DB_PASSWORD": "",
+                                               "MIGRATION_DB_URL": "",
+                                               "DB_MASTER_USER": ""})
+        self.assertEqual(code, 0, msg=out)
 
     def test_verify_requires_verify_full_url(self):
         bad = "postgresql://launchcrew_runtime:pw@dbhost:5432/launchcrew?sslmode=require"
@@ -292,6 +396,18 @@ class StaticBoundaryTests(unittest.TestCase):
         self.assertNotIn("MASTER_DB_PASSWORD", verify_body)
         self.assertNotIn("MIGRATION_DB_URL", verify_body)
         self.assertNotIn("alembic upgrade", verify_body.lower())
+
+    def test_password_binding_uses_client_side_cursor(self):
+        self.assertIn("ClientCursor", self.text)
+
+    def test_verify_mode_never_commits(self):
+        verify_start = self.text.index("def do_verify")
+        verify_body = self.text[verify_start:]
+        self.assertNotIn(".commit(", verify_body)
+
+    def test_verify_checks_exact_head_and_sqlstate(self):
+        self.assertIn("EXPECTED_HEAD", self.text)
+        self.assertIn("42501", self.text)
 
 
 if __name__ == "__main__":

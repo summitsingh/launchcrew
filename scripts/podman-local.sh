@@ -23,6 +23,8 @@ case "${1:-up}" in
     p build --format oci -f containers/api.Containerfile -t localhost/launchcrew-api:demo .
     p build --format oci -f containers/migrate.Containerfile -t localhost/launchcrew-migrate:demo .
     p build --format oci -f containers/web.Containerfile -t localhost/launchcrew-web:demo .
+    p build --format oci -f containers/web-proxy.Containerfile -t localhost/launchcrew-web-proxy:demo .
+    p build --format oci -f containers/bootstrap-db.Containerfile -t localhost/launchcrew-bootstrap:demo .
     ;;
   up)
     p pod create --name launchcrew-stack --network slirp4netns -p 127.0.0.1:8001:8000 -p 127.0.0.1:3001:3000

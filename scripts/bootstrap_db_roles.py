@@ -15,14 +15,20 @@ Modes, selected by argv flag only (no secret ever appears in argv):
             migration DDL, default privileges for migration-created tables).
             Idempotent: safe to rerun; reports each completed phase.
   --verify  read-only proof with the runtime URL only: SELECT works, the
-            alembic schema version row exists, and runtime CREATE/ALTER/DROP
-            each fail. Never connects as master or migration here.
+            alembic schema version equals the expected head revision, the
+            connected identity equals the runtime role, a rolled-back write
+            proves DML without committing, and runtime CREATE/ALTER/DROP
+            each fail with SQLSTATE 42501. Never connects as master or
+            migration here, and never commits.
 
 TLS guard: LAUNCHCREW_DB_TLS_MODE must be verify-full and
 DATABASE_SSL_ROOTCERT must be an existing CA bundle file, otherwise the job
-fails closed before any connection. Master connections use sslmode
-verify-full with that bundle. Runtime verify mode additionally requires the
-runtime URL itself to carry sslmode=verify-full.
+fails closed before any connection. Connections use sslmode verify-full with
+that bundle. URL parsing matches the effective-host policy of
+backend/store.py: the URL authority alone decides the destination, so query
+reroutes (host, hostaddr, service, servicefile, sslrootcert) and ambient
+libpq routing variables (PGHOST, PGHOSTADDR, PGSERVICE, PGSERVICEFILE) are
+refused instead of interpreted.
 
 Stdlib plus psycopg only. No backend framework import.
 """
@@ -33,9 +39,21 @@ import sys
 import urllib.parse
 
 IDENT = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
+HOST = re.compile(r"^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$")
+DBNAME = re.compile(r"^[A-Za-z0-9_.-]{1,63}$")
 PHASES_BIND = ("password-binding", "runtime-grants", "migration-grants",
                "default-privileges")
 ROOTCERT_ENV = "DATABASE_SSL_ROOTCERT"
+EXPECTED_HEAD = "004"
+VERIFY_PROBE = "_lc_verify_probe"
+# Query keys that reroute the effective destination or replace the pinned CA
+# file even when the URL authority looks right. Matched case-insensitively
+# after percent-decoding, exactly like backend/store.py.
+_REJECTED_QUERY_KEYS = frozenset({'host', 'hostaddr', 'service',
+                                  'servicefile', 'sslrootcert'})
+# Ambient libpq routing overrides. Presence alone is refused; values are
+# never read or logged.
+_REJECTED_PG_ENV_VARS = ('PGHOST', 'PGHOSTADDR', 'PGSERVICE', 'PGSERVICEFILE')
 
 _known_secrets: list = []
 
@@ -73,6 +91,31 @@ def _check_ident(label, value):
     return value
 
 
+def _check_host(label, value):
+    cleaned = (value or "").strip().lower()
+    if not cleaned or "," in cleaned or " " in cleaned:
+        raise ValueError("invalid %s" % label)
+    if not HOST.match(cleaned):
+        raise ValueError("invalid %s" % label)
+    return cleaned
+
+
+def _check_dbname(label, value):
+    if not DBNAME.match(value or ""):
+        raise ValueError("invalid %s" % label)
+    return value
+
+
+def _check_port(value):
+    try:
+        port = int((value or "5432").strip())
+    except ValueError:
+        raise ValueError("invalid DB_PORT")
+    if port < 1 or port > 65535:
+        raise ValueError("invalid DB_PORT")
+    return port
+
+
 def _tls_guard():
     if os.environ.get("LAUNCHCREW_DB_TLS_MODE", "") != "verify-full":
         raise ValueError("LAUNCHCREW_DB_TLS_MODE must be verify-full")
@@ -82,14 +125,77 @@ def _tls_guard():
     return bundle
 
 
-def _url_password(label, url):
-    # Password lives in process memory only; callers must never print url.
-    parts = urllib.parse.urlparse(url)
-    if not parts.password:
+def _reject_ambient_pg_overrides():
+    for name in _REJECTED_PG_ENV_VARS:
+        if name in os.environ:
+            raise ValueError(
+                "Refused: ambient %s is set; routing comes only from the URL" % name)
+
+
+def _parse_db_url(label, url, expected_user, expected_host, expected_db):
+    """Strict effective-destination parse of a database URL.
+
+    Returns the connection fields with the percent-decoded password. The
+    authority alone decides the destination: scheme must be postgresql,
+    hostname, database name, and username must equal the expected owned
+    target exactly, and exactly one sslmode=verify-full must be present with
+    no rerouting query keys. Raises ValueError on anything else.
+    """
+    try:
+        parts = urllib.parse.urlparse(url)
+    except Exception:
+        raise ValueError("%s is not a parseable URL" % label)
+    if parts.scheme != "postgresql":
+        raise ValueError("%s must use the postgresql scheme" % label)
+    host = (parts.hostname or "").strip().lower()
+    if not host or "," in host:
+        raise ValueError("%s must name a single database host" % label)
+    if host != expected_host:
+        raise ValueError("%s host does not match the owned target" % label)
+    try:
+        port = parts.port or 5432
+    except ValueError:
+        raise ValueError("%s has an invalid port" % label)
+    if port < 1 or port > 65535:
+        raise ValueError("%s has an invalid port" % label)
+    # Userinfo is parsed from the raw netloc so percent-encoding never
+    # confuses the split: only a literal "@" ends the userinfo, and only the
+    # first literal ":" separates the username from the password.
+    netloc = parts.netloc
+    if "@" not in netloc:
+        raise ValueError("%s has no username" % label)
+    userinfo = netloc.rsplit("@", 1)[0]
+    if ":" not in userinfo:
         raise ValueError("%s has no password" % label)
-    if "sslmode=verify-full" not in (parts.query or ""):
-        raise ValueError("%s requires sslmode=verify-full" % label)
-    return parts.password
+    raw_user, raw_password = userinfo.split(":", 1)
+    username = urllib.parse.unquote(raw_user)
+    password = urllib.parse.unquote(raw_password)
+    if username != expected_user:
+        raise ValueError("%s username does not match the owned role" % label)
+    if not password:
+        raise ValueError("%s has no password" % label)
+    dbname = (parts.path or "").lstrip("/")
+    if not dbname or "/" in dbname:
+        raise ValueError("%s must name a single database" % label)
+    if dbname != expected_db:
+        raise ValueError("%s database does not match the owned target" % label)
+    try:
+        items = urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+    except Exception:
+        raise ValueError("%s has an unreadable query" % label)
+    modes = []
+    for key, value in items:
+        lowered = key.strip().lower()
+        if lowered == "sslmode":
+            modes.append(value.strip().lower())
+        elif lowered in _REJECTED_QUERY_KEYS:
+            raise ValueError(
+                "%s must not carry a %s query parameter; routing comes only from the URL host"
+                % (label, lowered))
+    if len(modes) != 1 or modes[0] != "verify-full":
+        raise ValueError("%s requires exactly sslmode=verify-full" % label)
+    return {"host": host, "port": port, "dbname": dbname,
+            "user": username, "password": password}
 
 
 def _quote_ident(name):
@@ -97,30 +203,39 @@ def _quote_ident(name):
     return '"' + name.replace('"', '""') + '"'
 
 
-def _role_exists(cur, name):
-    cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s", (name,))
-    return cur.fetchone() is not None
+def _role_row(cur, name):
+    cur.execute(
+        "SELECT rolname, rolsuper, rolcanlogin FROM pg_roles WHERE rolname = %s",
+        (name,))
+    return cur.fetchone()
 
 
 def do_bind():
     import psycopg
 
     bundle = _tls_guard()
-    host = _env("DB_HOST")
-    port = os.environ.get("DB_PORT", "5432")
-    dbname = _env("DB_NAME")
-    master_user = _env("DB_MASTER_USER")
+    _reject_ambient_pg_overrides()
+    host = _check_host("DB_HOST", _env("DB_HOST"))
+    port = _check_port(os.environ.get("DB_PORT", "5432"))
+    dbname = _check_dbname("DB_NAME", _env("DB_NAME"))
+    master_user = _check_ident("DB_MASTER_USER", _env("DB_MASTER_USER"))
     master_password = _env("MASTER_DB_PASSWORD")
     runtime_url = _env("RUNTIME_DB_URL")
     migration_url = _env("MIGRATION_DB_URL")
     runtime_user = _check_ident("RUNTIME_USER", _env("RUNTIME_USER"))
     migration_user = _check_ident("MIGRATION_USER", _env("MIGRATION_USER"))
     schema = _check_ident("APP_SCHEMA", os.environ.get("APP_SCHEMA", "public"))
-    for secret in (master_password, runtime_url, migration_url):
+    if runtime_user == migration_user:
+        raise ValueError("RUNTIME_USER and MIGRATION_USER must be distinct roles")
+    if runtime_user == master_user or migration_user == master_user:
+        raise ValueError("runtime and migration roles must differ from the master user")
+    runtime = _parse_db_url("RUNTIME_DB_URL", runtime_url,
+                            runtime_user, host, dbname)
+    migration = _parse_db_url("MIGRATION_DB_URL", migration_url,
+                              migration_user, host, dbname)
+    for secret in (master_password, runtime_url, migration_url,
+                   runtime["password"], migration["password"]):
         _known_secrets.append(secret)
-    runtime_password = _url_password("RUNTIME_DB_URL", runtime_url)
-    migration_password = _url_password("MIGRATION_DB_URL", migration_url)
-    _known_secrets.extend((runtime_password, migration_password))
     if not host or " " in host:
         raise ValueError("invalid DB_HOST")
 
@@ -134,18 +249,29 @@ def do_bind():
     try:
         conn.autocommit = True
         cur = conn.cursor()
+        # DDL statements cannot take server-side bound parameters, so the
+        # password binds below use a client-side binding cursor: the password
+        # travels only as a bound value, never interpolated into SQL text.
+        bind_cur = psycopg.ClientCursor(conn)
         qi_runtime = _quote_ident(runtime_user)
         qi_migration = _quote_ident(migration_user)
         qi_schema = _quote_ident(schema)
         try:
             # Phase 1: exact owned roles exist, passwords bound in memory.
-            for user, password in ((runtime_user, runtime_password),
-                                   (migration_user, migration_password)):
-                if not _role_exists(cur, user):
+            for user, password in ((runtime_user, runtime["password"]),
+                                   (migration_user, migration["password"])):
+                row = _role_row(cur, user)
+                if row is not None and len(row) > 1 and row[1]:
+                    return _fail("role-safety",
+                                 "existing superuser role refused: %s" % user)
+                if row is None:
                     cur.execute("CREATE ROLE %s WITH LOGIN"
                                 % _quote_ident(user))
-                cur.execute("ALTER ROLE %s WITH PASSWORD %%s"
-                            % _quote_ident(user), (password,))
+                elif len(row) > 2 and not row[2]:
+                    cur.execute("ALTER ROLE %s WITH LOGIN"
+                                % _quote_ident(user))
+                bind_cur.execute("ALTER ROLE %s WITH PASSWORD %%s"
+                                 % _quote_ident(user), (password,))
             done.append("password-binding")
             _ok("password-binding")
         except Exception:
@@ -208,18 +334,37 @@ def do_bind():
     return 0
 
 
+def _refused_ddl(exc):
+    # Only an insufficient-privilege refusal counts as DDL proof. A generic
+    # network, syntax, or missing-table error must never pass.
+    return getattr(exc, "sqlstate", None) == "42501"
+
+
 def do_verify():
     import psycopg
 
     bundle = _tls_guard()
+    _reject_ambient_pg_overrides()
     runtime_url = _env("RUNTIME_DB_URL")
+    runtime_user = _check_ident("RUNTIME_USER", _env("RUNTIME_USER"))
+    host = _check_host("DB_HOST", _env("DB_HOST"))
+    dbname = _check_dbname("DB_NAME", _env("DB_NAME"))
+    # Verify connects with the parsed effective destination only, never the
+    # raw URL string, so rerouting query keys or ambient variables cannot
+    # silently move this proof to another database.
+    target = _parse_db_url("RUNTIME_DB_URL", runtime_url,
+                           runtime_user, host, dbname)
     _known_secrets.append(runtime_url)
-    _url_password("RUNTIME_DB_URL", runtime_url)  # enforces verify-full
+    _known_secrets.append(target["password"])
     try:
-        conn = psycopg.connect(runtime_url, sslrootcert=bundle)
+        conn = psycopg.connect(host=target["host"], port=target["port"],
+                               dbname=target["dbname"], user=target["user"],
+                               password=target["password"],
+                               sslmode="verify-full", sslrootcert=bundle)
     except Exception:
         return _fail("verify-connect")
     try:
+        conn.autocommit = False
         cur = conn.cursor()
         try:
             cur.execute("SELECT 1")
@@ -232,13 +377,46 @@ def do_verify():
         try:
             cur.execute("SELECT version_num FROM alembic_version")
             version = cur.fetchone()
-            if not version or not version[0]:
+            if not version or version[0] != EXPECTED_HEAD:
                 return _fail("verify-schema")
             print("bootstrap-db-roles: verify-schema ok revision=%s"
                   % _redact(version[0]), flush=True)
         except Exception:
             return _fail("verify-schema")
-        conn.rollback()
+        try:
+            cur.execute("SELECT current_user")
+            identity = cur.fetchone()
+            if not identity or identity[0] != runtime_user:
+                return _fail("verify-identity")
+            _ok("verify-identity")
+        except Exception:
+            return _fail("verify-identity")
+        # Rolled-back write proof: DML must work for the runtime role, but
+        # nothing here may commit a row change.
+        try:
+            cur.execute("INSERT INTO alembic_version (version_num) VALUES (%s)",
+                        (VERIFY_PROBE,))
+            if cur.rowcount != 1:
+                conn.rollback()
+                return _fail("verify-write")
+            cur.execute("UPDATE alembic_version SET version_num = %s "
+                        "WHERE version_num = %s", (VERIFY_PROBE, VERIFY_PROBE))
+            if cur.rowcount != 1:
+                conn.rollback()
+                return _fail("verify-write")
+            cur.execute("DELETE FROM alembic_version WHERE version_num = %s",
+                        (VERIFY_PROBE,))
+            if cur.rowcount != 1:
+                conn.rollback()
+                return _fail("verify-write")
+            conn.rollback()
+            _ok("verify-write")
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return _fail("verify-write")
         for stmt, label in (
                 ("CREATE TABLE _lc_verify_nope (id integer primary key)",
                  "verify-runtime-no-create"),
@@ -248,11 +426,23 @@ def do_verify():
                  "verify-runtime-no-drop")):
             try:
                 cur.execute(stmt)
-                conn.rollback()
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
                 return _fail(label)
-            except Exception:
-                conn.rollback()
+            except Exception as exc:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                if not _refused_ddl(exc):
+                    return _fail(label, "not a permission refusal")
                 _ok(label)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
     finally:
         try:
             conn.close()
