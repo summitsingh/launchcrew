@@ -2,6 +2,9 @@
 import io
 import json
 from unittest.mock import patch
+from urllib.request import Request
+
+import pytest
 
 from backend import sam
 
@@ -83,6 +86,18 @@ def test_files_failure_blocks_responses_single_attempt_each(tmp_path, monkeypatc
     assert result['error_type'] == 'OSError'
     assert calls == [c for c in calls if c.endswith('/files')]
     assert len(calls) == 1
+
+
+def test_redirect_refused_before_resend_at_handler_seam(monkeypatch):
+    monkeypatch.setenv('META_API_KEY', 'offline-fixture')
+    handler = sam._RefuseRedirect()
+    request = Request('https://api.meta.ai/v1/files', data=b'photo body')
+    for code in (301, 302, 303, 307, 308):
+        with pytest.raises(sam.SamTransportError, match='redirect refused'):
+            handler.redirect_request(request, None, code, 'redirect', {}, 'https://other.example/files')
+    # The production opener carries the refusing handler, so urllib raises
+    # instead of following; no second request is ever constructed or sent.
+    assert any(isinstance(item, sam._RefuseRedirect) for item in sam._photo_opener().handlers)
 
 
 def test_one_upload_then_one_responses_no_retry(tmp_path, monkeypatch):

@@ -4,8 +4,45 @@ import os
 from pathlib import Path
 import re
 from time import monotonic
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 from uuid import uuid4
+
+
+class SamTransportError(RuntimeError):
+    """A bounded SAM Files-to-Responses sequence did not complete.
+
+    ``uploads``/``segmentations`` count the provider calls actually made
+    before the failure, so finalization can report honest accounting.
+    """
+
+    def __init__(self, message, *, uploads=0, segmentations=0):
+        super().__init__(message)
+        self.uploads = uploads
+        self.segmentations = segmentations
+
+
+class _RefuseRedirect(HTTPRedirectHandler):
+    """Refuse any redirect before the request body could be resent.
+
+    urllib invokes ``redirect_request`` instead of following; raising here
+    guarantees the second request is never constructed or sent.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise SamTransportError('redirect refused; body not resent')
+
+
+def _photo_opener():
+    return build_opener(_RefuseRedirect)
+
+
+def urlopen(request, timeout=None):
+    """Module urlopen seam: production traffic refuses redirects pre-follow.
+
+    Tests keep patching ``backend.sam.urlopen``; unpatched calls go through
+    an opener whose redirect handler raises before any resend.
+    """
+    return _photo_opener().open(request, timeout=timeout)
 
 DEMO_PHOTOS = Path(__file__).resolve().parents[1] / 'facts' / 'demo_photos'
 # Concept prompts return paired boxes and lossless masks, documented by Meta.
@@ -53,13 +90,14 @@ def parse_sse(lines):
         frame = re.match(r'<(\d+)f>', line)
         if not frame:
             raise ValueError('Invalid SAM frame')
+        line_frame = int(frame[1])
         remaining = line[frame.end():]
         while remaining:
             match = RECORD.match(remaining)
             if not match:
                 raise ValueError('Invalid lossless SAM record')
             values = match.groups()
-            records.append({'frame': int(frame[1]), 'object_id': int(values[0]),
+            records.append({'frame': line_frame, 'object_id': int(values[0]),
                             'box': tuple(map(int, values[1:7])),
                             'mask': {'x': int(values[7]), 'y': int(values[8]),
                                      'height': int(values[9]), 'width': int(values[10]),
@@ -69,6 +107,11 @@ def parse_sse(lines):
                 if not remaining.startswith(','):
                     raise ValueError('Invalid SAM separator')
                 remaining = remaining[1:]
+                repeated = re.match(r'<(\d+)f>', remaining)
+                if repeated:
+                    if int(repeated[1]) != line_frame:
+                        raise ValueError('Invalid SAM frame')
+                    remaining = remaining[repeated.end():]
     return records
 
 
@@ -126,10 +169,6 @@ def verify_configured_demo():
     return verify_demo_photo(DEMO_PHOTOS / name if name else None, enabled=bool(name))
 
 
-class SamTransportError(RuntimeError):
-    """A bounded SAM Files-to-Responses sequence did not complete."""
-
-
 def photo_sam_operable():
     """Operator feature flag plus key presence. Never proof of credits."""
     key = os.environ.get('META_API_KEY', '').strip()
@@ -150,24 +189,24 @@ def upload_and_segment(raw_bytes, mime, concept='product', timeout_s=30.0):
     if mime not in ('image/png', 'image/jpeg'):
         raise SamTransportError('Unsupported image mime')
     deadline = monotonic() + timeout_s
+    progress = {'uploads': 0, 'segmentations': 0}
 
     def send(endpoint, body, content_type, accept):
         remaining = deadline - monotonic()
         if remaining <= 0:
-            raise SamTransportError('SAM sequence timed out')
+            raise SamTransportError('SAM sequence timed out', **progress)
         request = Request(os.environ.get('META_API_BASE_URL', 'https://api.meta.ai/v1').rstrip('/') + endpoint,
                           data=body, headers={'Authorization': 'Bearer ' + key,
                                               'Content-Type': content_type, 'Accept': accept})
+        progress['uploads' if endpoint == '/files' else 'segmentations'] += 1
         try:
-            response = urlopen(request, timeout=remaining)
-        except SamTransportError:
+            return urlopen(request, timeout=remaining)
+        except SamTransportError as error:
+            error.uploads = max(error.uploads, progress['uploads'])
+            error.segmentations = max(error.segmentations, progress['segmentations'])
             raise
         except Exception as error:
-            raise SamTransportError(type(error).__name__ + ': transport failed')
-        final_url = getattr(response, 'geturl', lambda: None)()
-        if final_url and not final_url.endswith(endpoint):
-            raise SamTransportError('redirect refused; body not resent')
-        return response
+            raise SamTransportError(type(error).__name__ + ': transport failed', **progress)
 
     try:
         boundary = 'launchcrew' + uuid4().hex
@@ -178,7 +217,7 @@ def upload_and_segment(raw_bytes, mime, concept='product', timeout_s=30.0):
         with send('/files', body, 'multipart/form-data; boundary=' + boundary, 'application/json') as response:
             file_id = json.load(response)['id']
         if not isinstance(file_id, str) or not file_id:
-            raise SamTransportError('Missing file id')
+            raise SamTransportError('Missing file id', **progress)
         payload = {'model': 'sam-3.1', 'input': [{'type': 'message', 'role': 'user', 'content': [
             {'type': 'input_text', 'text': concept}, {'type': 'input_image', 'file_id': file_id}]}],
             'stream': True, 'metadata': {'mask_encoding': 'lossless'}}
@@ -186,10 +225,10 @@ def upload_and_segment(raw_bytes, mime, concept='product', timeout_s=30.0):
             def bounded_lines():
                 for line in response:
                     if monotonic() >= deadline:
-                        raise SamTransportError('SAM sequence timed out')
+                        raise SamTransportError('SAM sequence timed out', **progress)
                     yield line
             return parse_sse(bounded_lines())
     except SamTransportError:
         raise
     except Exception as error:
-        raise SamTransportError(type(error).__name__ + ': segmentation failed')
+        raise SamTransportError(type(error).__name__ + ': segmentation failed', **progress)
