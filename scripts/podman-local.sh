@@ -28,7 +28,10 @@ case "${1:-up}" in
     p volume exists launchcrew-stack-data || p volume create launchcrew-stack-data
     p run -d --name launchcrew-stack-db --pod launchcrew-stack -e POSTGRES_DB=launchcrew -e POSTGRES_HOST_AUTH_METHOD=trust -v launchcrew-stack-data:/var/lib/postgresql/data:U localhost/launchcrew-db:demo
     for attempt in {1..60}; do
-      if p exec launchcrew-stack-db pg_isready -U postgres -d launchcrew; then break; fi
+      if p exec launchcrew-stack-db pg_isready -U postgres -d launchcrew; then
+        sleep 3
+        if p exec launchcrew-stack-db pg_isready -U postgres -d launchcrew; then break; fi
+      fi
       sleep 1
     done
     p exec launchcrew-stack-db pg_isready -U postgres -d launchcrew

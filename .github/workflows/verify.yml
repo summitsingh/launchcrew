@@ -28,7 +28,13 @@ jobs:
       - name: Local Postgres through Podman
         run: |
           podman run -d --name launchcrew-test-db -e POSTGRES_DB=launchcrew -e POSTGRES_HOST_AUTH_METHOD=trust -p 127.0.0.1:5432:5432 docker.io/library/postgres:17-alpine
-          for attempt in {1..60}; do if podman exec launchcrew-test-db pg_isready -U postgres -d launchcrew; then break; fi; sleep 1; done
+          for attempt in {1..60}; do
+            if podman exec launchcrew-test-db pg_isready -U postgres -d launchcrew; then
+              sleep 3
+              if podman exec launchcrew-test-db pg_isready -U postgres -d launchcrew; then break; fi
+            fi
+            sleep 1
+          done
           podman exec launchcrew-test-db pg_isready -U postgres -d launchcrew
       - run: uv sync --frozen
       - run: uv run python -m unittest discover -s tests -v
