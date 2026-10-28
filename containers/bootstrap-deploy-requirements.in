@@ -1,0 +1,13 @@
+# LaunchCrew deploy-only SDK inputs, bootstrap image only.
+# Exact pins from host public facts (actual TLS verified PyPI):
+# parent .local boto3-1.43.119-public.json and
+# cryptography-50.0.2-public.json. No invented versions.
+# Resolved by host with:
+#   uv pip compile --no-config --generate-hashes --universal
+#     --python-version 3.14 --output-file
+#     containers/bootstrap-deploy-requirements.lock -
+# Full hashed output is in containers/bootstrap-deploy-requirements.lock.
+# Installed with pip --require-hashes in containers/bootstrap-db.Containerfile
+# only. Core app UV deps in pyproject.toml and uv.lock are unchanged.
+boto3==1.43.119
+cryptography==50.0.2
