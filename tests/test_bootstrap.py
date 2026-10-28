@@ -702,7 +702,8 @@ class BootstrapHarness(unittest.TestCase):
             token_file.write_text("", encoding="utf-8")
             created = Path(tmp) / "created"
             journals = Path(tmp) / "journals"
-            journals.mkdir()
+            journals.mkdir(mode=0o700)
+            journals.chmod(0o700)
             given = {}
             items = list(args)
             index = 0

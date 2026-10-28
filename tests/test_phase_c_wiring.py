@@ -10,9 +10,11 @@ and ambiguous launch journaling with read-only recovery and no resend.
 """
 import json
 import os
+import signal
 import stat
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -671,7 +673,8 @@ class PhaseCHarness(unittest.TestCase):
             token_file = Path(tmp) / "token"
             adopt_file = Path(tmp) / "adopt"
             journals = Path(tmp) / "journals"
-            journals.mkdir()
+            journals.mkdir(mode=0o700)
+            journals.chmod(0o700)
             given = {"AcmCertificateArn": CERT_ARN}
             items = list(args)
             index = 0
@@ -1175,7 +1178,8 @@ class CrashResumeTests(PhaseCHarness):
             token_file = Path(tmp) / "token"
             adopt_file = Path(tmp) / "adopt"
             journals = Path(tmp) / "journals"
-            journals.mkdir()
+            journals.mkdir(mode=0o700)
+            journals.chmod(0o700)
             given = {"AcmCertificateArn": CERT_ARN}
             for flag, key in self.PARAM_KEYS.items():
                 for pos, item in enumerate(self.base_args()):
@@ -1356,7 +1360,8 @@ class ConcurrentOperationLockTests(PhaseCHarness):
             adopt_file = Path(tmp) / "adopt"
             adopt_file.write_text("", encoding="utf-8")
             journals = Path(tmp) / "journals"
-            journals.mkdir()
+            journals.mkdir(mode=0o700)
+            journals.chmod(0o700)
             given = {"AcmCertificateArn": CERT_ARN}
             base = self.base_args()
             for flag, key in self.PARAM_KEYS.items():
@@ -1432,6 +1437,127 @@ class ConcurrentOperationLockTests(PhaseCHarness):
             locks = [e for e in journals.iterdir() if e.name.endswith(".lock")]
             self.assertEqual(locks, [])
             self.assertTrue(proc1.returncode == 0 or proc2.returncode == 0)
+
+
+class SignalTrapTests(PhaseCHarness):
+    def run_signal_case(self, sig, expected_code):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = Path(tmp) / "fake-aws"
+            fake.write_text(FAKE_AWS, encoding="utf-8")
+            fake.chmod(fake.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            log = Path(tmp) / "calls.log"
+            log.write_text("", encoding="utf-8")
+            count = Path(tmp) / "count"
+            count.write_text("0", encoding="utf-8")
+            taskdefs = Path(tmp) / "taskdefs"
+            taskdefs.write_text("", encoding="utf-8")
+            token_file = Path(tmp) / "token"
+            token_file.write_text("", encoding="utf-8")
+            adopt_file = Path(tmp) / "adopt"
+            adopt_file.write_text("", encoding="utf-8")
+            journals = Path(tmp) / "journals"
+            journals.mkdir(mode=0o700)
+            journals.chmod(0o700)
+            given = {"AcmCertificateArn": CERT_ARN}
+            base = self.base_args()
+            for flag, key in self.PARAM_KEYS.items():
+                for pos, item in enumerate(base):
+                    if item == flag and pos + 1 < len(base):
+                        given[key] = base[pos + 1]
+            params = Path(tmp) / "params.json"
+            params.write_text(json.dumps(
+                [{"ParameterKey": k, "ParameterValue": v} for k, v in sorted(given.items())]),
+                encoding="utf-8")
+            foundation_params = Path(tmp) / "foundation-params.json"
+            foundation_params.write_text(json.dumps(
+                [{"ParameterKey": "BudgetLimitUsd", "ParameterValue": "45"},
+                 {"ParameterKey": "BudgetNotifyEmail", "ParameterValue": NOTIFY_EMAIL}]),
+                encoding="utf-8")
+            env = dict(os.environ)
+            for key in ("AWS_REGION", "AWS_DEFAULT_REGION", "AWS_PROFILE",
+                        "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+                env.pop(key, None)
+            env["AWS_BIN"] = str(fake)
+            env["FAKE_AWS_LOG"] = str(log)
+            env["FAKE_COUNT_FILE"] = str(count)
+            env["FAKE_TASKDEF_FILE"] = str(taskdefs)
+            env["FAKE_TOKEN_FILE"] = str(token_file)
+            env["FAKE_ADOPT_FILE"] = str(adopt_file)
+            env["FAKE_CERT_ARN"] = CERT_ARN
+            env["FAKE_DB_HOST"] = DB_HOST
+            env["FAKE_TOPIC_ARN"] = TOPIC_ARN
+            env["FAKE_NOTIFY_EMAIL"] = NOTIFY_EMAIL
+            env["FAKE_RUN"] = "ok"
+            env["FAKE_RUN_DELAY"] = "3"
+            for table in (self.IMAGE_ENV, self.SECRET_ENV):
+                for flag, name in table.items():
+                    for pos, item in enumerate(base):
+                        if item == flag and pos + 1 < len(base):
+                            env[name] = base[pos + 1]
+            full = [*base, "--phase", "init",
+                    "--parameters-file", str(params),
+                    "--foundation-stack-name", FOUNDATION_STACK,
+                    "--foundation-parameters-file", str(foundation_params),
+                    "--prereqs-stack-name", PREREQS_STACK,
+                    "--launch-journal-dir", str(journals)]
+            proc = subprocess.Popen(
+                [str(BOOTSTRAP), *full], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, env=env)
+            try:
+                barrier_ok = False
+                deadline = time.monotonic() + 20
+                while time.monotonic() < deadline:
+                    if proc.poll() is not None:
+                        break
+                    pending = [e for e in journals.iterdir()
+                               if e.is_file() and e.name.endswith("-active.json")]
+                    logged = ""
+                    try:
+                        logged = log.read_text(encoding="utf-8")
+                    except OSError:
+                        logged = ""
+                    if pending and "run-task" in logged:
+                        barrier_ok = True
+                        break
+                    time.sleep(0.1)
+                self.assertTrue(barrier_ok, msg="prelaunch barrier not reached")
+                self.assertIsNone(proc.poll(), msg="exited before signal")
+                proc.send_signal(sig)
+                try:
+                    out, err = proc.communicate(timeout=20)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    out, err = proc.communicate(timeout=10)
+                    self.fail("signal did not terminate owned bootstrap")
+                self.assertEqual(proc.returncode, expected_code)
+                combined = (out or "") + (err or "")
+                self.assertNotIn("Phase init complete", combined)
+                self.assertNotIn("already complete", combined)
+                docs = {}
+                for entry in sorted(journals.iterdir()):
+                    if entry.is_file() and entry.suffix == ".json":
+                        docs[entry.name] = json.loads(entry.read_text(encoding="utf-8"))
+                for doc in docs.values():
+                    self.assertNotEqual(doc.get("outcome"), "complete")
+                locks = [e for e in journals.iterdir() if e.name.endswith(".lock")]
+                self.assertEqual(locks, [])
+                calls = [line for line in log.read_text(encoding="utf-8").splitlines()
+                         if line.strip()]
+                runs = [call for call in calls if "run-task" in call]
+                self.assertEqual(len(runs), 1)
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        pass
+
+    def test_term_exits_143_without_completion(self):
+        self.run_signal_case(signal.SIGTERM, 143)
+
+    def test_int_exits_130_without_completion(self):
+        self.run_signal_case(signal.SIGINT, 130)
 
 
 class EcsPaginationTests(PhaseCHarness):

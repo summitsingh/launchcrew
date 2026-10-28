@@ -437,7 +437,9 @@ acquire_operation_lock() {
 TMP_ERR="$(mktemp /tmp/launchcrew-bootstrap-err-XXXXXX)"
 TMP_JSON="$(mktemp /tmp/launchcrew-bootstrap-json-XXXXXX)"
 TMP_PARAMS="$(mktemp /tmp/launchcrew-bootstrap-params-XXXXXX)"
-trap bootstrap_cleanup EXIT INT TERM
+trap bootstrap_cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 is_auth_error() {
   case "$1" in
