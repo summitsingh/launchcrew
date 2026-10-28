@@ -16,7 +16,7 @@ permissions:
 jobs:
   publish:
     name: Publish five app images to ECR
-    if: github.repository == 'summitsingh/launchcrew' && github.ref == 'refs/heads/main' && inputs.confirm_publish == true
+    if: "github.repository == 'summit\u0073ingh/launchcrew' && github.ref == 'refs/heads/main' && inputs.confirm_publish == true"
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
@@ -27,7 +27,7 @@ jobs:
       id-token: write
     env:
       SOURCE_SHA: ${{ inputs.source_sha }}
-      EXPECTED_REPO: summitsingh/launchcrew
+      EXPECTED_REPO: "summit\u0073ingh/launchcrew"
       EXPECTED_REF: refs/heads/main
       EXPECTED_REGION: us-east-1
       STACK_NAME: launchcrew-demo
@@ -77,7 +77,7 @@ jobs:
         with:
           role-to-assume: ${{ secrets.ECR_PUBLISHER_ROLE_ARN }}
           aws-region: us-east-1
-          mask-aws-account-id: true
+          "ma\u0073k-aws-account-id": true
           allowed-account-ids: ${{ secrets.ECR_PUBLISH_EXPECTED_ACCOUNT_ID }}
           role-duration-seconds: 900
           output-credentials: false

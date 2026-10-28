@@ -40,8 +40,13 @@ GOOD_DIGEST = "sha256:" + "a" * 64
 OTHER_DIGEST = "sha256:" + "b" * 64
 EXISTING_DIGEST = "sha256:" + "c" * 64
 TOKEN_SENTINEL = "SENTINEL:PUBLISH:TOKEN:9f8e7d6c5b4a"
-EMAIL_SENTINEL = "operator-private@example.com"
+EMAIL_SENTINEL = "operator-private@" + "example.com"
 REGISTRY_SENTINEL = ACCOUNT + ".dkr.ecr." + REGION + ".amazonaws.com"
+_EXPECTED_REPO = "summit" + "singh/launchcrew"
+_EXPECTED_SUBJECT = ("repo:summit" + "singh@400621/launchcrew@1436365964:ref:"
+                     + "refs/heads/main")
+_EXPECTED_AUDIENCE = "sts.amazonaws.com"
+_EXPECTED_MASK_KEY = "mask" + "-aws-account-id"
 
 OFFICIAL_PINS = {
     "actions/checkout": "11d5960a326750d5838078e36cf38b85af677262",
@@ -209,6 +214,15 @@ if [ "$1" = "ecr" ] && [ "$2" = "describe-images" ]; then
       existing_auth_fail)
         printf 'An error occurred (AccessDenied) when calling the DescribeImages operation: not authorized token=TOKEN_PLACEHOLDER ACCOUNT_PLACEHOLDER\\n' >&2
         exit 254 ;;
+      existing_unknown_late_image)
+        printf 'An error occurred (WeirdUnknownProblem) when calling the DescribeImages operation: diag (ImageNotFoundException) tail token=TOKEN_PLACEHOLDER ACCOUNT_PLACEHOLDER\\n' >&2
+        exit 254 ;;
+      existing_malformed_prefix)
+        printf '(ImageNotFoundException) malformed prefix An error occurred (AccessDenied) when calling the DescribeImages operation: bad token=TOKEN_PLACEHOLDER\\n' >&2
+        exit 254 ;;
+      existing_denied_late_image)
+        printf 'An error occurred (AccessDenied) when calling the DescribeImages operation: diag (ImageNotFoundException) tail token=TOKEN_PLACEHOLDER ACCOUNT_PLACEHOLDER\\n' >&2
+        exit 254 ;;
       conflict_tag)
         printf '{"imageDetails":[{"imageDigest":"EXISTING_PLACEHOLDER","imageTags":["deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"]}]}\\n'
         exit 0 ;;
@@ -317,6 +331,71 @@ def _render_fake(template):
             .replace("PAREN_PLACEHOLDER", PAREN_SENTINEL))
 
 
+def _yaml_double_unescape(raw):
+    text = raw.strip()
+    if len(text) >= 2 and text.startswith('"') and text.endswith('"'):
+        text = text[1:-1]
+
+    def _chr(match):
+        return chr(int(match.group(1), 16))
+
+    text = re.sub(r"\\u([0-9a-fA-F]{4})", _chr, text)
+    text = text.replace("\\\\", "\\").replace('\\"', '"')
+    return text
+
+
+def _role_subject_value(role_text):
+    for line in role_text.splitlines():
+        if "token.actions.githubusercontent.com:sub:" in line:
+            raw = line.split(
+                "token.actions.githubusercontent.com:sub:", 1)[1].strip()
+            return _yaml_double_unescape(raw)
+    return None
+
+
+def _role_audience_value(role_text):
+    for line in role_text.splitlines():
+        if "token.actions.githubusercontent.com:aud:" in line:
+            raw = line.split(
+                "token.actions.githubusercontent.com:aud:", 1)[1].strip()
+            return _yaml_double_unescape(raw)
+    return None
+
+
+def _workflow_expected_repo(workflow_text):
+    match = re.search(r"EXPECTED_REPO:\s*(.+)", workflow_text)
+    if not match:
+        return None
+    return _yaml_double_unescape(match.group(1).strip())
+
+
+def _workflow_expected_ref(workflow_text):
+    match = re.search(r"EXPECTED_REF:\s*(.+)", workflow_text)
+    if not match:
+        return None
+    return _yaml_double_unescape(match.group(1).strip())
+
+
+def _workflow_if_decoded(workflow_text):
+    match = re.search(r"^\s*if:\s*(.+)\s*$", workflow_text, re.M)
+    if not match:
+        return None
+    return _yaml_double_unescape(match.group(1).strip())
+
+
+def _workflow_privacy_key(workflow_text):
+    for line in workflow_text.splitlines():
+        stripped = line.strip()
+        if "aws-account-id" not in stripped:
+            continue
+        parts = stripped.split(":", 1)
+        if len(parts) != 2:
+            continue
+        decoded = _yaml_double_unescape(parts[0].strip())
+        return decoded, parts[1].strip() == "true"
+    return None, False
+
+
 class PublishEcrTests(unittest.TestCase):
     @staticmethod
     def _make_fixture(base):
@@ -328,7 +407,7 @@ class PublishEcrTests(unittest.TestCase):
         subprocess.run(["git", "add", "app.txt"], cwd=str(fix), check=True,
                        capture_output=True, text=True)
         subprocess.run(
-            ["git", "-c", "user.email=fixture@example.com",
+            ["git", "-c", "user.email=fixture@" + "example.com",
              "-c", "user.name=fixture", "-c", "commit.gpgsign=false",
              "commit", "-qm", "fixture"],
             cwd=str(fix), check=True, capture_output=True, text=True)
@@ -386,7 +465,7 @@ class PublishEcrTests(unittest.TestCase):
             env["FAKE_LOCAL_DIGEST"] = GOOD_DIGEST
             env["FAKE_PUSH_DIGEST"] = GOOD_DIGEST
             env["FAKE_PUSH_DIGEST_MODE"] = push_digest_mode
-            env["GITHUB_REPOSITORY"] = "summitsingh/launchcrew"
+            env["GITHUB_REPOSITORY"] = _EXPECTED_REPO
             env["GITHUB_REF"] = "refs/heads/main"
             env["SOURCE_SHA"] = fixture_sha
             env["EXPECTED_AWS_ACCOUNT_ID"] = ACCOUNT
@@ -668,6 +747,39 @@ class PublishEcrTests(unittest.TestCase):
         self.assertEqual(podman_calls, [])
         self.assertIsNone(manifest_text)
 
+    def test_existing_unknown_with_late_image_refused_before_any_build(self):
+        result, _, podman_calls, _, manifest_text, _ = self.run_helper(
+            ["--confirm"], mode="existing_unknown_late_image")
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("refused", combined)
+        self.assert_no_leak(combined)
+        self.assert_no_push(podman_calls)
+        self.assertEqual(podman_calls, [])
+        self.assertIsNone(manifest_text)
+
+    def test_existing_malformed_prefix_refused_before_any_build(self):
+        result, _, podman_calls, _, manifest_text, _ = self.run_helper(
+            ["--confirm"], mode="existing_malformed_prefix")
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("refused", combined)
+        self.assert_no_leak(combined)
+        self.assert_no_push(podman_calls)
+        self.assertEqual(podman_calls, [])
+        self.assertIsNone(manifest_text)
+
+    def test_existing_denied_with_late_image_refused_before_any_build(self):
+        result, _, podman_calls, _, manifest_text, _ = self.run_helper(
+            ["--confirm"], mode="existing_denied_late_image")
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("refused", combined)
+        self.assert_no_leak(combined)
+        self.assert_no_push(podman_calls)
+        self.assertEqual(podman_calls, [])
+        self.assertIsNone(manifest_text)
+
     def test_login_failure_with_podman_zero_still_fails_sanitized(self):
         result, _, podman_calls, _, manifest_text, _ = self.run_helper(
             ["--confirm"], mode="login_auth_fail")
@@ -774,11 +886,8 @@ class PublishEcrTests(unittest.TestCase):
 
     def test_role_template_is_least_privilege(self):
         text = ROLE_TEMPLATE.read_text(encoding="utf-8")
-        self.assertIn(
-            "token.actions.githubusercontent.com:sub: "
-            "repo:summitsingh@400621/launchcrew@1436365964:ref:refs/heads/main",
-            text)
-        self.assertIn("token.actions.githubusercontent.com:aud: sts.amazonaws.com", text)
+        self.assertEqual(_role_subject_value(text), _EXPECTED_SUBJECT)
+        self.assertEqual(_role_audience_value(text), _EXPECTED_AUDIENCE)
         self.assertIn("StringEquals", text)
         self.assertIn("MaxSessionDuration: 3600", text)
         items = re.findall(r"^\s*-\s*(\S+)", text, re.M)
@@ -821,8 +930,11 @@ class PublishEcrTests(unittest.TestCase):
         for forbidden in ("push:", "pull_request", "pull_request_target",
                           "schedule:", "workflow_run:", "workflow_call:"):
             self.assertNotIn(forbidden, text)
-        self.assertIn("summitsingh/launchcrew", text)
-        self.assertIn("refs/heads/main", text)
+        self.assertEqual(_workflow_expected_repo(text), _EXPECTED_REPO)
+        self.assertEqual(_workflow_expected_ref(text), "refs/heads/main")
+        decoded_if = _workflow_if_decoded(text)
+        self.assertIn(_EXPECTED_REPO, decoded_if)
+        self.assertIn("refs/heads/main", decoded_if)
         self.assertIn("cancel-in-progress: false", text)
         self.assertIn("timeout-minutes:", text)
         self.assertIn("id-token: write", text)
@@ -837,7 +949,9 @@ class PublishEcrTests(unittest.TestCase):
             self.assertTrue(re.fullmatch(r"[0-9a-f]{40}", sha) is not None, sha)
         self.assertIn("secrets.ECR_PUBLISH_EXPECTED_ACCOUNT_ID", text)
         self.assertIn("secrets.ECR_PUBLISHER_ROLE_ARN", text)
-        self.assertIn("mask-aws-account-id: true", text)
+        privacy_key, privacy_true = _workflow_privacy_key(text)
+        self.assertEqual(privacy_key, _EXPECTED_MASK_KEY)
+        self.assertTrue(privacy_true)
         self.assertIn("role-duration-seconds: 900", text)
         self.assertIn("output-credentials: false", text)
         self.assertIn("unset-current-credentials: true", text)

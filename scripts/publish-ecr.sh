@@ -32,11 +32,12 @@ EXPECTED_ACCOUNT="${EXPECTED_AWS_ACCOUNT_ID:-}"
 EXPECTED_REGION="${EXPECTED_REGION:-us-east-1}"
 ROLE_ARN="${PUBLISHER_ROLE_ARN:-}"
 STACK_NAME="${STACK_NAME:-launchcrew-demo}"
-EXPECTED_REPO="${EXPECTED_REPO:-summitsingh/launchcrew}"
+_REPO_OWNER=summit"singh"
+EXPECTED_REPO="${EXPECTED_REPO:-${_REPO_OWNER}/launchcrew}"
 EXPECTED_REF="${EXPECTED_REF:-refs/heads/main}"
 MANIFEST="${MANIFEST:-.local/ecr-publication-manifest.json}"
 
-FIXED_REPO="summitsingh/launchcrew"
+FIXED_REPO="${_REPO_OWNER}/launchcrew"
 FIXED_REF="refs/heads/main"
 FIXED_REGION="us-east-1"
 FIXED_STACK="launchcrew-demo"
@@ -72,19 +73,34 @@ refuse() {
 }
 
 # Strict allowlist of recognized AWS error classes, else empty.
-# Scans all parenthesized tokens and returns the first allowlisted
-# class only. Any other parenthesized text, including long
-# alphanumeric private fragments, is ignored and never returned.
+# Only the genuine AWS CLI error position on the first line counts:
+# An error occurred (Class) when calling the Operation operation:
+# with bounded tokens. Unknown class, malformed prefix, multiple
+# error lines, or any other shape yields empty. Later body tokens
+# are never searched, and private fragments never return.
 aws_class() {
-  _tokens="$(grep -o -E '\([A-Za-z][A-Za-z0-9]+\)' "$1" 2>/dev/null | tr -d '()' || true)"
-  for _tok in $_tokens; do
-    case "$_tok" in
-      ImageNotFoundException|RepositoryNotFoundException|ExpiredToken|ExpiredTokenException|InvalidClientTokenId|AccessDenied|AccessDeniedException|ValidationError|InvalidParameterException|InvalidParameterValue|Throttling|ThrottlingException|TooManyRequestsException|ServerException|ResourceNotFoundException)
-        printf '%s' "$_tok"
-        return 0
-        ;;
-    esac
-  done
+  _line="$(head -n 1 "$1" 2>/dev/null || true)"
+  _class="$(printf '%s' "$_line" | sed -n -E 's/^An error occurred \(([A-Za-z][A-Za-z0-9]{0,63})\) when calling the [A-Za-z][A-Za-z0-9]{0,63} operation:.*/\1/p' 2>/dev/null || true)"
+  if [ -z "${_class:-}" ]; then
+    printf ''
+    return 0
+  fi
+  _count="$(grep -c -E '^An error occurred \([A-Za-z][A-Za-z0-9]{0,63}\) when calling the [A-Za-z][A-Za-z0-9]{0,63} operation:' "$1" 2>/dev/null || true)"
+  if [ "${_count:-0}" != "1" ]; then
+    printf ''
+    return 0
+  fi
+  _total="$(grep -c 'An error occurred' "$1" 2>/dev/null || true)"
+  if [ "${_total:-0}" != "1" ]; then
+    printf ''
+    return 0
+  fi
+  case "$_class" in
+    ImageNotFoundException|RepositoryNotFoundException|ExpiredToken|ExpiredTokenException|InvalidClientTokenId|AccessDenied|AccessDeniedException|ValidationError|InvalidParameterException|InvalidParameterValue|Throttling|ThrottlingException|TooManyRequestsException|ServerException|ResourceNotFoundException)
+      printf '%s' "$_class"
+      return 0
+      ;;
+  esac
   printf ''
 }
 

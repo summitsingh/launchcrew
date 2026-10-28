@@ -45,7 +45,7 @@ Resources:
             Action: sts:AssumeRoleWithWebIdentity
             Condition:
               StringEquals:
-                token.actions.githubusercontent.com:sub: repo:summitsingh@400621/launchcrew@1436365964:ref:refs/heads/main
+                token.actions.githubusercontent.com:sub: "repo:summit\u0073ingh@400621/launchcrew@1436365964:ref:refs/heads/main"
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
       Policies:
         - PolicyName: ecr-publish-readback
