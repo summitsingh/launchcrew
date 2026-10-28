@@ -753,9 +753,9 @@ PYEOF
 # batch-get-image can exit 0 with failures or a missing image, so the JSON
 # fields are inspected, never the exit code alone. A tag@sha256 pin is
 # honored by requiring the ECR digest to equal the pinned digest; a tag
-# alone proves only the point-in-time digest read back here, because the
-# template repos carry no immutable tag lock, so enable rechecks this proof
-# immediately before boot.
+# alone proves only the point-in-time digest read back here, even though
+# the five app repos now carry IMMUTABLE tag locks, so enable rechecks
+# this proof immediately before boot.
 verify_image() {
   IMAGE_URI="$1"
   EXPECTED_REPO="$2"

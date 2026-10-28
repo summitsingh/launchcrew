@@ -19,14 +19,20 @@ green.
   guard before configure AWS credentials, helper call through env,
   manifest artifact on success only)
 - [ ] Task 2: add `scripts/publish-ecr.sh` (dry run default zero
-  calls, explicit confirm, exact SHA and main and clean tracked
-  source, expected account and us-east-1, assumed role identity with
-  root refused, owned stack tags, CE Project Active UserDefined,
-  five stack bindings, IMMUTABLE everywhere, conflict tag refused
-  before push with safe digest replay only, same proven Podman
-  builds, five app pushes never db, full SHA tags, stdin login with
-  private auth file and cleanup, sanitized errors, bounded single
-  attempts, manifest only on five matching readback digests)
+  calls, explicit confirm, exact SHA plus HEAD plus origin/main plus
+  clean tree with no non-ignored untracked source and required
+  repo/main context, fixed expected constants, exact STS assumed
+  role identity with root refused, owned stack proof with exact ID
+  and status and tags, CE Project exactly once Active UserDefined
+  through tag-keys and type flags, five stack bindings, IMMUTABLE
+  with no exclusions and exact resource tags on all five repos, any
+  existing tag refused before any build or push with no overwrite
+  and no replay, same proven Podman storage and builds, five app
+  pushes never db, full SHA tags, stdin login with private auth file
+  and cleanup, digest file only with push stdout never parsed,
+  fixed errors with no raw streams, bounded single attempts,
+  manifest only on five matching readbacks and never over a
+  preexisting file)
 - [ ] Task 3: add `deploy/aws/publisher-role.yaml` (exact immutable
   subject plus audience condition, existing provider ARN parameter,
   five exact repo ARNs, GetAuthorizationToken on star only,
@@ -36,10 +42,16 @@ green.
   ECR resources in `deploy/aws/fargate.yaml`, nothing else
 - [ ] Task 5: add `tests/test_publish_ecr.py` with fake AWS and fake
   Podman recording real argv and stdin (dry run zero calls, every
-  refusal before push, token never in argv log manifest or output
-  with auth file cleanup, five readback success shapes, digest
-  mismatch and partial failure with no manifest, IAM least privilege
-  and subject parse, workflow guard and injection safe env parse)
+  refusal before push and ownership refusals before any build, token
+  and account and ARN and registry and email never in output or
+  manifest or artifact with auth file cleanup, fake Podman
+  validating real storage and login and push flag shapes and writing
+  the digest file with empty stdout, five readback success shapes,
+  missing and invalid digest file and digest mismatch and partial
+  failure with no new manifest, stale manifest preserved and never
+  posed as fresh, IAM structural action parse and subject and
+  provider pattern check, workflow guard and 40 hex official pins
+  and injection safe env parse)
 - [ ] Task 6: add `docs/ecr-publication.md` (setup, publish, verify,
   teardown, boundaries, ROOT preflight fact without account ID) and
   update `docs/aws-approval-pack.md` for the new role and cleanup
@@ -53,7 +65,7 @@ green.
    whitelist) and of the workflow (dispatch only, guards, pinned
    SHAs, secret handling)
 3. `bash -n scripts/publish-ecr.sh` and shellcheck if configured
-4. Full suite only if time allows: `uv run python -m unittest
+4. Host mandatory full suite before any publish: `uv run python -m unittest
    discover -s tests`
 5. Codex final review, then normal main push only when green
 

@@ -22,20 +22,32 @@ with no push path on push, pull request, or schedule events.
 2. Isolated helper `scripts/publish-ecr.sh`, dry run default with zero
    AWS and zero Podman calls. Confirm path validates exact source SHA
    (full 40 hex through env, never eval of shell input), checked out
-   HEAD equality, clean tracked tree, expected account (12 digits),
-   region us-east-1, role ARN shape with matching account, assumed role
-   identity (root refused), owned stack tags, CE Project Active
-   UserDefined, five stack resource bindings, IMMUTABLE on all five
-   repos, and existing tag state before any push. A conflicting tag
-   refuses before any push unless the existing digest provably equals
-   the local digest (safe replay skips that push). Full SHA tags only.
-   ECR login pipes the password on stdin with a private mode 600
-   auth file in an owned mode 700 temp dir, removed on success and
-   failure. Errors are sanitized, bounded, and never carry raw
-   stderr, IDs, ARNs, or tokens.
+   HEAD equality plus origin/main snapshot equality, clean tree with
+   no modified tracked files and no non-ignored untracked build
+   source, required repo and main context with no silent bypass,
+   fixed expected constants, expected account (12 digits),
+   region us-east-1, role ARN shape with matching account, exact STS
+   assumed role identity (root, user, and wrong role refused), owned
+   stack proof with exact ID and stable status and exact tags, CE
+   Project exactly once as UserDefined Active through tag-keys and
+   type flags, five stack resource bindings, IMMUTABLE with no
+   exclusions and exact resource tags on all five repos, and existing
+   tag state before any build or push. Any existing tag for the SHA
+   refuses the whole run before any build or push, with no overwrite
+   and no replay. Full SHA tags only. Storage flags match the proven
+   local path. ECR login pipes the password on stdin with a private
+   mode 600 auth file in an owned mode 700 temp dir, removed on
+   success and failure; the auth file is real reversible credential
+   storage on local disk during the run. The pushed digest comes only
+   from the push digest file, never from parsed stdout. Errors are
+   fixed stage or error class text only, bounded, and never carry raw
+   stderr, IDs, ARNs, tokens, emails, registry URIs, or bodies. A
+   preexisting manifest refuses the run instead of being overwritten.
 3. Publisher role `deploy/aws/publisher-role.yaml`, referencing an
-   existing account provider ARN parameter and never altering shared
-   provider state. Assume condition is the exact immutable subject plus
+   existing account provider ARN parameter restricted by pattern to
+   the exact token.actions.githubusercontent.com issuer host and
+   never altering shared provider state. Assume condition is the
+   exact immutable subject plus
    audience sts.amazonaws.com. Grants are ECR upload, readback,
    describe, and list tags on the five exact repo ARNs,
    GetAuthorizationToken on Resource star, CE

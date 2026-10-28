@@ -33,7 +33,9 @@ jobs:
       STACK_NAME: launchcrew-demo
     steps:
       - name: Check out exact main source
-        uses: actions/checkout@11d5960a326750d58380738e36bfabf77265a # v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Install Podman tooling
         run: sudo apt-get update && sudo apt-get install -y podman slirp4netns
       - name: Validate source SHA and private secrets before any cloud call

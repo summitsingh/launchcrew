@@ -308,12 +308,14 @@ cancel of an active run, bounded timeout, contents read plus id-token
 write only, pinned official actions, private secrets for the expected
 account and the publisher role ARN), `scripts/publish-ecr.sh` (dry run
 default with zero calls, exact source SHA and clean tracked tree,
-assumed role identity with ROOT refused, owned stack tags, CE Project
-Active UserDefined, five stack bindings, IMMUTABLE everywhere,
-conflicting tag refused before any push with safe digest replay only,
-full SHA tags, five app pushes never db, stdin login with private auth
-file cleanup, sanitized errors, manifest only on five matching
-readbacks), `deploy/aws/publisher-role.yaml` (exact immutable main
+assumed role identity with ROOT refused, owned stack proof, exact
+stack tags, CE Project Active UserDefined, five stack bindings,
+IMMUTABLE with no exclusions and exact resource tags everywhere, any
+existing tag refused before any build or push with no overwrite and no
+replay, full SHA tags, five app pushes never db, digest file only with
+push stdout never parsed, stdin login with private auth file cleanup,
+fixed errors with no raw streams, manifest only on five matching
+readbacks and never over a preexisting file), `deploy/aws/publisher-role.yaml` (exact immutable main
 subject plus audience, existing provider ARN parameter with no shared
 provider change, five exact repo ARNs, GetAuthorizationToken on
 Resource star only, CE metadata read only, minimum reads on the owned
@@ -329,6 +331,7 @@ empty and delete with the demo stack delete. The publisher role and
 the two private secrets live outside the stack and are deleted by
 their own step after the demo window. No role, provider, secret,
 dispatch, push, deploy, DNS, spend, or recording action is approved or
-claimed by this pack. Host checks after the authoring terminal:
-focused offline tests in `tests/test_publish_ecr.py`, static parses of
-the role and workflow, and the full suite only if time allows.
+claimed by this pack. Host checks after the authoring terminal are
+mandatory before any publish: focused offline tests in
+`tests/test_publish_ecr.py`, static parses of the role and workflow,
+plus the full suite.

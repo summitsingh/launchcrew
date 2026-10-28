@@ -13,12 +13,17 @@ Description: >-
 Parameters:
   GitHubOidcProviderArn:
     Type: String
+    AllowedPattern: 'arn:aws:iam::[0-9]{12}:oidc-provider/token.actions.githubusercontent.com'
     Description: >-
       ARN of the existing account-global GitHub OIDC provider in this
       account (token.actions.githubusercontent.com, client ID
       sts.amazonaws.com). This template references it and never creates,
       updates, or deletes shared provider state. Separate one-time
-      creation applies only if absent, under its own approval.
+      creation applies only if absent, under its own approval. The
+      pattern fixes the issuer host exactly: no wildcard, no other
+      issuer, and the operator pre-apply review still confirms the same
+      signed-in account, the provider URL, and the audience, with no
+      shared provider change.
   RoleName:
     Type: String
     Default: launchcrew-ecr-publisher
