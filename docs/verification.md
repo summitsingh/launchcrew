@@ -244,3 +244,24 @@ SAM, live model calls, remote CI, video, submission, connectors, provisioning, a
 Preserved v1 unittest suite: 38 passed. The initial restricted-sandbox attempt could not bind three temporary test HTTP servers; rerunning with localhost socket permission passed all 38 without source changes. Dependency downloads initially required network permission, then installed from the locked manifests in this worktree.
 
 After staging only the six new source, test, migration, and connector-notes files, scripts/scan_repo.py passed with zero findings for every check. scripts/check-repo-text.py reported em_dash 0 and legacy_brand 0. Both staged and unstaged git diff whitespace checks passed. The branch remained feature/v2-memory-replay-campaign at 966de60; no commit or push occurred.
+
+## Release candidate independent verification, Oct 28, 2026, at c1038ef
+
+Branch ceplat-launchcrew-release-candidate, clean HEAD c1038ef. Independent Codex run, disposable clusters only, removed after use. No push, no merge to main, no cloud provisioning, no credentials in repo.
+
+- Backend pytest: 67 passed, exit 0, on disposable loopback Postgres 18.6, nondefault port, via scripts/verify-release-candidate.sh --backend-only.
+- Original unittest suite: 38 passed, exit 0, same run.
+- Contract regeneration: 23 paths, backend/openapi.json clean with no diff, exit 0.
+- Database roles: scripts/verify-db-roles.sh PASS on disposable loopback Postgres 18.6, nondefault port, with tightened privilege-only refusals. Runtime CRUD and sequence use passed. Runtime CREATE, ALTER, DROP refused. Migration CREATE, ALTER, DROP passed on a disposable proof table. Static role order 29/30/37 passed.
+- cfn-lint 1.58.0 on deploy/aws/fargate.yaml: passed.
+- Frontend and browser: pending, not passed, due npm registry certificate validation. No Vitest, typecheck, build, or Playwright result is claimed for the candidate.
+- Clusters: disposable test clusters removed after use.
+
+Unresolved and not claimed: frontend and browser rerun, live auth sign-in, live model retest and container-path test, live SAM end to end (held, no live calls), AWS SAM validation and deployment, demo recording, merge, push, and submission. An AWS Budget is an alert and estimate mechanism, not an enforced hard spend cap. Cost and deployment approvals stay open user decisions.
+
+## Teardown implementation, Oct 28, local only, pending independent rerun
+
+- deploy/aws/teardown.sh: dry-run default with no AWS call. Confirm path requires exact stack ARN plus expected 12-digit account and region, verifies caller identity and Project LaunchCrew with Environment demo tags before any destructive call, deletes only that stack via CloudFormation, waits for stack-delete-complete, verifies terminal absence by authoritative ValidationError not-found, distinguishes auth and API errors from not-found, never deletes by prefix, never deletes shared or outside-stack resources, and reports Secrets Manager values, ACM certificate, Cloudflare DNS, and manual snapshots as remaining work with a separate approval gate.
+- deploy/aws/fargate.yaml: explicit DeletionPolicy Delete and UpdateReplacePolicy Delete on Database, ECR repos, log groups, and DemoBudget. ECR repos set EmptyOnDelete true so a nonempty repo does not block stack deletion or silently retain images. Database keeps DeleteAutomatedBackups true and DeletionProtection false so approved teardown does not silently retain a billable final snapshot.
+- Offline tests: tests/test_teardown.py, 8 tests passed with a fake AWS command fixture, no AWS contact. Covers dry-run zero calls, refused ARN and caller and tag mismatch with no delete, success verified by authoritative not-found, and auth failure never treated as absence.
+- Local static checks in this commit: sh -n teardown.sh passed, teardown unittest passed, scan and text checks passed. Full backend, db-roles, and cfn-lint rerun for this teardown revision is pending independent verification and is not claimed here.

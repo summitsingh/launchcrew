@@ -41,7 +41,7 @@ Parameters:
     Description: Master database username, for initial creation only. Runtime and migration identities are created separately by deploy/aws/db-roles.sql and are never the master identity.
   BudgetLimitUsd:
     Type: Number
-    Description: AWS Budget limit in USD, for the demo period only. No approved default, supply after Summit chooses a cap. A value of 0 is not an approval, it is a placeholder that must be replaced.
+    Description: AWS Budget limit in USD, for the demo period only. No approved default, supply after Summit chooses a cap. A value of 0 is not an approval, it is a placeholder that must be replaced. An AWS Budget is an alert and estimate mechanism, not an enforced hard spend cap.
 Resources:
   Vpc:
     Type: AWS::EC2::VPC
@@ -164,48 +164,66 @@ Resources:
           SourceSecurityGroupId: !Ref ApiSecurityGroup
   ApiEcrRepo:
     Type: AWS::ECR::Repository
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
     Properties:
       RepositoryName: launchcrew-api
+      EmptyOnDelete: true
       ImageScanningConfiguration: { ScanOnPush: true }
       Tags:
         - { Key: Project, Value: LaunchCrew }
         - { Key: Environment, Value: demo }
   WebEcrRepo:
     Type: AWS::ECR::Repository
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
     Properties:
       RepositoryName: launchcrew-web
+      EmptyOnDelete: true
       ImageScanningConfiguration: { ScanOnPush: true }
       Tags:
         - { Key: Project, Value: LaunchCrew }
         - { Key: Environment, Value: demo }
   WebProxyEcrRepo:
     Type: AWS::ECR::Repository
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
     Properties:
       RepositoryName: launchcrew-web-proxy
+      EmptyOnDelete: true
       ImageScanningConfiguration: { ScanOnPush: true }
       Tags:
         - { Key: Project, Value: LaunchCrew }
         - { Key: Environment, Value: demo }
   MigrationEcrRepo:
     Type: AWS::ECR::Repository
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
     Properties:
       RepositoryName: launchcrew-migration
+      EmptyOnDelete: true
       ImageScanningConfiguration: { ScanOnPush: true }
       Tags:
         - { Key: Project, Value: LaunchCrew }
         - { Key: Environment, Value: demo }
   ApiLogGroup:
     Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
     Properties:
       LogGroupName: /launchcrew/demo/api
       RetentionInDays: 7
   WebLogGroup:
     Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
     Properties:
       LogGroupName: /launchcrew/demo/web
       RetentionInDays: 7
   MigrationLogGroup:
     Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
     Properties:
       LogGroupName: /launchcrew/demo/migration
       RetentionInDays: 7
@@ -219,6 +237,8 @@ Resources:
         - { Key: Environment, Value: demo }
   Database:
     Type: AWS::RDS::DBInstance
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
     Properties:
       DBInstanceClass: db.t4g.micro
       Engine: postgres
@@ -488,6 +508,8 @@ Resources:
           TargetGroupArn: !Ref WebTargetGroup
   DemoBudget:
     Type: AWS::Budgets::Budget
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
     Properties:
       Budget:
         BudgetName: launchcrew-demo
