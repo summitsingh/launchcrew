@@ -5,7 +5,7 @@ import { CampaignDayCard, CampaignView, DiffResult, ReplayView } from '../src/co
 import { canApproveDay, canExportDay } from '../src/lib/v2';
 import type { components } from '../src/lib/schema';
 
-const day: components['schemas']['CampaignDay'] = { day: 1, run_id: 'run_demo', approval_state: 'pending_approval', status: 'completed', checker_v2_blocked_count: 0, idea: 'Demo wallet' };
+const day: components['schemas']['CampaignDay'] = { day: 1, run_id: 'run_demo', approval_state: 'pending_approval', status: 'completed', checker_v2_blocked_count: 0, idea: 'Demo wallet', angle: 'Origin story', brief: 'Designed in Texas for Austin commuters', draft_v2_post: 'Vegan leather wallet, designed in Texas.' };
 const noop = () => {};
 function card(value: typeof day, busy = false) { return renderToStaticMarkup(<CampaignDayCard day={value} busy={busy} approve={noop} download={noop} />); }
 
@@ -38,10 +38,12 @@ describe('v2 review controls', () => {
       draft_v1_post_a: 'First A', draft_v1_post_b: 'First B', draft_v2_post_a: 'Final A', draft_v2_post_b: 'Final B', draft_v2_email_a: 'Email A', draft_v2_email_b: 'Email B',
       checker_v1_blocked_count_a: 1, checker_v1_blocked_count_b: 0, checker_v2_blocked_count_a: 0, checker_v2_blocked_count_b: 0,
       blocked_claims_only_in_a: [{ claim: 'best in Texas', reason: 'Unsupported' }], blocked_claims_only_in_b: [],
-      approval_state_a: 'pending_approval', approval_state_b: 'approved_for_export', approval_state_changed: true, status_a: 'completed', status_b: 'completed', receipt_keys_only_in_a: ['demo_extra'], receipt_keys_only_in_b: []
+      approval_state_a: 'pending_approval', approval_state_b: 'approved_for_export', approval_state_changed: true, status_a: 'completed', status_b: 'completed', receipt_keys_only_in_a: ['demo_extra'], receipt_keys_only_in_b: [], checker_profile_a: 'standard', checker_profile_b: 'strict', checker_profile_changed: true, memory_ids_a: [], memory_ids_b: []
     };
     const html = renderToStaticMarkup(<DiffResult diff={diff} />);
-    for (const text of ['different ideas', 'Draft changes', 'First A', 'Final B', 'Email A', 'Checker verdict changes', 'best in Texas', 'Approval state changes', 'approved_for_export', 'Receipt key diff', 'demo_extra']) expect(html).toContain(text);
+    for (const text of ['different ideas', 'Draft changes', 'First A', 'Final B', 'Email A', 'Checker verdict changes', 'Checker profile changes', 'standard', 'strict', 'best in Texas', 'Approval state changes', 'approved_for_export', 'Receipt key diff', 'demo_extra']) expect(html).toContain(text);
+    expect(card(day)).toContain('Origin story');
+    expect(card(day)).toContain('Designed in Texas for Austin commuters');
     expect(renderToStaticMarkup(<DiffResult diff={{ ...diff, same_idea: true }} />)).not.toContain('different ideas');
   });
 });
