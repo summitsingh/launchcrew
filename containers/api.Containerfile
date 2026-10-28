@@ -11,6 +11,7 @@ COPY agents ./agents
 COPY facts ./facts
 COPY alembic.ini ./
 COPY containers/api-entrypoint.sh /usr/local/bin/api-entrypoint.sh
+RUN chmod 755 /usr/local/bin/api-entrypoint.sh
 USER 10001:10001
 EXPOSE 8000 8443
 CMD ["/usr/local/bin/api-entrypoint.sh"]

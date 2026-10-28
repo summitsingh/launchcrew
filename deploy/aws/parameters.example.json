@@ -1,1 +1,46 @@
-[{"ParameterKey":"DomainName","ParameterValue":"REPLACE_WITH_DOMAIN_AFTER_EXPLICIT_CLOUDFLARE_AUTHORIZATION"},{"ParameterKey":"AcmCertificateArn","ParameterValue":"REPLACE_WITH_ACM_CERTIFICATE_ARN"},{"ParameterKey":"ApiImageUri","ParameterValue":"REPLACE_WITH_ECR_API_IMAGE_URI"},{"ParameterKey":"WebImageUri","ParameterValue":"REPLACE_WITH_ECR_WEB_IMAGE_URI"},{"ParameterKey":"MigrationImageUri","ParameterValue":"REPLACE_WITH_ECR_MIGRATION_IMAGE_URI"},{"ParameterKey":"DatabasePasswordSecretArn","ParameterValue":"REPLACE_WITH_SECRETS_MANAGER_ARN"},{"ParameterKey":"DatabaseUsername","ParameterValue":"launchcrew_runtime"},{"ParameterKey":"BudgetLimitUsd","ParameterValue":"REPLACE_WITH_SUMMIT_CHOSEN_CAP_AFTER_ESTIMATE"},{"ParameterKey":"WebTlsReady","ParameterValue":"true"},{"ParameterKey":"ApiTlsReady","ParameterValue":"true"}]
+[
+  {
+    "ParameterKey": "AcmCertificateArn",
+    "ParameterValue": "REPLACE_WITH_ACM_CERTIFICATE_ARN"
+  },
+  {
+    "ParameterKey": "ApiImageUri",
+    "ParameterValue": "REPLACE_WITH_ECR_API_IMAGE_URI"
+  },
+  {
+    "ParameterKey": "WebImageUri",
+    "ParameterValue": "REPLACE_WITH_ECR_WEB_IMAGE_URI"
+  },
+  {
+    "ParameterKey": "WebProxyImageUri",
+    "ParameterValue": "REPLACE_WITH_ECR_WEB_PROXY_IMAGE_URI"
+  },
+  {
+    "ParameterKey": "MigrationImageUri",
+    "ParameterValue": "REPLACE_WITH_ECR_MIGRATION_IMAGE_URI"
+  },
+  {
+    "ParameterKey": "RuntimeDbUrlSecretArn",
+    "ParameterValue": "REPLACE_WITH_RUNTIME_DB_URL_SECRET_ARN"
+  },
+  {
+    "ParameterKey": "MigrationDbUrlSecretArn",
+    "ParameterValue": "REPLACE_WITH_MIGRATION_DB_URL_SECRET_ARN"
+  },
+  {
+    "ParameterKey": "TlsSecretArn",
+    "ParameterValue": "REPLACE_WITH_TLS_SECRET_ARN"
+  },
+  {
+    "ParameterKey": "MasterDbPasswordSecretArn",
+    "ParameterValue": "REPLACE_WITH_MASTER_DB_PASSWORD_SECRET_ARN"
+  },
+  {
+    "ParameterKey": "DatabaseUsername",
+    "ParameterValue": "launchcrew_master"
+  },
+  {
+    "ParameterKey": "BudgetLimitUsd",
+    "ParameterValue": "REPLACE_WITH_SUMMIT_CHOSEN_CAP_AFTER_ESTIMATE"
+  }
+]

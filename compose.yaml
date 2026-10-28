@@ -22,9 +22,23 @@ services:
     image: localhost/launchcrew-api:demo
     environment:
       DATABASE_URL: postgresql://postgres@db:5432/launchcrew
+      LAUNCHCREW_DB_TLS_MODE: local
       AUTH_ENABLED: 'false'
       PUBLIC_BASE_URL: http://127.0.0.1:3001
     ports: ['127.0.0.1:8001:8000']
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+  migrate:
+    build:
+      context: .
+      dockerfile: containers/migrate.Containerfile
+    image: localhost/launchcrew-migrate:demo
+    environment:
+      DATABASE_URL: postgresql://postgres@db:5432/launchcrew
+      LAUNCHCREW_DB_TLS_MODE: local
     depends_on:
       db:
         condition: service_healthy
