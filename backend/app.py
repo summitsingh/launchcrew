@@ -621,7 +621,7 @@ def photo_check(run_id: str, body: PhotoCheckIn, actor: str = Depends(auth.actor
             db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id'),
                        {'receipt': json.dumps(revised), 'state': revised['approval_state'], 'id': run_id})
             db.execute(text('DELETE FROM approvals WHERE run_id=:id'), {'id': run_id})
-            store.audit(db, run_id, 'photo_checked', actor)
+            store.audit(db, run_id, 'photo_check_requested', actor)
         kept = photo_status_of(revised)
         check = PhotoCheckOut(method='not_run', label=None, reason=kept['reason'],
                               policy_version=PHOTO_POLICY_VERSION,

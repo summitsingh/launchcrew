@@ -239,7 +239,9 @@ def test_remove_photo_clears_and_requires_reapprove(client):
     assert reread['photo_status']['state'] == 'no_photo'
     assert [entry.get('photo_event') for entry in reread['revision_history'][-2:]] == ['photo_checked', 'photo_removed']
     assert reread['revision_history'][:len(history_before)] == history_before
-    assert 'human_draft' not in reread
+    # The shared Receipt DTO serializes an absent human draft as null; the
+    # meaningful claim is that removal fabricates no human draft content.
+    assert reread.get('human_draft') is None
     assert reread['maker_draft_v2'] == check.json()['receipt']['maker_draft_v2']
     assert client.post('/api/runs/%s/approve' % run_id, json={'expected_revision': 2}).status_code == 200
     exported = client.post('/api/runs/%s/export' % run_id, json={'expected_revision': 2})

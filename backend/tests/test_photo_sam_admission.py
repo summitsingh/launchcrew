@@ -307,8 +307,47 @@ def test_concurrent_duplicate_admits_one_paid_sequence(client, monkeypatch):
         for thread in threads:
             thread.join()
     assert sorted(results) == [200, 200]
+    # Transport barrier: exactly one upload and one segmentation total for
+    # the duplicate pair; the loser replays pending with zero HTTP.
     assert len([url for url in calls if url.endswith('/files')]) == 1
+    assert len([url for url in calls if url.endswith('/responses')]) == 1
+    assert len(calls) == 2
     assert _budget() == 0
+
+
+def test_crash_ledger_replay_sends_nothing_and_stays_pending(client, monkeypatch):
+    run_id = _make_run(client)
+    raw = _png_bytes()
+    _approve_bytes(monkeypatch, raw)
+    _grant(1)
+    digest = hashlib.sha256(raw).hexdigest()
+    # Simulate a crash between admission and finalization: the ledger row
+    # plus budget decrement commit, but transport never runs.
+    row = photo_admission.admit_photo_check(store.engine(), run_id, 0, digest, 0, actor='demo_placeholder')
+    assert row['status'] == 'admitted' and row['is_owner'] is True
+    assert _budget() == 0
+    calls = []
+
+    def no_resend(request, timeout):
+        calls.append(request.full_url)
+        return _stream_text(CLEAR_TAG)
+
+    with patch('backend.sam.urlopen', side_effect=no_resend):
+        response = client.post('/api/runs/%s/photo-check' % run_id,
+                               json={'image_data_uri': _data_uri(raw), 'expected_revision': 0})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    # Pending and honest: no finished verdict is faked while in flight.
+    assert body['check']['label'] is None
+    assert body['check']['reason'] == 'check_requested: segmentation in flight'
+    assert body['check']['photo_state'] == 'check_requested'
+    assert body['preview'] is None
+    assert calls == []
+    assert _budget() == 0
+    with store.connect() as db:
+        status = db.execute(text('SELECT status FROM sam_calls')).scalar()
+    assert status == 'admitted'
+    assert client.post('/api/runs/%s/approve' % run_id, json={'expected_revision': 1}).status_code == 422
 
 
 def test_upload_failure_prevents_sam_and_never_resends(client, monkeypatch):
@@ -433,16 +472,45 @@ def test_stale_paid_version_returns_409(client, monkeypatch):
 
 
 def test_budget_migration_defaults_zero_and_rejects_negative(test_engine):
-    with test_engine.begin() as connection:
-        rows = connection.execute(text("SELECT id, remaining_images FROM sam_budget")).all()
-    assert rows == [('global', 0)]
-    with pytest.raises(Exception):
-        with test_engine.begin() as connection:
-            connection.execute(text("UPDATE sam_budget SET remaining_images=-1 WHERE id='global'"))
-    photo_admission.set_budget_remaining(test_engine, 2)
-    with test_engine.begin() as connection:
-        assert connection.execute(text("SELECT remaining_images FROM sam_budget WHERE id='global'")).scalar() == 2
-    photo_admission.set_budget_remaining(test_engine, 0)
+    """Prove the migration default on actually fresh migration state.
+
+    The shared ``test_engine`` schema carries budget grants from earlier
+    tests, so asserting the default on it would confuse the fixture reset
+    with the migration proof. Migrate a fresh schema instead.
+    """
+    import os
+    from uuid import uuid4 as _uuid4
+    from alembic import command as _alembic_command
+    from alembic.config import Config as _AlembicConfig
+    from sqlalchemy import create_engine as _make_engine
+    url = os.environ['DATABASE_URL'].replace('postgresql://', 'postgresql+psycopg://', 1)
+    schema = 'test_budget_mig_' + _uuid4().hex
+    admin = _make_engine(url)
+    original_engine = store.engine
+    try:
+        with admin.begin() as connection:
+            connection.execute(text('CREATE SCHEMA ' + schema))
+        fresh = _make_engine(url, connect_args={'options': '-csearch_path=' + schema})
+        try:
+            store.engine = lambda: fresh
+            _alembic_command.upgrade(_AlembicConfig('alembic.ini'), 'head')
+            with fresh.begin() as connection:
+                rows = connection.execute(text("SELECT id, remaining_images FROM sam_budget")).all()
+            assert rows == [('global', 0)]
+            with pytest.raises(Exception):
+                with fresh.begin() as connection:
+                    connection.execute(text("UPDATE sam_budget SET remaining_images=-1 WHERE id='global'"))
+            photo_admission.set_budget_remaining(fresh, 2)
+            with fresh.begin() as connection:
+                assert connection.execute(text("SELECT remaining_images FROM sam_budget WHERE id='global'")).scalar() == 2
+            photo_admission.set_budget_remaining(fresh, 0)
+        finally:
+            store.engine = original_engine
+            fresh.dispose()
+    finally:
+        with admin.begin() as connection:
+            connection.execute(text('DROP SCHEMA ' + schema + ' CASCADE'))
+        admin.dispose()
 
 
 def test_failed_run_cannot_attach(client, monkeypatch):
