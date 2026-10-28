@@ -142,6 +142,75 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/campaigns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Campaigns */
+        get: operations["list_campaigns_api_campaigns_get"];
+        put?: never;
+        /** Create Campaign */
+        post: operations["create_campaign_api_campaigns_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Campaign */
+        get: operations["get_campaign_api_campaigns__campaign_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/days/{day}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Approve Campaign Day */
+        post: operations["approve_campaign_day_api_campaigns__campaign_id__days__day__approve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/campaigns/{campaign_id}/days/{day}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Export Campaign Day */
+        post: operations["export_campaign_day_api_campaigns__campaign_id__days__day__export_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/health": {
         parameters: {
             query?: never;
@@ -154,6 +223,60 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/memory": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Memory */
+        get: operations["list_memory_api_memory_get"];
+        put?: never;
+        /** Create Memory */
+        post: operations["create_memory_api_memory_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/memory/from-run/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Learn Memory */
+        post: operations["learn_memory_api_memory_from_run__run_id__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/memory/{item_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Memory */
+        get: operations["get_memory_api_memory__item_id__get"];
+        /** Edit Memory */
+        put: operations["edit_memory_api_memory__item_id__put"];
+        post?: never;
+        /** Delete Memory */
+        delete: operations["delete_memory_api_memory__item_id__delete"];
         options?: never;
         head?: never;
         patch?: never;
@@ -187,6 +310,23 @@ export interface paths {
         put?: never;
         /** Create Run */
         post: operations["create_run_api_runs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_a}/diff/{run_b}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Replay Diff */
+        get: operations["replay_diff_api_runs__run_a__diff__run_b__get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -274,6 +414,40 @@ export interface components {
             /** Timestamp */
             timestamp: string;
         };
+        /** CampaignDay */
+        CampaignDay: {
+            /**
+             * Approval State
+             * @enum {string}
+             */
+            approval_state: "pending_approval" | "approved_for_export";
+            /** Checker V2 Blocked Count */
+            checker_v2_blocked_count: number | null;
+            /** Day */
+            day: number;
+            /** Idea */
+            idea: string;
+            /** Run Id */
+            run_id: string;
+            /** Status */
+            status: string;
+        };
+        /** CampaignOut */
+        CampaignOut: {
+            /** Agent Name */
+            agent_name: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Days */
+            days: components["schemas"]["CampaignDay"][];
+            /** Id */
+            id: string;
+            /** Idea */
+            idea: string;
+        };
         /** Check */
         Check: {
             /** Blocked Claims */
@@ -312,6 +486,67 @@ export interface components {
         Idea: {
             /** Idea */
             idea: string;
+        };
+        /** LearnMemory */
+        LearnMemory: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "approval_example" | "blocked_rule";
+        };
+        /** MemoryItemEdit */
+        MemoryItemEdit: {
+            /** Content */
+            content: {
+                [key: string]: unknown;
+            };
+            /** Kind */
+            kind?: ("brand_fact" | "profile" | "approval_example" | "blocked_rule") | null;
+            /** Title */
+            title: string;
+        };
+        /** MemoryItemIn */
+        MemoryItemIn: {
+            /** Content */
+            content: {
+                [key: string]: unknown;
+            };
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "brand_fact" | "profile" | "approval_example" | "blocked_rule";
+            /** Title */
+            title: string;
+        };
+        /** MemoryItemOut */
+        MemoryItemOut: {
+            /** Content */
+            content: {
+                [key: string]: unknown;
+            };
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Id */
+            id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "brand_fact" | "profile" | "approval_example" | "blocked_rule";
+            /** Source Run Id */
+            source_run_id: string | null;
+            /** Title */
+            title: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
         };
         /** Preview */
         Preview: {
@@ -394,6 +629,67 @@ export interface components {
             };
         } & {
             [key: string]: unknown;
+        };
+        /** RunDiff */
+        RunDiff: {
+            /** Approval State A */
+            approval_state_a: string;
+            /** Approval State B */
+            approval_state_b: string;
+            /** Approval State Changed */
+            approval_state_changed: boolean;
+            /** Blocked Claims Only In A */
+            blocked_claims_only_in_a: {
+                [key: string]: string;
+            }[];
+            /** Blocked Claims Only In B */
+            blocked_claims_only_in_b: {
+                [key: string]: string;
+            }[];
+            /** Checker V1 Blocked Count A */
+            checker_v1_blocked_count_a: number | null;
+            /** Checker V1 Blocked Count B */
+            checker_v1_blocked_count_b: number | null;
+            /** Checker V2 Blocked Count A */
+            checker_v2_blocked_count_a: number | null;
+            /** Checker V2 Blocked Count B */
+            checker_v2_blocked_count_b: number | null;
+            /** Draft V1 Email Changed */
+            draft_v1_email_changed: boolean;
+            /** Draft V1 Post A */
+            draft_v1_post_a: string | null;
+            /** Draft V1 Post B */
+            draft_v1_post_b: string | null;
+            /** Draft V1 Post Changed */
+            draft_v1_post_changed: boolean;
+            /** Draft V2 Email A */
+            draft_v2_email_a: string | null;
+            /** Draft V2 Email B */
+            draft_v2_email_b: string | null;
+            /** Draft V2 Email Changed */
+            draft_v2_email_changed: boolean;
+            /** Draft V2 Post A */
+            draft_v2_post_a: string | null;
+            /** Draft V2 Post B */
+            draft_v2_post_b: string | null;
+            /** Draft V2 Post Changed */
+            draft_v2_post_changed: boolean;
+            /** Idea */
+            idea: string;
+            /** Receipt Keys Only In A */
+            receipt_keys_only_in_a: string[];
+            /** Receipt Keys Only In B */
+            receipt_keys_only_in_b: string[];
+            /** Run A Id */
+            run_a_id: string;
+            /** Run B Id */
+            run_b_id: string;
+            /** Same Idea */
+            same_idea: boolean;
+            /** Status A */
+            status_a: string;
+            /** Status B */
+            status_b: string;
         };
         /** RunInput */
         RunInput: {
@@ -724,6 +1020,162 @@ export interface operations {
             };
         };
     };
+    list_campaigns_api_campaigns_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignOut"][];
+                };
+            };
+        };
+    };
+    create_campaign_api_campaigns_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunInput"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_campaign_api_campaigns__campaign_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CampaignOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    approve_campaign_day_api_campaigns__campaign_id__days__day__approve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+                day: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Empty"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Receipt"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_campaign_day_api_campaigns__campaign_id__days__day__export_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+                day: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Empty"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Receipt"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     health_api_health_get: {
         parameters: {
             query?: never;
@@ -742,6 +1194,189 @@ export interface operations {
                     "application/json": {
                         [key: string]: string;
                     };
+                };
+            };
+        };
+    };
+    list_memory_api_memory_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryItemOut"][];
+                };
+            };
+        };
+    };
+    create_memory_api_memory_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryItemIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryItemOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    learn_memory_api_memory_from_run__run_id__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LearnMemory"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryItemOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_memory_api_memory__item_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryItemOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    edit_memory_api_memory__item_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MemoryItemEdit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryItemOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_memory_api_memory__item_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -786,6 +1421,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Receipt"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    replay_diff_api_runs__run_a__diff__run_b__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_a: string;
+                run_b: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunDiff"];
                 };
             };
             /** @description Validation Error */
