@@ -30,6 +30,7 @@ function receipt(overrides: Record<string, unknown> = {}): Receipt {
     approvals: [],
     revision: 0,
     revision_history: [],
+    export_history: [],
     summary: { submit_attempted: false },
     audit: {},
     stage_bindings: { scout: 'Scout', maker: 'Maker', checker: 'Checker' },

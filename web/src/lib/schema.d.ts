@@ -452,6 +452,11 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** ApproveIn */
+        ApproveIn: {
+            /** Expected Revision */
+            expected_revision?: number | null;
+        };
         /** CampaignDay */
         CampaignDay: {
             /**
@@ -464,6 +469,8 @@ export interface components {
              * @enum {string}
              */
             approval_state: "pending_approval" | "approved_for_export";
+            /** Approved Revision */
+            approved_revision?: number | null;
             /**
              * Brief
              * @default
@@ -477,6 +484,11 @@ export interface components {
             draft_v2_post?: string | null;
             /** Idea */
             idea: string;
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
             /** Run Id */
             run_id: string;
             /** Status */
@@ -545,6 +557,22 @@ export interface components {
             /** Post */
             post: string;
         };
+        /** ExportEvent */
+        ExportEvent: {
+            /** Exported By */
+            exported_by?: string | null;
+            /** Revision */
+            revision?: number | null;
+            /** Timestamp */
+            timestamp?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** ExportIn */
+        ExportIn: {
+            /** Expected Revision */
+            expected_revision?: number | null;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -561,6 +589,8 @@ export interface components {
             email: string;
             /** Post */
             post: string;
+            /** Revised At */
+            revised_at?: string | null;
             /** Revised By */
             revised_by?: string | null;
             /** Revision */
@@ -792,6 +822,11 @@ export interface components {
             checker_profile: string;
             checker_v1?: components["schemas"]["Check"] | null;
             checker_v2?: components["schemas"]["Check"] | null;
+            /**
+             * Export History
+             * @default []
+             */
+            export_history: components["schemas"]["ExportEvent"][];
             /** Exported Draft */
             exported_draft?: components["schemas"]["Draft"] | components["schemas"]["HumanDraft"] | null;
             /** Exported Revision */
@@ -803,6 +838,10 @@ export interface components {
              * @default
              */
             idea: string;
+            /** Last Exported At */
+            last_exported_at?: string | null;
+            /** Last Exported By */
+            last_exported_by?: string | null;
             maker_draft_v1?: components["schemas"]["Draft"] | null;
             maker_draft_v2?: components["schemas"]["Draft"] | null;
             /**
@@ -846,10 +885,7 @@ export interface components {
         };
         /** ReviseIn */
         ReviseIn: {
-            /**
-             * Base Revision
-             * @default 0
-             */
+            /** Base Revision */
             base_revision: number;
             /** Email */
             email: string;
@@ -858,6 +894,8 @@ export interface components {
         };
         /** RevisionHistoryEntry */
         RevisionHistoryEntry: {
+            /** Approval State */
+            approval_state?: string | null;
             /**
              * Approvals
              * @default []
@@ -865,10 +903,36 @@ export interface components {
             approvals: components["schemas"]["Approval"][];
             /** Approved Revision */
             approved_revision?: number | null;
+            /** Blocked Claims */
+            blocked_claims?: string[] | null;
+            /** Check */
+            check?: {
+                [key: string]: unknown;
+            } | null;
+            /** Checker Policies */
+            checker_policies?: string[] | null;
+            /** Checker Profile */
+            checker_profile?: string | null;
+            /** Draft */
+            draft?: {
+                [key: string]: unknown;
+            } | null;
+            /** Memory Used */
+            memory_used?: {
+                [key: string]: unknown;
+            }[] | null;
             /** Outcome */
             outcome?: string | null;
+            /** Revised At */
+            revised_at?: string | null;
+            /** Revised By */
+            revised_by?: string | null;
             /** Revision */
             revision?: number | null;
+            /** Stage Bindings */
+            stage_bindings?: {
+                [key: string]: string;
+            } | null;
             /** Superseded By */
             superseded_by?: number | null;
         } & {
@@ -1472,9 +1536,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
+                "application/json": components["schemas"]["ApproveIn"];
             };
         };
         responses: {
@@ -1510,9 +1572,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
+                "application/json": components["schemas"]["ExportIn"];
             };
         };
         responses: {
@@ -1888,9 +1948,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
+                "application/json": components["schemas"]["ApproveIn"];
             };
         };
         responses: {
@@ -1925,9 +1983,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": {
-                    [key: string]: unknown;
-                };
+                "application/json": components["schemas"]["ExportIn"];
             };
         };
         responses: {

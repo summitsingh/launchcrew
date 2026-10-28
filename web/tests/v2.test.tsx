@@ -5,7 +5,7 @@ import { CampaignDayCard, CampaignView, DiffResult, ReplayView } from '../src/co
 import { canApproveDay, canExportDay } from '../src/lib/v2';
 import type { components } from '../src/lib/schema';
 
-const day: components['schemas']['CampaignDay'] = { day: 1, run_id: 'run_demo', approval_state: 'pending_approval', status: 'completed', checker_v2_blocked_count: 0, idea: 'Demo wallet', angle: 'Origin story', brief: 'Designed in Texas for Austin commuters', draft_v2_post: 'Vegan leather wallet, designed in Texas.' };
+const day: components['schemas']['CampaignDay'] = { day: 1, run_id: 'run_demo', approval_state: 'pending_approval', status: 'completed', checker_v2_blocked_count: 0, idea: 'Demo wallet', angle: 'Origin story', brief: 'Designed in Texas for Austin commuters', draft_v2_post: 'Vegan leather wallet, designed in Texas.', revision: 0 };
 const noop = () => {};
 function card(value: typeof day, busy = false) { return renderToStaticMarkup(<CampaignDayCard day={value} busy={busy} approve={noop} download={noop} />); }
 

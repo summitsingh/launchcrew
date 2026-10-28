@@ -7,7 +7,7 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from backend import adapter, store, auth
@@ -82,16 +82,34 @@ class HumanDraft(BaseModel):
     email: str
     claims: list[str] = []
     revised_by: str | None = None
+    revised_at: str | None = None
     revision: int | None = None
 
 
 class RevisionHistoryEntry(BaseModel):
     model_config = ConfigDict(extra='allow')
     revision: int | None = None
+    draft: dict[str, Any] | None = None
+    check: dict[str, Any] | None = None
+    approval_state: str | None = None
     approvals: list[Approval] = []
     approved_revision: int | None = None
+    checker_profile: str | None = None
+    checker_policies: list[str] | None = None
+    blocked_claims: list[str] | None = None
+    stage_bindings: dict[str, str] | None = None
+    memory_used: list[dict[str, Any]] | None = None
+    revised_by: str | None = None
+    revised_at: str | None = None
     superseded_by: int | None = None
     outcome: str | None = None
+
+
+class ExportEvent(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    revision: int | None = None
+    exported_by: str | None = None
+    timestamp: str | None = None
 
 
 class ScoutFact(BaseModel):
@@ -145,6 +163,9 @@ class Receipt(BaseModel):
     revision_history: list[RevisionHistoryEntry] = []
     exported_draft: Draft | HumanDraft | None = None
     exported_revision: int | None = None
+    export_history: list[ExportEvent] = []
+    last_exported_by: str | None = None
+    last_exported_at: str | None = None
     maker_draft_v1: Draft | None = None
     maker_draft_v2: Draft | None = None
     checker_v1: Check | None = None
@@ -368,7 +389,15 @@ def get_run(run_id: str, actor: str = Depends(auth.actor)):
 class ReviseIn(Strict):
     post: str = Field(min_length=1, max_length=2000)
     email: str = Field(min_length=1, max_length=2000)
-    base_revision: int = Field(default=0, ge=0)
+    base_revision: StrictInt = Field(ge=0)
+
+
+class ApproveIn(Strict):
+    expected_revision: StrictInt | None = Field(default=None, ge=0)
+
+
+class ExportIn(Strict):
+    expected_revision: StrictInt | None = Field(default=None, ge=0)
 
 
 @app.post('/api/runs/{run_id}/revise', response_model=Receipt)
@@ -377,7 +406,7 @@ def revise(run_id: str, body: ReviseIn, actor: str = Depends(auth.actor)):
     with store.connect() as db:
         receipt = get_receipt(db, run_id, True)
         try:
-            revised = human_review.apply_revision(receipt, body.post.strip(), body.email.strip(), actor, int(body.base_revision))
+            revised = human_review.apply_revision(receipt, body.post.strip(), body.email.strip(), actor, body.base_revision)
         except human_review.NeedsRevision as error:
             raise HTTPException(422, {'message': str(error), 'blocked_claims': error.check['blocked_claims'],
                                       'revision_instructions': error.check['revision_instructions'],
@@ -394,17 +423,15 @@ def revise(run_id: str, body: ReviseIn, actor: str = Depends(auth.actor)):
 
 
 @app.post('/api/runs/{run_id}/approve', response_model=Receipt)
-def approve(run_id: str, body: dict, actor: str = Depends(auth.actor)):
+def approve(run_id: str, body: ApproveIn, actor: str = Depends(auth.actor)):
+    from launchcrew import human_review
     with store.connect() as db:
         receipt = get_receipt(db, run_id, True)
-        expected = body.get('expected_revision') if isinstance(body, dict) else None
-        if expected is not None:
-            try:
-                expected = int(expected)
-            except (TypeError, ValueError):
-                raise HTTPException(422, 'expected_revision must be an integer')
-            if expected < 0:
-                raise HTTPException(422, 'expected_revision must be an integer')
+        expected = body.expected_revision
+        if human_review.current_revision(receipt) > 0 and expected is None:
+            raise HTTPException(409, 'Approval is stale; expected_revision is required for edited revisions')
+        if expected is not None and expected != human_review.current_revision(receipt):
+            raise HTTPException(409, 'Approval is stale; the draft changed')
         try:
             receipts.approve_receipt(receipt, actor, expected)
         except ValueError as error:
@@ -419,24 +446,22 @@ def approve(run_id: str, body: dict, actor: str = Depends(auth.actor)):
 
 
 @app.post('/api/runs/{run_id}/export', response_model=Receipt)
-def export(run_id: str, body: dict, actor: str = Depends(auth.actor)):
+def export(run_id: str, body: ExportIn, actor: str = Depends(auth.actor)):
     with store.connect() as db:
         from launchcrew import human_review
         receipt = get_receipt(db, run_id, True)
-        expected = body.get('expected_revision') if isinstance(body, dict) else None
-        if expected is not None:
-            try:
-                expected = int(expected)
-            except (TypeError, ValueError):
-                raise HTTPException(422, 'expected_revision must be an integer')
-            if expected != human_review.current_revision(receipt):
-                raise HTTPException(409, 'Export is stale; the draft changed')
+        expected = body.expected_revision
+        if human_review.current_revision(receipt) > 0 and expected is None:
+            raise HTTPException(409, 'Export is stale; expected_revision is required for edited revisions')
+        if expected is not None and expected != human_review.current_revision(receipt):
+            raise HTTPException(409, 'Export is stale; the draft changed')
         try:
-            data = json.loads(adapter.export_pack(receipt))
+            exported = human_review.record_export(receipt, actor)
         except ValueError as error:
             raise HTTPException(422, str(error))
+        db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id'), {'receipt': json.dumps(exported), 'state': exported['approval_state'], 'id': run_id})
         store.audit(db, run_id, 'exported', actor)
-    return JSONResponse(data, headers={'Content-Disposition': 'attachment; filename="launchcrew-pack.json"'})
+    return JSONResponse(exported, headers={'Content-Disposition': 'attachment; filename="launchcrew-pack.json"'})
 
 
 MemoryKind = Literal['brand_fact', 'profile', 'approval_example', 'blocked_rule']
@@ -650,6 +675,8 @@ class CampaignDay(Strict):
     angle: str = ''
     brief: str = ''
     draft_v2_post: str | None = None
+    revision: int = 0
+    approved_revision: int | None = None
 
 
 class CampaignOut(Strict):
@@ -674,7 +701,9 @@ def campaign_detail(db, campaign_id):
         result['days'].append({'day': day, 'run_id': receipt['run_id'], 'approval_state': receipt['approval_state'],
                                'status': receipt['status'], 'checker_v2_blocked_count': (check or {}).get('blocked_count'),
                                'idea': receipt.get('idea', ''), 'angle': angle, 'brief': brief,
-                               'draft_v2_post': (current or {}).get('post')})
+                               'draft_v2_post': (current or {}).get('post'),
+                               'revision': human_review.current_revision(receipt),
+                               'approved_revision': receipt.get('approved_revision')})
     return result
 
 
@@ -722,10 +751,10 @@ def campaign_run(campaign_id, day):
 
 
 @app.post('/api/campaigns/{campaign_id}/days/{day}/approve', response_model=Receipt)
-def approve_campaign_day(campaign_id: str, day: int, body: dict, actor: str = Depends(auth.actor)):
+def approve_campaign_day(campaign_id: str, day: int, body: ApproveIn, actor: str = Depends(auth.actor)):
     return approve(campaign_run(campaign_id, day), body, actor)
 
 
 @app.post('/api/campaigns/{campaign_id}/days/{day}/export', response_model=Receipt)
-def export_campaign_day(campaign_id: str, day: int, body: dict, actor: str = Depends(auth.actor)):
+def export_campaign_day(campaign_id: str, day: int, body: ExportIn, actor: str = Depends(auth.actor)):
     return export(campaign_run(campaign_id, day), body, actor)

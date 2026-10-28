@@ -37,10 +37,25 @@ def _sentences(post, email):
 
 def current_revision(receipt):
     try:
-        value = int(receipt.get('revision', 0) or 0)
+        raw = receipt.get('revision', 0)
+        if isinstance(raw, bool):
+            return 0
+        value = int(raw or 0)
     except (TypeError, ValueError):
         return 0
     return value if value >= 0 else 0
+
+
+def _entry_sourced(entry):
+    sources = entry.get('sources')
+    if isinstance(sources, list) and any(isinstance(s, str) and s.strip() for s in sources):
+        return True
+    evidence = entry.get('evidence')
+    if isinstance(evidence, str) and evidence.strip():
+        return True
+    if isinstance(evidence, list) and any(isinstance(s, str) and s.strip() for s in evidence):
+        return True
+    return False
 
 
 def snapshot_allowlist(receipt):
@@ -48,8 +63,9 @@ def snapshot_allowlist(receipt):
     facts_used = scout.get('facts_used') if isinstance(scout, dict) else None
     if isinstance(facts_used, list) and facts_used:
         allowlist = [entry.get('claim') for entry in facts_used
-                     if isinstance(entry, dict) and entry.get('verified')
-                     and isinstance(entry.get('claim'), str) and entry['claim'].strip()]
+                     if isinstance(entry, dict) and entry.get('verified') is True
+                     and isinstance(entry.get('claim'), str) and entry['claim'].strip()
+                     and _entry_sourced(entry)]
         if allowlist:
             return allowlist
     return None
@@ -58,9 +74,11 @@ def snapshot_allowlist(receipt):
 def snapshot_sources(receipt):
     scout = receipt.get('scout') or {}
     sources = scout.get('sources') if isinstance(scout, dict) else None
-    if isinstance(sources, list) and all(isinstance(s, str) for s in sources) and sources:
-        return list(sources)
-    return ['demo_facts.json']
+    if isinstance(sources, list) and sources:
+        cleaned = [s for s in sources if isinstance(s, str) and s.strip()]
+        if cleaned and len(cleaned) == len(sources):
+            return list(cleaned)
+    return None
 
 
 def snapshot_blocked(receipt):
@@ -93,9 +111,17 @@ def valid_revision_context(receipt):
         return False, 'Receipt unavailable'
     if receipt.get('status') == 'failed':
         return False, 'Failed runs cannot be edited into approved packs'
-    if receipt.get('maker_draft_v2') is None or receipt.get('checker_v2') is None:
+    if receipt.get('status') != 'completed':
+        return False, 'Run has no complete draft context to revise'
+    maker = receipt.get('maker_draft_v2')
+    checker = receipt.get('checker_v2')
+    if not isinstance(maker, dict) or not isinstance(maker.get('post'), str) or not isinstance(maker.get('email'), str):
+        return False, 'Run has no complete draft context to revise'
+    if not isinstance(checker, dict) or isinstance(checker.get('blocked_count'), bool) or not isinstance(checker.get('blocked_count'), int):
         return False, 'Run has no complete draft context to revise'
     if snapshot_allowlist(receipt) is None:
+        return False, 'Run has no verified fact snapshot to recheck against'
+    if snapshot_sources(receipt) is None:
         return False, 'Run has no verified fact snapshot to recheck against'
     return True, ''
 
@@ -144,11 +170,31 @@ def exportable(receipt):
     if receipt.get('approval_state') != 'approved_for_export':
         return False
     check = current_check(receipt)
-    if not isinstance(check, dict) or check.get('blocked_count', 1) != 0:
+    if not isinstance(check, dict) or isinstance(check.get('blocked_count'), bool) or check.get('blocked_count', 1) != 0:
         return False
     if current_revision(receipt) > 0:
-        return receipt.get('approved_revision') == current_revision(receipt)
+        approved = receipt.get('approved_revision')
+        if isinstance(approved, bool) or not isinstance(approved, int):
+            return False
+        return approved == current_revision(receipt)
     return True
+
+
+def _history_entry(receipt, previous, actor, now):
+    return {'revision': previous,
+            'draft': current_draft(receipt),
+            'check': copy.deepcopy(current_check(receipt)),
+            'approval_state': receipt.get('approval_state'),
+            'approvals': copy.deepcopy(list(receipt.get('approvals') or [])),
+            'approved_revision': receipt.get('approved_revision'),
+            'checker_profile': receipt.get('checker_profile'),
+            'checker_policies': copy.deepcopy(receipt.get('checker_policies')),
+            'blocked_claims': copy.deepcopy(receipt.get('blocked_claims')),
+            'stage_bindings': copy.deepcopy(receipt.get('stage_bindings')),
+            'memory_used': copy.deepcopy(receipt.get('memory_used')),
+            'revised_by': actor,
+            'revised_at': now,
+            'superseded_by': previous + 1, 'outcome': 'superseded_by_human_edit'}
 
 
 def apply_revision(receipt, post, email, actor, base_revision):
@@ -156,6 +202,8 @@ def apply_revision(receipt, post, email, actor, base_revision):
     ok, reason = valid_revision_context(receipt)
     if not ok:
         raise ValueError(reason)
+    if isinstance(base_revision, bool) or not isinstance(base_revision, int):
+        raise ValueError('base_revision must be an integer')
     if base_revision != current_revision(receipt):
         raise ValueError('Revision is stale; reload the latest draft before saving')
     check = recheck_text(post, email, receipt)
@@ -163,16 +211,13 @@ def apply_revision(receipt, post, email, actor, base_revision):
         raise NeedsRevision(check)
     revised = copy.deepcopy(receipt)
     previous = current_revision(revised)
+    now = timestamp()
     history = list(revised.get('revision_history') or [])
-    if revised.get('approval_state') == 'approved_for_export' or revised.get('approvals'):
-        history.append({'revision': previous,
-                        'approvals': list(revised.get('approvals') or []),
-                        'approved_revision': revised.get('approved_revision'),
-                        'superseded_by': previous + 1, 'outcome': 'superseded_by_human_edit'})
+    history.append(_history_entry(revised, previous, actor, now))
     sentences = _sentences(post, email)
     revised['revision'] = previous + 1
     revised['human_draft'] = {'post': post, 'email': email, 'claims': sentences,
-                              'revised_by': 'human', 'revision': previous + 1}
+                              'revised_by': actor, 'revised_at': now, 'revision': previous + 1}
     revised['human_check'] = check
     revised['revision_history'] = history
     revised['approvals'] = []
@@ -182,7 +227,7 @@ def apply_revision(receipt, post, email, actor, base_revision):
     events.append({'step': 'human_revision', 'agent': 'human',
                    'profile': actor or 'human',
                    'action': 'Saved human revision %d; recheck blocked_count=%d' % (previous + 1, check['blocked_count']),
-                   'timestamp': timestamp()})
+                   'timestamp': now, 'revision': previous + 1, 'revised_by': actor})
     revised.setdefault('audit', {})['event_log'] = events
     return revised
 
@@ -190,26 +235,58 @@ def apply_revision(receipt, post, email, actor, base_revision):
 def approve_current(receipt, actor, expected_revision=None):
     if receipt.get('status') == 'failed':
         raise ValueError('Approval requires a completed run')
+    if receipt.get('status') != 'completed':
+        raise ValueError('Approval requires a completed run')
     if receipt.get('approval_state') != 'pending_approval':
         raise ValueError('Run is not pending approval')
-    if expected_revision is not None and int(expected_revision) != current_revision(receipt):
-        raise ValueError('Approval is stale; the draft changed')
+    current = current_revision(receipt)
+    if current > 0 and expected_revision is None:
+        raise ValueError('Approval is stale; expected_revision is required for edited revisions')
+    if expected_revision is not None:
+        if isinstance(expected_revision, bool) or not isinstance(expected_revision, int):
+            raise ValueError('expected_revision must be an integer')
+        if int(expected_revision) != current:
+            raise ValueError('Approval is stale; the draft changed')
     ok, reason = valid_revision_context(receipt)
     if not ok:
         raise ValueError('Approval requires a completed run with draft context')
     check = current_check(receipt)
-    if not isinstance(check, dict) or check.get('blocked_count', 1) != 0:
+    if not isinstance(check, dict) or isinstance(check.get('blocked_count'), bool) or check.get('blocked_count', 1) != 0:
         raise ValueError('Approval requires a clean final check')
     revised = copy.deepcopy(receipt)
+    now = timestamp()
     revised['approvals'] = list(revised.get('approvals') or [])
     revised['approvals'].append({'approved_by': actor, 'action': 'approved_for_export',
-                                 'timestamp': timestamp(), 'revision': current_revision(revised)})
+                                 'timestamp': now, 'revision': current_revision(revised)})
     revised['approval_state'] = 'approved_for_export'
     revised['approved_revision'] = current_revision(revised)
     events = list((revised.get('audit') or {}).get('event_log') or [])
     events.append({'step': 'approval', 'agent': 'human', 'profile': actor or 'human',
                    'action': 'Approved revision %d for export' % current_revision(revised),
-                   'timestamp': timestamp()})
+                   'timestamp': now, 'revision': current_revision(revised), 'approved_by': actor})
+    revised.setdefault('audit', {})['event_log'] = events
+    return revised
+
+
+def record_export(receipt, actor):
+    """Persist actual export revision/actor/time onto a receipt copy."""
+    if not exportable(receipt):
+        raise ValueError('Export requires approval of the latest revision and a clean final check')
+    revised = copy.deepcopy(receipt)
+    now = timestamp()
+    rev = current_revision(revised)
+    draft = current_draft(revised)
+    revised['exported_draft'] = draft
+    revised['exported_revision'] = rev
+    history = list(revised.get('export_history') or [])
+    history.append({'revision': rev, 'exported_by': actor, 'timestamp': now})
+    revised['export_history'] = history
+    revised['last_exported_by'] = actor
+    revised['last_exported_at'] = now
+    events = list((revised.get('audit') or {}).get('event_log') or [])
+    events.append({'step': 'export', 'agent': 'human', 'profile': actor or 'human',
+                   'action': 'Exported revision %d for offline use' % rev,
+                   'timestamp': now, 'revision': rev, 'exported_by': actor})
     revised.setdefault('audit', {})['event_log'] = events
     return revised
 

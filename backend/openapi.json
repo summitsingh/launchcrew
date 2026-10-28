@@ -36,6 +36,25 @@
         "title": "Approval",
         "type": "object"
       },
+      "ApproveIn": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Revision"
+          }
+        },
+        "title": "ApproveIn",
+        "type": "object"
+      },
       "CampaignDay": {
         "additionalProperties": false,
         "properties": {
@@ -51,6 +70,17 @@
             ],
             "title": "Approval State",
             "type": "string"
+          },
+          "approved_revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved Revision"
           },
           "brief": {
             "default": "",
@@ -86,6 +116,11 @@
           "idea": {
             "title": "Idea",
             "type": "string"
+          },
+          "revision": {
+            "default": 0,
+            "title": "Revision",
+            "type": "integer"
           },
           "run_id": {
             "title": "Run Id",
@@ -278,6 +313,65 @@
         "title": "Draft",
         "type": "object"
       },
+      "ExportEvent": {
+        "additionalProperties": true,
+        "properties": {
+          "exported_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Exported By"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revision"
+          },
+          "timestamp": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timestamp"
+          }
+        },
+        "title": "ExportEvent",
+        "type": "object"
+      },
+      "ExportIn": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Revision"
+          }
+        },
+        "title": "ExportIn",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -309,6 +403,17 @@
           "post": {
             "title": "Post",
             "type": "string"
+          },
+          "revised_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revised At"
           },
           "revised_by": {
             "anyOf": [
@@ -847,6 +952,14 @@
               }
             ]
           },
+          "export_history": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ExportEvent"
+            },
+            "title": "Export History",
+            "type": "array"
+          },
           "exported_draft": {
             "anyOf": [
               {
@@ -896,6 +1009,28 @@
             "default": "",
             "title": "Idea",
             "type": "string"
+          },
+          "last_exported_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Exported At"
+          },
+          "last_exported_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Exported By"
           },
           "maker_draft_v1": {
             "anyOf": [
@@ -1015,7 +1150,6 @@
         "additionalProperties": false,
         "properties": {
           "base_revision": {
-            "default": 0,
             "minimum": 0.0,
             "title": "Base Revision",
             "type": "integer"
@@ -1035,7 +1169,8 @@
         },
         "required": [
           "post",
-          "email"
+          "email",
+          "base_revision"
         ],
         "title": "ReviseIn",
         "type": "object"
@@ -1043,6 +1178,17 @@
       "RevisionHistoryEntry": {
         "additionalProperties": true,
         "properties": {
+          "approval_state": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval State"
+          },
           "approvals": {
             "default": [],
             "items": {
@@ -1062,6 +1208,84 @@
             ],
             "title": "Approved Revision"
           },
+          "blocked_claims": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blocked Claims"
+          },
+          "check": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Check"
+          },
+          "checker_policies": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checker Policies"
+          },
+          "checker_profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checker Profile"
+          },
+          "draft": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Draft"
+          },
+          "memory_used": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory Used"
+          },
           "outcome": {
             "anyOf": [
               {
@@ -1073,6 +1297,28 @@
             ],
             "title": "Outcome"
           },
+          "revised_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revised At"
+          },
+          "revised_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revised By"
+          },
           "revision": {
             "anyOf": [
               {
@@ -1083,6 +1329,20 @@
               }
             ],
             "title": "Revision"
+          },
+          "stage_bindings": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Bindings"
           },
           "superseded_by": {
             "anyOf": [
@@ -2154,9 +2414,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "additionalProperties": true,
-                "title": "Body",
-                "type": "object"
+                "$ref": "#/components/schemas/ApproveIn"
               }
             }
           },
@@ -2214,9 +2472,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "additionalProperties": true,
-                "title": "Body",
-                "type": "object"
+                "$ref": "#/components/schemas/ExportIn"
               }
             }
           },
@@ -2675,9 +2931,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "additionalProperties": true,
-                "title": "Body",
-                "type": "object"
+                "$ref": "#/components/schemas/ApproveIn"
               }
             }
           },
@@ -2726,9 +2980,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "additionalProperties": true,
-                "title": "Body",
-                "type": "object"
+                "$ref": "#/components/schemas/ExportIn"
               }
             }
           },

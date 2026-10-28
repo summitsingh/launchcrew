@@ -17,6 +17,7 @@ function receipt(overrides: Record<string, unknown> = {}): Receipt {
     approvals: [],
     revision: 0,
     revision_history: [],
+    export_history: [],
     summary: { submit_attempted: false },
     audit: { event_log: [{ step: 'checker_v2', agent: 'Checker', profile: 'Checker', action: 'Rechecked', timestamp: '2026-01-01T00:00:00Z' }] },
     maker_draft_v2: { post: 'Maker post', email: 'Maker email', claims: [] },
@@ -55,6 +56,23 @@ describe('human revision helpers', () => {
     expect(html).toContain('checker_v2');
     expect(html).toContain('2026-01-01T00:00:00Z');
     expect(html).toContain('No times are invented');
+  });
+
+  it('shows superseded revisions with actor/time and actual exports', () => {
+    const html = renderToStaticMarkup(
+      <ReceiptTimeline
+        receipt={receipt({
+          revision: 1,
+          revision_history: [{ revision: 0, superseded_by: 1, revised_by: 'demo_placeholder', revised_at: '2026-01-02T00:00:00Z', approvals: [] }],
+          export_history: [{ revision: 1, exported_by: 'demo_placeholder', timestamp: '2026-01-03T00:00:00Z' }],
+          audit: { event_log: [{ step: 'export', agent: 'human', profile: 'demo_placeholder', action: 'Exported revision 1 for offline use', timestamp: '2026-01-03T00:00:00Z', revision: 1 }] },
+        })}
+      />,
+    );
+    expect(html).toContain('Superseded revisions');
+    expect(html).toContain('revised by demo_placeholder');
+    expect(html).toContain('Exported revision 1 by demo_placeholder');
+    expect(html).toContain('export');
   });
 
   it('disables the editor on failed runs', () => {
