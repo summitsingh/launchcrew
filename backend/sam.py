@@ -105,7 +105,7 @@ def verify_demo_photo(photo=None, *, enabled=False):
         if not isinstance(file_id, str) or not file_id:
             raise ValueError('Missing file id')
         payload = {'model': 'sam-3.1', 'input': [{'type': 'message', 'role': 'user', 'content': [
-            {'type': 'input_text', 'text': 'wallet'}, {'type': 'input_image', 'file_id': file_id}]}],
+            {'type': 'input_text', 'text': 'jacket'}, {'type': 'input_image', 'file_id': file_id}]}],
             'stream': True, 'metadata': {'mask_encoding': 'lossless'}}
         with send('/responses', json.dumps(payload).encode(), 'application/json') as response:
             def bounded_lines():
