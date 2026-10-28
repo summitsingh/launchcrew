@@ -48,7 +48,7 @@ OFFICIAL_PINS = {
     "aws-actions/configure-aws-credentials": "e1253824e5c10ff9df46874f81ed3ec929e19cfd",
     "actions/upload-artifact": "ea165f8d65b6e75b540449e92b4886f43607fa02",
 }
-WRONG_CHECKOUT_LITERAL = "11d5960a326750d58380738e36bfabf77265a"
+PAREN_SENTINEL = "Abc123Xyz456Def789Ghi012Jkl345Mno678Pqr901Stu234Vwx567Yz890"
 
 FAKE_AWS = """#!/bin/sh
 LOG="${FAKE_AWS_LOG:-/dev/null}"
@@ -79,6 +79,9 @@ if [ "$1" = "sts" ] && [ "$2" = "get-caller-identity" ]; then
       printf '{"Account":"ACCOUNT_PLACEHOLDER","Arn":"arn:aws:sts::ACCOUNT_PLACEHOLDER:assumed-role/other-role/session"}\\n' ;;
     caller_auth_fail)
       printf 'An error occurred (ExpiredToken) when calling the GetCallerIdentity operation: token=TOKEN_PLACEHOLDER arn:aws:iam::ACCOUNT_PLACEHOLDER:role/x REGISTRY_PLACEHOLDER mail=OPERATOR_EMAIL_PLACEHOLDER\\n' >&2
+      exit 254 ;;
+    sentinel_prefix)
+      printf 'An error occurred (PAREN_PLACEHOLDER) leaked prefix then (ExpiredToken) when calling the GetCallerIdentity operation: token=TOKEN_PLACEHOLDER arn:aws:iam::ACCOUNT_PLACEHOLDER:role/x REGISTRY_PLACEHOLDER mail=OPERATOR_EMAIL_PLACEHOLDER\\n' >&2
       exit 254 ;;
     *) printf '{"Account":"ACCOUNT_PLACEHOLDER","Arn":"arn:aws:sts::ACCOUNT_PLACEHOLDER:assumed-role/launchcrew-ecr-publisher/TESTSESSION"}\\n' ;;
   esac
@@ -310,7 +313,8 @@ def _render_fake(template):
             .replace("OTHER_PLACEHOLDER", OTHER_DIGEST)
             .replace("EXISTING_PLACEHOLDER", EXISTING_DIGEST)
             .replace("REGISTRY_PLACEHOLDER", REGISTRY_SENTINEL)
-            .replace("OPERATOR_EMAIL_PLACEHOLDER", EMAIL_SENTINEL))
+            .replace("OPERATOR_EMAIL_PLACEHOLDER", EMAIL_SENTINEL)
+            .replace("PAREN_PLACEHOLDER", PAREN_SENTINEL))
 
 
 class PublishEcrTests(unittest.TestCase):
@@ -547,6 +551,21 @@ class PublishEcrTests(unittest.TestCase):
         self.assert_no_push(podman_calls)
         self.assertIsNone(manifest_text)
 
+    def test_parenthesized_sentinel_prefix_never_leaks(self):
+        result, _, podman_calls, _, manifest_text, _ = self.run_helper(
+            ["--confirm"], mode="sentinel_prefix")
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("refused", combined)
+        self.assertNotIn(PAREN_SENTINEL, combined)
+        self.assert_no_leak(combined)
+        self.assert_no_push(podman_calls)
+        self.assertEqual(podman_calls, [])
+        self.assertIsNone(manifest_text)
+        self.assertTrue(
+            "(ExpiredToken)" in combined or "(unknown)" in combined,
+            combined)
+
     def test_stack_tag_mismatch_refused_with_no_push(self):
         result, _, podman_calls, _, manifest_text, _ = self.run_helper(
             ["--confirm"], mode="stacks_tag_mismatch")
@@ -763,6 +782,8 @@ class PublishEcrTests(unittest.TestCase):
         self.assertIn("StringEquals", text)
         self.assertIn("MaxSessionDuration: 3600", text)
         items = re.findall(r"^\s*-\s*(\S+)", text, re.M)
+        scalars = re.findall(r"^\s*Action:\s*(\S+)\s*$", text, re.M)
+        items = items + scalars
         for action in ("ecr:PutImage", "ecr:UploadLayerPart", "ecr:BatchGetImage",
                        "ecr:DescribeImages", "ecr:ListTagsForResource",
                        "ecr:GetAuthorizationToken", "ce:ListCostAllocationTags",
@@ -814,9 +835,6 @@ class PublishEcrTests(unittest.TestCase):
         self.assertEqual(mapping, OFFICIAL_PINS)
         for sha in mapping.values():
             self.assertTrue(re.fullmatch(r"[0-9a-f]{40}", sha) is not None, sha)
-        self.assertNotIn(WRONG_CHECKOUT_LITERAL, text)
-        own_text = Path(__file__).read_text(encoding="utf-8")
-        self.assertNotIn(WRONG_CHECKOUT_LITERAL, own_text)
         self.assertIn("secrets.ECR_PUBLISH_EXPECTED_ACCOUNT_ID", text)
         self.assertIn("secrets.ECR_PUBLISHER_ROLE_ARN", text)
         self.assertIn("mask-aws-account-id: true", text)

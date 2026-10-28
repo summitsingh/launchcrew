@@ -36,9 +36,10 @@ inputs are the full 40-char source SHA and the confirmation flag.
 The workflow refuses unless the input SHA equals the checked out
 origin/main SHA, the secrets are present with valid shapes, and the
 branch is main in the exact repository. It assumes the publisher role
-for 900 seconds with masked account IDs, temporary action-managed
-environment credentials for the subsequent AWS CLI steps, no step
-outputs, no persistent profiles, and no static keys, then runs
+for 900 seconds with masked account IDs,
+temporary action-managed environment credentials for the subsequent
+AWS CLI steps, no step outputs, no persistent profiles, and no static
+keys, then runs
 `scripts/publish-ecr.sh --confirm`, which revalidates every guard live
 (assumed role identity with root refused, owned stack proof, exact
 stack tags, CE Project Active UserDefined, five stack bindings,
@@ -77,9 +78,10 @@ Teardown of the demo stays in `deploy/aws/teardown.sh`.
 No push, pull request, schedule, or workflow event can publish.
 No `latest` tag, no force, no delete, no overwrite, no replay of an
 existing tag. The database image is built for local runs and never
-pushed. Errors carry fixed stage or error class text only: no raw AWS
-or Podman stderr, no IDs, no ARNs, no tokens, no emails, no registry
-URIs, no response bodies. The ECR password travels on stdin from the
+pushed. Errors carry fixed stage or allowlisted error class text
+only: no raw AWS or Podman stderr, no IDs, no ARNs, no tokens, no
+emails, no registry URIs, no response bodies. The ECR password
+travels on stdin from the
 AWS CLI to Podman only, never in argv, files, or output. The Podman
 auth file holds registry credentials as reversible credential storage
 on local disk during the run (private mode 600 inside an owned mode

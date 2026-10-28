@@ -10,17 +10,19 @@
 # presence refuses the run so a stale file can never pose as a fresh
 # receipt. This script never deploys anything.
 # Conventions: bash plus python3 for strict JSON parsing only. Error
-# output is fixed bounded stage or error class text only: raw AWS or
-# Podman stderr, account IDs, ARNs, tokens, registry URIs, emails, and
-# response bodies are never printed. The ECR password travels on stdin
+# output is fixed bounded stage or allowlisted error class text only:
+# raw AWS or Podman stderr, account IDs, ARNs, tokens, registry URIs,
+# emails, and response bodies are never printed. The ECR password
+# travels on stdin
 # from the AWS CLI to Podman only, never in argv, files, or output. The
 # Podman auth file is real reversible credential storage on local disk
 # during the run: private mode 600 inside an owned mode 700 temp dir,
 # removed on success and on failure. No other auth file, cache entry, or
 # profile is touched. Storage flags mirror scripts/podman-local.sh
 # (graph root, runroot, vfs, cgroupfs, containers config) so builds match
-# the proven local path. Single attempts only with one explicit bounded
-# transport retry, no blind resend, no overwrite of an existing tag.
+# the proven local path. Single attempts only with three explicit bounded
+# transport retries via Podman --retry 3, no script level blind resend,
+# no overwrite of an existing tag.
 set -euo pipefail
 AWS_BIN="${AWS_BIN:-aws}"
 PODMAN_BIN="${PODMAN_BIN:-podman}"
@@ -69,18 +71,33 @@ refuse() {
   exit 1
 }
 
-# First parenthesized AWS error class token, validated, else empty.
+# Strict allowlist of recognized AWS error classes, else empty.
+# Scans all parenthesized tokens and returns the first allowlisted
+# class only. Any other parenthesized text, including long
+# alphanumeric private fragments, is ignored and never returned.
 aws_class() {
-  grep -o -E '\([A-Za-z][A-Za-z0-9]+\)' "$1" 2>/dev/null | head -n 1 | tr -d '()' || true
+  _tokens="$(grep -o -E '\([A-Za-z][A-Za-z0-9]+\)' "$1" 2>/dev/null | tr -d '()' || true)"
+  for _tok in $_tokens; do
+    case "$_tok" in
+      ImageNotFoundException|RepositoryNotFoundException|ExpiredToken|ExpiredTokenException|InvalidClientTokenId|AccessDenied|AccessDeniedException|ValidationError|InvalidParameterException|InvalidParameterValue|Throttling|ThrottlingException|TooManyRequestsException|ServerException|ResourceNotFoundException)
+        printf '%s' "$_tok"
+        return 0
+        ;;
+    esac
+  done
+  printf ''
 }
 
-# Fixed bounded failure line: stage plus a validated class token only.
-# Raw AWS stderr is never printed.
+# Fixed bounded failure line: stage plus an allowlisted class only,
+# or fixed unknown. Raw AWS stderr is never printed.
 fail_aws() {
   _class="$(aws_class "$2")"
   case "$_class" in
-    [A-Za-z][A-Za-z0-9]*) ;;
-    *) _class="unknown" ;;
+    ImageNotFoundException|RepositoryNotFoundException|ExpiredToken|ExpiredTokenException|InvalidClientTokenId|AccessDenied|AccessDeniedException|ValidationError|InvalidParameterException|InvalidParameterValue|Throttling|ThrottlingException|TooManyRequestsException|ServerException|ResourceNotFoundException)
+      ;;
+    *)
+      _class="unknown"
+      ;;
   esac
   echo "publish-ecr: refused: $1 (${_class})" >&2
   exit 1
@@ -349,8 +366,9 @@ assert seen.get("Environment") == "demo", "Environment tag"
 done
 
 # --- existing tag state, before any build or push ---
-# An absent tag answers ImageNotFoundException. Any other API failure
-# refuses and is never treated as absence. Any existing digest for the
+# An absent tag answers exact allowlisted ImageNotFoundException. Any
+# other API failure refuses and is never treated as absence. Any
+# existing digest for the
 # requested SHA refuses the whole run before any build or push: with
 # IMMUTABLE repos there is no safe in place overwrite and no replay,
 # the operator reviews the existing tag out of band.
@@ -427,8 +445,8 @@ fi
 # The pushed digest comes only from the --digestfile the push writes.
 # Push stdout can be empty and progress lines never carry the manifest
 # digest, so stdout is never parsed. The digest file must hold exactly
-# one sha256:64 lowercase hex value. One explicit bounded transport
-# retry, no script level resend.
+# one sha256:64 lowercase hex value. Three explicit bounded transport
+# retries via --retry 3 only, no script level blind resend on failure.
 push_one() {
   _local_name="$1"; _repo="$2"
   _target="${REGISTRY}/${_repo}:${SOURCE_SHA}"
@@ -498,17 +516,16 @@ READ_BOOTSTRAP="$(readback_digest launchcrew-bootstrap "$PUSHED_BOOTSTRAP")" || 
 # Written atomically next to the target path with safe modes, only
 # after every guard and every readback passed.
 MANIFEST_DIR="$(dirname "$MANIFEST")"
-mkdir -p "$MANIFEST_DIR"
+mkdir -p "$MANIFEST_DIR" 2>/dev/null || {
+  echo "publish-ecr: refused: manifest directory unwritable" >&2
+  exit 1
+}
 if [ ! -O "$MANIFEST_DIR" ]; then
   echo "publish-ecr: refused: manifest directory is not owned" >&2
   exit 1
 fi
 MANIFEST_NEW="${MANIFEST}.new.$$"
-python3 - "$MANIFEST_NEW" "$SOURCE_SHA" "$READ_API" "$READ_WEB" "$READ_PROXY" "$READ_MIGRATE" "$READ_BOOTSTRAP" <<'PYEOF' 2>/dev/null || {
-  echo "publish-ecr: failed: manifest proof malformed, partial publication" >&2
-  rm -f "$MANIFEST_NEW"
-  exit 1
-}
+python3 -c '
 import json, sys
 path, sha, api, web, proxy, migrate, bootstrap = sys.argv[1:8]
 repos = [("launchcrew-api", api), ("launchcrew-web", web), ("launchcrew-web-proxy", proxy),
@@ -526,9 +543,21 @@ manifest = {
 with open(path, "w", encoding="utf-8") as handle:
     json.dump(manifest, handle, indent=2)
     handle.write("\n")
-PYEOF
-chmod 600 "$MANIFEST_NEW"
-mv "$MANIFEST_NEW" "$MANIFEST"
+' "$MANIFEST_NEW" "$SOURCE_SHA" "$READ_API" "$READ_WEB" "$READ_PROXY" "$READ_MIGRATE" "$READ_BOOTSTRAP" 2>/dev/null || {
+  echo "publish-ecr: failed: manifest proof malformed, partial publication" >&2
+  rm -f "$MANIFEST_NEW"
+  exit 1
+}
+chmod 600 "$MANIFEST_NEW" 2>/dev/null || {
+  echo "publish-ecr: failed: manifest proof malformed, partial publication" >&2
+  rm -f "$MANIFEST_NEW"
+  exit 1
+}
+mv "$MANIFEST_NEW" "$MANIFEST" 2>/dev/null || {
+  echo "publish-ecr: failed: manifest proof malformed, partial publication" >&2
+  rm -f "$MANIFEST_NEW"
+  exit 1
+}
 echo "publish-ecr: confirmed publication of five images with matching readback digests."
 echo "Remaining work: assemble full URI with digest in private operator parameters, then deploy review."
 
