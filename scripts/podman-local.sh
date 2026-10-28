@@ -15,7 +15,7 @@ if [[ -L "$runroot" || ( -e "$runroot" && ! -O "$runroot" ) ]]; then
 fi
 mkdir -p -m 700 "$runroot"
 chmod 700 "$runroot"
-podman_args=(--root "$PWD/.local/podman" --runroot "$runroot" --storage-driver vfs)
+podman_args=(--root "$PWD/.local/podman" --runroot "$runroot" --storage-driver vfs --cgroup-manager cgroupfs)
 p() { podman "${podman_args[@]}" "$@"; }
 case "${1:-up}" in
   build)
