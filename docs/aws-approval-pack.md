@@ -18,8 +18,11 @@ inventory is dated history now superseded for publisher scope only
 by the fulfilled `launchcrew-publisher` stack plus OIDC provider,
 role, and two GitHub secrets below; app demo stack, ACM, ECR app
 repos, AWS secret values, and DNS remain none. No account ID,
-production names, resource names, spend amounts, or private URLs
-appear in public source or docs. This pack authorizes nothing;
+private production resource identifiers, unrelated account spend,
+real account cost data, or private URLs appear in public source
+or docs; the public proposed new resource names and quoted public
+price estimates below are reviewable scope. This pack authorizes
+nothing;
 publisher prereqs needed no reask once fulfilled, while app
 provisioning and any DNS record each still need a separate user
 authorization tap after this pack is reviewed. Every figure below is
@@ -249,6 +252,19 @@ Budget tag readiness, current as of Oct 28, 2026: the Project key now reads Acti
   not cloud API permission proof, and recording and submission gates stay
   intact.
 
+Remaining prereqs before app infra authorization: secure consumption
+exists but fresh-account secure creation, population, and cert ordering
+are still missing. `deploy/aws/bootstrap.sh` checks existing secret ARN
+metadata only with describe-secret and never fetches values,
+`scripts/bootstrap_db_roles.py` consumes injected values, and
+`deploy/aws/fargate.yaml` takes the four secret ARNs plus master
+password before infra while the database endpoint is known only after
+infra, with TLS keys plus ACM still gated. Fresh-account creation,
+population, and certificate ordering must be implemented and reviewed
+before app infra is authorized; current tests prove consumption, roles,
+and keyless flow only, not that the whole deployment is ready. No new
+implementation is added here; future phases will address it.
+
 ## Gates the user must clear at the authorization tap
 
 No generic TBD question is asked here; each gate below names its exact
@@ -366,7 +382,10 @@ GetRolePolicy is the exact five app ECR ARNs plus token star plus
 CE metadata star plus own demo stack reads, with no IAM, PassRole,
 ECS, SecretsManager, S3, or deploy actions; attached policies
 EMPTY and inline exactly `ecr-publish-readback`; no root
-credentials used and no OIDC session requested. GitHub OIDC
+credentials were used for publisher login or push, no root
+credential values were retrieved or exported, setup used the
+existing approved CloudShell sign-in, and no actual OIDC session
+was requested and no ECR push was run. GitHub OIDC
 readback use_default true plus use_immutable_subject true with
 matching prefix; repo secrets started at 0, created ONLY the two
 publisher names via gh stdin encryption with account metadata

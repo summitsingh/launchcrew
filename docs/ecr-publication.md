@@ -39,11 +39,15 @@ PRIVATE. Actual DescribeStacks is TERMINAL CREATE_COMPLETE; sole
 StackResource is PublisherRole type AWS::IAM::Role name
 `launchcrew-ecr-publisher` CREATE_COMPLETE, with both owner tags.
 
-Actual GetRole trust is the exact immutable main subject
-`repo:summitsingh@400621/launchcrew@1436365964:ref:refs/heads/main`
-plus audience `sts.amazonaws.com` on the Federated same-account
-GitHub provider, Action AssumeRoleWithWebIdentity only, max
-session 3600 and workflow 900. Actual GetRolePolicy is the exact
+Actual GetRole trust is the exact immutable main subject pinned in
+published f08 `deploy/aws/publisher-role.yaml` StringEquals
+`token.actions.githubusercontent.com:sub` (see
+https://github.com/summitsingh/launchcrew/blob/f08b3c3464abe11bf88806db7a0bdd5090383f39/deploy/aws/publisher-role.yaml),
+immutable owner ID 400621 with repo launchcrew ID 1436365964 on
+ref `refs/heads/main`, plus audience `sts.amazonaws.com` on the
+Federated same-account GitHub provider, Action
+AssumeRoleWithWebIdentity only, max session 3600 and workflow
+900. Actual GetRolePolicy is the exact
 source five app ECR ARNs plus token star plus CE tag metadata star
 plus own `launchcrew-demo` stack reads, with no IAM, PassRole,
 ECS, SecretsManager, S3, or deploy actions.
