@@ -343,7 +343,7 @@ print(bad if bad else (typ+"|"+n))' "$SUB_INPUT_PATH" 2>/dev/null || echo MALFOR
   esac
   SUB_IS_ACTUAL=0
   case "$SUB_DECODED" in
-    ACTUAL\|*) SUB_IS_ACTUAL=1 ;;
+    ACTUAL\\|*) SUB_IS_ACTUAL=1 ;;
   esac
   SUB_NEXT_TOKEN="${SUB_DECODED#*|}"
   if [ -n "$SUB_NEXT_TOKEN" ]; then
@@ -893,7 +893,13 @@ class OwnershipTests(BootstrapHarness):
 
     def test_missing_stack_allows_fresh_infra_create(self):
         result, calls = self.run_bootstrap(
-            [*self.minimal_infra_args(), "--phase", "infra"], mode="stack_missing")
+            [*self.minimal_infra_args(), "--phase", "infra"], mode="stack_missing",
+            extra_env={"FAKE_RT_ARN": SECRET_RT, "FAKE_MG_ARN": SECRET_MG,
+                       "FAKE_MASTER_ARN": SECRET_MASTER, "FAKE_TLS_ARN": SECRET_TLS},
+            params_overrides={"RuntimeDbUrlSecretArn": SECRET_RT,
+                              "MigrationDbUrlSecretArn": SECRET_MG,
+                              "MasterDbPasswordSecretArn": SECRET_MASTER,
+                              "TlsSecretArn": SECRET_TLS})
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
         combined = result.stdout + result.stderr
         self.assertIn("fresh create", combined)
@@ -1208,7 +1214,13 @@ class CostTagAdmissionTests(BootstrapHarness):
 
     def test_active_ce_passes_infra_with_scoped_query(self):
         result, calls = self.run_bootstrap(
-            [*self.minimal_infra_args(), "--phase", "infra"])
+            [*self.minimal_infra_args(), "--phase", "infra"],
+            extra_env={"FAKE_RT_ARN": SECRET_RT, "FAKE_MG_ARN": SECRET_MG,
+                       "FAKE_MASTER_ARN": SECRET_MASTER, "FAKE_TLS_ARN": SECRET_TLS},
+            params_overrides={"RuntimeDbUrlSecretArn": SECRET_RT,
+                              "MigrationDbUrlSecretArn": SECRET_MG,
+                              "MasterDbPasswordSecretArn": SECRET_MASTER,
+                              "TlsSecretArn": SECRET_TLS})
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
         ce_calls = [call for call in calls if "list-cost-allocation-tags" in call]
         self.assertEqual(len(ce_calls), 1)
@@ -1412,7 +1424,11 @@ class TemplateStagingTests(unittest.TestCase):
                       "BudgetEmailSubscription", "BudgetLimitUsd",
                       "BudgetNotifyEmail", "BudgetNotifyConfigured"):
             self.assertNotIn(token, self.text)
-        self.assertIn("owns no budget", self.text)
+        for resource in ("AWS::Budgets::Budget", "AWS::SNS::Topic",
+                         "AWS::SNS::Subscription", "AWS::SNS::TopicPolicy"):
+            self.assertNotIn(resource, self.text)
+        self.assertIn("DemoBudget", self.foundation)
+        self.assertIn("BudgetTopic", self.foundation)
 
     def test_execution_roles_are_split_and_least_scope(self):
         for role in ("ApiExecutionRole", "WebExecutionRole",

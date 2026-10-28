@@ -403,12 +403,12 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-task""-definition" ]; then
     *launchcrew-demo-sdkinit*)
       SDK_COMMAND="--populate"
       if [ "$SDK_MODE" = "command" ]; then SDK_COMMAND="--bind"; fi
-      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/SdkInitExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/SdkInitTaskRole%s","containerDefinitions":[{"name":"sdk-init","essential":true,"image":"%s"%s,"command":["%s"],"environment":[{"name":"LAUNCHCREW_EXPECTED_ACCOUNT","value":"111122223333"},{"name":"LAUNCHCREW_EXPECTED_REGION","value":"us-east-1"},{"name":"LAUNCHCREW_EXPECTED_ROLE","value":"SdkInitTaskRole-physical"},{"name":"LAUNCHCREW_MASTER_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_RUNTIME_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_MIGRATION_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_TLS_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_CERT_ARN","value":"%s"},{"name":"LAUNCHCREW_DB_HOST","value":"%s"},{"name":"LAUNCHCREW_DB_TLS_MODE","value":"verify-full"},{"name":"DATABASE_SSL_ROOTCERT","value":"/app/rds-ca-bundle.pem"}]%s}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_BOOT" "$ENTRY_JSON" "$SDK_COMMAND" "$SEC_MASTER" "$SEC_RT" "$SEC_MG" "$SEC_TLS" "$SDK_CERT" "$SDK_HOST"
+      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/SdkInitExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/SdkInitTaskRole%s","containerDefinitions":[{"name":"sdk-init","essential":true,"image":"%s"%s,"command":["%s"],"environment":[{"name":"LAUNCHCREW_EXPECTED_ACCOUNT","value":"111122223333"},{"name":"LAUNCHCREW_EXPECTED_REGION","value":"us-east-1"},{"name":"LAUNCHCREW_EXPECTED_ROLE","value":"SdkInitTaskRole-physical"},{"name":"LAUNCHCREW_MASTER_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_RUNTIME_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_MIGRATION_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_TLS_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_CERT_ARN","value":"%s"},{"name":"LAUNCHCREW_DB_HOST","value":"%s"},{"name":"LAUNCHCREW_DB_TLS_MODE","value":"verify-full"},{"name":"DATABASE_SSL_ROOTCERT","value":"/app/rds-ca-bundle.pem"}]%s}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_BOOT" "$ENTRY_JSON" "$SDK_COMMAND" "$SEC_MASTER" "$SEC_RT" "$SEC_MG" "$SEC_TLS" "$SDK_CERT" "$SDK_HOST" "$INJECT_JSON"
       exit 0 ;;
     *launchcrew-demo-sdkmaterial*)
       SDK_COMMAND="--verify-material"
       if [ "$SDK_MODE" = "command" ]; then SDK_COMMAND="--bind"; fi
-      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/SdkMaterialExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/SdkMaterialTaskRole%s","containerDefinitions":[{"name":"sdk-material","essential":true,"image":"%s"%s,"command":["%s"],"environment":[{"name":"LAUNCHCREW_EXPECTED_ACCOUNT","value":"111122223333"},{"name":"LAUNCHCREW_EXPECTED_REGION","value":"us-east-1"},{"name":"LAUNCHCREW_EXPECTED_ROLE","value":"SdkMaterialTaskRole-physical"},{"name":"LAUNCHCREW_MASTER_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_RUNTIME_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_MIGRATION_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_TLS_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_CERT_ARN","value":"%s"},{"name":"LAUNCHCREW_DB_HOST","value":"%s"},{"name":"LAUNCHCREW_DB_TLS_MODE","value":"verify-full"},{"name":"DATABASE_SSL_ROOTCERT","value":"/app/rds-ca-bundle.pem"}]%s}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_BOOT" "$ENTRY_JSON" "$SDK_COMMAND" "$SEC_MASTER" "$SEC_RT" "$SEC_MG" "$SEC_TLS" "$SDK_CERT" "$SDK_HOST"
+      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/SdkMaterialExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/SdkMaterialTaskRole%s","containerDefinitions":[{"name":"sdk-material","essential":true,"image":"%s"%s,"command":["%s"],"environment":[{"name":"LAUNCHCREW_EXPECTED_ACCOUNT","value":"111122223333"},{"name":"LAUNCHCREW_EXPECTED_REGION","value":"us-east-1"},{"name":"LAUNCHCREW_EXPECTED_ROLE","value":"SdkMaterialTaskRole-physical"},{"name":"LAUNCHCREW_MASTER_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_RUNTIME_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_MIGRATION_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_TLS_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_CERT_ARN","value":"%s"},{"name":"LAUNCHCREW_DB_HOST","value":"%s"},{"name":"LAUNCHCREW_DB_TLS_MODE","value":"verify-full"},{"name":"DATABASE_SSL_ROOTCERT","value":"/app/rds-ca-bundle.pem"}]%s}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_BOOT" "$ENTRY_JSON" "$SDK_COMMAND" "$SEC_MASTER" "$SEC_RT" "$SEC_MG" "$SEC_TLS" "$SDK_CERT" "$SDK_HOST" "$INJECT_JSON"
       exit 0 ;;
     *) echo "fake-aws: unexpected describe task definition: $*" >&2; exit 2 ;;
   esac
@@ -584,7 +584,7 @@ print(bad if bad else (typ+"|"+n))' "$SUB_INPUT_PATH" 2>/dev/null || echo MALFOR
   esac
   SUB_IS_ACTUAL=0
   case "$SUB_DECODED" in
-    ACTUAL\|*) SUB_IS_ACTUAL=1 ;;
+    ACTUAL\\|*) SUB_IS_ACTUAL=1 ;;
   esac
   SUB_NEXT_TOKEN="${SUB_DECODED#*|}"
   if [ -n "$SUB_NEXT_TOKEN" ]; then
@@ -1335,14 +1335,30 @@ class StandalonePrereqTests(PhaseCHarness):
 
     def test_standalone_infra_each_secret_mismatch_stops_without_deploy(self):
         other = "arn:aws:secretsmanager:us-east-1:111122223333:secret:other-secret-ZzZzZz"
+        flag_for = {
+            "RuntimeDbUrlSecretArn": "--runtime-secret-arn",
+            "MigrationDbUrlSecretArn": "--migration-secret-arn",
+            "MasterDbPasswordSecretArn": "--master-secret-arn",
+            "TlsSecretArn": "--tls-secret-arn",
+        }
+        prereq_env_for = {
+            "RuntimeDbUrlSecretArn": ("FAKE_RT_ARN", SECRET_RT),
+            "MigrationDbUrlSecretArn": ("FAKE_MG_ARN", SECRET_MG),
+            "MasterDbPasswordSecretArn": ("FAKE_MASTER_ARN", SECRET_MASTER),
+            "TlsSecretArn": ("FAKE_TLS_ARN", SECRET_TLS),
+        }
         for key in ("RuntimeDbUrlSecretArn", "MigrationDbUrlSecretArn",
                     "MasterDbPasswordSecretArn", "TlsSecretArn"):
             with self.subTest(key=key):
+                env_name, original = prereq_env_for[key]
                 result, calls, _ = self.run_phase(
-                    [*self.base_args(), "--phase", "infra"],
-                    params_overrides={key: other})
+                    [*self.base_args(**{flag_for[key]: other}), "--phase", "infra"],
+                    params_overrides={key: other},
+                    extra_env={env_name: original})
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn("owned prereq ref", result.stdout + result.stderr)
+                combined = result.stdout + result.stderr
+                self.assertNotIn("CLI value does not match", combined)
+                self.assertIn("does not equal the validated CLI ARN", combined)
                 self.assertFalse(any("deploy " in call for call in calls))
 
     def test_standalone_infra_happy_owned_chain_passes(self):
