@@ -6,7 +6,7 @@
 
 **Architecture:** Pure-geometry server verdict (volatile boxes, persisted sanitized summary plus a private admission row) bound to the existing run plus revision approval machine; client holds raw pixels transiently only.
 
-**Tech Stack:** FastAPI / Pydantic / SQLAlchemy / Alembic / Postgres; Next.js plus TS plus TanStack; stdlib only in core geometry.
+**Tech Stack:** FastAPI / Pydantic / SQLAlchemy / Alembic / Postgres; Next.js plus TS plus TanStack; stdlib only in core geometry. Backend image validation uses Pillow 13.0.0 only (exact pin owned by Task 2 with `pyproject.toml` and `uv.lock`; official release Oct 16 2026 with Python 3.14 support per https://pypi.org/project/pillow/ and https://pillow.readthedocs.io/en/stable/installation/python-support.html). No custom JPEG decoder and no Pillow install in the pure Task 1 foundation pass.
 
 **Spec:** `docs/superpowers/specs/2026-10-28-photo-review-design.md`
 
@@ -15,13 +15,13 @@
 ## Global Constraints
 
 - Plan and design only in this turn; no live SAM calls, no paid calls, no deploy, no credentials, no video, no final submission. Balance stays UNVERIFIED; SAM defaults OFF and global budget defaults 0.
-- Max 1 image / 1 MiB raw per check over a single JSON base64 body; validate magic bytes plus decoded format and dims; never filename alone; no paths, no URLs, no second image, no multipart variant; no raw persistence or preview endpoint.
+- Max 1 image / 1 MiB raw and at most 8 million decoded pixels per check over a single JSON base64 body; validate magic bytes plus actual PNG/JPEG static structure and EXIF-oriented dims via Pillow 13.0.0 (exact pin owned by Task 2); reject malformed, truncated, empty, animated, and decompression-bomb bytes before admission without changing approved raw bytes; never filename alone; no paths, no URLs, no second image, no multipart variant; no raw persistence or preview endpoint. Core geometry stays stdlib only with no custom JPEG decoder.
 - Labels only `detected | not_detected | possible_clipping | unknown`; never assert full-object visibility from a box; cut-off pixels are unrecoverable and crop only subsets existing pixels.
 - The ONLY paid bytes are the operator-verified byte identity of `DSC_3252_demo_1600.jpg` recorded in preflight evidence; no filename class, no general paid permission. Keyless or unconfigured callers get `method: "not_run"` with HTTP 200 and honest copy.
 - At most one Files plus at most one Responses per admitted check, Responses only if Files succeeded; no retries; terminal accepted/ambiguous/crashed never resent; in-flight duplicate returns pending, never a faked finished summary.
 - Server-controlled one-shot global budget, default 0; no client budget claim; no public budget reset or epoch choice; reject parallel different-image and stale-revision admissions BEFORE any HTTP.
-- Postgres state only via Alembic migration plus runtime CRUD roles; no implicit DDL. Private control metadata (sha256 digest, provider file ID) lives only in the admission row; receipts/exports/logs hold only the sanitized summary.
-- All geometry/file-ID fixtures hand-authored synthetic; no provider captures, no raw photos in repo/logs/receipts/exports.
+- Postgres state only via Alembic migration plus runtime CRUD roles; no implicit DDL. Private admission control metadata (operator-approved sha256 digest for exact-byte approval) lives only in the private admission row when exact-byte approval requires it; provider file IDs stay volatile in memory only and are never persisted. Receipts/exports/logs hold only the sanitized summary, so private control scope stays distinct from public receipt scope.
+- All geometry fixtures hand-authored synthetic; no provider captures, no raw photos in repo/logs/receipts/exports.
 - Keep all 16 pre-existing human-review browser assertions green (enumerated in Task 4); add one real keyless browser test as the 17th. Never weaken Maker/human source copy to accommodate photo copy.
 - Phase order is strict: Task 1 pure policy first and independently testable, then Task 2 migration plus admission plus transport, then Task 3 API plus gating, then Task 4 UI plus integration. Task 5 is a live gate, never a substitute for any milestone.
 
@@ -89,7 +89,7 @@ def suggest_crop(box: tuple[int, int, int, int, int, int], frame: tuple[int, int
     pass  # body owned by worker
 ```
 
-Rules owned by this task: `frame` may be `None` only when `records` is empty (result `not_detected`); any record requires a valid positive frame with consistent `(w,h)` across records, `frame == 0` everywhere, inclusive area math, 2 px edge rule, 2%/98% area gates, multi-match `unknown:needs_review`. `suggest_crop` pads EACH side by `pad_ratio` times the OBJECT BOX width/height (basis is box dims, not frame dims), clamps to frame inclusive bounds, and is called only for single `detected`. Stdlib only, no I/O, no assets.
+Rules owned by this task: `frame` may be `None` only when `records` is empty (result `not_detected`); any record requires a valid positive frame with consistent `(w,h)` across records matching the passed frame, `frame == 0` everywhere, inclusive area math, 2 px edge rule, 2%/98% area gates, multi-match `unknown:needs_review`. Mask metadata is validated from the actual source record: origin `(0,0)` with positive mask dims bounded by the frame, never required to equal the frame size; opaque `payload` is never decoded. `suggest_crop` pads EACH side by `pad_ratio` times the OBJECT BOX width/height (basis is box dims, not frame dims), rounds to nearest int with Python `round`, clamps to frame inclusive bounds, and is called only for single `detected`. Stdlib only, no I/O, no assets.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -97,7 +97,7 @@ Rules owned by this task: `frame` may be `None` only when `records` is empty (re
 def test_single_clear_box_is_detected():
     rec = {"frame": 0, "object_id": 1,
            "box": (100, 100, 300, 400, 1600, 1200),
-           "mask": {"x": 100, "y": 100, "height": 1200, "width": 1600,
+           "mask": {"x": 0, "y": 0, "height": 301, "width": 201,
                     "encoding": "lossless", "payload": "AA=="}}
     assert classify_photo_geometry([rec], (1600, 1200))["label"] == "detected"
 
@@ -107,23 +107,23 @@ def test_zero_records_is_not_detected_without_frame_dims():
 def test_edge_touch_is_possible_clipping():
     rec = {"frame": 0, "object_id": 1,
            "box": (0, 10, 200, 400, 1600, 1200),
-           "mask": {"x": 0, "y": 10, "height": 1200, "width": 1600,
+           "mask": {"x": 0, "y": 0, "height": 391, "width": 201,
                     "encoding": "lossless", "payload": "AA=="}}
     assert classify_photo_geometry([rec], (1600, 1200))["label"] == "possible_clipping"
 
 def test_bad_dims_and_multi_match_are_unknown():
     bad = {"frame": 0, "object_id": 1,
            "box": (5, 5, 2000, 400, 1600, 1200),
-           "mask": {"x": 5, "y": 5, "height": 1200, "width": 1600,
+           "mask": {"x": 0, "y": 0, "height": 100, "width": 100,
                     "encoding": "lossless", "payload": "AA=="}}
     assert classify_photo_geometry([bad], (1600, 1200))["label"] == "unknown"
     r1 = {"frame": 0, "object_id": 1,
           "box": (10, 10, 100, 100, 1600, 1200),
-          "mask": {"x": 10, "y": 10, "height": 1200, "width": 1600,
+          "mask": {"x": 0, "y": 0, "height": 91, "width": 91,
                    "encoding": "lossless", "payload": "AA=="}}
     r2 = {"frame": 0, "object_id": 2,
           "box": (200, 200, 300, 300, 1600, 1200),
-          "mask": {"x": 200, "y": 200, "height": 1200, "width": 1600,
+          "mask": {"x": 0, "y": 0, "height": 101, "width": 101,
                    "encoding": "lossless", "payload": "AA=="}}
     assert classify_photo_geometry([r1, r2], (1600, 1200))["reason"] == "needs_review"
 
@@ -159,7 +159,7 @@ cd "$REPO_ROOT" && git add tests/test_photo_policy.py launchcrew/photo_policy.py
 - Modify: `backend/store.py`, `backend/sam.py`
 - Test: `backend/tests/test_photo_sam_admission.py`
 
-Schema owned by this task. `sam_budget`: `id TEXT PRIMARY KEY CHECK (id = 'global')`, `remaining_images INTEGER NOT NULL DEFAULT 0 CHECK (remaining_images >= 0)`, `updated_at TIMESTAMPTZ NOT NULL DEFAULT now()`. `sam_calls`: `id TEXT PRIMARY KEY`, `run_id TEXT NOT NULL REFERENCES runs(id)`, `revision INTEGER NOT NULL`, `photo_sha256 TEXT NOT NULL` (private control metadata, never in receipts), `provider_file_id TEXT NULL` (private control metadata, never in receipts), `status TEXT NOT NULL CHECK (status IN ('admitted','succeeded','failed_terminal'))`, `label TEXT NULL CHECK (label IN ('detected','not_detected','possible_clipping','unknown','not_run'))`, `reason TEXT NULL`, `policy_version TEXT NOT NULL DEFAULT 'photo-geometry/v1'`, `created_at`/`updated_at TIMESTAMPTZ DEFAULT now()`, `UNIQUE (run_id, revision)` so a parallel different image on the same revision is refused. No public route mutates `sam_budget`; the single grant (1 image) arrives via operator migration/backfill only.
+Schema owned by this task. `sam_budget`: `id TEXT PRIMARY KEY CHECK (id = 'global')`, `remaining_images INTEGER NOT NULL DEFAULT 0 CHECK (remaining_images >= 0)`, `updated_at TIMESTAMPTZ NOT NULL DEFAULT now()`. `sam_calls`: `id TEXT PRIMARY KEY`, `run_id TEXT NOT NULL REFERENCES runs(id)`, `revision INTEGER NOT NULL`, `photo_sha256 TEXT NOT NULL` (private admission control metadata for exact-byte approval, never in receipts), `status TEXT NOT NULL CHECK (status IN ('admitted','succeeded','failed_terminal'))`, `label TEXT NULL CHECK (label IN ('detected','not_detected','possible_clipping','unknown','not_run'))`, `reason TEXT NULL`, `policy_version TEXT NOT NULL DEFAULT 'photo-geometry/v1'`, `created_at`/`updated_at TIMESTAMPTZ DEFAULT now()`, `UNIQUE (run_id, revision)` so a parallel different image on the same revision is refused. No `provider_file_id` column: provider file IDs stay volatile in memory only and are never persisted. This task also owns the exact `Pillow==13.0.0` pin in `pyproject.toml` and `uv.lock`. No public route mutates `sam_budget`; the single grant (1 image) arrives via operator migration/backfill only.
 
 **Interfaces (exact, no ellipsis):**
 
@@ -183,7 +183,7 @@ def run_photo_check(db: Engine, run_id: str, raw_bytes: bytes, mime: str, revisi
     pass  # body owned by worker
 ```
 
-Admission order owned by this task: validate bytes bounds and magic BEFORE opening the paid transaction is allowed, then in ONE transaction lock `sam_budget FOR UPDATE`, require `remaining_images > 0`, require `expected_revision` equals current pack revision, require sha256 equals the operator-approved digest allowlist, decrement budget by 1, insert `sam_calls` as `admitted`, bump pack revision and clear approvals, commit, and only then perform at most one Files plus at most one Responses (Responses only if Files returned a non-empty file ID). Duplicate same `(run_id, revision)` while `admitted` returns the pending row (HTTP 200 pending); after terminal state returns the persisted summary; different sha same revision returns 409; stale `expected_revision` returns 409; exhausted budget or non-approved bytes returns 422. Accepted, ambiguous, crashed, timed-out, or revision-moved finalizations land `failed_terminal` and are never resent. Transport mocked at the HTTP seam; keyless returns `method: "not_run"`.
+Admission order owned by this task: validate bytes bounds, magic, actual PNG/JPEG static structure, and EXIF-oriented dims via Pillow 13.0.0 (exact pin in `pyproject.toml` and `uv.lock`; bounds 1 MiB raw and 8 million decoded pixels; reject malformed, truncated, empty, animated, and decompression-bomb bytes) BEFORE opening the paid transaction is allowed, then in ONE transaction lock `sam_budget FOR UPDATE`, require `remaining_images > 0`, require `expected_revision` equals current pack revision, require sha256 equals the operator-approved digest allowlist, decrement budget by 1, insert `sam_calls` as `admitted`, bump pack revision and clear approvals, commit, and only then perform at most one Files plus at most one Responses (Responses only if Files returned a non-empty file ID held volatile in memory only and never persisted). Duplicate same `(run_id, revision)` while `admitted` returns the pending row (HTTP 200 pending); after terminal state returns the persisted summary; different sha same revision returns 409; stale `expected_revision` returns 409; exhausted budget or non-approved bytes returns 422. Accepted, ambiguous, crashed, timed-out, or revision-moved finalizations land `failed_terminal` and are never resent. Transport mocked at the HTTP seam; keyless returns `method: "not_run"`.
 
 - [ ] **Step 1: Write the failing test (uses only the existing `test_engine` and `client` fixtures; every helper below is defined in the test file itself)**
 
@@ -245,7 +245,7 @@ Expected: FAIL (tables/functions/routes missing).
 
 - [ ] **Step 3: Implement migration `003_photo_sam_calls`, admission insert, bounded transport in `backend/sam.py`**
 
-Unique `(run_id, revision)`; terminal states never re-admitted; budget default 0 server-side; transport mocked at the HTTP seam (mock `urlopen`/send, never live); magic-byte plus decoded-format validation; keyless gives `{"method": "not_run"}` with HTTP 200.
+Unique `(run_id, revision)`; terminal states never re-admitted; budget default 0 server-side; transport mocked at the HTTP seam (mock `urlopen`/send, never live); magic-byte plus Pillow 13.0.0 decoded-format validation (no custom JPEG decoder); keyless gives `{"method": "not_run"}` with HTTP 200.
 
 - [ ] **Step 4: Run test to verify it passes**
 
