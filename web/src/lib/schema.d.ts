@@ -417,14 +417,26 @@ export interface components {
         /** CampaignDay */
         CampaignDay: {
             /**
+             * Angle
+             * @default
+             */
+            angle: string;
+            /**
              * Approval State
              * @enum {string}
              */
             approval_state: "pending_approval" | "approved_for_export";
+            /**
+             * Brief
+             * @default
+             */
+            brief: string;
             /** Checker V2 Blocked Count */
             checker_v2_blocked_count: number | null;
             /** Day */
             day: number;
+            /** Draft V2 Post */
+            draft_v2_post?: string | null;
             /** Idea */
             idea: string;
             /** Run Id */
@@ -610,6 +622,15 @@ export interface components {
             audit: {
                 [key: string]: unknown;
             };
+            /** Campaign Brief */
+            campaign_brief?: string | null;
+            /** Campaign Day */
+            campaign_day?: number | null;
+            /**
+             * Checker Profile
+             * @default standard
+             */
+            checker_profile: string;
             checker_v1?: components["schemas"]["Check"] | null;
             checker_v2?: components["schemas"]["Check"] | null;
             /**
@@ -619,6 +640,13 @@ export interface components {
             idea: string;
             maker_draft_v1?: components["schemas"]["Draft"] | null;
             maker_draft_v2?: components["schemas"]["Draft"] | null;
+            /**
+             * Memory Used
+             * @default []
+             */
+            memory_used: {
+                [key: string]: unknown;
+            }[];
             /** Run Id */
             run_id: string;
             /** Status */
@@ -646,6 +674,15 @@ export interface components {
             blocked_claims_only_in_b: {
                 [key: string]: string;
             }[];
+            /** Checker Profile A */
+            checker_profile_a?: string | null;
+            /** Checker Profile B */
+            checker_profile_b?: string | null;
+            /**
+             * Checker Profile Changed
+             * @default false
+             */
+            checker_profile_changed: boolean;
             /** Checker V1 Blocked Count A */
             checker_v1_blocked_count_a: number | null;
             /** Checker V1 Blocked Count B */
@@ -676,6 +713,16 @@ export interface components {
             draft_v2_post_changed: boolean;
             /** Idea */
             idea: string;
+            /**
+             * Memory Ids A
+             * @default []
+             */
+            memory_ids_a: string[];
+            /**
+             * Memory Ids B
+             * @default []
+             */
+            memory_ids_b: string[];
             /** Receipt Keys Only In A */
             receipt_keys_only_in_a: string[];
             /** Receipt Keys Only In B */
@@ -695,8 +742,19 @@ export interface components {
         RunInput: {
             /** Agent Name */
             agent_name: string;
+            /**
+             * Checker Profile
+             * @default standard
+             * @enum {string}
+             */
+            checker_profile: "standard" | "strict";
             /** Idea */
             idea: string;
+            /**
+             * Memory Ids
+             * @default []
+             */
+            memory_ids: string[];
             /**
              * Seed Unverified Claim
              * @default false

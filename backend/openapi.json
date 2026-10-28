@@ -27,12 +27,22 @@
       "CampaignDay": {
         "additionalProperties": false,
         "properties": {
+          "angle": {
+            "default": "",
+            "title": "Angle",
+            "type": "string"
+          },
           "approval_state": {
             "enum": [
               "pending_approval",
               "approved_for_export"
             ],
             "title": "Approval State",
+            "type": "string"
+          },
+          "brief": {
+            "default": "",
+            "title": "Brief",
             "type": "string"
           },
           "checker_v2_blocked_count": {
@@ -49,6 +59,17 @@
           "day": {
             "title": "Day",
             "type": "integer"
+          },
+          "draft_v2_post": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Draft V2 Post"
           },
           "idea": {
             "title": "Idea",
@@ -517,6 +538,33 @@
             "title": "Audit",
             "type": "object"
           },
+          "campaign_brief": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaign Brief"
+          },
+          "campaign_day": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaign Day"
+          },
+          "checker_profile": {
+            "default": "standard",
+            "title": "Checker Profile",
+            "type": "string"
+          },
           "checker_v1": {
             "anyOf": [
               {
@@ -561,6 +609,15 @@
                 "type": "null"
               }
             ]
+          },
+          "memory_used": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Memory Used",
+            "type": "array"
           },
           "run_id": {
             "title": "Run Id",
@@ -621,6 +678,33 @@
             },
             "title": "Blocked Claims Only In B",
             "type": "array"
+          },
+          "checker_profile_a": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checker Profile A"
+          },
+          "checker_profile_b": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checker Profile B"
+          },
+          "checker_profile_changed": {
+            "default": false,
+            "title": "Checker Profile Changed",
+            "type": "boolean"
           },
           "checker_v1_blocked_count_a": {
             "anyOf": [
@@ -752,6 +836,22 @@
             "title": "Idea",
             "type": "string"
           },
+          "memory_ids_a": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Memory Ids A",
+            "type": "array"
+          },
+          "memory_ids_b": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Memory Ids B",
+            "type": "array"
+          },
           "receipt_keys_only_in_a": {
             "items": {
               "type": "string"
@@ -826,11 +926,28 @@
             "title": "Agent Name",
             "type": "string"
           },
+          "checker_profile": {
+            "default": "standard",
+            "enum": [
+              "standard",
+              "strict"
+            ],
+            "title": "Checker Profile",
+            "type": "string"
+          },
           "idea": {
             "maxLength": 2000,
             "minLength": 1,
             "title": "Idea",
             "type": "string"
+          },
+          "memory_ids": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Memory Ids",
+            "type": "array"
           },
           "seed_unverified_claim": {
             "default": false,
