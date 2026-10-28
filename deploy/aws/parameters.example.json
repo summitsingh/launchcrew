@@ -20,6 +20,10 @@
     "ParameterValue": "REPLACE_WITH_ECR_MIGRATION_IMAGE_URI"
   },
   {
+    "ParameterKey": "BootstrapImageUri",
+    "ParameterValue": "REPLACE_WITH_ECR_BOOTSTRAP_IMAGE_URI"
+  },
+  {
     "ParameterKey": "RuntimeDbUrlSecretArn",
     "ParameterValue": "REPLACE_WITH_RUNTIME_DB_URL_SECRET_ARN"
   },
@@ -42,5 +46,13 @@
   {
     "ParameterKey": "BudgetLimitUsd",
     "ParameterValue": "REPLACE_WITH_SUMMIT_CHOSEN_CAP_AFTER_ESTIMATE"
+  },
+  {
+    "ParameterKey": "BudgetNotifyEmail",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "EnableServices",
+    "ParameterValue": "false"
   }
 ]

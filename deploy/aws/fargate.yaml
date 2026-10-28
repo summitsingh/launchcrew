@@ -42,6 +42,21 @@ Parameters:
   BudgetLimitUsd:
     Type: Number
     Description: AWS Budget limit in USD, for the demo period only. No approved default, supply after Summit chooses a cap. A value of 0 is not an approval, it is a placeholder that must be replaced. An AWS Budget is an alert and estimate mechanism, not an enforced hard spend cap.
+  EnableServices:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Staged bootstrap gate. Default false keeps both ECS services at DesiredCount 0 so infrastructure, ECR repositories, RDS, and task definitions exist first with no app running. Set to true only after images are verified, database roles are bound, and the migration one-off task has STOPPED with exit code 0 plus schema proof, via deploy/aws/bootstrap.sh. Never set true with placeholder image URIs.
+  BudgetNotifyEmail:
+    Type: String
+    Default: ''
+    Description: Owner contact email for demo budget alerts, supplied privately at deploy review, never committed with a real address. Empty means no email subscription is created and the budget has no subscribers. Alerts are notifications only, not an enforced hard spend cap.
+  BootstrapImageUri:
+    Type: String
+    Description: ECR URI for the bootstrap database-role image, built from containers/bootstrap-db.Containerfile, used only by the isolated one-off bootstrap task. No default, no placeholder at apply time.
+Conditions:
+  ServicesEnabled: !Equals ['true', !Ref EnableServices]
+  BudgetNotifyConfigured: !Not [!Equals ['', !Ref BudgetNotifyEmail]]
 Resources:
   Vpc:
     Type: AWS::EC2::VPC
@@ -206,6 +221,17 @@ Resources:
       Tags:
         - { Key: Project, Value: LaunchCrew }
         - { Key: Environment, Value: demo }
+  BootstrapEcrRepo:
+    Type: AWS::ECR::Repository
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      RepositoryName: launchcrew-bootstrap
+      EmptyOnDelete: true
+      ImageScanningConfiguration: { ScanOnPush: true }
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
   ApiLogGroup:
     Type: AWS::Logs::LogGroup
     DeletionPolicy: Delete
@@ -321,6 +347,26 @@ Resources:
               - Effect: Allow
                 Action: [secretsmanager:GetSecretValue]
                 Resource: [!Ref MigrationDbUrlSecretArn]
+  BootstrapTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: bootstrap-db-roles-only
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [secretsmanager:GetSecretValue]
+                Resource:
+                  - !Ref MasterDbPasswordSecretArn
+                  - !Ref RuntimeDbUrlSecretArn
+                  - !Ref MigrationDbUrlSecretArn
   ApiTaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
@@ -414,6 +460,38 @@ Resources:
               awslogs-group: !Ref MigrationLogGroup
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: migration
+  BootstrapTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: '256'
+      Memory: '512'
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt BootstrapTaskRole.Arn
+      ContainerDefinitions:
+        - Name: bootstrap-db-roles
+          Image: !Ref BootstrapImageUri
+          Essential: true
+          Environment:
+            - { Name: LAUNCHCREW_DB_TLS_MODE, Value: verify-full }
+            - { Name: DATABASE_SSL_ROOTCERT, Value: /app/rds-ca-bundle.pem }
+            - { Name: DB_NAME, Value: launchcrew }
+            - { Name: DB_MASTER_USER, Value: !Ref DatabaseUsername }
+            - { Name: DB_HOST, Value: !GetAtt Database.Endpoint.Address }
+            - { Name: APP_SCHEMA, Value: public }
+            - { Name: RUNTIME_USER, Value: launchcrew_runtime }
+            - { Name: MIGRATION_USER, Value: launchcrew_migration }
+          Secrets:
+            - { Name: MASTER_DB_PASSWORD, ValueFrom: !Sub '${MasterDbPasswordSecretArn}:password::' }
+            - { Name: RUNTIME_DB_URL, ValueFrom: !Sub '${RuntimeDbUrlSecretArn}:database-url::' }
+            - { Name: MIGRATION_DB_URL, ValueFrom: !Sub '${MigrationDbUrlSecretArn}:database-url::' }
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref MigrationLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: bootstrap-db-roles
   LoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
@@ -479,7 +557,7 @@ Resources:
     Properties:
       Cluster: !Ref Cluster
       TaskDefinition: !Ref ApiTaskDefinition
-      DesiredCount: 1
+      DesiredCount: !If [ServicesEnabled, 1, 0]
       LaunchType: FARGATE
       NetworkConfiguration:
         AwsvpcConfiguration:
@@ -495,7 +573,7 @@ Resources:
     Properties:
       Cluster: !Ref Cluster
       TaskDefinition: !Ref WebTaskDefinition
-      DesiredCount: 1
+      DesiredCount: !If [ServicesEnabled, 1, 0]
       LaunchType: FARGATE
       NetworkConfiguration:
         AwsvpcConfiguration:
@@ -516,7 +594,29 @@ Resources:
         BudgetLimit: { Amount: !Ref BudgetLimitUsd, Unit: USD }
         TimeUnit: MONTHLY
         BudgetType: COST
-      NotificationsWithSubscribers: []
+      NotificationsWithSubscribers: !If
+        - BudgetNotifyConfigured
+        - - Notification: { NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 80, ThresholdType: PERCENTAGE, NotificationState: ALARM }
+            Subscribers: [{ SubscriptionType: SNS, Address: !Ref BudgetTopic }]
+          - Notification: { NotificationType: FORECASTED, ComparisonOperator: GREATER_THAN, Threshold: 100, ThresholdType: PERCENTAGE, NotificationState: ALARM }
+            Subscribers: [{ SubscriptionType: SNS, Address: !Ref BudgetTopic }]
+        - []
+  BudgetTopic:
+    Type: AWS::SNS::Topic
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      DisplayName: launchcrew-demo-budget
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
+  BudgetEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: BudgetNotifyConfigured
+    Properties:
+      Protocol: email
+      Endpoint: !Ref BudgetNotifyEmail
+      TopicArn: !Ref BudgetTopic
 Outputs:
   LoadBalancerDnsName:
     Description: ALB DNS name, placeholder target only, Cloudflare record requires separate explicit authorization
