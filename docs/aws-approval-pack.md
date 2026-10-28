@@ -207,25 +207,7 @@ tag-filtered coverage, so a manual billing guard stays on the operator and
 no broad cloud platform monitoring is added here. There is no hard cap
 anywhere in this design.
 
-Budget tag readiness was observed INACTIVE through a read-only Billing
-console check on Oct 28, 2026: the Project key exists as a user defined
-resource cost allocation tag with Status Inactive. No activation was made,
-no screenshot or account, production, or cost data is published here, and
-this observed state must be rechecked live with ce
-list-cost-allocation-tags before any future mutation. Activation needs a
-separate billing approval that is never done by this template or by
-deploy/aws/bootstrap.sh. Allow about 24 hours for a new tag key to appear
-plus about 24 hours for activation. Until the key reads back Active the
-filter can return no data, and a filter with no data or 0 is NOT proof of
-zero spend and NOT a hard cap. Source and bootstrap fail closed on this
-point: an Inactive, absent, ambiguous, or unreadable Project key refuses
-every paid phase before any CloudFormation deploy or one-off task, and an
-unfiltered or inexact budget refuses enable. Monitoring is never claimed
-working before the operator preflight in deploy/aws/bootstrap.sh passes.
-Resource billing begins at infra, RDS, and ALB creation even with both ECS
-services at DesiredCount 0, and activating the shared PROJECT key changes
-global billing reporting, so that approval stays gated with no resources
-changed by it.
+Budget tag readiness, current as of Oct 28, 2026: the Project key now reads Active. The earlier INACTIVE read-only Billing console check on Oct 28, 2026 (Project key exists as a user defined resource cost allocation tag with Status Inactive, no activation made) remains meaningful dated history and is now superseded. Human explicitly approved activation ONLY of the existing Project tag in KoruShield Billing; Codex used the AWS Console to select Project only, then Activate and confirm 1 tag. Saved status Active Oct 28, 2026 10:24 UTC-05, reloaded page and verified Project Active persists. Other tags untouched, no backfill, no resources deployed, no IAM change, no secret values, no credentials, no ECR push, no DNS, and no spending action. The screenshot stays private at `../.local/aws-project-tag-active.png`, and no screenshot or account, production, or cost data is published here. This is browser persisted proof only, with no new CLI or API permission proof. Cost data availability and hard cap are NEVER implied. This observed Active state must still be rechecked live with ce list-cost-allocation-tags before any future mutation, and future paid preflight must still read actual CE status. Allow about 24 hours for a new tag key to appear plus about 24 hours for activation as general timing context. A filter with no data or 0 is NOT proof of zero spend and NOT a hard cap. Source and bootstrap still fail closed on this point: an Inactive, absent, ambiguous, or unreadable Project key refuses every paid phase before any CloudFormation deploy or one-off task, and an unfiltered or inexact budget refuses enable. Monitoring is never claimed working before the operator preflight in deploy/aws/bootstrap.sh passes. Resource billing begins at infra, RDS, and ALB creation even with both ECS services at DesiredCount 0, and activating the shared PROJECT key changes global billing reporting, so deployment and spending approvals stay gated with no resources changed by the activation step. The shared-key activation gate is fulfilled and is not called pending currently. No broad cost estimate change is made here.
 
 ## Explicit expiration, teardown, and access boundary
 
@@ -267,10 +249,8 @@ owner and evidence, for approval only after this pack is reviewed.
    at the tap, confirm the region is us-east-1 or record the confirmed
    region, with no new figure assumed.
 2. User fills BudgetLimitUsd (recommended 45 monthly, Project filtered)
-   and BudgetNotifyEmail. Separate billing approval is needed to activate
-   the Project key as a user defined resource cost allocation tag; that
-   activation is never done by the template or script and can take about
-   24 hours for key appearance plus about 24 hours for activation.
+   and BudgetNotifyEmail. The separate billing approval to activate
+   the Project key as a user defined resource cost allocation tag was granted and is now fulfilled: Project reads Active as of Oct 28, 2026 10:24 UTC-05, other tags untouched, no resources changed by that step. That activation was a Billing console step, never done by the template or script. General timing context is about 24 hours for key appearance plus about 24 hours for activation. Deployment and spending approvals still require separate authorization.
 3. Separate explicit authorization for the Cloudflare DNS record, the ACM
    certificate, and the 4 Secrets Manager values; none are created by
    reviewing this source.
