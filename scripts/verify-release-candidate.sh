@@ -90,14 +90,61 @@ pick_pg_port() {
   echo "55433"
 }
 
+validate_candidate_ports() {
+  api_port="$1"
+  web_port="$2"
+  pg_port="$3"
+  for candidate in "$api_port" "$web_port"; do
+    case "$candidate" in ''|*[!0-9]*) fail "candidate web/API port must be numeric, found: $candidate" ;; esac
+  done
+  [ "$api_port" = "$web_port" ] && fail "LC_API_PORT ($api_port) and LC_WEB_PORT ($web_port) must differ"
+  for reserved in 3000 3001 8000 8001 5432; do
+    [ "$api_port" = "$reserved" ] && fail "LC_API_PORT must avoid reserved port $reserved"
+    [ "$web_port" = "$reserved" ] && fail "LC_WEB_PORT must avoid reserved port $reserved"
+  done
+  if [ -n "$pg_port" ]; then
+    [ "$api_port" = "$pg_port" ] && fail "LC_API_PORT ($api_port) conflicts with disposable Postgres port $pg_port"
+    [ "$web_port" = "$pg_port" ] && fail "LC_WEB_PORT ($web_port) conflicts with disposable Postgres port $pg_port"
+  fi
+  if command -v python3 >/dev/null 2>&1; then
+    for candidate in "$api_port" "$web_port"; do
+      if ! python3 -c "import socket,sys; s=socket.socket(); s.settimeout(1); sys.exit(0 if s.connect_ex(('127.0.0.1', int(sys.argv[1]))) != 0 else 1)" "$candidate" 2>/dev/null; then
+        fail "port 127.0.0.1:$candidate is already in use, choose a free LC_API_PORT/LC_WEB_PORT"
+      fi
+    done
+  fi
+}
+
+preserve_server_logs() {
+  artifact_dir="$REPO_ROOT/.local/verify-candidate-logs"
+  mkdir -p "$artifact_dir" 2>/dev/null || return 0
+  if [ -n "${PG_ROOT:-}" ] && [ -d "$PG_ROOT" ]; then
+    for name in api.log web.log postgres.log; do
+      if [ -f "$PG_ROOT/$name" ]; then
+        cp "$PG_ROOT/$name" "$artifact_dir/verify-candidate-$name" 2>/dev/null || true
+      fi
+    done
+    log "server logs preserved in $artifact_dir before temp cleanup"
+  fi
+}
+
 check_pins
 bash -n "$SCRIPT_DIR/verify-release-candidate.sh"
 log "static: bash -n pass"
 
+API_PORT="${LC_API_PORT:-8021}"
+WEB_PORT="${LC_WEB_PORT:-3021}"
+[ "$API_PORT" = "8001" ] && fail "LC_API_PORT must not be 8001"
+[ "$WEB_PORT" = "3001" ] && fail "LC_WEB_PORT must not be 3001"
+EXPECTED_API_URL="http://127.0.0.1:$API_PORT"
+log "candidate web/API ports: API 127.0.0.1:$API_PORT web 127.0.0.1:$WEB_PORT (rewrites bake API_URL at build)"
+
+validate_candidate_ports "$API_PORT" "$WEB_PORT" ""
 PG_BIN_DIR="$(find_pg_bin)"
 check_pg18 "$PG_BIN_DIR"
 PORT="$(pick_pg_port)"
 [ "$PORT" = "5432" ] && fail "refusing default port 5432"
+validate_candidate_ports "$API_PORT" "$WEB_PORT" "$PORT"
 log "using PG_BIN=$PG_BIN_DIR port=$PORT loopback 127.0.0.1 only"
 
 PG_ROOT="$(mktemp -d /tmp/launchcrew-candidate-pg-XXXXXX)"
@@ -110,9 +157,11 @@ API_PID=""
 WEB_PID=""
 
 cleanup() {
+  status=$?
+  if [ "$status" -ne 0 ]; then preserve_server_logs; fi
   if [ -n "$API_PID" ] && kill -0 "$API_PID" 2>/dev/null; then kill "$API_PID" 2>/dev/null || true; fi
   if [ -n "$WEB_PID" ] && kill -0 "$WEB_PID" 2>/dev/null; then kill "$WEB_PID" 2>/dev/null || true; fi
-  if [ -n "${PGDATA:-}" ] && [ -d "$PGDATA" ] && [ -x "$PG_BIN_DIR/pg_ctl" ]; then
+  if [ -n "${PGDATA:-}" ] && [ -d "$PGDATA" ] && [ -x "${PG_BIN_DIR:-}/pg_ctl" ]; then
     "$PG_BIN_DIR/pg_ctl" -D "$PGDATA" -m fast stop >/dev/null 2>&1 || true
   fi
   if [ -n "${PG_ROOT:-}" ] && [ -d "$PG_ROOT" ]; then rm -rf "$PG_ROOT"; fi
@@ -240,12 +289,13 @@ set -e
 [ "$TSC_STATUS" -eq 0 ] || fail "frontend typecheck failed with exit $TSC_STATUS"
 log "frontend typecheck exit 0"
 
+validate_candidate_ports "$API_PORT" "$WEB_PORT" "$PORT"
 set +e
-pnpm --dir web build 2>&1 | tail -n 10
+API_URL="$EXPECTED_API_URL" pnpm --dir web build 2>&1 | tail -n 10
 BUILD_STATUS=${PIPESTATUS[0]}
 set -e
 [ "$BUILD_STATUS" -eq 0 ] || fail "frontend build failed with exit $BUILD_STATUS"
-log "frontend build exit 0"
+log "frontend build exit 0 with API_URL=$EXPECTED_API_URL (rewrites baked)"
 
 if ! pnpm --dir web exec playwright --version >/dev/null 2>&1; then
   log "browser: pending (playwright unavailable)"
@@ -253,10 +303,7 @@ if ! pnpm --dir web exec playwright --version >/dev/null 2>&1; then
   exit 0
 fi
 
-API_PORT="${LC_API_PORT:-8021}"
-WEB_PORT="${LC_WEB_PORT:-3021}"
-[ "$API_PORT" = "8001" ] && fail "LC_API_PORT must not be 8001"
-[ "$WEB_PORT" = "3001" ] && fail "LC_WEB_PORT must not be 3001"
+validate_candidate_ports "$API_PORT" "$WEB_PORT" "$PORT"
 "$PG_BIN_DIR/createdb" -h 127.0.0.1 -p "$PORT" -U "$SUPERUSER" "$PLAYWRIGHT_DB"
 PW_URL="postgresql://$SUPERUSER@127.0.0.1:$PORT/$PLAYWRIGHT_DB"
 log "created disposable playwright database $PLAYWRIGHT_DB"
@@ -266,24 +313,25 @@ MIG_STATUS=$?
 set -e
 [ "$MIG_STATUS" -eq 0 ] || fail "playwright alembic upgrade failed with exit $MIG_STATUS"
 
+log "no live model calls: META_API_KEY empty, AUTH_ENABLED false, deterministic gates only"
 DATABASE_URL="$PW_URL" AUTH_ENABLED=false META_API_KEY="" nohup "${PY_RUN[@]}" -m uvicorn backend.app:app --host 127.0.0.1 --port "$API_PORT" >"$PG_ROOT/api.log" 2>&1 &
 API_PID=$!
-API_URL="http://127.0.0.1:$API_PORT" PORT="$WEB_PORT" nohup pnpm --dir web exec next start --hostname 127.0.0.1 --port "$WEB_PORT" >"$PG_ROOT/web.log" 2>&1 &
+API_URL="$EXPECTED_API_URL" PORT="$WEB_PORT" nohup pnpm --dir web exec next start --hostname 127.0.0.1 --port "$WEB_PORT" >"$PG_ROOT/web.log" 2>&1 &
 WEB_PID=$!
 for _ in $(seq 1 60); do
   if curl -fsS "http://127.0.0.1:$API_PORT/api/health" >/dev/null 2>&1 && curl -fsS "http://127.0.0.1:$WEB_PORT/api/health" >/dev/null 2>&1; then break; fi
   sleep 2
 done
-curl -fsS "http://127.0.0.1:$API_PORT/api/health" >/dev/null || fail "API did not become ready on 127.0.0.1:$API_PORT"
-curl -fsS "http://127.0.0.1:$WEB_PORT/api/health" >/dev/null || fail "web did not become ready on 127.0.0.1:$WEB_PORT"
-log "servers ready: API 127.0.0.1:$API_PORT web 127.0.0.1:$WEB_PORT"
+curl -fsS "http://127.0.0.1:$API_PORT/api/health" >/dev/null || { preserve_server_logs; fail "API did not become ready on 127.0.0.1:$API_PORT"; }
+curl -fsS "http://127.0.0.1:$WEB_PORT/api/health" >/dev/null || { preserve_server_logs; fail "web did not become ready on 127.0.0.1:$WEB_PORT (expected API_URL=$EXPECTED_API_URL baked at build)"; }
+log "servers ready: API 127.0.0.1:$API_PORT web 127.0.0.1:$WEB_PORT with API_URL=$EXPECTED_API_URL"
 
 set +e
-WEB_URL="http://127.0.0.1:$WEB_PORT" DATABASE_URL="$PW_URL" pnpm --dir web test:e2e -- tests/e2e/integration-acceptance.spec.ts 2>&1 | tail -n 15
+WEB_URL="http://127.0.0.1:$WEB_PORT" DATABASE_URL="$PW_URL" pnpm --dir web test:e2e -- tests/e2e/integration-acceptance.spec.ts tests/e2e/stage-selection.spec.ts 2>&1 | tail -n 15
 ACCEPT_STATUS=${PIPESTATUS[0]}
 set -e
-[ "$ACCEPT_STATUS" -eq 0 ] || fail "integration acceptance Playwright failed with exit $ACCEPT_STATUS"
-log "integration acceptance Playwright exit 0"
+[ "$ACCEPT_STATUS" -eq 0 ] || { preserve_server_logs; fail "integration acceptance Playwright failed with exit $ACCEPT_STATUS"; }
+log "integration acceptance plus stage-selection Playwright exit 0"
 
 set +e
 WEB_URL="http://127.0.0.1:$WEB_PORT" DATABASE_URL="$PW_URL" pnpm --dir web test:e2e -- tests/e2e/review.spec.ts 2>&1 | tail -n 15
