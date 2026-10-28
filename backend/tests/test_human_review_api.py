@@ -15,6 +15,7 @@ import json
 from unittest.mock import patch
 import pytest
 from sqlalchemy import text
+from backend import store
 from launchcrew import human_review, run
 
 IDEA = 'Vegan leather wallet, $49, for Austin commuters, launch on Instagram'
@@ -140,6 +141,76 @@ def test_edit_after_approval_keeps_superseded_history(client):
     assert body['revision_history'][1]['revision'] == 1
     assert body['revision_history'][1]['superseded_by'] == 2
     assert body['revision_history'][1]['draft']['post'] == first.json()['human_draft']['post']
+
+
+def current_approvals(run_id):
+    with store.connect() as db:
+        return list(db.execute(
+            text('SELECT run_id, approved_by FROM approvals WHERE run_id=:id ORDER BY approved_at, approved_by'),
+            {'id': run_id}))
+
+
+def test_reapproval_after_edits_uses_fresh_current_approval(client):
+    receipt = new_run(client)
+    run_id = receipt['run_id']
+    assert client.post(f'/api/runs/{run_id}/approve', json={}).status_code == 200
+    assert len(current_approvals(run_id)) == 1
+    # A saved edit clears the stale current approval: the projection must
+    # not still present the superseded approval as current.
+    assert client.post(f'/api/runs/{run_id}/revise', json=valid_edit(receipt)).status_code == 200
+    assert current_approvals(run_id) == []
+    reread = client.get(f'/api/runs/{run_id}').json()
+    assert reread['approvals'] == []
+    assert reread['approved_revision'] is None
+    # Fresh reapproval of the latest revision works after the edit, with the
+    # correct expected revision, and restores exactly one current row.
+    assert client.post(f'/api/runs/{run_id}/approve', json={'expected_revision': reread['revision']}).status_code == 200
+    rows = current_approvals(run_id)
+    assert len(rows) == 1
+    assert rows[0][0] == run_id
+    assert rows[0][1] == 'demo_placeholder'
+    # The superseded approval survives as immutable evidence in the receipt
+    # history and audit timeline, not in the current projection.
+    reread = client.get(f'/api/runs/{run_id}').json()
+    assert reread['approved_revision'] == 1
+    assert len(reread['approvals']) == 1
+    assert reread['approvals'][0]['revision'] == 1
+    assert reread['revision_history'][0]['approvals'][0]['approved_by'] == 'demo_placeholder'
+    assert reread['revision_history'][0]['approval_state'] == 'approved_for_export'
+    steps = [entry.get('step') for entry in reread['audit']['event_log']]
+    assert steps.count('approval') == 2
+    assert steps.count('human_revision') == 1
+
+
+def test_repeated_reapproval_across_two_edits(client):
+    receipt = new_run(client)
+    run_id = receipt['run_id']
+    assert client.post(f'/api/runs/{run_id}/approve', json={}).status_code == 200
+    assert client.post(f'/api/runs/{run_id}/revise', json=valid_edit(receipt)).status_code == 200
+    first = client.get(f'/api/runs/{run_id}').json()
+    assert client.post(f'/api/runs/{run_id}/approve', json={'expected_revision': first['revision']}).status_code == 200
+    assert len(current_approvals(run_id)) == 1
+    second_edit = valid_edit(client.get(f'/api/runs/{run_id}').json())
+    second_edit['post'] = 'Designed in Texas. Vegan leather wallet.'
+    assert client.post(f'/api/runs/{run_id}/revise', json=second_edit).status_code == 200
+    # The second edit also clears the current projection; stale approval for
+    # revision 1 must not remain current for revision 2.
+    assert current_approvals(run_id) == []
+    second = client.get(f'/api/runs/{run_id}').json()
+    assert second['revision'] == 2
+    assert second['approval_state'] == 'pending_approval'
+    assert client.post(f'/api/runs/{run_id}/approve', json={'expected_revision': 2}).status_code == 200
+    assert len(current_approvals(run_id)) == 1
+    exported = client.post(f'/api/runs/{run_id}/export', json={'expected_revision': 2})
+    assert exported.status_code == 200, exported.text
+    assert exported.json()['exported_revision'] == 2
+    assert exported.json()['exported_draft']['post'] == second_edit['post']
+    assert exported.json()['maker_draft_v2'] == receipt['maker_draft_v2']
+    final = client.get(f'/api/runs/{run_id}').json()
+    assert final['approved_revision'] == 2
+    assert len(final['revision_history']) == 2
+    assert [entry['revision'] for entry in final['revision_history']] == [0, 1]
+    assert final['revision_history'][1]['approvals'][0]['revision'] == 1
 
 
 def test_multiple_pending_edits_preserve_each_prior_revision(client):
@@ -273,6 +344,43 @@ def test_policy_and_memory_floor_survive_human_edits(client):
     assert 'price_claims' in reread['checker_policies']
 
 
+def test_stage_snapshot_examples_immutable_after_profile_edits(client):
+    receipt = new_run(client)
+    run_id = receipt['run_id']
+    before = client.get(f'/api/runs/{run_id}').json()
+    assert before['stage_agents']['maker']['examples'] == []
+    assert before['stage_bindings']['maker'] == 'Maker'
+    profile = client.get('/api/agents/Maker').json()
+    profile['examples'] = [{'input': 'wallet brief', 'approved_output': 'Vegan leather wallet.',
+                            'note': 'style reference only, never a verified fact'}]
+    profile['decision_rules'] = profile['decision_rules'] + ['Extra advisory rule']
+    assert client.put('/api/agents/Maker', json=profile).status_code == 200
+    reread = client.get(f'/api/runs/{run_id}').json()
+    # The stored stage snapshot is immutable: later profile edits, including
+    # new examples and decision rules, do not rewrite past proof.
+    assert reread['stage_agents'] == before['stage_agents']
+    assert reread['stage_agents']['maker']['examples'] == []
+    assert reread['stage_bindings'] == before['stage_bindings']
+    assert reread['checker_policies'] == receipt['checker_policies']
+    # Revision recheck still uses the run snapshot, not the live profile.
+    assert client.post(f'/api/runs/{run_id}/revise', json=valid_edit(receipt)).status_code == 200
+    revised = client.get(f'/api/runs/{run_id}').json()
+    assert revised['stage_agents'] == before['stage_agents']
+
+
+def test_stage_snapshot_captures_allowlisted_example_copy(client):
+    profile = client.get('/api/agents/Maker').json()
+    profile['examples'] = [{'input': 'wallet brief', 'approved_output': 'Vegan leather wallet.',
+                            'note': 'dropped: never snapshotted, never a fact'}]
+    assert client.put('/api/agents/Maker', json=profile).status_code == 200
+    receipt = new_run(client)
+    snap = receipt['stage_agents']['maker']['examples']
+    # Only the allowlisted input/approved_output strings are snapshotted;
+    # extra keys are dropped, and examples are never claimed as verified facts.
+    assert snap == [{'input': 'wallet brief', 'approved_output': 'Vegan leather wallet.'}]
+    assert set(snap[0]) == {'input', 'approved_output'}
+
+
 def test_missing_verified_sources_fail_closed(client, test_engine):
     receipt = new_run(client)
     run_id = receipt['run_id']
@@ -290,6 +398,7 @@ def test_missing_verified_sources_fail_closed(client, test_engine):
 def test_malformed_verified_flag_is_not_trusted(client, test_engine):
     receipt = new_run(client)
     run_id = receipt['run_id']
+    corrupted_claim = receipt['scout']['facts_used'][0]['claim']
     with test_engine.begin() as connection:
         row = connection.execute(text('SELECT receipt FROM runs WHERE id=:id'), {'id': run_id}).fetchone()
         assert row is not None
@@ -302,7 +411,17 @@ def test_malformed_verified_flag_is_not_trusted(client, test_engine):
         stored['scout']['facts_used'] = facts
         connection.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb) WHERE id=:id'),
                            {'receipt': json.dumps(stored), 'id': run_id})
-    assert client.post(f'/api/runs/{run_id}/revise', json=valid_edit(receipt)).status_code == 422
+    # An edit that leans on the corrupted claim is refused: the malformed
+    # 'yes' flag is not trusted as verification, and the strict check still
+    # requires verified is True plus sourced entries.
+    bad = valid_edit(receipt)
+    bad['post'] = corrupted_claim + '. Designed in Texas.'
+    refused = client.post(f'/api/runs/{run_id}/revise', json=bad)
+    assert refused.status_code == 422, refused.text
+    assert client.get(f'/api/runs/{run_id}').json()['revision'] == 0
+    # Other independently verified sourced facts remain usable: an edit that
+    # cites only intact facts still passes the deterministic recheck.
+    assert client.post(f'/api/runs/{run_id}/revise', json=valid_edit(receipt)).status_code == 200
 
 
 def test_revision_history_tolerates_legacy_entries():

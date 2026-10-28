@@ -214,20 +214,36 @@ export DATABASE_URL="postgresql://$SUPERUSER@127.0.0.1:$PORT/$BACKEND_DB"
 export AUTH_ENABLED="false"
 unset LAUNCHCREW_DB_TLS_MODE 2>/dev/null || true
 
+run_and_persist() {
+  # run_and_persist <label> <logfile> -- <command...> persists full output
+  # (no secrets: commands here never print env or credentials) before a
+  # bounded console tail, and propagates the exact command exit status.
+  label="$1"; logfile="$2"; shift 2
+  [ "$1" = "--" ] && shift
+  mkdir -p "$(dirname "$logfile")"
+  set +e
+  "$@" >"$logfile" 2>&1
+  status=$?
+  set -e
+  tail -n 30 "$logfile"
+  log "$label full log: $logfile"
+  return $status
+}
+
 log "run combined backend pytest"
 set +e
-"${PYTEST_RUN[@]}" -q --disable-warnings 2>&1 | tail -n 20
-PYTEST_STATUS=${PIPESTATUS[0]}
+run_and_persist "backend pytest" "$REPO_ROOT/.local/verify-candidate-logs/verify-candidate-pytest.log" -- "${PYTEST_RUN[@]}" -q --disable-warnings
+PYTEST_STATUS=$?
 set -e
-[ "$PYTEST_STATUS" -eq 0 ] || fail "backend pytest failed with exit $PYTEST_STATUS"
+[ "$PYTEST_STATUS" -eq 0 ] || { preserve_server_logs; fail "backend pytest failed with exit $PYTEST_STATUS (full log above)"; }
 log "backend pytest exit 0"
 
 log "run original unittest suite"
 set +e
-"${PY_RUN[@]}" -m unittest discover -s tests 2>&1 | tail -n 10
-UNITTEST_STATUS=${PIPESTATUS[0]}
+run_and_persist "unittest" "$REPO_ROOT/.local/verify-candidate-logs/verify-candidate-unittest.log" -- "${PY_RUN[@]}" -m unittest discover -s tests
+UNITTEST_STATUS=$?
 set -e
-[ "$UNITTEST_STATUS" -eq 0 ] || fail "unittest suite failed with exit $UNITTEST_STATUS"
+[ "$UNITTEST_STATUS" -eq 0 ] || { preserve_server_logs; fail "unittest suite failed with exit $UNITTEST_STATUS (full log above)"; }
 log "unittest exit 0"
 
 log "contract regeneration check"

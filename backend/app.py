@@ -418,6 +418,13 @@ def revise(run_id: str, body: ReviseIn, actor: str = Depends(auth.actor)):
                 raise HTTPException(409, message)
             raise HTTPException(422, message)
         db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id'), {'receipt': json.dumps(revised), 'state': revised['approval_state'], 'id': run_id})
+        # A saved revision resets approval, so the stale current-approval
+        # projection must not remain: a leftover row would collide with the
+        # fresh reapproval INSERT below (run_id PRIMARY KEY) and wrongly
+        # present the superseded approval as current. Superseded
+        # actor/time/revision evidence stays immutable in the receipt
+        # revision_history, the receipt audit event_log, and the audit table.
+        db.execute(text('DELETE FROM approvals WHERE run_id=:id'), {'id': run_id})
         store.audit(db, run_id, 'human_revised', actor)
     return revised
 
@@ -440,6 +447,12 @@ def approve(run_id: str, body: ApproveIn, actor: str = Depends(auth.actor)):
                 raise HTTPException(409, message)
             raise HTTPException(422, message)
         db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id'), {'receipt': json.dumps(receipt), 'state': receipt['approval_state'], 'id': run_id})
+        # The approvals table is a current-approval projection (one row per
+        # run): the plain INSERT keeps the PRIMARY KEY guard against double
+        # approval and concurrent approval races, with no ON CONFLICT bypass
+        # and no version-gate bypass (the stale/missing expected_revision
+        # checks above still run first). A revise clears this row, so fresh
+        # reapproval after edits inserts cleanly in the same transaction.
         db.execute(text('INSERT INTO approvals(run_id,approved_by) VALUES (:id,:actor)'), {'id': run_id, 'actor': actor})
         store.audit(db, run_id, 'approved_for_export', actor)
     return receipt

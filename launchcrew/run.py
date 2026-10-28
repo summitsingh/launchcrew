@@ -91,11 +91,36 @@ def model_usage(attempts):
             'data_mode_note': 'Stated intent for user data, not a verified API setting.'}
 
 
+def _snapshot_examples(profile):
+    # Allowlisted deep copy of profile examples only: input and
+    # approved_output strings. Anything else on an example entry (including
+    # anything credential-like) is dropped, and non-string or blank entries
+    # are skipped. Examples are untrusted style references for prompts, never
+    # verified facts: they never enter the review allowlist, which is built
+    # only from sourced Scout facts with verified is True.
+    snapshot = []
+    examples = profile.get('examples')
+    if not isinstance(examples, list):
+        return snapshot
+    for example in examples:
+        if not isinstance(example, dict):
+            continue
+        given = example.get('input')
+        shown = example.get('approved_output')
+        if not isinstance(given, str) or not isinstance(shown, str):
+            continue
+        if not given.strip() and not shown.strip():
+            continue
+        snapshot.append({'input': given[:2000], 'approved_output': shown[:2000]})
+    return snapshot
+
+
 def _stage_snapshot(profile):
     return {'name': profile.get('name'), 'role': profile.get('role'),
             'personality': profile.get('personality'), 'expertise': profile.get('expertise'),
             'decision_rules': list(profile.get('decision_rules', [])),
-            'veto_scope': list(profile.get('veto_scope', []))}
+            'veto_scope': list(profile.get('veto_scope', [])),
+            'examples': _snapshot_examples(profile)}
 
 
 def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverified_claim=False, receipt_writer=save_receipt, model_enabled=True, visual_verifier=None, memory_claims=None, blocked_claims=None, checker_profile='standard', brief=None, campaign_day=None, scout_profile=None, maker_profile=None, checker_agent=None):
