@@ -328,17 +328,10 @@ curl -fsS "http://127.0.0.1:$WEB_PORT/api/health" >/dev/null || { preserve_serve
 log "servers ready: API 127.0.0.1:$API_PORT web 127.0.0.1:$WEB_PORT with API_URL=$EXPECTED_API_URL trusted origin $EXPECTED_WEB_URL"
 
 set +e
-WEB_URL="http://127.0.0.1:$WEB_PORT" DATABASE_URL="$PW_URL" pnpm --dir web test:e2e -- tests/e2e/integration-acceptance.spec.ts tests/e2e/stage-selection.spec.ts 2>&1 | tail -n 15
-ACCEPT_STATUS=${PIPESTATUS[0]}
+WEB_URL="http://127.0.0.1:$WEB_PORT" DATABASE_URL="$PW_URL" pnpm --dir web test:e2e 2>&1 | tail -n 15
+E2E_STATUS=${PIPESTATUS[0]}
 set -e
-[ "$ACCEPT_STATUS" -eq 0 ] || { preserve_server_logs; fail "integration acceptance Playwright failed with exit $ACCEPT_STATUS"; }
-log "integration acceptance plus stage-selection Playwright exit 0"
-
-set +e
-WEB_URL="http://127.0.0.1:$WEB_PORT" DATABASE_URL="$PW_URL" pnpm --dir web test:e2e -- tests/e2e/review.spec.ts 2>&1 | tail -n 15
-VIEWPORT_STATUS=${PIPESTATUS[0]}
-set -e
-[ "$VIEWPORT_STATUS" -eq 0 ] || fail "viewport Playwright failed with exit $VIEWPORT_STATUS"
-log "viewport Playwright exit 0"
+[ "$E2E_STATUS" -eq 0 ] || { preserve_server_logs; fail "browser Playwright failed with exit $E2E_STATUS"; }
+log "browser Playwright exit 0 (full tests/e2e glob, single JSON report)"
 
 log "PASS: all verification complete on disposable 127.0.0.1:$PORT"

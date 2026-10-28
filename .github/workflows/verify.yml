@@ -64,8 +64,14 @@ jobs:
         run: |
           podman --version
           scripts/podman-local.sh build
+          # Clean only the owned test pod on exit. The named volume and
+          # local images stay per existing policy. Diagnostics print first
+          # so a failure carries bounded sanitized logs, not just curl.
+          trap 'scripts/podman-local.sh diag || true; scripts/podman-local.sh down >/dev/null 2>&1 || true' EXIT
           scripts/podman-local.sh up
           scripts/podman-local.sh check
+          trap - EXIT
+          scripts/podman-local.sh down
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -76,4 +82,6 @@ jobs:
             .local/*-1024.png
             .local/*-1440.png
             .local/playwright-results.json
+            .local/container-diag.log
+            .local/container-path-evidence.json
             web/test-results

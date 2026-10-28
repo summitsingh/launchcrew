@@ -82,7 +82,7 @@ The first expanded scan reported 499 email matches from package-version strings 
 
 ## Container verification
 
-Three images were built with `podman build --format oci`, via scripts/podman-local.sh. All three services ran through rootless Podman. Image manifests use application/vnd.oci.image.manifest.v1+json. Runtime user checks: API uid 10001, web uid 1000, database uid 70. The API runs Alembic before serving.
+Three images were built with `podman build --format oci`, via scripts/podman-local.sh. All three services ran through rootless Podman. Image manifests use application/vnd.oci.image.manifest.v1+json. Runtime user checks: API uid 10001, web uid 1000, database uid 70. Superseded: the runtime API image intentionally never migrates now (see the container migration fix below). A separate migration image runs once before API startup.
 
 - `curl -fsS http://127.0.0.1:8001/api/health`: HTTP 200, status ok, auth disabled_demo, approval_by demo_placeholder.
 - `curl -fsS http://127.0.0.1:3001/`: HTTP 200.
@@ -286,3 +286,25 @@ Unresolved and not claimed: full verifier rerun on a bind-capable host, live aut
 - deploy/aws/fargate.yaml: explicit DeletionPolicy Delete and UpdateReplacePolicy Delete on Database, ECR repos, log groups, and DemoBudget. ECR repos set EmptyOnDelete true so a nonempty repo does not block stack deletion or silently retain images. Database keeps DeleteAutomatedBackups true and DeletionProtection false so approved teardown does not silently retain a billable final snapshot.
 - Offline tests: tests/test_teardown.py, 8 tests passed with a fake AWS command fixture, no AWS contact. Covers dry-run zero calls, refused ARN and caller and tag mismatch with no delete, success verified by authoritative not-found, and auth failure never treated as absence.
 - Local static checks in this commit: sh -n teardown.sh passed, teardown unittest passed, scan and text checks passed. Full backend, db-roles, and cfn-lint rerun for this teardown revision is pending independent verification and is not claimed here.
+
+## Container migration fix plus full e2e glob, Oct 28, local only, new CI pending
+
+Sole writer personal MuseCode CLI on main, atop 1d1a7c0. No push in this pass. No cloud, DNS, deploy, spend, credentials, photos, SAM, product model, recording, or submission action. No backend Memory semantics change; 1d1a7c0 behavior preserved.
+
+- Published failure: the CI Podman step at e56d51e failed with `curl: (56) Recv failure: Connection reset by peer` 60 times against http://127.0.0.1:8001/api/health, after host, backend, frontend, and 14 browser checks passed and all images built (local log verification-ci-e56d51e-failed.log held outside the repo; task cites run 40638273145). The CI log carried no API container output, only curl resets, so the cause below is grounded in repo code, not in captured container logs.
+- Diagnosis: `scripts/podman-local.sh up` created a fresh named volume, waited for Postgres, then started the runtime API with no migration step. The runtime entrypoint intentionally never migrates (deployment separation, own migration role), and `backend/app.py` lifespan calls `store.initialize()`, which INSERTs seed agents immediately. Against a fresh volume with no tables that INSERT fails, so the API container exits and the health probe resets. The existing `containers/migrate.Containerfile` was built by nothing and run by nothing.
+- Fix, separations preserved: `build` now also builds `localhost/launchcrew-migrate:demo`; `up` runs that image once with `DATABASE_URL=postgresql://postgres@127.0.0.1:5432/launchcrew` and `LAUNCHCREW_DB_TLS_MODE=local` before starting the runtime API, and fails with diagnostics if migration fails. Alembic stays out of `containers/api-entrypoint.sh`, the runtime API keeps no DDL, cloud TLS enforcement in `backend/store.py` is untouched, and the migration and runtime database roles stay separate. `down` still removes only the owned pod and keeps the named volume and images.
+- Failure evidence: new `diag` subcommand prints pod status plus bounded 100 line tails of app logs only, never environment, inspect output, config, or secret values, and saves `.local/container-diag.log`. `up` calls it when migration, API, or web readiness fails. CI traps it before cleaning the owned pod and uploads `.local/container-diag.log` plus `.local/container-path-evidence.json` as verification evidence.
+- Functional container proof: new `scripts/verify-container-path.py` (stdlib only, authored in this pass) runs keyless through the real API and the Next rewrite proxy with no model calls: direct and proxied health with `disabled_demo` and `demo_placeholder`, agent list, plain run creation, receipt reread, seeded run blocked in v1, export refused 422 before approval, approval, export 200 with `submit_attempted` false, and queue listing. `scripts/podman-local.sh check` runs it after the existing health probes.
+- Full browser glob: `scripts/verify-release-candidate.sh` now runs one `pnpm --dir web test:e2e` with no named spec files, so `web/tests/e2e/memory-learned.spec.ts` plus integration, stage, and viewport specs all run in a single invocation with one complete JSON report. Named spec lists cannot omit a future spec again.
+- Static separation tests: new `tests/test_container_migration.py`, 13 tests, socket-free, covering migration image build, migration before API ordering with explicit local DB mode, runtime no DDL, migrate only migrates, full e2e glob with all four specs present, sanitized diagnostics with owned pod only cleanup, and harness coverage through the proxy with the 422 gate.
+
+Socket-free evidence from this sandbox (binds denied, so no servers, databases, or containers started):
+
+- `bash -n` on `scripts/podman-local.sh`, `scripts/verify-release-candidate.sh`, and `scripts/verify-db-roles.sh`: all pass.
+- New tests plus related suites: 47 passed (`test_container_migration`, `test_verifier_origin`, `test_scan`, `test_teardown`, `test_memory_semantics`).
+- Full `tests` discover: 87 run, 3 errors, all three the known `tests/test_stage_b.py` WebTests binds denied by this sandbox, same as the prior pass. No new failure.
+- `python3 scripts/scan_repo.py`: pass, zero findings. `scripts/check-repo-text.py`: em_dash 0, legacy_brand 0. `git diff --check`: clean.
+- Harness CLI parses (`--api-base`, `--web-base`); its live run needs the container stack and is pending CI.
+
+Not claimed: container stack pass (needs a bind-capable host or CI; new CI run for this commit is pending, not passed), memory-learned browser pass (pending independent host run via the full verifier, then CI), backend pytest and db-roles rerun on a host. The container diagnosis above is code-grounded and awaits CI proof.

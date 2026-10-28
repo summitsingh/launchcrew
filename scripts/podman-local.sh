@@ -21,6 +21,7 @@ case "${1:-up}" in
   build)
     p build --format oci -f containers/db.Containerfile -t localhost/launchcrew-db:demo .
     p build --format oci -f containers/api.Containerfile -t localhost/launchcrew-api:demo .
+    p build --format oci -f containers/migrate.Containerfile -t localhost/launchcrew-migrate:demo .
     p build --format oci -f containers/web.Containerfile -t localhost/launchcrew-web:demo .
     ;;
   up)
@@ -35,28 +36,63 @@ case "${1:-up}" in
       sleep 1
     done
     p exec launchcrew-stack-db pg_isready -U postgres -d launchcrew
+    # Fresh volumes have no schema. The runtime API image never migrates,
+    # so the separate migration image runs once here, before API startup.
+    if ! p run --name launchcrew-migrate --pod launchcrew-stack -e DATABASE_URL=postgresql://postgres@127.0.0.1:5432/launchcrew -e LAUNCHCREW_DB_TLS_MODE=local localhost/launchcrew-migrate:demo; then
+      echo 'podman-local: migration failed, collecting bounded sanitized diagnostics' >&2
+      "$0" diag || true
+      exit 1
+    fi
     p run -d --name launchcrew-api --pod launchcrew-stack -e DATABASE_URL=postgresql://postgres@127.0.0.1:5432/launchcrew -e AUTH_ENABLED=false -e PUBLIC_BASE_URL=http://127.0.0.1:3001 localhost/launchcrew-api:demo
     for attempt in {1..60}; do
       if curl -fsS http://127.0.0.1:8001/api/health; then break; fi
       sleep 1
     done
-    curl -fsS http://127.0.0.1:8001/api/health
+    if ! curl -fsS http://127.0.0.1:8001/api/health; then
+      echo 'podman-local: API did not become ready, collecting bounded sanitized diagnostics' >&2
+      "$0" diag || true
+      exit 1
+    fi
     p run -d --name launchcrew-web --pod launchcrew-stack localhost/launchcrew-web:demo
     for attempt in {1..60}; do
       if curl -fsS http://127.0.0.1:3001/api/health; then break; fi
       sleep 1
     done
-    curl -fsS http://127.0.0.1:3001/api/health
+    if ! curl -fsS http://127.0.0.1:3001/api/health; then
+      echo 'podman-local: web did not become ready, collecting bounded sanitized diagnostics' >&2
+      "$0" diag || true
+      exit 1
+    fi
     ;;
   check)
     p exec launchcrew-stack-db pg_isready -U postgres -d launchcrew
     curl -fsS -o /dev/null -w 'API HTTP %{http_code}\n' http://127.0.0.1:8001/api/health
     curl -fsS -o /dev/null -w 'WEB HTTP %{http_code}\n' http://127.0.0.1:3001/
     curl -fsS -o /dev/null -w 'WEB API HTTP %{http_code}\n' http://127.0.0.1:3001/api/health
+    if ! python3 scripts/verify-container-path.py --api-base http://127.0.0.1:8001 --web-base http://127.0.0.1:3001; then
+      echo 'podman-local: container path check failed, collecting bounded sanitized diagnostics' >&2
+      "$0" diag || true
+      exit 1
+    fi
+    ;;
+  diag)
+    # Bounded sanitized status for CI artifacts. App logs only, bounded
+    # tails, no environment, no inspect, no config, no secret values.
+    mkdir -p .local
+    {
+      echo '--- pod ---'
+      p pod ps || true
+      echo '--- containers ---'
+      p ps -a --pod || true
+      for name in launchcrew-stack-db launchcrew-migrate launchcrew-api launchcrew-web; do
+        echo "--- logs $name (tail 100) ---"
+        p logs --tail 100 "$name" 2>&1 || echo "(no logs for $name)"
+      done
+    } 2>&1 | tee .local/container-diag.log | tail -n 120
     ;;
   down)
     p pod rm -f launchcrew-stack
     # Keep named volume and local images for coordinator verification.
     ;;
-  *) echo 'Usage: scripts/podman-local.sh build|up|check|down' >&2; exit 2 ;;
+  *) echo 'Usage: scripts/podman-local.sh build|up|check|down|diag' >&2; exit 2 ;;
 esac
