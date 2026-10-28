@@ -30,6 +30,11 @@ case "${1:-up}" in
     done
     curl -fsS http://127.0.0.1:8001/api/health
     p run -d --name launchcrew-web --pod launchcrew-stack localhost/launchcrew-web:demo
+    for attempt in {1..60}; do
+      if curl -fsS http://127.0.0.1:3001/api/health; then break; fi
+      sleep 1
+    done
+    curl -fsS http://127.0.0.1:3001/api/health
     ;;
   check)
     p exec launchcrew-stack-db pg_isready -U postgres -d launchcrew

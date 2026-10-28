@@ -10,3 +10,9 @@
 .env
 .env.*
 runs
+.aws
+.codex
+.agents
+**/.env
+**/.env.*
+**/*.pyc
