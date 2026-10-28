@@ -214,3 +214,33 @@ web/tests/unit.test.tsx
 web/tsconfig.json
 web/vitest.config.ts
 ```
+
+
+## V2 Item A verification, separate worktree, Oct 27, 2026
+
+Worktree: /home/summit/launchcrew-v2, branch feature/v2-memory-replay-campaign, starting commit 966de60. Only this worktree was edited. No branch switch, commit, push, rebase, or revert occurred. All new implementation was authored in this repo during this task. Existing pipeline and receipt gates remain the execution and approval paths.
+
+Backend: `DATABASE_URL=postgresql://postgres@127.0.0.1:54329/launchcrew UV_CACHE_DIR="$PWD/.local/uv-cache" uv run pytest -q` passed 50 tests with two dependency deprecation warnings. The first run found a JSON literal parsed as a SQL bind in a new test; it was corrected to a bound JSON parameter and the complete suite passed. This includes strict memory inputs, lifecycle and audit, explicit approved-run learning, replay changes and idea mismatch, seven campaign runs and legacy memory rows, individual gates, transaction rollback, auth coverage, v1 approval/export, and exact committed OpenAPI equality.
+
+Frontend: local pnpm 10.20.0 ran `client:generate`, `test`, `typecheck`, and `build`. Vitest passed 10 tests across two files. New component tests cover both views, replay sections and mismatch, and day approval/export controls for pending, blocked, failed, missing final check, approved, and busy states. Typecheck and production build passed. Generated types match the canonical OpenAPI exactly.
+
+Database handling: checked scripts/podman-local.sh and container status. No running pod appeared in the default Podman inventory; API port 8001 and web port 3001 did not respond. Existing localhost Postgres 17.11 on port 54329 responded successfully. Used it with unique temporary schemas for tests and API demo, then dropped only those schemas. No container was started, stopped, rebuilt, or removed. No Podman volume or repo pod was changed. No full stack was started. Playwright smoke was not run because the full stack was not up.
+
+The deterministic API demo used FastAPI TestClient with the real Postgres migration and adapter, overriding only pipeline options to model_enabled=False and visual_verifier=None. No model or visual transport was invoked. Demo rows were removed with the isolated schema after verification. Detailed local evidence is in .local/v2-demo-evidence.json, which is ignored by git.
+
+- Memory created: mem_72299b7aff9749219961051afd61d80e. Edited title to Wallet demo price, content to the $49 demo price plus demo_only true.
+- Campaign created: camp_3ca8f5dc10134bdca3f66d89fd350911. Seven days, all initially completed and pending_approval, final blocked count zero.
+- Day 1: run_8b788fbf7b9a4d4c8d465ae819b8a4e2, explicitly changed to approved_for_export, then exported with HTTP 200 and attachment filename launchcrew-pack.json. Export receipt state approved_for_export, submit_attempted false.
+- Day 2: run_542807e07d0d452088aacc1994b8ba13, pending_approval.
+- Day 3: run_d33cb8fdf6d2408cafbfcaff1bd6b4d4, pending_approval.
+- Day 4: run_aee9c748e3be4304b950eed457312394, pending_approval.
+- Day 5: run_0c533cd2c18e407cbae15d2c7726ec86, pending_approval.
+- Day 6: run_bdcfe553022c48b8ad2edc7e09517937, pending_approval.
+- Day 7: run_d2441f1e1dbf4725a2544f7c9e14da2c, pending_approval.
+- Replay compared day 1 with day 2, HTTP 200, same_idea true, approval_state_changed true. Both had first blocked count one and final blocked count zero. Identical deterministic drafts yielded false draft-change flags. Regression tests separately verify differing drafts and Checker verdicts.
+
+SAM, live model calls, remote CI, video, submission, connectors, provisioning, and live sign-in were not done. Support Crew, Designer, and Analyst were not built. Nothing publishes automatically. Nothing was committed or pushed.
+
+Preserved v1 unittest suite: 38 passed. The initial restricted-sandbox attempt could not bind three temporary test HTTP servers; rerunning with localhost socket permission passed all 38 without source changes. Dependency downloads initially required network permission, then installed from the locked manifests in this worktree.
+
+After staging only the six new source, test, migration, and connector-notes files, scripts/scan_repo.py passed with zero findings for every check. scripts/check-repo-text.py reported em_dash 0 and legacy_brand 0. Both staged and unstaged git diff whitespace checks passed. The branch remained feature/v2-memory-replay-campaign at 966de60; no commit or push occurred.
