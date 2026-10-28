@@ -223,7 +223,7 @@ test('integration acceptance V1 plus V2', async ({ page, request }) => {
   await expect(day4Card.getByText('pending_approval')).toBeVisible();
   await page.screenshot({ path: `${local}/07-campaign.png`, fullPage: true });
 
-  // Failed run guard in the queue: Approve is disabled, export is refused.
+  // Failed run guard in the queue: completed-only UI hides Approve/Export, APIs refuse with 422.
   // SEEDED failed run: direct receipt update in the disposable database,
   // then the browser must render the guard. Not a natural UI failure path.
   const failedRun = await request.post('/api/runs', { data: { idea: wallet, agent_name: agentName, seed_unverified_claim: false } });
@@ -231,7 +231,8 @@ test('integration acceptance V1 plus V2', async ({ page, request }) => {
   seedReceipt(failedJson.run_id, 'status', '"failed"');
   await page.getByRole('button', { name: 'Approval queue', exact: false }).click();
   const failedCard = page.locator(`[data-run-id="${failedJson.run_id}"]`);
-  await expect(failedCard.getByRole('button', { name: 'Approve for export', exact: true })).toBeDisabled();
+  await expect(failedCard.getByRole('button', { name: 'Approve for export', exact: true })).toHaveCount(0);
+  await expect(failedCard.getByRole('button', { name: 'Export pack', exact: true })).toHaveCount(0);
   const failedExport = await request.post(`/api/runs/${failedJson.run_id}/export`, { data: {} });
   expect(failedExport.status()).toBe(422);
   const failedApprove = await request.post(`/api/runs/${failedJson.run_id}/approve`, { data: {} });
