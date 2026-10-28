@@ -102,6 +102,11 @@ dd { margin: 0; font-weight: 600; text-align: right; overflow-wrap: anywhere; }
 .check-strip svg { display: inline; vertical-align: middle; }
 .check-strip small { display: block; font-size: 11px; margin-top: 9px; color: #51614f; }
 .blocked { background: #f9efe3; border-left: 3px solid #b87930; padding: 14px; margin-bottom: 18px; font-size: 12px; }
+.scout-list { list-style: none; margin: 0 0 8px; padding: 0; }
+.scout-list > li { border-top: 1px solid #d9e1d4; padding: 12px 0; font-size: 12px; min-width: 0; }
+.scout-row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; overflow-wrap: anywhere; }
+.scout-row > * { min-width: 0; max-width: 100%; }
+.scout-row .hint { margin: 6px 0 0; }
 .blocked p { margin: 4px 0 0; }
 .draft { background: #f4f6f0; padding: 16px; border-radius: 5px; font-size: 13px; }
 .review-footer { display: flex; justify-content: space-between; align-items: center; gap: 20px; padding-top: 24px; }

@@ -259,6 +259,27 @@ Branch ceplat-launchcrew-release-candidate, clean HEAD c1038ef. Independent Code
 
 Unresolved and not claimed: frontend and browser rerun, live auth sign-in, live model retest and container-path test, live SAM end to end (held, no live calls), AWS SAM validation and deployment, demo recording, merge, push, and submission. An AWS Budget is an alert and estimate mechanism, not an enforced hard spend cap. Cost and deployment approvals stay open user decisions.
 
+## Campaign selector fix plus Scout facts section, Oct 28, local only, pending host browser rerun
+
+Extends main at dbad964. Sole writer personal MuseCLI, repo-local identity only. No push. No dependency or browser reinstall. No cloud, DNS, deploy, spend, credentials, photos, SAM, product model, recording, or submission action.
+
+- Campaign strict violation fixed: CampaignView Maker control was labeled `Agent`, so `getByLabel('Agent')` matched Scout agent, Agent, and Checker agent. The control is now labeled `Maker profile` with id `campaign-maker`, matching the brief form wording. web/tests/e2e/integration-acceptance.spec.ts Campaign Week now uses `getByLabel('Maker profile', { exact: true })`. Other brief-form Maker selectors were made exact without changing assertions. No route mocks, no deleted proof steps.
+- Typed Scout receipt contract, backward compatible: backend/app.py adds optional `ScoutFact`, `ScoutSection`, and `ModelUsage` models plus optional `scout`, `stage_bindings`, `stage_agents`, `checker_enforcement`, `checker_policies`, and `model_usage` on Receipt. Historical and failed receipts without Scout data still validate. backend/openapi.json and web/src/lib/schema.d.ts regenerated normally. Contract paths stay 24.
+- Run review now renders Scout facts and risks from stored receipt data: new `ScoutFactsSection` in web/src/components/v2-views.tsx, shown between the stage strip and the first-check panel. It lists each stored fact with its claim, evidence, source labels, and Verified or Unverified status; each stored risk tagged as a demo risk or an unverified model hypothesis; the selected Scout identity from stage bindings; and stored model synthesis and usage truthfully, with a fallback line when usage is absent on older receipts. Legacy or failed receipts render a short unavailable note and invent no facts. Raw receipt JSON remains inspectable in the record view. Approval, export, autopost safety, profile, Memory, Replay, and Campaign flows are unchanged. Existing panel, badge, tag, and hint styles reused plus small list rules that wrap at narrow widths.
+- Playwright assertions added, not yet run on a host: stage-selection guarded run asserts the rendered section shows the custom Scout identity, 5 fact rows, 3 risk rows, 5 exact Verified badges, all 5 default claims, demo-risk labeling, the no-external-research note, and deterministic fallback, with API cross-checks on `scout.facts_used`, `scout.risks`, and `scout.sources`; default run asserts 5 facts and 3 risks in UI and API; integration-acceptance v1 run asserts 5 facts, 3 risks, and 5 Verified badges in UI plus API lengths on the exported receipt. Viewport overflow at 375, 768, 1024, and 1440 is covered by the existing review spec run path, which checks no horizontal overflow after the draft renders with the new section.
+
+Socket-free evidence from this sandbox (binds denied, so no servers started):
+- Frontend Vitest: 5 files, 26 tests passed (20 before, 6 new scout-facts tests).
+- Frontend typecheck: `tsc --noEmit` exit 0.
+- Frontend production build with `API_URL=http://127.0.0.1:8021`: exit 0.
+- Contract: openapi regeneration idempotent, 24 paths, web schema matches canonical OpenAPI per the committed drift test inside the Vitest run.
+- Core unittest: 63 passed, 3 errors, all three in tests/test_stage_b.py WebTests setUp where HTTPServer bind is denied by this sandbox (PermissionError on bind). Unrelated files untouched; rerun on a bind-capable host required.
+- Backend pytest: not run here, needs disposable Postgres loopback bind. Pending host run.
+- scripts/scan_repo.py: pass, zero findings. scripts/check-repo-text.py: em_dash 0, legacy_brand 0. `git diff --check`: clean.
+- Browser acceptance including Campaign Week and the new Scout facts UI: pending host run via scripts/verify-release-candidate.sh --all. Not claimed.
+
+Unresolved and not claimed: full verifier rerun on a bind-capable host, live auth sign-in, live model calls, SAM end to end, deployment, demo recording, push, and submission.
+
 ## Teardown implementation, Oct 28, local only, pending independent rerun
 
 - deploy/aws/teardown.sh: dry-run default with no AWS call. Confirm path requires exact stack ARN plus expected 12-digit account and region, verifies caller identity and Project LaunchCrew with Environment demo tags before any destructive call, deletes only that stack via CloudFormation, waits for stack-delete-complete, verifies terminal absence by authoritative ValidationError not-found, distinguishes auth and API errors from not-found, never deletes by prefix, never deletes shared or outside-stack resources, and reports Secrets Manager values, ACM certificate, Cloudflare DNS, and manual snapshots as remaining work with a separate approval gate.

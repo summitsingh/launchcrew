@@ -74,6 +74,39 @@ class Approval(BaseModel):
     timestamp: str
 
 
+class ScoutFact(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    claim: str = ''
+    verified: bool = False
+    evidence: str | None = None
+    sources: list[str] = []
+
+
+class ScoutSection(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    facts_used: list[ScoutFact] = []
+    risks: list[str] = []
+    sources: list[str] = []
+    model_mode: str | None = None
+    model_note: str | None = None
+
+
+class ModelUsage(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    spark_calls: int = 0
+    spark_mode: str = 'deterministic_fallback'
+    mode: str = 'deterministic_fallback'
+    model_used: str = 'none'
+    models_used: list[str] = []
+    error_types: list[str] = []
+    wonder_used: bool = False
+    wonder_attempts: int = 0
+    token_counts: dict[str, int] = {}
+    tokens_known: bool = False
+    data_mode: str = 'standard_no_train'
+    data_mode_note: str = ''
+
+
 class Receipt(BaseModel):
     model_config = ConfigDict(extra='allow')
     run_id: str
@@ -91,6 +124,12 @@ class Receipt(BaseModel):
     checker_v2: Check | None = None
     summary: dict[str, Any]
     audit: dict[str, Any]
+    scout: ScoutSection | None = Field(default=None, description='Scout facts, sources, demo risks, and synthesis mode. Absent on historical or failed receipts.')
+    stage_bindings: dict[str, str] | None = None
+    stage_agents: dict[str, Any] | None = None
+    checker_enforcement: dict[str, Any] | None = None
+    checker_policies: list[str] | None = None
+    model_usage: ModelUsage | None = None
 
 
 class Preview(BaseModel):

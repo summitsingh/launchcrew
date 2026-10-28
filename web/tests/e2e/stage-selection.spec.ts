@@ -68,7 +68,7 @@ test('custom Scout and Checker selection changes verdict and receipt identity', 
   async function runWithChecker(checker: string) {
     await page.getByRole('button', { name: 'Launch brief', exact: false }).click();
     await page.getByLabel('Scout agent').selectOption(scoutName);
-    await page.getByLabel('Maker profile').selectOption('Maker');
+    await page.getByLabel('Maker profile', { exact: true }).selectOption('Maker');
     await page.getByLabel('Checker agent').selectOption(checker);
     await page.getByLabel('Checker profile').selectOption('standard');
     await page.getByLabel('Memory ids, comma separated, optional').fill('');
@@ -96,6 +96,11 @@ test('custom Scout and Checker selection changes verdict and receipt identity', 
   expect(defaultReceipt.checker_v1.blocked_count).toBe(0);
   expect(defaultReceipt.maker_draft_v2.post).toContain('$49');
   expect((defaultReceipt.checker_enforcement.effective_policies as string[])).not.toContain('price_claims');
+  expect(defaultReceipt.scout.facts_used).toHaveLength(5);
+  expect(defaultReceipt.scout.risks).toHaveLength(3);
+  const defaultScout = page.locator('section[aria-label="Scout facts and sources"]');
+  await expect(defaultScout.locator('.scout-fact')).toHaveCount(5);
+  await expect(defaultScout.locator('.scout-risk')).toHaveCount(3);
   await page.screenshot({ path: `${local}/04-default.png`, fullPage: true });
 
   // Same input, custom PriceGuard: price is blocked and revised out.
@@ -119,6 +124,20 @@ test('custom Scout and Checker selection changes verdict and receipt identity', 
   expect(guardedReceipt.maker_draft_v2.post).not.toContain('$49');
   expect(guardedReceipt.checker_enforcement.effective_policies).toContain('price_claims');
   expect(guardedReceipt.summary.submit_attempted).toBe(false);
+  expect(guardedReceipt.scout.facts_used).toHaveLength(5);
+  expect(guardedReceipt.scout.risks).toHaveLength(3);
+  expect(guardedReceipt.scout.sources).toEqual(['demo_facts.json', 'demo brand brief']);
+  const guardedScout = page.locator('section[aria-label="Scout facts and sources"]');
+  await expect(guardedScout).toContainText(`Scout stage: ${scoutName}`);
+  await expect(guardedScout.locator('.scout-fact')).toHaveCount(5);
+  await expect(guardedScout.locator('.scout-risk')).toHaveCount(3);
+  await expect(guardedScout.getByText('Verified', { exact: true })).toHaveCount(5);
+  for (const claim of ['100% vegan PU leather', 'Designed in Texas', '$49', 'Vegan leather wallet', 'For Austin commuters']) {
+    await expect(guardedScout.getByText(claim, { exact: true })).toBeVisible();
+  }
+  await expect(guardedScout.getByText('Demo risk, unverified').first()).toBeVisible();
+  await expect(guardedScout).toContainText('No external research was run');
+  await expect(guardedScout).toContainText('deterministic fallback');
   await page.screenshot({ path: `${local}/05-guarded.png`, fullPage: true });
 
   // Replay proves the stage binding difference, not only the verdict.

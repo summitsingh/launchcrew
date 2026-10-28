@@ -7,6 +7,8 @@ import { canApproveDay, canExportDay, memoryEditPayload } from '@/lib/v2';
 import type { components } from '@/lib/schema';
 
 type Receipt = components['schemas']['Receipt'];
+type ScoutSection = components['schemas']['ScoutSection'];
+type ModelUsage = components['schemas']['ModelUsage'];
 type Diff = components['schemas']['RunDiff'];
 type Day = components['schemas']['CampaignDay'];
 const wallet = 'Vegan leather wallet, $49, for Austin commuters, launch on Instagram';
@@ -111,6 +113,33 @@ export function DiffResult({ diff }: { diff: Diff }) {
   </div>;
 }
 
+export function ScoutFactsSection({ receipt }: { receipt: Receipt }) {
+  const scout = (receipt.scout ?? null) as ScoutSection | null;
+  const scoutName = receipt.stage_bindings?.scout ?? 'Scout';
+  const usage = (receipt.model_usage ?? null) as ModelUsage | null;
+  if (!scout || !Array.isArray(scout.facts_used)) {
+    return <section className="panel" aria-label="Scout facts and sources"><p className="eyebrow">SCOUT FACTS AND RISKS</p><h2>Sourced facts unavailable for this receipt.</h2><p className="hint">Historical or failed runs predate stored Scout facts. No facts are invented here; inspect the complete receipt JSON in the record below.</p></section>;
+  }
+  const facts = scout.facts_used;
+  const risks = Array.isArray(scout.risks) ? scout.risks : [];
+  const sourceLabels = Array.isArray(scout.sources) ? scout.sources : [];
+  const synthesized = scout.model_mode === 'spark';
+  return <section className="panel" aria-label="Scout facts and sources">
+    <p className="eyebrow">SCOUT FACTS AND RISKS</p>
+    <h2>What Scout sourced{scoutName && scoutName !== 'Scout' ? ` · ${scoutName}` : ''}.</h2>
+    <p className="hint">Scout stage{scoutName ? `: ${scoutName}` : ''}. Demo facts only, sourced from the local facts file and demo brand brief below. No external research was run and no live product verification is claimed. Only verified facts reach Maker drafts.</p>
+    <h3>Sourced facts ({facts.length})</h3>
+    {facts.length === 0 && <p className="hint">No stored facts on this receipt.</p>}
+    <ul className="scout-list">{facts.map((fact, i) => <li key={i} className="scout-fact"><div className="scout-row"><strong>{fact.claim || 'Unlabeled fact'}</strong><span className={`badge ${fact.verified ? 'approved' : 'pending'}`}>{fact.verified ? 'Verified' : 'Unverified'}</span></div><p className="hint">Evidence: {fact.evidence || 'none stored'}{Array.isArray(fact.sources) && fact.sources.length > 0 ? ` · Sources: ${fact.sources.join(', ')}` : ' · No stored source: unverified model hypothesis, not external research.'}</p></li>)}</ul>
+    <h3>Risks for review ({risks.length})</h3>
+    <p className="hint">Demo risks are hypotheses for your review, never approved product facts.</p>
+    {risks.length === 0 && <p className="hint">No stored risks on this receipt.</p>}
+    <ul className="scout-list">{risks.map((risk, i) => <li key={i} className="scout-risk"><div className="scout-row"><span>{risk}</span><span className="tag">{risk.startsWith('Unverified model risk:') ? 'Unverified model hypothesis' : 'Demo risk, unverified'}</span></div></li>)}</ul>
+    <p className="hint">Model synthesis: {synthesized ? 'spark (optional Scout synthesis received)' : 'none, deterministic fallback'}{scout.model_note ? ` · ${scout.model_note}` : ''}{usage ? ` · Stored usage: ${usage.mode}, ${usage.spark_calls} Spark calls, model ${usage.model_used}.` : ' · Stored model usage unavailable on this receipt.'}</p>
+    {sourceLabels.length > 0 && <p className="hint">Fact sources on this receipt: {sourceLabels.join(', ')}.</p>}
+  </section>;
+}
+
 export function ReplayView({ queue }: { queue: Receipt[] }) {
   const [a, setA] = useState('');
   const [b, setB] = useState('');
@@ -141,5 +170,5 @@ export function CampaignView({ profiles }: { profiles: components['schemas']['Pr
     const link = document.createElement('a'); link.href = url; link.download = `${run.run_id}.json`; link.click(); URL.revokeObjectURL(url); setNotice(`Export downloaded: ${run.run_id}`);
   } });
   const error = create.error || campaign.error || weeks.error || approve.error || download.error;
-  return <section aria-label="Campaign"><section className="panel"><h2>Campaign Week</h2><p>Nothing publishes automatically. Review and approve each day individually.</p><form onSubmit={e => { e.preventDefault(); create.mutate(); }}><label htmlFor="campaign-idea">Idea</label><textarea id="campaign-idea" required maxLength={2000} value={idea} onChange={e => setIdea(e.target.value)} /><label htmlFor="campaign-scout">Scout agent</label><select id="campaign-scout" value={scout} onChange={e => setScout(e.target.value)}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</select><label htmlFor="campaign-agent">Agent</label><select id="campaign-agent" value={agent} onChange={e => setAgent(e.target.value)}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</select><label htmlFor="campaign-checker-agent">Checker agent</label><select id="campaign-checker-agent" value={checkerAgent} onChange={e => setCheckerAgent(e.target.value)}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</select><p className="hint">Each agent runs its own stage. Original names and rules are kept in each day receipt.</p><label htmlFor="campaign-checker">Checker profile</label><select id="campaign-checker" value={checkerProfile} onChange={e => setCheckerProfile(e.target.value)}><option>standard</option><option>strict</option></select><p className="hint">Supported Checker policies: veto_scope superlatives or price_claims; decision_rules Block superlatives or Block price claims (exact match). Other rules are advisory only.</p><label className="checkbox"><input type="checkbox" checked={seed} onChange={e => setSeed(e.target.checked)} />Include unsupported claim demo</label><Button type="submit" disabled={create.isPending || !profiles.length}>{create.isPending ? 'Creating week...' : 'Create week'}</Button></form><label htmlFor="campaign-select">Open a campaign</label><select id="campaign-select" value={id} onChange={e => setId(e.target.value)}><option value="">Select a week</option>{weeks.data?.map(week => <option key={week.id} value={week.id}>{week.idea} ({week.id})</option>)}</select></section>{error && <p role="alert">{error.message}</p>}{notice && <p role="status">{notice}</p>}{campaign.isFetching && <p>Refreshing week...</p>}{campaign.data && <section><h2>{campaign.data.idea}</h2><p className="run-id">{campaign.data.id}</p>{campaign.data.days.map(day => <CampaignDayCard key={day.day} day={day} busy={approve.isPending || download.isPending} approve={() => approve.mutate(day.day)} download={() => download.mutate(day.day)} />)}</section>}</section>;
+  return <section aria-label="Campaign"><section className="panel"><h2>Campaign Week</h2><p>Nothing publishes automatically. Review and approve each day individually.</p><form onSubmit={e => { e.preventDefault(); create.mutate(); }}><label htmlFor="campaign-idea">Idea</label><textarea id="campaign-idea" required maxLength={2000} value={idea} onChange={e => setIdea(e.target.value)} /><label htmlFor="campaign-scout">Scout agent</label><select id="campaign-scout" value={scout} onChange={e => setScout(e.target.value)}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</select><label htmlFor="campaign-maker">Maker profile</label><select id="campaign-maker" value={agent} onChange={e => setAgent(e.target.value)}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</select><label htmlFor="campaign-checker-agent">Checker agent</label><select id="campaign-checker-agent" value={checkerAgent} onChange={e => setCheckerAgent(e.target.value)}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</select><p className="hint">Each agent runs its own stage. Original names and rules are kept in each day receipt.</p><label htmlFor="campaign-checker">Checker profile</label><select id="campaign-checker" value={checkerProfile} onChange={e => setCheckerProfile(e.target.value)}><option>standard</option><option>strict</option></select><p className="hint">Supported Checker policies: veto_scope superlatives or price_claims; decision_rules Block superlatives or Block price claims (exact match). Other rules are advisory only.</p><label className="checkbox"><input type="checkbox" checked={seed} onChange={e => setSeed(e.target.checked)} />Include unsupported claim demo</label><Button type="submit" disabled={create.isPending || !profiles.length}>{create.isPending ? 'Creating week...' : 'Create week'}</Button></form><label htmlFor="campaign-select">Open a campaign</label><select id="campaign-select" value={id} onChange={e => setId(e.target.value)}><option value="">Select a week</option>{weeks.data?.map(week => <option key={week.id} value={week.id}>{week.idea} ({week.id})</option>)}</select></section>{error && <p role="alert">{error.message}</p>}{notice && <p role="status">{notice}</p>}{campaign.isFetching && <p>Refreshing week...</p>}{campaign.data && <section><h2>{campaign.data.idea}</h2><p className="run-id">{campaign.data.id}</p>{campaign.data.days.map(day => <CampaignDayCard key={day.day} day={day} busy={approve.isPending || download.isPending} approve={() => approve.mutate(day.day)} download={() => download.mutate(day.day)} />)}</section>}</section>;
 }

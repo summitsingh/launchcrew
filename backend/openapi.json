@@ -453,6 +453,82 @@
         "title": "MemoryItemOut",
         "type": "object"
       },
+      "ModelUsage": {
+        "additionalProperties": true,
+        "properties": {
+          "data_mode": {
+            "default": "standard_no_train",
+            "title": "Data Mode",
+            "type": "string"
+          },
+          "data_mode_note": {
+            "default": "",
+            "title": "Data Mode Note",
+            "type": "string"
+          },
+          "error_types": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Error Types",
+            "type": "array"
+          },
+          "mode": {
+            "default": "deterministic_fallback",
+            "title": "Mode",
+            "type": "string"
+          },
+          "model_used": {
+            "default": "none",
+            "title": "Model Used",
+            "type": "string"
+          },
+          "models_used": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Models Used",
+            "type": "array"
+          },
+          "spark_calls": {
+            "default": 0,
+            "title": "Spark Calls",
+            "type": "integer"
+          },
+          "spark_mode": {
+            "default": "deterministic_fallback",
+            "title": "Spark Mode",
+            "type": "string"
+          },
+          "token_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "default": {},
+            "title": "Token Counts",
+            "type": "object"
+          },
+          "tokens_known": {
+            "default": false,
+            "title": "Tokens Known",
+            "type": "boolean"
+          },
+          "wonder_attempts": {
+            "default": 0,
+            "title": "Wonder Attempts",
+            "type": "integer"
+          },
+          "wonder_used": {
+            "default": false,
+            "title": "Wonder Used",
+            "type": "boolean"
+          }
+        },
+        "title": "ModelUsage",
+        "type": "object"
+      },
       "Preview": {
         "properties": {
           "checker_enforcement": {
@@ -654,6 +730,32 @@
             ],
             "title": "Campaign Day"
           },
+          "checker_enforcement": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checker Enforcement"
+          },
+          "checker_policies": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checker Policies"
+          },
           "checker_profile": {
             "default": "standard",
             "title": "Checker Profile",
@@ -713,9 +815,56 @@
             "title": "Memory Used",
             "type": "array"
           },
+          "model_usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "run_id": {
             "title": "Run Id",
             "type": "string"
+          },
+          "scout": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ScoutSection"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Scout facts, sources, demo risks, and synthesis mode. Absent on historical or failed receipts."
+          },
+          "stage_agents": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Agents"
+          },
+          "stage_bindings": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage Bindings"
           },
           "status": {
             "title": "Status",
@@ -1163,6 +1312,95 @@
           "agent_name"
         ],
         "title": "RunInput",
+        "type": "object"
+      },
+      "ScoutFact": {
+        "additionalProperties": true,
+        "properties": {
+          "claim": {
+            "default": "",
+            "title": "Claim",
+            "type": "string"
+          },
+          "evidence": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence"
+          },
+          "sources": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "verified": {
+            "default": false,
+            "title": "Verified",
+            "type": "boolean"
+          }
+        },
+        "title": "ScoutFact",
+        "type": "object"
+      },
+      "ScoutSection": {
+        "additionalProperties": true,
+        "properties": {
+          "facts_used": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ScoutFact"
+            },
+            "title": "Facts Used",
+            "type": "array"
+          },
+          "model_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Mode"
+          },
+          "model_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Note"
+          },
+          "risks": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Risks",
+            "type": "array"
+          },
+          "sources": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Sources",
+            "type": "array"
+          }
+        },
+        "title": "ScoutSection",
         "type": "object"
       },
       "ValidationError": {

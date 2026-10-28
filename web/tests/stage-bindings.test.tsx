@@ -38,10 +38,11 @@ describe('per-stage role selections', () => {
 
   it('renders campaign stage selectors without a live backend', () => {
     const html = campaignHtml();
-    for (const label of ['Scout agent', 'Checker agent', 'Checker profile', 'Create week', 'Nothing publishes automatically.']) {
+    for (const label of ['Scout agent', 'Maker profile', 'Checker agent', 'Checker profile', 'Create week', 'Nothing publishes automatically.']) {
       expect(html).toContain(label);
     }
     expect(html).toContain('id="campaign-scout"');
+    expect(html).toContain('id="campaign-maker"');
     expect(html).toContain('id="campaign-checker-agent"');
     expect(html).toContain('id="campaign-checker"');
   });

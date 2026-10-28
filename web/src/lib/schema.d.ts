@@ -597,6 +597,73 @@ export interface components {
              */
             updated_at: string;
         };
+        /** ModelUsage */
+        ModelUsage: {
+            /**
+             * Data Mode
+             * @default standard_no_train
+             */
+            data_mode: string;
+            /**
+             * Data Mode Note
+             * @default
+             */
+            data_mode_note: string;
+            /**
+             * Error Types
+             * @default []
+             */
+            error_types: string[];
+            /**
+             * Mode
+             * @default deterministic_fallback
+             */
+            mode: string;
+            /**
+             * Model Used
+             * @default none
+             */
+            model_used: string;
+            /**
+             * Models Used
+             * @default []
+             */
+            models_used: string[];
+            /**
+             * Spark Calls
+             * @default 0
+             */
+            spark_calls: number;
+            /**
+             * Spark Mode
+             * @default deterministic_fallback
+             */
+            spark_mode: string;
+            /**
+             * Token Counts
+             * @default {}
+             */
+            token_counts: {
+                [key: string]: number;
+            };
+            /**
+             * Tokens Known
+             * @default false
+             */
+            tokens_known: boolean;
+            /**
+             * Wonder Attempts
+             * @default 0
+             */
+            wonder_attempts: number;
+            /**
+             * Wonder Used
+             * @default false
+             */
+            wonder_used: boolean;
+        } & {
+            [key: string]: unknown;
+        };
         /** Preview */
         Preview: {
             /** Checker Enforcement */
@@ -673,6 +740,12 @@ export interface components {
             campaign_brief?: string | null;
             /** Campaign Day */
             campaign_day?: number | null;
+            /** Checker Enforcement */
+            checker_enforcement?: {
+                [key: string]: unknown;
+            } | null;
+            /** Checker Policies */
+            checker_policies?: string[] | null;
             /**
              * Checker Profile
              * @default standard
@@ -694,8 +767,19 @@ export interface components {
             memory_used: {
                 [key: string]: unknown;
             }[];
+            model_usage?: components["schemas"]["ModelUsage"] | null;
             /** Run Id */
             run_id: string;
+            /** @description Scout facts, sources, demo risks, and synthesis mode. Absent on historical or failed receipts. */
+            scout?: components["schemas"]["ScoutSection"] | null;
+            /** Stage Agents */
+            stage_agents?: {
+                [key: string]: unknown;
+            } | null;
+            /** Stage Bindings */
+            stage_bindings?: {
+                [key: string]: string;
+            } | null;
             /** Status */
             status: string;
             /** Summary */
@@ -843,6 +927,52 @@ export interface components {
              * @default false
              */
             seed_unverified_claim: boolean;
+        };
+        /** ScoutFact */
+        ScoutFact: {
+            /**
+             * Claim
+             * @default
+             */
+            claim: string;
+            /** Evidence */
+            evidence?: string | null;
+            /**
+             * Sources
+             * @default []
+             */
+            sources: string[];
+            /**
+             * Verified
+             * @default false
+             */
+            verified: boolean;
+        } & {
+            [key: string]: unknown;
+        };
+        /** ScoutSection */
+        ScoutSection: {
+            /**
+             * Facts Used
+             * @default []
+             */
+            facts_used: components["schemas"]["ScoutFact"][];
+            /** Model Mode */
+            model_mode?: string | null;
+            /** Model Note */
+            model_note?: string | null;
+            /**
+             * Risks
+             * @default []
+             */
+            risks: string[];
+            /**
+             * Sources
+             * @default []
+             */
+            sources: string[];
+        } & {
+            [key: string]: unknown;
         };
         /** ValidationError */
         ValidationError: {

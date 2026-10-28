@@ -33,7 +33,7 @@ for (const width of [375, 768, 1024, 1440]) {
     });
     test('approval queue and wallet demo', async ({ page }) => {
       const { agentName: savedAgent } = JSON.parse(readFileSync(`${local}/agent-${width}.json`, 'utf8'));
-      await page.getByLabel('Maker profile').selectOption(savedAgent);
+      await page.getByLabel('Maker profile', { exact: true }).selectOption(savedAgent);
       await page.getByRole('button', { name: 'Create draft', exact: true }).click();
       await expect(page.getByRole('heading', { name: 'Unsupported claims stopped.' })).toBeVisible();
       await expect(page.getByText('best in Texas', { exact: true })).toBeVisible();
