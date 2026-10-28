@@ -5,10 +5,16 @@
 # demo tags before any destructive call. It deletes only the named stack via
 # CloudFormation. It never deletes by prefix and never deletes shared or
 # outside-stack resources. Outside-stack scope needs a separate approval and
-# is reported as remaining work. AWS Budget is an alert and estimate
-# mechanism, not an enforced hard spend cap. Cost and deployment approvals
-# stay open user decisions. Teardown is required after Nov 4 and no later
-# than Nov 9, 2026.
+# is reported as remaining work. Ordered teardown across stacks: delete the
+# app stack first so the ALB HTTPS listener is gone before the ACM
+# certificate is touched; then handle prereqs secrets with separately scoped
+# exact-ARN 7 day recovery deletes and the certificate; then delete the
+# foundation stack last so budget monitoring stays until paid resources are
+# gone. AWS Budget is an alert and estimate mechanism, not an enforced hard
+# spend cap. Cost and deployment approvals stay open user decisions. Teardown
+# is required after Nov 4 and no later than Nov 9, 2026. No automatic
+# deletion schedule is created by this script; expiry is a stop criterion
+# carried by the operator, not a configured action.
 set -eu
 AWS_BIN="${AWS_BIN:-aws}"
 CONFIRM=0
@@ -36,12 +42,14 @@ while [ $# -gt 0 ]; do
 done
 
 remaining_scope() {
-  echo "Remaining work, not deleted by this script:"
-  echo "- Secrets Manager values passed as parameters (runtime, migration, TLS, master password): outside stack, separate approval with exact ARNs if cleanup is wanted."
-  echo "- ACM certificate passed as AcmCertificateArn: outside stack, separate approval if cleanup is wanted."
-  echo "- Cloudflare DNS record, only if created in a later authorized run: separate approval, exact record name required."
-  echo "- Manual snapshots, images, or resources created outside the stack: separate approval with exact identifiers, never prefix deletion."
-  echo "- Verify no recurring charges in Cost Explorer and Budgets console. Budget is alert only, not a hard cap."
+  echo "Remaining work, not deleted by this script (ordered, each needs its own approval with exact identifiers):"
+  echo "1. App stack first: run this script against the exact app stack ARN so the ALB HTTPS listener is deleted before the ACM certificate is touched."
+  echo "2. Prereqs secrets next: the four retained secrets (master, runtime, migration, TLS) survive stack delete by Retain; delete each by its exact secret ARN only, with a 7 day recovery window and no force, for example: aws secretsmanager delete-secret --secret-id <exact-secret-arn> --recovery-window-in-days 7 --region <region>. Never force-delete without recovery, never regenerate, never resend on ambiguity."
+  echo "3. ACM certificate next: delete only after the app listener is gone, by the exact certificate ARN with a separate approval."
+  echo "4. Foundation stack last: run this script against the exact foundation stack ARN only after paid resources are gone, so budget monitoring stays until cleanup is done."
+  echo "5. Cloudflare DNS record, only if created in a later authorized run: separate approval, exact record name required. Publisher stack plus OIDC provider, role, and two secrets are a separate cleanup step after the demo window."
+  echo "6. Manual snapshots, images, or resources created outside the stacks: separate approval with exact identifiers, never prefix deletion, never whole-account inventory."
+  echo "- Verify no recurring charges in Cost Explorer and Budgets console. Budget is alert only, not a hard cap. No automatic deletion schedule exists; the Nov 9 date is an operator stop criterion, not a configured action."
 }
 
 if [ "$CONFIRM" -ne 1 ]; then

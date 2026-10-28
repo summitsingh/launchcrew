@@ -57,8 +57,12 @@ proof of no resources globally.
   resource, no scaling policy. Default EnableServices=false keeps both at 0
   until images, role binding, and migration are proven.
 - Task sizes: api 0.25 vCPU / 0.5 GB, web 0.25 vCPU / 0.5 GB
-  (total constant 0.5 vCPU / 1 GB). One-off tasks (bootstrap, migration,
-  verify) are 0.25 vCPU / 0.5 GB each and run for minutes only.
+  (total constant 0.5 vCPU / 1 GB). One-off tasks (SDK init, SDK material
+  verify, bootstrap, migration, runtime verify) are 0.25 vCPU / 0.5 GB each
+  and run for minutes only. Phase C adds no new repository, service, log
+  group, or budget: the only new billable resources are the two SDK one-off
+  job tasks at this bounded fixed spec, each holding one public IP for its
+  minutes of runtime.
 - RDS: private db.t4g.micro, 20 GB gp3, single AZ, no public port,
   storage encrypted, 1-day backup retention, deletion without a retained
   final snapshot (DeleteAutomatedBackups true, DeletionProtection false).
@@ -157,8 +161,9 @@ Exact subtotal 7 days: 16.52760055, shown as 16.53. Exact subtotal
 12 days: 28.15445808, shown as 28.15. Line items round; the rounded rows
 can differ from a sum of rounded rows, so full precision above governs.
 
-One-off overlap, estimated not capped: bootstrap, migration, and verify
-one-off jobs each run minutes at 0.25 vCPU / 0.5 GB. Compute is
+One-off overlap, estimated not capped: SDK init, SDK material verify,
+bootstrap, migration, and runtime verify one-off jobs each run minutes at
+0.25 vCPU / 0.5 GB. Compute is
 0.0002057083/min plus one public IP 0.0000833333/min, total
 0.0002890417/min before logs and other charges, so a clean run is a few
 cents but NOT under 0.10 guaranteed, with no retry bound. Failed jobs,
@@ -189,11 +194,12 @@ conservative explicit planning allowance if chosen, NOT a verified quote.
 
 ## Owner contact, project budget filter, and coverage limits
 
-BudgetNotifyEmail is a template parameter with an empty default, supplied
-privately at deploy review and never committed with a real address. When
-filled, the stack creates an SNS topic plus one email subscription and the
-DemoBudget notifies that topic at 80 percent actual and 100 percent
-forecasted spend. The topic carries a topic policy that allows Publish only
+BudgetNotifyEmail is a foundation template parameter with an empty
+default, supplied privately at deploy review and never committed with a
+real address. When filled, the foundation stack creates an SNS topic plus
+one email subscription and the DemoBudget notifies that topic at 80 percent
+actual and 100 percent forecasted spend. The app stack owns no budget and
+no SNS topic. The topic carries a topic policy that allows Publish only
 from budgets.amazonaws.com scoped to this account and this budget; without
 that policy the budget cannot deliver. When empty, no subscription is
 created and the budget has no subscribers. Email delivery is not ready on
@@ -225,15 +231,21 @@ Budget tag readiness, current as of Oct 28, 2026: the Project key now reads Acti
 
 - Teardown is required after Nov 4 and no later than Nov 9, 2026, with
   deploy/aws/teardown.sh against the exact stack ARN plus expected account
-  and region, after caller and tag verification. It deletes only the stack.
-  Automatic teardown is NOT configured; expiry is a stop criterion, not a
-  hard stop, and residual billing risk runs until every resource and every
-  outside-stack item below is actually deleted.
+  and region, after caller and tag verification. It deletes only the named
+  stack. Ordered teardown: the app stack first so the ALB listener is gone
+  before the ACM certificate is touched, then the four retained prereqs
+  secrets by exact ARN with a 7 day recovery window and no force plus the
+  certificate, then the foundation stack last so budget monitoring stays
+  until paid resources are gone. Automatic teardown is NOT configured;
+  expiry is a stop criterion, not a hard stop, and residual billing risk
+  runs until every resource and every outside-stack item below is actually
+  deleted.
 - Outside-stack cleanup needs a separate approval with exact identifiers:
-  the 4 Secrets Manager values, the ACM certificate, the Cloudflare DNS
-  record if created, and any manual snapshot. None are deleted by teardown.
-  The 4 outside-stack secrets plus ACM and DNS inputs stay privately gated;
-  no actual identifiers are invented in this pack.
+  the 4 Secrets Manager values (Retain, 7 day recovery, no force), the ACM
+  certificate (after the app listener is gone), the Cloudflare DNS
+  record if created, and any manual snapshot. None are deleted by a single
+  teardown run. The 4 outside-stack secrets plus ACM and DNS inputs stay
+  privately gated; no actual identifiers are invented in this pack.
 - Access boundary: the user asked for isolated KoruShield resources. The
   exact stack NAME in this pack is a proposal, NOT an existing stack ID.
   Account identity was confirmed privately; no account ID appears here.
@@ -285,20 +297,25 @@ owner and evidence, for approval only after this pack is reviewed.
    authorized push of the exact built digests; no placeholder image boots
    the app (enforced by bootstrap phase 3, which also refuses images whose
    digest, failures, or task definition reference do not match).
-5. Staged bootstrap via deploy/aws/bootstrap.sh: infra at DesiredCount 0
-   on a fresh stack (owned updates preserve the current true value so
-   running services are not reset), verified images by digest and task
-   definition reference with owned secret and execution role bindings,
+5. Staged bootstrap via deploy/aws/bootstrap.sh: owned foundation
+   COMPLETE plus exact confirmed SNS gate and owned prereqs ISSUED
+   readiness first (for all; PENDING stops, not ready), then infra at
+   DesiredCount 0 on a fresh stack (owned updates preserve the current
+   true value so running services are not reset), verified images by digest
+   and task definition reference with owned secret and owned role bindings,
+   SDK populate STOPPED exit 0 on the verified bootstrap image with
+   explicit EntryPoint, SDK material verify STOPPED exit 0 read-only,
    bootstrap role binding STOPPED exit 0, migration
    STOPPED exit 0 with verify-mode proof from the separate verify task
-   definition, then enable runs the budget readiness preflight (refuses an
-   unfiltered or inexact budget, requires the Project key to read back
-   Active after the earlier paid-phase admission gate, never activates
-   tags, never claims no data or 0 as zero spend) and re-proves images,
-   bindings, and the verify
-   proof from live state before updating to fixed 1 each with desired and
-   running counts read back (configuration check; serving health needs
-   ALB targets after DNS, which this script never claims).
+   definition, then enable runs the foundation budget readiness preflight
+   (refuses an unfiltered or inexact budget or inexact alert thresholds,
+   requires the Project key to read back Active after the earlier paid-phase
+   admission gate, never activates tags, never claims no data or 0 as zero
+   spend) and re-proves images, bindings, the material verify proof, and
+   the runtime verify proof from live state before updating to fixed 1 each
+   with desired and running counts read back (configuration check; serving
+   health needs ALB targets after DNS, which this script never claims).
+   Standalone enable never populates, exports, binds, or migrates.
 6. Live verification only after that tap: WEB 200, API 200 through the
    public base, HTTPS chain and container TLS hop, database verify-full,
    and keyless synthetic behavior with no paid inference reachable.

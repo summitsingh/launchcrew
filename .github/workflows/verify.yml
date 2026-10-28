@@ -41,6 +41,25 @@ jobs:
       - run: uv sync --frozen
       - run: uv run python -m unittest discover -s tests -v
       - run: uv run pytest -q
+      - name: Isolated deployment SDK proof (no skips)
+        run: |
+          set -eu
+          mkdir -p .local
+          # The app venv intentionally lacks the optional deployment SDK, so
+          # SDK and real-crypto cases skip there. This isolated venv installs
+          # ONLY the approved public deployment hashlock and reruns exactly
+          # those suites with actual dependencies; any skip fails the step.
+          # The app uv.lock stays separate and untouched.
+          uv venv .local/deploy-sdk-venv
+          uv pip install --python .local/deploy-sdk-venv/bin/python --require-hashes -r containers/bootstrap-deploy-requirements.lock
+          .local/deploy-sdk-venv/bin/python -m unittest discover -s tests -p "test_populate_prereqs.py" -v > .local/deploy-sdk-proof.log 2>&1
+          .local/deploy-sdk-venv/bin/python -m unittest discover -s tests -p "test_prereq_crypto.py" -v >> .local/deploy-sdk-proof.log 2>&1
+          if grep -qi "skipped" .local/deploy-sdk-proof.log; then
+            echo "refused: deployment SDK suites skipped with isolated deps installed" >&2
+            grep -i "skipped" .local/deploy-sdk-proof.log >&2 || true
+            exit 1
+          fi
+          grep -q "^OK" .local/deploy-sdk-proof.log
       - run: uv run python -m scripts.generate_client && git diff --exit-code backend/openapi.json
       - run: pnpm --dir web install --frozen-lockfile
       - run: pnpm --dir web client:generate && git diff --exit-code web/src/lib/schema.d.ts

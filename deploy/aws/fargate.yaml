@@ -2,18 +2,23 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
   LaunchCrew demo, Fargate plus ALB, review only, NOT applied.
   No apply, no DNS, no secrets in this file.
-  Region, domain, certificate ARN, image URIs, database password secret
-  ARN, and budget limit are parameters with no approved defaults.
-  Recommended region us-east-1 is NOT confirmed, see deploy README.
-  Cost cap is a user choice after seeing the estimate, not a default here.
-  Teardown is required after Nov 4 and no later than Nov 9, 2026.
-  Fresh demo VPC 10.42.0.0/16 avoids overlap with the existing
+  Region, domain, certificate ARN, image URIs, and database password secret
+  ARN are parameters with no approved defaults. This stack owns no budget
+  and no SNS topic: the exact budget name launchcrew-demo plus its topic,
+  policy, and subscription live only in deploy/aws/foundation.yaml, and
+  every paid bootstrap phase verifies that owned foundation budget read-only
+  before any mutation. Recommended region us-east-1 is NOT confirmed, see
+  deploy README. Cost cap is a user choice after seeing the estimate, not a
+  default here. Teardown is required after Nov 4 and no later than Nov 9,
+  2026. Fresh demo VPC 10.42.0.0/16 avoids overlap with the existing
   nondefault 10.0.0.0/16 network. No existing network changes, routes,
-  or peering. DemoBudget filters to user defined resource cost
-  allocation tag Project=LaunchCrew only, never the whole account.
-  Filter with no data or 0 is not proof of zero spend and not a hard
-  cap. Tag activation status is UNVERIFIED in source, see deploy
-  README and docs/aws-approval-pack.md.
+  or peering. A budget filter with no data or 0 is not proof of zero spend
+  and not a hard cap. Tag activation status is UNVERIFIED in source, see
+  deploy README and docs/aws-approval-pack.md. Two one-off SDK job task
+  definitions (init populate plus material verify) share the bootstrap image
+  with explicit EntryPoint to populate_prereqs.py; the default image
+  entrypoint stays the binder with --bind, and Command alone would retain
+  that binder entrypoint.
 Parameters:
   AcmCertificateArn:
     Type: String
@@ -46,24 +51,16 @@ Parameters:
     Type: String
     Default: launchcrew_master
     Description: Master database username, for initial creation only. Runtime and migration identities are created separately by deploy/aws/db-roles.sql and are never the master identity.
-  BudgetLimitUsd:
-    Type: Number
-    Description: AWS Budget limit in USD, for the demo period only. No approved default, supply after Summit chooses a cap. A value of 0 is not an approval, it is a placeholder that must be replaced. The budget filters to user defined resource cost allocation tag Project=LaunchCrew with MatchOptions EQUALS, never the whole account. Legacy CostFilters are deprecated and not used. An AWS Budget is an alert and estimate mechanism, not an enforced hard spend cap. A filter returning no data or 0 is not proof of zero spend. Cost allocation tag activation is UNVERIFIED in source and needs a separate billing approval, never activated by this template or script.
   EnableServices:
     Type: String
     Default: 'false'
     AllowedValues: ['true', 'false']
-    Description: Staged bootstrap gate. Default false keeps both ECS services at DesiredCount 0 so infrastructure, ECR repositories, RDS, and task definitions exist first with no app running. Set to true only after images are verified, database roles are bound, and the migration one-off task has STOPPED with exit code 0 plus schema proof, via deploy/aws/bootstrap.sh. Never set true with placeholder image URIs.
-  BudgetNotifyEmail:
-    Type: String
-    Default: ''
-    Description: Owner contact email for demo budget alerts, supplied privately at deploy review, never committed with a real address. Empty means no email subscription is created and the budget has no subscribers. Alerts are notifications only, not an enforced hard spend cap.
+    Description: Staged bootstrap gate. Default false keeps both ECS services at DesiredCount 0 so infrastructure, ECR repositories, RDS, and task definitions exist first with no app running. Set to true only after images are verified, prereq materials are populated and verified, database roles are bound, and the migration one-off task has STOPPED with exit code 0 plus schema proof, via deploy/aws/bootstrap.sh. Never set true with placeholder image URIs.
   BootstrapImageUri:
     Type: String
     Description: ECR URI for the bootstrap database-role image, built from containers/bootstrap-db.Containerfile, used only by the isolated one-off bootstrap task. No default, no placeholder at apply time.
 Conditions:
   ServicesEnabled: !Equals ['true', !Ref EnableServices]
-  BudgetNotifyConfigured: !Not [!Equals ['', !Ref BudgetNotifyEmail]]
 Resources:
   Vpc:
     Type: AWS::EC2::VPC
@@ -505,6 +502,90 @@ Resources:
             Principal: { Service: ecs-tasks.amazonaws.com }
             Action: sts:AssumeRole
       Policies: []
+  SdkInitExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies: []
+  SdkInitTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: sdk-init-prereq-populate-only
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [secretsmanager:DescribeSecret]
+                Resource:
+                  - !Ref MasterDbPasswordSecretArn
+                  - !Ref RuntimeDbUrlSecretArn
+                  - !Ref MigrationDbUrlSecretArn
+                  - !Ref TlsSecretArn
+              - Effect: Allow
+                Action: [secretsmanager:GetSecretValue, secretsmanager:PutSecretValue]
+                Resource:
+                  - !Ref RuntimeDbUrlSecretArn
+                  - !Ref MigrationDbUrlSecretArn
+                  - !Ref TlsSecretArn
+              - Effect: Allow
+                Action:
+                  - acm:DescribeCertificate
+                  - acm:ListTagsForCertificate
+                  - acm:GetCertificate
+                  - acm:ExportCertificate
+                Resource: [!Ref AcmCertificateArn]
+  SdkMaterialExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies: []
+  SdkMaterialTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: sdk-material-verify-readonly
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [secretsmanager:DescribeSecret, secretsmanager:GetSecretValue]
+                Resource:
+                  - !Ref RuntimeDbUrlSecretArn
+                  - !Ref MigrationDbUrlSecretArn
+                  - !Ref TlsSecretArn
+              - Effect: Allow
+                Action:
+                  - acm:DescribeCertificate
+                  - acm:ListTagsForCertificate
+                  - acm:GetCertificate
+                Resource: [!Ref AcmCertificateArn]
   ApiTaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
@@ -673,6 +754,78 @@ Resources:
               awslogs-group: !Ref MigrationLogGroup
               awslogs-region: !Ref AWS::Region
               awslogs-stream-prefix: verify-db-roles
+  SdkInitTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: '256'
+      Memory: '512'
+      ExecutionRoleArn: !GetAtt SdkInitExecutionRole.Arn
+      TaskRoleArn: !GetAtt SdkInitTaskRole.Arn
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
+      ContainerDefinitions:
+        - Name: sdk-init
+          Image: !Ref BootstrapImageUri
+          Essential: true
+          EntryPoint: [/opt/venv/bin/python, /app/scripts/populate_prereqs.py]
+          Command: ['--populate']
+          Environment:
+            - { Name: LAUNCHCREW_EXPECTED_ACCOUNT, Value: !Ref AWS::AccountId }
+            - { Name: LAUNCHCREW_EXPECTED_REGION, Value: !Ref AWS::Region }
+            - { Name: LAUNCHCREW_EXPECTED_ROLE, Value: !Ref SdkInitTaskRole }
+            - { Name: LAUNCHCREW_MASTER_SECRET_ARN, Value: !Ref MasterDbPasswordSecretArn }
+            - { Name: LAUNCHCREW_RUNTIME_SECRET_ARN, Value: !Ref RuntimeDbUrlSecretArn }
+            - { Name: LAUNCHCREW_MIGRATION_SECRET_ARN, Value: !Ref MigrationDbUrlSecretArn }
+            - { Name: LAUNCHCREW_TLS_SECRET_ARN, Value: !Ref TlsSecretArn }
+            - { Name: LAUNCHCREW_CERT_ARN, Value: !Ref AcmCertificateArn }
+            - { Name: LAUNCHCREW_DB_HOST, Value: !GetAtt Database.Endpoint.Address }
+            - { Name: LAUNCHCREW_DB_TLS_MODE, Value: verify-full }
+            - { Name: DATABASE_SSL_ROOTCERT, Value: /app/rds-ca-bundle.pem }
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref MigrationLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: sdk-init
+  SdkMaterialTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: '256'
+      Memory: '512'
+      ExecutionRoleArn: !GetAtt SdkMaterialExecutionRole.Arn
+      TaskRoleArn: !GetAtt SdkMaterialTaskRole.Arn
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
+      ContainerDefinitions:
+        - Name: sdk-material
+          Image: !Ref BootstrapImageUri
+          Essential: true
+          EntryPoint: [/opt/venv/bin/python, /app/scripts/populate_prereqs.py]
+          Command: ['--verify-material']
+          Environment:
+            - { Name: LAUNCHCREW_EXPECTED_ACCOUNT, Value: !Ref AWS::AccountId }
+            - { Name: LAUNCHCREW_EXPECTED_REGION, Value: !Ref AWS::Region }
+            - { Name: LAUNCHCREW_EXPECTED_ROLE, Value: !Ref SdkMaterialTaskRole }
+            - { Name: LAUNCHCREW_MASTER_SECRET_ARN, Value: !Ref MasterDbPasswordSecretArn }
+            - { Name: LAUNCHCREW_RUNTIME_SECRET_ARN, Value: !Ref RuntimeDbUrlSecretArn }
+            - { Name: LAUNCHCREW_MIGRATION_SECRET_ARN, Value: !Ref MigrationDbUrlSecretArn }
+            - { Name: LAUNCHCREW_TLS_SECRET_ARN, Value: !Ref TlsSecretArn }
+            - { Name: LAUNCHCREW_CERT_ARN, Value: !Ref AcmCertificateArn }
+            - { Name: LAUNCHCREW_DB_HOST, Value: !GetAtt Database.Endpoint.Address }
+            - { Name: LAUNCHCREW_DB_TLS_MODE, Value: verify-full }
+            - { Name: DATABASE_SSL_ROOTCERT, Value: /app/rds-ca-bundle.pem }
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref MigrationLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: sdk-material
   LoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
@@ -779,70 +932,6 @@ Resources:
         - ContainerName: web-proxy
           ContainerPort: 8443
           TargetGroupArn: !Ref WebTargetGroup
-  DemoBudget:
-    Type: AWS::Budgets::Budget
-    DeletionPolicy: Delete
-    UpdateReplacePolicy: Delete
-    Properties:
-      Budget:
-        BudgetName: launchcrew-demo
-        BudgetLimit: { Amount: !Ref BudgetLimitUsd, Unit: USD }
-        TimeUnit: MONTHLY
-        BudgetType: COST
-        # Project scoped filter only. Legacy CostFilters are deprecated
-        # and not used. Resource Project tags alone do not scope a
-        # budget: the Project key must also be activated as a user
-        # defined resource cost allocation tag in Billing, otherwise
-        # this filter sees no data. No data or 0 is not proof of zero
-        # spend and never a hard cap. Activation status is UNVERIFIED
-        # in source and needs a separate billing approval.
-        FilterExpression:
-          Tags:
-            Key: Project
-            Values: [LaunchCrew]
-            MatchOptions: [EQUALS]
-      NotificationsWithSubscribers: !If
-        - BudgetNotifyConfigured
-        - - Notification: { NotificationType: ACTUAL, ComparisonOperator: GREATER_THAN, Threshold: 80, ThresholdType: PERCENTAGE }
-            Subscribers: [{ SubscriptionType: SNS, Address: !Ref BudgetTopic }]
-          - Notification: { NotificationType: FORECASTED, ComparisonOperator: GREATER_THAN, Threshold: 100, ThresholdType: PERCENTAGE }
-            Subscribers: [{ SubscriptionType: SNS, Address: !Ref BudgetTopic }]
-        - []
-  BudgetTopic:
-    Type: AWS::SNS::Topic
-    DeletionPolicy: Delete
-    UpdateReplacePolicy: Delete
-    Properties:
-      DisplayName: launchcrew-demo-budget
-      Tags:
-        - { Key: Project, Value: LaunchCrew }
-        - { Key: Environment, Value: demo }
-  BudgetTopicPolicy:
-    Type: AWS::SNS::TopicPolicy
-    DeletionPolicy: Delete
-    UpdateReplacePolicy: Delete
-    Properties:
-      Topics: [!Ref BudgetTopic]
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Sid: AllowBudgetsPublishOnly
-            Effect: Allow
-            Principal: { Service: budgets.amazonaws.com }
-            Action: sns:Publish
-            Resource: !Ref BudgetTopic
-            Condition:
-              StringEquals:
-                aws:SourceAccount: !Ref AWS::AccountId
-              ArnLike:
-                aws:SourceArn: !Sub 'arn:aws:budgets::${AWS::AccountId}:budget/launchcrew-demo'
-  BudgetEmailSubscription:
-    Type: AWS::SNS::Subscription
-    Condition: BudgetNotifyConfigured
-    Properties:
-      Protocol: email
-      Endpoint: !Ref BudgetNotifyEmail
-      TopicArn: !Ref BudgetTopic
 Outputs:
   LoadBalancerDnsName:
     Description: ALB DNS name, placeholder target only, Cloudflare record requires separate explicit authorization

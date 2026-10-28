@@ -86,6 +86,29 @@ if [ "$1" = "budgets" ] && [ "$2" = "describe-budget" ]; then
   printf '{"Budget":{"BudgetName":"launchcrew-demo","BudgetType":"COST","TimeUnit":"MONTHLY","FilterExpression":%s}}\\n' "$FILTER"
   exit 0
 fi
+if [ "$1" = "budgets" ] && [ "$2" = "describe-notifications-for-budget" ]; then
+  NOTIF_MODE="${FAKE_NOTIF:-exact}"
+  if [ "$NOTIF_MODE" = "auth" ]; then
+    echo "An error occurred (AccessDenied) when calling the DescribeNotificationsForBudget operation: not authorized" >&2
+    exit 254
+  fi
+  if [ "$NOTIF_MODE" = "error" ]; then
+    echo "An error occurred (ThrottlingException) when calling the DescribeNotificationsForBudget operation: Rate exceeded" >&2
+    exit 254
+  fi
+  if [ "$NOTIF_MODE" = "malformed" ]; then printf 'not-json{{{\\n'; exit 0; fi
+  NOTIF_TOPIC="${FAKE_TOPIC_ARN:-arn:aws:sns:us-east-1:111122223333:launchcrew-foundation-BudgetTopic-ABC123}"
+  if [ "$NOTIF_MODE" = "missing" ]; then
+    printf '{"NotificationsWithSubscribers":[{"Notification":{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"PERCENTAGE"},"Subscribers":[{"SubscriptionType":"SNS","Address":"%s"}]}]}\\n' "$NOTIF_TOPIC"
+    exit 0
+  fi
+  if [ "$NOTIF_MODE" = "wrong" ]; then
+    printf '{"NotificationsWithSubscribers":[{"Notification":{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":50,"ThresholdType":"PERCENTAGE"},"Subscribers":[{"SubscriptionType":"SNS","Address":"%s"}]},{"Notification":{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100,"ThresholdType":"PERCENTAGE"},"Subscribers":[{"SubscriptionType":"SNS","Address":"%s"}]}]}\\n' "$NOTIF_TOPIC" "$NOTIF_TOPIC"
+    exit 0
+  fi
+  printf '{"NotificationsWithSubscribers":[{"Notification":{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"PERCENTAGE"},"Subscribers":[{"SubscriptionType":"SNS","Address":"%s"}]},{"Notification":{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100,"ThresholdType":"PERCENTAGE"},"Subscribers":[{"SubscriptionType":"SNS","Address":"%s"}]}]}\\n' "$NOTIF_TOPIC" "$NOTIF_TOPIC"
+  exit 0
+fi
 if [ "$1" = "cloudformation" ] && [ "$2" = "describe-stacks" ]; then
   STACK=""
   PREV=""

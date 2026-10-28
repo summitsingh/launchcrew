@@ -3,10 +3,11 @@
 No test contacts AWS. The fake AWS script logs calls and returns canned
 responses based on FAKE_MODE. Dry-run must make zero calls. Confirm path must
 verify caller, stack tags, and secret ARN ownership before any mutation, must
-order infra before images before dbroles before migrate before enable, must
-require STOPPED exit 0 for one-off tasks with schema proof before enabling
-fixed-count services, must refuse placeholder images, and must never call
-GetSecretValue.
+verify the owned foundation budget plus confirmed SNS subscription before any
+paid phase, must order infra before images before init before material before
+dbroles before migrate before enable, must require STOPPED exit 0 for one-off
+tasks with schema proof before enabling fixed-count services, must refuse
+placeholder images, and must never call GetSecretValue.
 """
 import os
 import stat
@@ -18,14 +19,22 @@ from pathlib import Path
 BOOTSTRAP = Path(__file__).resolve().parents[1] / "deploy" / "aws" / "bootstrap.sh"
 TEMPLATE = Path(__file__).resolve().parents[1] / "deploy" / "aws" / "fargate.yaml"
 PARAMS = Path(__file__).resolve().parents[1] / "deploy" / "aws" / "parameters.example.json"
+FOUNDATION = Path(__file__).resolve().parents[1] / "deploy" / "aws" / "foundation.yaml"
 
 ACCOUNT = "111122223333"
 REGION = "us-east-1"
 STACK = "launchcrew-demo"
+FOUNDATION_STACK = "launchcrew-foundation"
+PREREQS_STACK = "launchcrew-prereqs"
 SECRET_RT = f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:launchcrew-runtime-AbCdEf"
 SECRET_MG = f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:launchcrew-migration-GhIjKl"
 SECRET_MASTER = f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:launchcrew-master-MnOpQr"
 SECRET_TLS = f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:launchcrew-tls-QrStUv"
+TOPIC_ARN = f"arn:aws:sns:{REGION}:{ACCOUNT}:launchcrew-foundation-BudgetTopic-ABC123"
+SUB_ARN = f"{TOPIC_ARN}:12345678-90ab-cdef-1234-567890abcdef"
+CERT_ARN = f"arn:aws:acm:{REGION}:{ACCOUNT}:certificate/12345678-90ab-cdef-1234-567890abcde1"
+DB_HOST = "launchcrew-demo.abc123.us-east-1.rds.amazonaws.com"
+NOTIFY_EMAIL = "owner" + "@" + "example.test"
 
 
 def image(repo, tag="abc123"):
@@ -73,6 +82,21 @@ if [ "$1" = "secretsmanager" ] && [ "$2" = "describe-secret" ]; then
   exit 2
 fi
 if [ "$1" = "cloudformation" ] && [ "$2" = "describe-stacks" ]; then
+  DESCRIBE_STACK=""
+  DESCRIBE_PREV=""
+  for DESCRIBE_ARG in "$@"; do
+    if [ "$DESCRIBE_PREV" = "--stack-name" ]; then DESCRIBE_STACK="$DESCRIBE_ARG"; fi
+    DESCRIBE_PREV="$DESCRIBE_ARG"
+  done
+  case "$DESCRIBE_STACK" in
+    launchcrew-foundation|launchcrew-prereqs)
+      FOUND_STATUS="CREATE_COMPLETE"
+      case "$*" in
+        *"StackStatus"*) printf '%s\\n' "$FOUND_STATUS"; exit 0 ;;
+      esac
+      printf '{"Stacks":[{"StackId":"arn:aws:cloudformation:us-east-1:111122223333:stack/%s/abc123","StackStatus":"%s","Tags":[{"Key":"Project","Value":"LaunchCrew"},{"Key":"Environment","Value":"demo"}]}]}\\n' "$DESCRIBE_STACK" "$FOUND_STATUS"
+      exit 0 ;;
+  esac
   if [ "$MODE" = "stack_auth" ]; then
     echo "An error occurred (AccessDenied) when calling the DescribeStacks operation: not authorized" >&2
     exit 254
@@ -102,18 +126,108 @@ if [ "$1" = "cloudformation" ] && [ "$2" = "describe-stacks" ]; then
   exit 0
 fi
 if [ "$1" = "cloudformation" ] && [ "$2" = "describe-stack-resource" ]; then
-  case "$*" in
-    *ApiTaskDefinition*) printf 'arn:aws:ecs:us-east-1:111122223333:task'"-definition"'/launchcrew-demo-api:1\\n'; exit 0 ;;
-    *WebTaskDefinition*) printf 'arn:aws:ecs:us-east-1:111122223333:task'"-definition"'/launchcrew-demo-web:1\\n'; exit 0 ;;
-    *BootstrapTaskDefinition*) printf 'arn:aws:ecs:us-east-1:111122223333:task'"-definition"'/launchcrew-demo-bootstrap:1\\n'; exit 0 ;;
-    *MigrationTaskDefinition*) printf 'arn:aws:ecs:us-east-1:111122223333:task'"-definition"'/launchcrew-demo-migration:1\\n'; exit 0 ;;
-    *VerifyTaskDefinition*) printf 'arn:aws:ecs:us-east-1:111122223333:task'"-definition"'/launchcrew-demo-verify:1\\n'; exit 0 ;;
-    *PublicSubnetA*) printf 'subnet-aaa\\n'; exit 0 ;;
-    *PublicSubnetB*) printf 'subnet-bbb\\n'; exit 0 ;;
-    *JobSecurityGroup*) printf 'sg-ccc\\n'; exit 0 ;;
+  RESOURCE_STACK=""
+  RESOURCE_LOGICAL=""
+  RESOURCE_PREV=""
+  for RESOURCE_ARG in "$@"; do
+    if [ "$RESOURCE_PREV" = "--stack-name" ]; then RESOURCE_STACK="$RESOURCE_ARG"; fi
+    if [ "$RESOURCE_PREV" = "--logical-resource-id" ]; then RESOURCE_LOGICAL="$RESOURCE_ARG"; fi
+    RESOURCE_PREV="$RESOURCE_ARG"
+  done
+  if [ "$RESOURCE_STACK" = "launchcrew-foundation" ] && [ "$RESOURCE_LOGICAL" = "BudgetTopic" ]; then
+    printf '%s\\n' "${FAKE_TOPIC_ARN:-arn:aws:sns:us-east-1:111122223333:launchcrew-foundation-BudgetTopic-ABC123}"
+    exit 0
+  fi
+  if [ "$RESOURCE_STACK" = "launchcrew-prereqs" ]; then
+    case "$RESOURCE_LOGICAL" in
+      MasterSecret) printf '%s\\n' "${FAKE_MASTER_ARN:-}"; exit 0 ;;
+      RuntimeSecret) printf '%s\\n' "${FAKE_RT_ARN:-}"; exit 0 ;;
+      MigrationSecret) printf '%s\\n' "${FAKE_MG_ARN:-}"; exit 0 ;;
+      TlsSecret) printf '%s\\n' "${FAKE_TLS_ARN:-}"; exit 0 ;;
+      DemoCertificate) printf '%s\\n' "${FAKE_CERT_ARN:-}"; exit 0 ;;
+    esac
+  fi
+  case "$RESOURCE_LOGICAL" in
+    ApiTaskDefinition) printf 'arn:aws:ecs:us-east-1:111122223333:task'"-definition"'/launchcrew-demo-api:1\\n'; exit 0 ;;
+    WebTaskDefinition) printf 'arn:aws:ecs:us-east-1:111122223333:task'"-definition"'/launchcrew-demo-web:1\\n'; exit 0 ;;
+    BootstrapTaskDefinition) printf 'arn:aws:ecs:us-east-1:111122223333:task'"-definition"'/launchcrew-demo-bootstrap:1\\n'; exit 0 ;;
+    MigrationTaskDefinition) printf 'arn:aws:ecs:us-east-1:111122223333:task'"-definition"'/launchcrew-demo-migration:1\\n'; exit 0 ;;
+    VerifyTaskDefinition) printf 'arn:aws:ecs:us-east-1:111122223333:task'"-definition"'/launchcrew-demo-verify:1\\n'; exit 0 ;;
+    SdkInitTaskDefinition) printf 'arn:aws:ecs:us-east-1:111122223333:task'"-definition"'/launchcrew-demo-sdkinit:1\\n'; exit 0 ;;
+    SdkMaterialTaskDefinition) printf 'arn:aws:ecs:us-east-1:111122223333:task'"-definition"'/launchcrew-demo-sdkmaterial:1\\n'; exit 0 ;;
+    PublicSubnetA) printf 'subnet-aaa\\n'; exit 0 ;;
+    PublicSubnetB) printf 'subnet-bbb\\n'; exit 0 ;;
+    JobSecurityGroup) printf 'sg-ccc\\n'; exit 0 ;;
+    Database) printf 'launchcrew-demo-db\\n'; exit 0 ;;
+    ApiExecutionRole|WebExecutionRole|MigrationExecutionRole|BootstrapExecutionRole|VerifyExecutionRole|SdkInitExecutionRole|SdkMaterialExecutionRole|ApiTaskRole|WebTaskRole|MigrationTaskRole|BootstrapTaskRole|VerifyTaskRole|SdkInitTaskRole|SdkMaterialTaskRole) printf '%s-physical\\n' "$RESOURCE_LOGICAL"; exit 0 ;;
   esac
   echo "fake-aws: unexpected resource lookup: $*" >&2
   exit 2
+fi
+if [ "$1" = "iam" ] && [ "$2" = "get-role" ]; then
+  ROLE_NAME=""
+  ROLE_PREV=""
+  for ROLE_ARG in "$@"; do
+    if [ "$ROLE_PREV" = "--role-name" ]; then ROLE_NAME="$ROLE_ARG"; fi
+    ROLE_PREV="$ROLE_ARG"
+  done
+  printf 'arn:aws:iam::111122223333:role/%s\\n' "$ROLE_NAME"
+  exit 0
+fi
+if [ "$1" = "rds" ] && [ "$2" = "describe-db-instances" ]; then
+  printf '%s\\n' "${FAKE_DB_HOST:-launchcrew-demo.abc123.us-east-1.rds.amazonaws.com}"
+  exit 0
+fi
+if [ "$1" = "budgets" ] && [ "$2" = "describe-notifications-for-budget" ]; then
+  NOTIF_MODE="${FAKE_NOTIF:-exact}"
+  if [ "$NOTIF_MODE" = "auth" ]; then
+    echo "An error occurred (AccessDenied) when calling the DescribeNotificationsForBudget operation: not authorized" >&2
+    exit 254
+  fi
+  if [ "$NOTIF_MODE" = "error" ]; then
+    echo "An error occurred (ThrottlingException) when calling the DescribeNotificationsForBudget operation: Rate exceeded" >&2
+    exit 254
+  fi
+  if [ "$NOTIF_MODE" = "malformed" ]; then printf 'not-json{{{\\n'; exit 0; fi
+  NOTIF_TOPIC="${FAKE_TOPIC_ARN:-arn:aws:sns:us-east-1:111122223333:launchcrew-foundation-BudgetTopic-ABC123}"
+  if [ "$NOTIF_MODE" = "missing" ]; then
+    printf '{"NotificationsWithSubscribers":[{"Notification":{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"PERCENTAGE"},"Subscribers":[{"SubscriptionType":"SNS","Address":"%s"}]}]}\\n' "$NOTIF_TOPIC"
+    exit 0
+  fi
+  if [ "$NOTIF_MODE" = "wrong" ]; then
+    printf '{"NotificationsWithSubscribers":[{"Notification":{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":50,"ThresholdType":"PERCENTAGE"},"Subscribers":[{"SubscriptionType":"SNS","Address":"%s"}]},{"Notification":{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100,"ThresholdType":"PERCENTAGE"},"Subscribers":[{"SubscriptionType":"SNS","Address":"%s"}]}]}\\n' "$NOTIF_TOPIC" "$NOTIF_TOPIC"
+    exit 0
+  fi
+  printf '{"NotificationsWithSubscribers":[{"Notification":{"NotificationType":"ACTUAL","ComparisonOperator":"GREATER_THAN","Threshold":80,"ThresholdType":"PERCENTAGE"},"Subscribers":[{"SubscriptionType":"SNS","Address":"%s"}]},{"Notification":{"NotificationType":"FORECASTED","ComparisonOperator":"GREATER_THAN","Threshold":100,"ThresholdType":"PERCENTAGE"},"Subscribers":[{"SubscriptionType":"SNS","Address":"%s"}]}]}\\n' "$NOTIF_TOPIC" "$NOTIF_TOPIC"
+  exit 0
+fi
+if [ "$1" = "sns" ] && [ "$2" = "list-subscriptions-by-topic" ]; then
+  SNS_MODE="${FAKE_SNS:-exact}"
+  SNS_TOPIC="${FAKE_TOPIC_ARN:-arn:aws:sns:us-east-1:111122223333:launchcrew-foundation-BudgetTopic-ABC123}"
+  SNS_EMAIL="${FAKE_NOTIFY_EMAIL:-owner@example.test}"
+  if [ "$SNS_MODE" = "auth" ]; then
+    echo "An error occurred (AccessDenied) when calling the ListSubscriptionsByTopic operation: not authorized" >&2
+    exit 254
+  fi
+  if [ "$SNS_MODE" = "pending" ]; then
+    printf '{"Subscriptions":[{"Owner":"111122223333","Protocol":"email","Endpoint":"%s","TopicArn":"%s","SubscriptionArn":"PendingConfirmation"}]}\\n' "$SNS_EMAIL" "$SNS_TOPIC"
+    exit 0
+  fi
+  printf '{"Subscriptions":[{"Owner":"111122223333","Protocol":"email","Endpoint":"%s","TopicArn":"%s","SubscriptionArn":"%s:12345678-90ab-cdef-1234-567890abcdef"}]}\\n' "$SNS_EMAIL" "$SNS_TOPIC" "$SNS_TOPIC"
+  exit 0
+fi
+if [ "$1" = "acm" ] && [ "$2" = "describe-certificate" ]; then
+  CERT_MODE="${FAKE_CERT:-issued}"
+  CERT_ARN_VALUE="${FAKE_CERT_ARN:-arn:aws:acm:us-east-1:111122223333:certificate/12345678-90ab-cdef-1234-567890abcde1}"
+  CERT_STATUS="ISSUED"
+  if [ "$CERT_MODE" = "pending" ]; then CERT_STATUS="PENDING_VALIDATION"; fi
+  if [ "$CERT_MODE" = "wrong" ]; then CERT_STATUS="EXPIRED"; fi
+  printf '{"Certificate":{"CertificateArn":"%s","DomainName":"launchcrew.summitsingh.com","SubjectAlternativeNames":["launchcrew.summitsingh.com"],"Status":"%s","Type":"AMAZON_ISSUED","Options":{"Export":"ENABLED"}}}\\n' "$CERT_ARN_VALUE" "$CERT_STATUS"
+  exit 0
+fi
+if [ "$1" = "ecs" ] && [ "$2" = "list-tasks" ]; then
+  printf '{"taskArns":[]}\\n'
+  exit 0
 fi
 if [ "$1" = "cloudformation" ] && [ "$2" = "deploy" ]; then
   case "$*" in
@@ -184,6 +298,8 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-tasks" ]; then
     *launchcrew-demo-api*) NAMES="api" ;;
     *launchcrew-demo-web*) NAMES="web-app web-proxy" ;;
     *launchcrew-demo-migration*) NAMES="migration" ;;
+    *launchcrew-demo-sdkinit*) NAMES="sdk-init" ;;
+    *launchcrew-demo-sdkmaterial*) NAMES="sdk-material" ;;
     *) NAMES="bootstrap-db-roles" ;;
   esac
   CONTAINERS=""
@@ -223,21 +339,33 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-task""-definition" ]; then
     SEC_MASTER="arn:aws:secretsmanager:us-east-1:111122223333:secret:other-secret-ZzZzZz"
     SEC_TLS="arn:aws:secretsmanager:us-east-1:111122223333:secret:other-secret-ZzZzZz"
   fi
+  EXEC_SUFFIX="-physical"
+  if [ "$MODE" = "role_mismatch" ]; then EXEC_SUFFIX="-wrong"; fi
   case "$TASKDEF" in
     *launchcrew-demo-api*)
-      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/ApiExecutionRole","containerDefinitions":[{"name":"api","essential":true,"image":"%s","secrets":[{"name":"DATABASE_URL","valueFrom":"%s:database-url::"},{"name":"TLS_CERT_B64","valueFrom":"%s:tls-cert-b64::"},{"name":"TLS_KEY_B64","valueFrom":"%s:tls-key-b64::"}]}]}}\\n' "$IMG_API" "$SEC_RT" "$SEC_TLS" "$SEC_TLS"
+      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/ApiExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/ApiTaskRole%s","containerDefinitions":[{"name":"api","essential":true,"image":"%s","secrets":[{"name":"DATABASE_URL","valueFrom":"%s:database-url::"},{"name":"TLS_CERT_B64","valueFrom":"%s:tls-cert-b64::"},{"name":"TLS_KEY_B64","valueFrom":"%s:tls-key-b64::"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_API" "$SEC_RT" "$SEC_TLS" "$SEC_TLS"
       exit 0 ;;
     *launchcrew-demo-web*)
-      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/WebExecutionRole","containerDefinitions":[{"name":"web-app","essential":true,"image":"%s","secrets":[]},{"name":"web-proxy","essential":true,"image":"%s","secrets":[{"name":"TLS_CERT_B64","valueFrom":"%s:tls-cert-b64::"},{"name":"TLS_KEY_B64","valueFrom":"%s:tls-key-b64::"}]}]}}\\n' "$IMG_WEB" "$IMG_PROXY" "$SEC_TLS" "$SEC_TLS"
+      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/WebExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/WebTaskRole%s","containerDefinitions":[{"name":"web-app","essential":true,"image":"%s","secrets":[]},{"name":"web-proxy","essential":true,"image":"%s","secrets":[{"name":"TLS_CERT_B64","valueFrom":"%s:tls-cert-b64::"},{"name":"TLS_KEY_B64","valueFrom":"%s:tls-key-b64::"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_WEB" "$IMG_PROXY" "$SEC_TLS" "$SEC_TLS"
       exit 0 ;;
     *launchcrew-demo-migration*)
-      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/MigrationExecutionRole","containerDefinitions":[{"name":"migration","essential":true,"image":"%s","secrets":[{"name":"DATABASE_URL","valueFrom":"%s:database-url::"}]}]}}\\n' "$IMG_MIG" "$SEC_MG"
+      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/MigrationExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/MigrationTaskRole%s","containerDefinitions":[{"name":"migration","essential":true,"image":"%s","secrets":[{"name":"DATABASE_URL","valueFrom":"%s:database-url::"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_MIG" "$SEC_MG"
       exit 0 ;;
     *launchcrew-demo-bootstrap*)
-      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/BootstrapExecutionRole","containerDefinitions":[{"name":"bootstrap-db-roles","essential":true,"image":"%s","secrets":[{"name":"MASTER_DB_PASSWORD","valueFrom":"%s:password::"},{"name":"RUNTIME_DB_URL","valueFrom":"%s:database-url::"},{"name":"MIGRATION_DB_URL","valueFrom":"%s:database-url::"}]}]}}\\n' "$IMG_BOOT" "$SEC_MASTER" "$SEC_RT" "$SEC_MG"
+      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/BootstrapExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/BootstrapTaskRole%s","containerDefinitions":[{"name":"bootstrap-db-roles","essential":true,"image":"%s","secrets":[{"name":"MASTER_DB_PASSWORD","valueFrom":"%s:password::"},{"name":"RUNTIME_DB_URL","valueFrom":"%s:database-url::"},{"name":"MIGRATION_DB_URL","valueFrom":"%s:database-url::"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_BOOT" "$SEC_MASTER" "$SEC_RT" "$SEC_MG"
       exit 0 ;;
     *launchcrew-demo-verify*)
-      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/VerifyExecutionRole","containerDefinitions":[{"name":"bootstrap-db-roles","essential":true,"image":"%s","secrets":[{"name":"RUNTIME_DB_URL","valueFrom":"%s:database-url::"}]}]}}\\n' "$IMG_BOOT" "$SEC_RT"
+      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/VerifyExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/VerifyTaskRole%s","containerDefinitions":[{"name":"bootstrap-db-roles","essential":true,"image":"%s","secrets":[{"name":"RUNTIME_DB_URL","valueFrom":"%s:database-url::"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_BOOT" "$SEC_RT"
+      exit 0 ;;
+    *launchcrew-demo-sdkinit*)
+      SDK_CERT="${FAKE_CERT_ARN:-}"
+      SDK_HOST="${FAKE_DB_HOST:-}"
+      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/SdkInitExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/SdkInitTaskRole%s","containerDefinitions":[{"name":"sdk-init","essential":true,"image":"%s","entryPoint":["/opt/venv/bin/python","/app/scripts/populate_prereqs.py"],"command":["--populate"],"environment":[{"name":"LAUNCHCREW_EXPECTED_ACCOUNT","value":"111122223333"},{"name":"LAUNCHCREW_EXPECTED_REGION","value":"us-east-1"},{"name":"LAUNCHCREW_EXPECTED_ROLE","value":"SdkInitTaskRole-physical"},{"name":"LAUNCHCREW_MASTER_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_RUNTIME_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_MIGRATION_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_TLS_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_CERT_ARN","value":"%s"},{"name":"LAUNCHCREW_DB_HOST","value":"%s"},{"name":"LAUNCHCREW_DB_TLS_MODE","value":"verify-full"},{"name":"DATABASE_SSL_ROOTCERT","value":"/app/rds-ca-bundle.pem"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_BOOT" "$SEC_MASTER" "$SEC_RT" "$SEC_MG" "$SEC_TLS" "$SDK_CERT" "$SDK_HOST"
+      exit 0 ;;
+    *launchcrew-demo-sdkmaterial*)
+      SDK_CERT="${FAKE_CERT_ARN:-}"
+      SDK_HOST="${FAKE_DB_HOST:-}"
+      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/SdkMaterialExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/SdkMaterialTaskRole%s","containerDefinitions":[{"name":"sdk-material","essential":true,"image":"%s","entryPoint":["/opt/venv/bin/python","/app/scripts/populate_prereqs.py"],"command":["--verify-material"],"environment":[{"name":"LAUNCHCREW_EXPECTED_ACCOUNT","value":"111122223333"},{"name":"LAUNCHCREW_EXPECTED_REGION","value":"us-east-1"},{"name":"LAUNCHCREW_EXPECTED_ROLE","value":"SdkMaterialTaskRole-physical"},{"name":"LAUNCHCREW_MASTER_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_RUNTIME_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_MIGRATION_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_TLS_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_CERT_ARN","value":"%s"},{"name":"LAUNCHCREW_DB_HOST","value":"%s"},{"name":"LAUNCHCREW_DB_TLS_MODE","value":"verify-full"},{"name":"DATABASE_SSL_ROOTCERT","value":"/app/rds-ca-bundle.pem"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_BOOT" "$SEC_MASTER" "$SEC_RT" "$SEC_MG" "$SEC_TLS" "$SDK_CERT" "$SDK_HOST"
       exit 0 ;;
     *) echo "fake-aws: unexpected describe task definition: $*" >&2; exit 2 ;;
   esac
@@ -328,7 +456,8 @@ class BootstrapHarness(unittest.TestCase):
     }
 
     def run_bootstrap(self, args, mode="success", extra_env=None,
-                      params_overrides=None, params_raw=None):
+                      params_overrides=None, params_raw=None,
+                      foundation_params_raw=None):
         import json as _json
         with tempfile.TemporaryDirectory() as tmp:
             fake = Path(tmp) / "fake-aws"
@@ -341,6 +470,8 @@ class BootstrapHarness(unittest.TestCase):
             taskdefs = Path(tmp) / "taskdefs"
             taskdefs.write_text("", encoding="utf-8")
             created = Path(tmp) / "created"
+            journals = Path(tmp) / "journals"
+            journals.mkdir()
             given = {}
             items = list(args)
             index = 0
@@ -351,6 +482,8 @@ class BootstrapHarness(unittest.TestCase):
                     index += 2
                 else:
                     index += 1
+            if "AcmCertificateArn" not in given:
+                given["AcmCertificateArn"] = CERT_ARN
             if params_overrides:
                 given.update(params_overrides)
             params = Path(tmp) / "params.json"
@@ -360,6 +493,15 @@ class BootstrapHarness(unittest.TestCase):
                      for key, value in sorted(given.items())]), encoding="utf-8")
             else:
                 params.write_text(params_raw, encoding="utf-8")
+            foundation_params = Path(tmp) / "foundation-params.json"
+            if foundation_params_raw is None:
+                foundation_params.write_text(_json.dumps(
+                    [{"ParameterKey": "BudgetLimitUsd", "ParameterValue": "45"},
+                     {"ParameterKey": "BudgetNotifyEmail",
+                      "ParameterValue": NOTIFY_EMAIL}]), encoding="utf-8")
+            else:
+                foundation_params.write_text(foundation_params_raw,
+                                             encoding="utf-8")
             env = dict(os.environ)
             for key in ("AWS_REGION", "AWS_DEFAULT_REGION", "AWS_PROFILE",
                         "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
@@ -370,6 +512,10 @@ class BootstrapHarness(unittest.TestCase):
             env["FAKE_COUNT_FILE"] = str(count)
             env["FAKE_TASKDEF_FILE"] = str(taskdefs)
             env["FAKE_STACK_CREATED_FILE"] = str(created)
+            env["FAKE_CERT_ARN"] = CERT_ARN
+            env["FAKE_DB_HOST"] = DB_HOST
+            env["FAKE_TOPIC_ARN"] = TOPIC_ARN
+            env["FAKE_NOTIFY_EMAIL"] = NOTIFY_EMAIL
             for table in (self.IMAGE_ENV, self.SECRET_ENV):
                 for flag, name in table.items():
                     for pos, item in enumerate(items):
@@ -380,6 +526,11 @@ class BootstrapHarness(unittest.TestCase):
             full = list(args)
             if "--parameters-file" not in full:
                 full += ["--parameters-file", str(params)]
+            if "--foundation-stack-name" not in full and "--confirm" in full:
+                full += ["--foundation-stack-name", FOUNDATION_STACK,
+                         "--foundation-parameters-file", str(foundation_params),
+                         "--prereqs-stack-name", PREREQS_STACK,
+                         "--launch-journal-dir", str(journals)]
             result = subprocess.run(
                 [str(BOOTSTRAP), *full], capture_output=True, text=True,
                 env=env, check=False)
@@ -424,7 +575,8 @@ class DryRunTests(BootstrapHarness):
 
     def test_dry_run_lists_ordered_phases(self):
         result, _ = self.run_bootstrap([])
-        for phase in ("infra", "images", "dbroles", "migrate", "enable"):
+        for phase in ("infra", "images", "init", "material", "dbroles",
+                      "migrate", "enable"):
             self.assertIn(phase, result.stdout)
 
 
@@ -536,7 +688,16 @@ class PhaseOrderingTests(BootstrapHarness):
         self.assertLess(deploy_false, first_run)
         self.assertLess(first_run, deploy_true)
         run_tasks = [call for call in calls if "run-task" in call]
-        self.assertEqual(len(run_tasks), 3)
+        self.assertEqual(len(run_tasks), 5)
+        taskdef_order = []
+        for call in run_tasks:
+            for logical in ("sdkinit", "sdkmaterial", "bootstrap",
+                            "migration", "verify"):
+                if f"launchcrew-demo-{logical}" in call:
+                    taskdef_order.append(logical)
+        self.assertEqual(taskdef_order,
+                         ["sdkinit", "sdkmaterial", "bootstrap",
+                          "migration", "verify"])
 
     def test_enable_verifies_fixed_count_one_each(self):
         result, calls = self.run_bootstrap(self.base_args())
@@ -632,7 +793,13 @@ class PhaseOrderingTests(BootstrapHarness):
     def test_runtask_failure_refused(self):
         result, calls = self.run_bootstrap(self.base_args(), mode="runtask_failures")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("run-task reported failures", result.stdout + result.stderr)
+        combined = result.stdout + result.stderr
+        self.assertIn("ambiguous", combined)
+        self.assertIn("recovery confirms zero tasks", combined)
+        self.assertIn("No automatic resend", combined)
+        self.assertTrue(any("list-tasks" in call for call in calls))
+        runs = [call for call in calls if "run-task" in call]
+        self.assertEqual(len(runs), 1)
         self.assertFalse(any("EnableServices=true" in call for call in calls))
 
     def test_enable_alone_reproves_images_bindings_and_verify(self):
@@ -643,10 +810,17 @@ class PhaseOrderingTests(BootstrapHarness):
         self.assertIn("EnableServices=true", joined)
         self.assertIn("batch-get-image", joined)
         self.assertIn("launchcrew-demo-verify", joined)
+        self.assertIn("launchcrew-demo-sdkmaterial", joined)
         self.assertNotIn("launchcrew-demo-migration:1 --launch-type", joined)
         self.assertNotIn("launchcrew-demo-bootstrap:1 --launch-type", joined)
+        self.assertNotIn("launchcrew-demo-sdkinit:1 --launch-type", joined)
         runs = [call for call in calls if "run-task" in call]
-        self.assertEqual(len(runs), 1)
+        self.assertEqual(len(runs), 2)
+        material_run = next(i for i, call in enumerate(runs)
+                            if "launchcrew-demo-sdkmaterial" in call)
+        verify_run = next(i for i, call in enumerate(runs)
+                          if "launchcrew-demo-verify" in call)
+        self.assertLess(material_run, verify_run)
 
     def test_infra_alone_needs_no_images_or_secrets(self):
         result, calls = self.run_bootstrap([*self.minimal_infra_args(), "--phase", "infra"])
@@ -819,6 +993,8 @@ class CostTagAdmissionTests(BootstrapHarness):
     def test_inactive_ce_refuses_each_paid_phase(self):
         paid = [
             [*self.minimal_infra_args(), "--phase", "infra"],
+            [*self.base_args(), "--phase", "init"],
+            [*self.base_args(), "--phase", "material"],
             [*self.base_args(), "--phase", "dbroles"],
             [*self.base_args(), "--phase", "migrate"],
             [*self.base_args(), "--phase", "enable"],
@@ -898,9 +1074,9 @@ class BudgetFilterTests(BootstrapHarness):
         combined = result.stdout + result.stderr
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("UNVERIFIED", combined)
-        self.assertIn("DemoBudget lacks the exact", result.stderr)
+        self.assertIn("lacks the exact", result.stderr)
         refusal_lines = [line for line in result.stderr.splitlines()
-                         if "DemoBudget" in line or "UNVERIFIED" in line]
+                         if "Budget" in line or "UNVERIFIED" in line]
         self.assertTrue(refusal_lines)
         refusal_text = "\n".join(refusal_lines)
         self.assertNotIn("get-secret-value", refusal_text.lower())
@@ -951,6 +1127,7 @@ class TemplateStagingTests(unittest.TestCase):
     def setUp(self):
         self.text = TEMPLATE.read_text(encoding="utf-8")
         self.example = PARAMS.read_text(encoding="utf-8")
+        self.foundation = FOUNDATION.read_text(encoding="utf-8")
         root = TEMPLATE.parents[2]
         self.bootstrap_sh = (root / "deploy" / "aws" / "bootstrap.sh").read_text(encoding="utf-8")
         self.controller = (root / "containers" / "bootstrap-db.Containerfile").read_text(encoding="utf-8")
@@ -966,26 +1143,40 @@ class TemplateStagingTests(unittest.TestCase):
         self.assertNotIn("ScalableTarget", self.text)
 
     def test_budget_alerts_configured_not_empty(self):
-        self.assertNotIn("NotificationsWithSubscribers: []", self.text)
-        self.assertIn("BudgetNotifyConfigured", self.text)
-        self.assertIn("NotificationType: ACTUAL", self.text)
-        self.assertIn("Threshold: 80", self.text)
-        self.assertIn("NotificationType: FORECASTED", self.text)
-        self.assertIn("Threshold: 100", self.text)
-        self.assertNotIn("NotificationState", self.text)
-        self.assertIn("BudgetTopic", self.text)
-        self.assertIn("Protocol: email", self.text)
+        self.assertNotIn("NotificationsWithSubscribers: []", self.foundation)
+        self.assertIn("BudgetNotifyConfigured", self.foundation)
+        self.assertIn("NotificationType: ACTUAL", self.foundation)
+        self.assertIn("Threshold: 80", self.foundation)
+        self.assertIn("NotificationType: FORECASTED", self.foundation)
+        self.assertIn("Threshold: 100", self.foundation)
+        self.assertNotIn("NotificationState", self.foundation)
+        self.assertIn("BudgetTopic", self.foundation)
+        self.assertIn("Protocol: email", self.foundation)
+
+    def test_app_stack_owns_no_budget_or_topic(self):
+        for token in ("DemoBudget", "BudgetTopic", "BudgetTopicPolicy",
+                      "BudgetEmailSubscription", "BudgetLimitUsd",
+                      "BudgetNotifyEmail", "BudgetNotifyConfigured"):
+            self.assertNotIn(token, self.text)
+        self.assertIn("owns no budget", self.text)
 
     def test_execution_roles_are_split_and_least_scope(self):
         for role in ("ApiExecutionRole", "WebExecutionRole",
                      "MigrationExecutionRole", "BootstrapExecutionRole",
-                     "VerifyExecutionRole"):
+                     "VerifyExecutionRole", "SdkInitExecutionRole",
+                     "SdkMaterialExecutionRole"):
             self.assertIn(role, self.text)
-        self.assertEqual(self.text.count("secretsmanager:GetSecretValue"), 5)
+        exec_start = self.text.index("ApiExecutionRole:")
+        exec_roles = self.text[exec_start:self.text.index("ApiTaskRole:")]
+        self.assertEqual(exec_roles.count("secretsmanager:GetSecretValue"), 5)
         self.assertIn("api-execution-secrets-only", self.text)
         self.assertIn("verify-execution-secrets-only", self.text)
         self.assertIn("AmazonECSTaskExecutionRolePolicy", self.text)
-        self.assertNotIn("secretsmanager:PutSecretValue", self.text)
+        self.assertNotIn("secretsmanager:PutSecretValue", exec_roles)
+        sdk_exec_start = self.text.index("SdkInitExecutionRole:")
+        sdk_exec = self.text[sdk_exec_start:self.text.index("SdkInitTaskRole:")]
+        self.assertNotIn("secretsmanager:GetSecretValue", sdk_exec)
+        self.assertNotIn("secretsmanager:PutSecretValue", sdk_exec)
         self.assertNotIn("Resource: '*'", self.text)
         self.assertNotIn('Resource: "*"', self.text)
 
@@ -993,9 +1184,26 @@ class TemplateStagingTests(unittest.TestCase):
         for role in ("ApiTaskRole", "WebTaskRole", "MigrationTaskRole",
                      "BootstrapTaskRole", "VerifyTaskRole"):
             self.assertIn(role, self.text)
-        task_start = self.text.index("ApiTaskRole:")
-        task_roles = self.text[task_start:]
-        self.assertNotIn("secretsmanager:GetSecretValue", task_roles)
+        classic_start = self.text.index("ApiTaskRole:")
+        classic_roles = self.text[classic_start:self.text.index("SdkInitExecutionRole:")]
+        self.assertNotIn("secretsmanager:GetSecretValue", classic_roles)
+        self.assertNotIn("secretsmanager:PutSecretValue", classic_roles)
+
+    def test_sdk_task_roles_are_scoped_no_wildcards(self):
+        for role in ("SdkInitTaskRole", "SdkMaterialTaskRole"):
+            self.assertIn(role, self.text)
+        sdk_roles = self.text[self.text.index("SdkInitTaskRole:"):]
+        sdk_roles = sdk_roles[:sdk_roles.index("ApiTaskDefinition:")]
+        self.assertIn("secretsmanager:DescribeSecret", sdk_roles)
+        self.assertIn("secretsmanager:GetSecretValue", sdk_roles)
+        self.assertIn("secretsmanager:PutSecretValue", sdk_roles)
+        self.assertIn("acm:DescribeCertificate", sdk_roles)
+        self.assertIn("acm:ExportCertificate", sdk_roles)
+        material = self.text[self.text.index("SdkMaterialTaskRole:"):]
+        material = material[:material.index("ApiTaskDefinition:")]
+        self.assertNotIn("secretsmanager:PutSecretValue", material)
+        self.assertNotIn("acm:ExportCertificate", material)
+        self.assertNotIn("MasterDbPasswordSecretArn", material)
 
     def test_bootstrap_task_uses_verify_full_and_pinned_bundle(self):
         self.assertIn("BootstrapTaskDefinition", self.text)
@@ -1017,22 +1225,53 @@ class TemplateStagingTests(unittest.TestCase):
         self.assertIn("VerifyTaskDefinition", self.text)
         verify_start = self.text.index("VerifyTaskDefinition:")
         verify_body = self.text[verify_start:]
-        next_resource = verify_body.find("\n  LoadBalancer:")
+        next_resource = verify_body.find("\n  SdkInitTaskDefinition:")
         verify_body = verify_body[:next_resource]
         self.assertIn("RUNTIME_DB_URL", verify_body)
         self.assertIn("'--verify'", verify_body)
         self.assertNotIn("MASTER_DB_PASSWORD", verify_body)
         self.assertNotIn("MIGRATION_DB_URL", verify_body)
 
+    def test_sdk_tasks_use_explicit_entrypoint_and_command(self):
+        for logical, container, flag in (
+                ("SdkInitTaskDefinition", "sdk-init", "'--populate'"),
+                ("SdkMaterialTaskDefinition", "sdk-material",
+                 "'--verify-material'")):
+            self.assertIn(logical, self.text)
+            self.assertIn(container, self.text)
+            self.assertIn(flag, self.text)
+        self.assertIn(
+            "EntryPoint: [/opt/venv/bin/python, /app/scripts/populate_prereqs.py]",
+            self.text)
+        sdk_start = self.text.index("SdkInitTaskDefinition:")
+        sdk_body = self.text[sdk_start:self.text.index("\n  LoadBalancer:")]
+        self.assertNotIn("Secrets:", sdk_body)
+        self.assertIn("LAUNCHCREW_EXPECTED_ROLE, Value: !Ref SdkInitTaskRole",
+                      sdk_body)
+        self.assertIn("LAUNCHCREW_DB_HOST, Value: !GetAtt Database.Endpoint.Address",
+                      sdk_body)
+
     def test_budget_topic_allows_only_budgets_publish(self):
-        self.assertIn("BudgetTopicPolicy", self.text)
-        self.assertIn("budgets.amazonaws.com", self.text)
-        self.assertIn("aws:SourceAccount", self.text)
-        self.assertIn("aws:SourceArn", self.text)
+        self.assertIn("BudgetTopicPolicy", self.foundation)
+        self.assertIn("budgets.amazonaws.com", self.foundation)
+        self.assertIn("aws:SourceAccount", self.foundation)
+        self.assertIn("aws:SourceArn", self.foundation)
 
     def test_parameters_example_matches_template(self):
-        for key in ("BootstrapImageUri", "EnableServices", "BudgetNotifyEmail"):
+        import json as _json
+        example_keys = {entry["ParameterKey"]
+                        for entry in _json.loads(self.example)}
+        self.assertEqual(example_keys,
+                         {"AcmCertificateArn", "ApiImageUri", "WebImageUri",
+                          "WebProxyImageUri", "MigrationImageUri",
+                          "BootstrapImageUri", "RuntimeDbUrlSecretArn",
+                          "MigrationDbUrlSecretArn", "TlsSecretArn",
+                          "MasterDbPasswordSecretArn", "DatabaseUsername",
+                          "EnableServices"})
+        for key in ("BootstrapImageUri", "EnableServices"):
             self.assertIn(key, self.example)
+        self.assertNotIn("BudgetLimitUsd", self.example)
+        self.assertNotIn("BudgetNotifyEmail", self.example)
         self.assertIn('"false"', self.example)
 
     def test_bootstrap_image_pins_ca_bundle(self):

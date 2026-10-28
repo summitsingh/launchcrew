@@ -177,15 +177,22 @@ class FoundationParamsExampleTests(unittest.TestCase):
 
 
 class LegacyPreservedTests(unittest.TestCase):
-    def test_fargate_still_carries_budget_until_phase_c(self):
-        text = FARGATE.read_text(encoding="utf-8")
+    def test_budget_moved_atomically_to_foundation(self):
+        app_text = FARGATE.read_text(encoding="utf-8")
+        for logical in ("DemoBudget:", "BudgetTopic:",
+                        "BudgetTopicPolicy:", "BudgetEmailSubscription:",
+                        "BudgetLimitUsd:", "BudgetNotifyEmail:",
+                        "BudgetNotifyConfigured:"):
+            self.assertNotIn(logical, app_text)
+        foundation_text = FOUNDATION.read_text(encoding="utf-8")
         for logical in ("DemoBudget:", "BudgetTopic:",
                         "BudgetTopicPolicy:", "BudgetEmailSubscription:"):
-            self.assertIn(logical, text)
+            self.assertIn(logical, foundation_text)
 
     def test_default_all_order_mentions_legacy_first(self):
         text = BOOTSTRAP.read_text(encoding="utf-8")
-        for phase in ("infra", "images", "dbroles", "migrate", "enable"):
+        for phase in ("infra", "images", "init", "material", "dbroles",
+                      "migrate", "enable"):
             self.assertIn(phase, text)
 
 

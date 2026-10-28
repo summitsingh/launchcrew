@@ -4,9 +4,11 @@
 Runs ONLY as a one-off task on the existing bootstrap image (built from
 containers/bootstrap-db.Containerfile), sharing that image with the existing
 bootstrap task. No new ECR repo and no new local image: Phase C adds the
-task definitions with command overrides. This terminal does source only;
-no AWS calls run here. The host installs the isolated deploy-only lock
-after the terminal and runs all checks.
+task definitions with explicit EntryPoint to this script plus Command
+--populate or --verify-material. Command alone would retain the binder
+entrypoint, so the EntryPoint override is required. This terminal does
+source only; no AWS calls run here. The host installs the isolated
+deploy-only lock after the terminal and runs all checks.
 
 Modes, selected by argv flag only (no secret ever appears in argv):
   --populate         validate caller plus metadata, then write canonical

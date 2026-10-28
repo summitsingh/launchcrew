@@ -11,8 +11,9 @@ RUN uv sync --frozen --no-dev --no-install-project && useradd --uid 10001 --crea
 # created venv is unseeded and has no pip binary, so the existing uv
 # binary installs into that venv via --python. Core app UV deps
 # unchanged. This reuses the existing bootstrap image with no new ECR
-# repo; Phase C adds task definitions that override the command to run
-# populate_prereqs.py --populate or --verify-material on this same image.
+# repo; Phase C adds task definitions that override the EntryPoint to
+# populate_prereqs.py with Command --populate or --verify-material on
+# this same image. Command alone would retain the binder entrypoint.
 COPY containers/bootstrap-deploy-requirements.lock /tmp/bootstrap-deploy-requirements.lock
 RUN uv pip install --python /opt/venv/bin/python --require-hashes -r /tmp/bootstrap-deploy-requirements.lock \
  && rm /tmp/bootstrap-deploy-requirements.lock
@@ -46,8 +47,11 @@ USER 10001:10001
 # least privilege IAM role, to bind database role passwords from injected
 # Secrets Manager values held in process memory only. Phase B adds the
 # memory-only prereq provisioner on this same image with no new repo;
-# Phase C task definitions override the command to run populate_prereqs.py
-# --populate or --verify-material. Migration stays the only schema change
+# Phase C task definitions override the EntryPoint to
+# /opt/venv/bin/python /app/scripts/populate_prereqs.py with Command
+# --populate or --verify-material. Command alone would retain this binder
+# entrypoint, so the EntryPoint override is required for SDK jobs.
+# Migration stays the only schema change
 # path in containers/migrate.Containerfile, and runtime tasks use
 # containers/api.Containerfile, which must never run alembic or role binds.
 ENTRYPOINT ["/opt/venv/bin/python", "/app/scripts/bootstrap_db_roles.py"]

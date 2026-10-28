@@ -11,20 +11,39 @@
 #                 owned ECR repository with an image digest and no failures,
 #                 and equals the image referenced by its owned stack task
 #                 definition; placeholder or missing images refuse
+#   phase init    run the isolated SDK populate task on the verified bootstrap
+#                 image with explicit EntryPoint to populate_prereqs.py and
+#                 Command --populate, after infra plus published image proof
+#                 and before any binder, then require its STOPPED exit code 0
+#   phase material run the isolated SDK material verify task with explicit
+#                 EntryPoint to populate_prereqs.py and Command
+#                 --verify-material, read-only with zero Put and zero Export,
+#                 after init and before binder and enable
 #   phase dbroles run the isolated one-off bootstrap task that binds database
 #                 role passwords from injected Secrets Manager values held in
 #                 task memory only, then require its STOPPED exit code 0
 #   phase migrate run the single one-off migration task, require STOPPED exit
 #                 code 0, then run the separate verify task definition in
 #                 verify mode as schema and runtime-identity proof
-#   phase enable  re-prove images, owned secrets and execution roles, and the
-#                 runtime-only verify proof, then update the stack with
-#                 EnableServices=true for fixed count 1 each, then verify both
-#                 services report desired 1 and running 1
-# Opt-in prereq phases are explicit only and never run under all until Phase C:
+#   phase enable  re-prove images, owned secrets and execution roles, plus the
+#                 read-only material verify and the runtime-only verify proof,
+#                 then update the stack with EnableServices=true for fixed
+#                 count 1 each, then verify both services report desired 1 and
+#                 running 1. Standalone enable never populates, exports,
+#                 binds, or migrates.
+#   phase all     full readiness chain: owned foundation COMPLETE plus exact
+#                 confirmed SNS gate, owned prereqs ISSUED plus owned secret
+#                 metadata, then infra, images, init, material, dbroles,
+#                 migrate, enable in order. Already issued owned stacks verify
+#                 by readback; a PENDING_VALIDATION cert stops as PENDING, not
+#                 ready, with no ready claim.
+# Explicit prereq deploy phases (foundation and prereqs) remain explicit only
+# for creation; all verifies their readiness read-only and never deploys them:
 #   phase foundation deploy the foundation stack with Project filtered Budget
 #                 plus SNS topic, policy, and conditional email subscription,
-#                 then report subscription status with no paid Secrets yet
+#                 then report subscription status with no paid Secrets yet.
+#                 Foundation owns the exact budget name launchcrew-demo; the
+#                 app stack owns no budget and no SNS topic.
 #   phase prereqs enforce the exact SNS gate plus CE Active plus expiry guard,
 #                 then deploy four Secrets plus the exportable ACM cert, with
 #                 staged CREATE_IN_PROGRESS pending yielding a private DNS
@@ -35,18 +54,23 @@
 # the secretsmanager read-value API and never prints a secret value: it handles
 # only secret ARNs as identifiers via describe-secret metadata, and the
 # bootstrap job holds values in private task memory without logging them.
-# Outside-stack values (Secrets Manager secret contents, ACM certificate,
-# Cloudflare DNS, manual snapshots) need a separate approval with exact
-# identifiers and are reported as remaining work. Teardown stays separate in
-# deploy/aws/teardown.sh. An AWS Budget is an alert and estimate mechanism,
-# not an enforced hard spend cap. A budget filter with no data or 0 is not
-# proof of zero spend. Cost allocation tag activation is never done here and
-# is verified read-only before any paid phase: the Project key must already
-# be Active as a user defined resource cost allocation tag in Billing under
-# a separate approval, which can take 24h for the key to appear plus 24h for
-# activation. Inactive, absent, ambiguous, or unreadable activation refuses
-# before any CloudFormation deploy or one-off task, because spend starts at
-# infra, RDS, and ALB creation even at DesiredCount 0.
+# The SDK jobs read values only inside their own task roles; the controller
+# verifies their task definitions carry metadata env only with zero injected
+# Secrets entries. Outside-stack values (Secrets Manager secret contents, ACM
+# certificate, Cloudflare DNS, manual snapshots) need a separate approval with
+# exact identifiers and are reported as remaining work. Teardown stays
+# separate in deploy/aws/teardown.sh. An AWS Budget is an alert and estimate
+# mechanism, not an enforced hard spend cap. A budget filter with no data or 0
+# is not proof of zero spend. Cost allocation tag activation is never done
+# here and is verified read-only before any paid phase: the Project key must
+# already be Active as a user defined resource cost allocation tag in Billing
+# under a separate approval, which can take 24h for the key to appear plus 24h
+# for activation. Inactive, absent, ambiguous, or unreadable activation
+# refuses before any CloudFormation deploy or one-off task, because spend
+# starts at infra, RDS, and ALB creation even at DesiredCount 0. Every paid
+# phase also verifies the owned foundation stack tags and COMPLETE status,
+# the exact foundation budget filter plus alert thresholds, the exact
+# confirmed SNS subscription, and the Nov 9 source expiry guard.
 # One-off jobs run in the public subnets with a public IP and a security
 # group that allows no inbound traffic at all. That is the honest minimal
 # egress path: private subnets here have no NAT gateway and no VPC endpoints,
@@ -54,6 +78,9 @@
 # Manager, or CloudWatch Logs and only pretends to work. The database stays
 # private regardless: the isolated job group may reach only Postgres on the
 # database group plus HTTPS egress, and RDS itself is never public.
+# Each one-off launch writes a private mode 600 metadata-only journal before
+# the run-task call, uses a bounded client token with no automatic resend,
+# and recovers ambiguously failed launches read-only before any rerun.
 set -eu
 AWS_BIN="${AWS_BIN:-aws}"
 CONFIRM=0
@@ -79,13 +106,17 @@ FOUNDATION_TEMPLATE_FILE=""
 PREREQS_TEMPLATE_FILE=""
 FOUNDATION_PARAMETERS_FILE=""
 DNS_RECEIPT_FILE=""
+LAUNCH_JOURNAL_DIR="${LAUNCH_JOURNAL_DIR:-/tmp}"
 
 usage() {
-  echo "Usage: $0 [--confirm --stack-name NAME --expected-account ID --expected-region REGION ...] [--phase infra|images|dbroles|migrate|enable|all|foundation|prereqs]"
+  echo "Usage: $0 [--confirm --stack-name NAME --expected-account ID --expected-region REGION ...] [--phase infra|images|init|material|dbroles|migrate|enable|all|foundation|prereqs]"
   echo "Dry-run default makes no AWS call and prints the ordered phase plan."
   echo "Confirm path requires --stack-name, --expected-account (12 digits), --expected-region,"
   echo "  --parameters-file, plus per-phase image URIs and secret ARNs (see phase plan)."
-  echo "Opt-in prereq phases are explicit only and never run under all until Phase C:"
+  echo "Paid phases (infra, init, material, dbroles, migrate, enable, all) also need"
+  echo "  --foundation-stack-name plus --foundation-parameters-file for the owned budget gate."
+  echo "  --phase all additionally needs --prereqs-stack-name for the ISSUED readback."
+  echo "Explicit prereq deploy phases remain explicit only for creation:"
   echo "  --phase foundation needs --foundation-stack-name plus --foundation-parameters-file"
   echo "  --phase prereqs needs --prereqs-stack-name plus --foundation-stack-name plus --foundation-parameters-file plus --dns-receipt-file"
 }
@@ -137,6 +168,8 @@ while [ $# -gt 0 ]; do
     --foundation-parameters-file=*) FOUNDATION_PARAMETERS_FILE="${1#--foundation-parameters-file=}"; shift ;;
     --dns-receipt-file) DNS_RECEIPT_FILE="${2:-}"; shift 2 ;;
     --dns-receipt-file=*) DNS_RECEIPT_FILE="${1#--dns-receipt-file=}"; shift ;;
+    --launch-journal-dir) LAUNCH_JOURNAL_DIR="${2:-}"; shift 2 ;;
+    --launch-journal-dir=*) LAUNCH_JOURNAL_DIR="${1#--launch-journal-dir=}"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown arg: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -144,6 +177,9 @@ done
 
 phase_plan() {
   echo "Phase order, each phase gates the next; any failure stops the run:"
+  echo "  0. paid gates: owned foundation COMPLETE plus exact budget filter and alert"
+  echo "     thresholds plus exact confirmed SNS subscription, Project Active, expiry;"
+  echo "     all additionally verifies owned prereqs ISSUED plus secret metadata"
   echo "  1. ownership: caller account, stack Project LaunchCrew and Environment demo tags,"
   echo "     exact StackId account and region, secret ARN shape account and region,"
   echo "     plus exact returned secret ARN and secret tags; fresh stacks create with tags"
@@ -152,25 +188,35 @@ phase_plan() {
   echo "  3. images: all five ECR image URIs verified by digest with no failures, each equal"
   echo "     to its owned stack task definition image, explicit tag required, no latest fallback;"
   echo "     task definitions must inject exactly the validated secrets under the owned roles"
-  echo "  4. dbroles: isolated bootstrap task STOPPED exit 0, passwords bound in task memory only,"
-  echo "     after the bootstrap task definition secrets and execution role are proven owned"
-  echo "  5. migrate: isolated migration task STOPPED exit 0, then separate verify task proof of"
+  echo "  4. init: isolated SDK populate task on the verified bootstrap image with explicit"
+  echo "     EntryPoint to populate_prereqs.py and Command --populate, STOPPED exit 0,"
+  echo "     after the SDK task definition image, env, roles, and zero secret injection proof"
+  echo "  5. material: isolated SDK material verify task with explicit EntryPoint and"
+  echo "     Command --verify-material, read-only with zero Put and zero Export, STOPPED exit 0"
+  echo "  6. dbroles: isolated bootstrap task STOPPED exit 0, passwords bound in task memory only,"
+  echo "     after the bootstrap task definition secrets and owned roles are proven"
+  echo "  7. migrate: isolated migration task STOPPED exit 0, then separate verify task proof of"
   echo "     expected head revision, runtime identity, rolled-back write, and DDL refusal"
-  echo "  6. enable: budget readiness preflight (exact Project filter read back,"
-  echo "     Project activation verified Active read-only, never activated here),"
-  echo "     then re-prove images, bindings, and the runtime-only"
-  echo "     verify proof from live state, then update stack with EnableServices=true,"
-  echo "     verify desired 1 and running 1 each (configuration check only; serving"
-  echo "     health is proven by ALB targets after DNS)"
-  echo "Per-phase inputs: infra needs stack, account, region, parameters file only;"
+  echo "  8. enable: foundation budget readiness preflight (exact Project filter plus alert"
+  echo "     thresholds read back, Project activation verified Active read-only, never"
+  echo "     activated here), then re-prove images, bindings, the read-only material"
+  echo "     verify and the runtime-only verify proof from live state, then update stack"
+  echo "     with EnableServices=true, verify desired 1 and running 1 each (configuration"
+  echo "     check only; serving health is proven by ALB targets after DNS). Standalone"
+  echo "     enable never populates, exports, binds, or migrates."
+  echo "Per-phase inputs: infra needs stack, account, region, parameters file plus foundation gate args;"
   echo "  images needs the five image URIs plus the four secret ARNs for the API and web bindings;"
-  echo "  dbroles needs the bootstrap image and three secret ARNs;"
-  echo "  migrate needs the migration and bootstrap images plus migration and runtime secret ARNs;"
+  echo "  init and material need the bootstrap image plus all four secret ARNs plus foundation gate args;"
+  echo "  dbroles needs the bootstrap image and three secret ARNs plus foundation gate args;"
+  echo "  migrate needs the migration and bootstrap images plus migration and runtime secret ARNs plus foundation gate args;"
   echo "  enable needs the five image URIs and all four secret ARNs to re-prove refs, bindings, and verify."
+  echo "  all needs everything enable needs plus --foundation-stack-name, --prereqs-stack-name,"
+  echo "  and --foundation-parameters-file for the readiness chain."
   echo "Each phase re-verifies its own preconditions from live state, so a single phase can resume"
   echo "after earlier phases completed in a previous run; nothing is assumed from memory."
-  echo "Opt-in prereq phases, explicit only, never under all until Phase C atomic integration:"
-  echo "  foundation: deploy Budget plus SNS with Project filter, report subscription status, no paid Secrets yet"
+  echo "Explicit prereq deploy phases remain explicit only for creation; all verifies readiness read-only:"
+  echo "  foundation: deploy Budget plus SNS with Project filter, report subscription status, no paid Secrets yet;"
+  echo "     foundation owns the exact budget name, the app stack owns no budget"
   echo "  prereqs: exact SNS gate plus CE Active plus expiry guard, then deploy four Secrets plus exportable ACM,"
   echo "     staged CREATE_IN_PROGRESS pending yields private DNS receipt and public CNAME operator step"
   echo "Remaining work, never done by this script:"
@@ -189,7 +235,7 @@ if [ "$CONFIRM" -ne 1 ]; then
 fi
 
 case "$PHASE" in
-  infra|images|dbroles|migrate|enable|all|foundation|prereqs) ;;
+  infra|images|init|material|dbroles|migrate|enable|all|foundation|prereqs) ;;
   *) echo "refused: unknown phase $PHASE" >&2; exit 2 ;;
 esac
 [ -n "$EXPECTED_ACCOUNT" ] || { echo "confirm requires --expected-account with a 12-digit account" >&2; exit 2; }
@@ -198,6 +244,11 @@ case "$EXPECTED_ACCOUNT" in
   [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;;
   *) echo "refused: expected account must be 12 digits" >&2; exit 2 ;;
 esac
+require_foundation_gate_args() {
+  [ -n "$FOUNDATION_STACK_NAME" ] || { echo "confirm requires --foundation-stack-name for the owned budget gate" >&2; exit 2; }
+  [ -n "$FOUNDATION_PARAMETERS_FILE" ] || { echo "confirm requires --foundation-parameters-file for the approved notify value" >&2; exit 2; }
+  [ -f "$FOUNDATION_PARAMETERS_FILE" ] || { echo "refused: foundation parameters file not found: $FOUNDATION_PARAMETERS_FILE" >&2; exit 2; }
+}
 case "$PHASE" in
   foundation)
     [ -n "$FOUNDATION_STACK_NAME" ] || { echo "confirm requires --foundation-stack-name with the exact foundation stack name" >&2; exit 2; }
@@ -209,6 +260,17 @@ case "$PHASE" in
     [ -n "$FOUNDATION_PARAMETERS_FILE" ] || { echo "confirm requires --foundation-parameters-file for the approved notify value" >&2; exit 2; }
     [ -f "$FOUNDATION_PARAMETERS_FILE" ] || { echo "refused: foundation parameters file not found: $FOUNDATION_PARAMETERS_FILE" >&2; exit 2; }
     [ -n "$DNS_RECEIPT_FILE" ] || { echo "confirm requires --dns-receipt-file for the private validation receipt" >&2; exit 2; } ;;
+  all)
+    [ -n "$STACK_NAME" ] || { echo "confirm requires --stack-name with the exact stack name" >&2; exit 2; }
+    [ -n "$PARAMETERS_FILE" ] || { echo "confirm requires --parameters-file" >&2; exit 2; }
+    [ -f "$PARAMETERS_FILE" ] || { echo "refused: parameters file not found: $PARAMETERS_FILE" >&2; exit 2; }
+    require_foundation_gate_args
+    [ -n "$PREREQS_STACK_NAME" ] || { echo "confirm requires --prereqs-stack-name for the ISSUED readback" >&2; exit 2; } ;;
+  infra|init|material|dbroles|migrate|enable)
+    [ -n "$STACK_NAME" ] || { echo "confirm requires --stack-name with the exact stack name" >&2; exit 2; }
+    [ -n "$PARAMETERS_FILE" ] || { echo "confirm requires --parameters-file" >&2; exit 2; }
+    [ -f "$PARAMETERS_FILE" ] || { echo "refused: parameters file not found: $PARAMETERS_FILE" >&2; exit 2; }
+    require_foundation_gate_args ;;
   *)
     [ -n "$STACK_NAME" ] || { echo "confirm requires --stack-name with the exact stack name" >&2; exit 2; }
     [ -n "$PARAMETERS_FILE" ] || { echo "confirm requires --parameters-file" >&2; exit 2; }
@@ -237,6 +299,9 @@ case "$PHASE" in
   infra) ;;
   foundation|prereqs) ;;
   images) require_images_args; require_secret_args; require_tls_arg ;;
+  init|material)
+    [ -n "$BOOTSTRAP_IMAGE" ] || { echo "confirm requires --bootstrap-image for this phase" >&2; exit 2; }
+    require_secret_args; require_tls_arg ;;
   dbroles)
     [ -n "$BOOTSTRAP_IMAGE" ] || { echo "confirm requires --bootstrap-image for this phase" >&2; exit 2; }
     require_secret_args ;;
@@ -250,7 +315,7 @@ esac
 
 needs_secret_checks() {
   case "$PHASE" in
-    dbroles|migrate|enable|all) return 0 ;;
+    init|material|dbroles|migrate|enable|all) return 0 ;;
   esac
   [ -n "$RUNTIME_SECRET_ARN" ] || [ -n "$MIGRATION_SECRET_ARN" ] || [ -n "$MASTER_SECRET_ARN" ] || [ -n "$TLS_SECRET_ARN" ]
 }
@@ -354,7 +419,7 @@ wants_phase() {
   return 1
 }
 case "$PHASE" in
-  foundation|prereqs) check_prereq_expiry ;;
+  infra|init|material|dbroles|migrate|enable|all|foundation|prereqs) check_prereq_expiry ;;
 esac
 # Ownership gate one: caller identity must match the expected account before
 # any stack, secret, image, task, or service call.
@@ -505,6 +570,7 @@ check_params_match() {
 import json, sys
 KNOWN_SECRET_KEYS = {"RuntimeDbUrlSecretArn", "MigrationDbUrlSecretArn",
                      "MasterDbPasswordSecretArn", "TlsSecretArn"}
+MOVED_BUDGET_KEYS = {"BudgetLimitUsd", "BudgetNotifyEmail"}
 try:
     with open(sys.argv[1]) as handle:
         doc = json.load(handle)
@@ -526,6 +592,8 @@ for entry in doc:
         raise SystemExit("parameters file entry has no explicit ParameterValue")
     if "Secret" in key and key not in KNOWN_SECRET_KEYS:
         raise SystemExit("parameters file has an unrecognized secret reference")
+    if key in MOVED_BUDGET_KEYS:
+        raise SystemExit("parameters file carries a foundation-owned budget key")
     print("%s\t%s" % (key, entry.get("ParameterValue", "")))
 PYEOF
   [ $? -eq 0 ] || { echo "refused: parameters file is not an explicit deployable list: $PARAMETERS_FILE" >&2; return 1; }
@@ -647,7 +715,7 @@ PYEOF
 }
 
 case "$PHASE" in
-  infra|dbroles|migrate|enable|all|foundation|prereqs) check_cost_tag_activation ;;
+  infra|init|material|dbroles|migrate|enable|all|foundation|prereqs) check_cost_tag_activation ;;
 esac
 
 # cloudformation deploy has no --parameter-file option. Overrides travel as
@@ -682,6 +750,8 @@ for entry in doc:
     key = entry["ParameterKey"]
     if key == "EnableServices":
         continue
+    if key in ("BudgetLimitUsd", "BudgetNotifyEmail"):
+        raise SystemExit("parameters file carries a foundation-owned budget key")
     if "ParameterValue" not in entry:
         raise SystemExit("parameters file entry has no explicit ParameterValue")
     value = entry.get("ParameterValue", "")
@@ -975,6 +1045,86 @@ PYEOF
   echo "Verified foundation DemoBudget filter: Tags Project=LaunchCrew EQUALS only, read back from live state."
 }
 
+# Foundation budget alert readback, read-only and fail-closed. It requires
+# exactly the two template notifications: ACTUAL GREATER_THAN 80 PERCENTAGE
+# and FORECASTED GREATER_THAN 100 PERCENTAGE, each subscribed once to the
+# owned foundation topic via SNS. Missing, extra, retargeted, or unreadable
+# notifications refuse. Alerts are notifications only, never a hard cap.
+check_foundation_notifications() {
+  NOTIF_TOPIC="$(prereq_stack_resource "$FOUNDATION_STACK_NAME" BudgetTopic 2>"$TMP_ERR")" || { echo "foundation topic lookup failed, project spend monitoring UNVERIFIED." >&2; phase_failed "$PHASE"; }
+  NOTIF_TOPIC="$(printf '%s' "$NOTIF_TOPIC" | tr -d '[:space:]')"
+  [ -n "$NOTIF_TOPIC" ] && [ "$NOTIF_TOPIC" != "None" ] || { echo "refused: foundation topic ARN missing, project spend monitoring UNVERIFIED." >&2; phase_failed "$PHASE"; }
+  NOTIF_JSON="$(mktemp /tmp/launchcrew-fnotif-XXXXXX)"
+  if ! "$AWS_BIN" budgets describe-notifications-for-budget --account-id "$EXPECTED_ACCOUNT" --budget-name launchcrew-demo --output json >"$NOTIF_JSON" 2>"$TMP_ERR"; then
+    rm -f "$NOTIF_JSON"
+    ERR="$(cat "$TMP_ERR" 2>/dev/null || true)"
+    echo "foundation budget notifications unreadable, project spend monitoring UNVERIFIED, no claim made." >&2
+    if is_auth_error "$ERR"; then
+      echo "authorization or API failure, not absence: budgets:DescribeNotificationsForBudget read permission is required." >&2
+    fi
+    phase_failed "$PHASE"
+  fi
+  NOTIF_PROOF="$(python3 - "$NOTIF_JSON" "$NOTIF_TOPIC" 2>/dev/null <<'PYEOF'
+import json, sys
+notif_file, expected_topic = sys.argv[1:3]
+try:
+    doc = json.load(open(notif_file))
+except Exception:
+    print("MALFORMED")
+    sys.exit(0)
+entries = doc.get("NotificationsWithSubscribers", None)
+if not isinstance(entries, list):
+    print("MALFORMED")
+    sys.exit(0)
+want = {
+    ("ACTUAL", "GREATER_THAN", 80, "PERCENTAGE"),
+    ("FORECASTED", "GREATER_THAN", 100, "PERCENTAGE"),
+}
+seen = set()
+for entry in entries:
+    if not isinstance(entry, dict):
+        print("MALFORMED")
+        sys.exit(0)
+    note = entry.get("Notification", None)
+    subs = entry.get("Subscribers", None)
+    if not isinstance(note, dict) or not isinstance(subs, list):
+        print("MALFORMED")
+        sys.exit(0)
+    try:
+        threshold = note.get("Threshold", None)
+        if isinstance(threshold, float) and threshold.is_integer():
+            threshold = int(threshold)
+        key = (note.get("NotificationType", ""), note.get("ComparisonOperator", ""),
+               threshold, note.get("ThresholdType", ""))
+    except Exception:
+        print("MALFORMED")
+        sys.exit(0)
+    if key not in want or key in seen:
+        print("NOTIFICATION_MISMATCH")
+        sys.exit(0)
+    if len(subs) != 1:
+        print("SUBSCRIBER_MISMATCH")
+        sys.exit(0)
+    sub = subs[0]
+    if not isinstance(sub, dict):
+        print("MALFORMED")
+        sys.exit(0)
+    if sub.get("SubscriptionType", "") != "SNS" or sub.get("Address", "") != expected_topic:
+        print("SUBSCRIBER_MISMATCH")
+        sys.exit(0)
+    seen.add(key)
+if seen == want:
+    print("NOTIFICATIONS_OK")
+else:
+    print("NOTIFICATION_MISMATCH")
+PYEOF
+)" || { rm -f "$NOTIF_JSON"; echo "foundation budget notifications unreadable, project spend monitoring UNVERIFIED." >&2; phase_failed "$PHASE"; }
+  rm -f "$NOTIF_JSON"
+  NOTIF_PROOF="$(printf '%s' "$NOTIF_PROOF" | tr -d '[:space:]')"
+  [ "$NOTIF_PROOF" = "NOTIFICATIONS_OK" ] || { echo "refused: foundation budget notifications are not exactly ACTUAL 80 plus FORECASTED 100 to the owned topic, project spend monitoring UNVERIFIED." >&2; phase_failed "$PHASE"; }
+  echo "Verified foundation budget alerts: ACTUAL 80 plus FORECASTED 100 to the owned topic, notifications only, never a hard cap."
+}
+
 check_foundation_params() {
   if ! python3 - "$FOUNDATION_PARAMETERS_FILE" <<'PYEOF'
 import json, sys
@@ -1029,27 +1179,27 @@ PYEOF
 }
 
 check_sns_exact_gate() {
-  TOPIC_ARN="$(prereq_stack_resource "$FOUNDATION_STACK_NAME" BudgetTopic 2>"$TMP_ERR")" || { echo "foundation topic lookup failed, no paid prereqs started." >&2; phase_failed prereqs; }
+  TOPIC_ARN="$(prereq_stack_resource "$FOUNDATION_STACK_NAME" BudgetTopic 2>"$TMP_ERR")" || { echo "foundation topic lookup failed, no paid phase started." >&2; phase_failed "$PHASE"; }
   TOPIC_ARN="$(printf '%s' "$TOPIC_ARN" | tr -d '[:space:]')"
-  [ -n "$TOPIC_ARN" ] && [ "$TOPIC_ARN" != "None" ] || { echo "refused: foundation topic ARN missing, no paid prereqs started." >&2; phase_failed prereqs; }
+  [ -n "$TOPIC_ARN" ] && [ "$TOPIC_ARN" != "None" ] || { echo "refused: foundation topic ARN missing, no paid phase started." >&2; phase_failed "$PHASE"; }
   case "$TOPIC_ARN" in
     arn:aws:sns:*:*:*) ;;
-    *) echo "refused: foundation topic ARN is malformed, no paid prereqs started." >&2; phase_failed prereqs ;;
+    *) echo "refused: foundation topic ARN is malformed, no paid phase started." >&2; phase_failed "$PHASE" ;;
   esac
   TOPIC_COLONS="$(printf '%s' "$TOPIC_ARN" | tr -cd ':' | wc -c)"
-  [ "$TOPIC_COLONS" -eq 5 ] || { echo "refused: foundation topic ARN is malformed, no paid prereqs started." >&2; phase_failed prereqs; }
-  [ "$(printf '%s' "$TOPIC_ARN" | cut -d: -f3)" = "sns" ] || { echo "refused: foundation topic ARN is malformed, no paid prereqs started." >&2; phase_failed prereqs; }
+  [ "$TOPIC_COLONS" -eq 5 ] || { echo "refused: foundation topic ARN is malformed, no paid phase started." >&2; phase_failed "$PHASE"; }
+  [ "$(printf '%s' "$TOPIC_ARN" | cut -d: -f3)" = "sns" ] || { echo "refused: foundation topic ARN is malformed, no paid phase started." >&2; phase_failed "$PHASE"; }
   TOPIC_REGION="$(printf '%s' "$TOPIC_ARN" | cut -d: -f4)"
   TOPIC_ACCOUNT="$(printf '%s' "$TOPIC_ARN" | cut -d: -f5)"
-  [ "$TOPIC_REGION" = "$EXPECTED_REGION" ] || { echo "refused: foundation topic region mismatch, no paid prereqs started." >&2; phase_failed prereqs; }
-  [ "$TOPIC_ACCOUNT" = "$EXPECTED_ACCOUNT" ] || { echo "refused: foundation topic account mismatch, no paid prereqs started." >&2; phase_failed prereqs; }
+  [ "$TOPIC_REGION" = "$EXPECTED_REGION" ] || { echo "refused: foundation topic region mismatch, no paid phase started." >&2; phase_failed "$PHASE"; }
+  [ "$TOPIC_ACCOUNT" = "$EXPECTED_ACCOUNT" ] || { echo "refused: foundation topic account mismatch, no paid phase started." >&2; phase_failed "$PHASE"; }
   SNS_JSON="$(mktemp /tmp/launchcrew-sns-XXXXXX)"
   if ! "$AWS_BIN" sns list-subscriptions-by-topic --topic-arn "$TOPIC_ARN" --region "$EXPECTED_REGION" --output json >"$SNS_JSON" 2>"$TMP_ERR"; then
     rm -f "$SNS_JSON"
     ERR="$(cat "$TMP_ERR" 2>/dev/null || true)"
-    echo "SNS subscription read failed, no paid prereqs started." >&2
+    echo "SNS subscription read failed, no paid phase started." >&2
     if is_auth_error "$ERR"; then echo "authorization or API failure, not absence." >&2; fi
-    phase_failed prereqs
+    phase_failed "$PHASE"
   fi
   SNS_PROOF="$(python3 - "$SNS_JSON" "$FOUNDATION_PARAMETERS_FILE" "$TOPIC_ARN" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" 2>/dev/null <<'PYEOF'
 import json, sys
@@ -1138,18 +1288,133 @@ elif pending_expected:
 else:
     print("NO_EXACT")
 PYEOF
-)" || { rm -f "$SNS_JSON"; echo "SNS subscription proof unreadable, no paid prereqs started." >&2; phase_failed prereqs; }
+)" || { rm -f "$SNS_JSON"; echo "SNS subscription proof unreadable, no paid phase started." >&2; phase_failed "$PHASE"; }
   rm -f "$SNS_JSON"
   SNS_PROOF="$(printf '%s' "$SNS_PROOF" | tr -d '[:space:]')"
   case "$SNS_PROOF" in
     EXACT_OK) echo "Verified exact confirmed budget email subscription on the owned topic" ;;
-    EMPTY_EMAIL) echo "refused: approved notify value is empty, no subscription exists, no paid prereqs started." >&2; phase_failed prereqs ;;
-    EMPTY|PENDING|NO_EXACT) echo "refused: no confirmed exact budget email subscription, confirm the approved address before paid prereqs, no change made." >&2; phase_failed prereqs ;;
-    DUPLICATE) echo "refused: duplicate budget email subscriptions, status ambiguous, no change made." >&2; phase_failed prereqs ;;
-    AMBIGUOUS) echo "refused: ambiguous budget subscriptions with extra confirmed entries, no change made." >&2; phase_failed prereqs ;;
-    WRONG) echo "refused: confirmed subscription is not the approved exact endpoint and protocol, no change made." >&2; phase_failed prereqs ;;
-    *) echo "refused: SNS subscription status unreadable, treated as not confirmed, no change made." >&2; phase_failed prereqs ;;
+    EMPTY_EMAIL) echo "refused: approved notify value is empty, no subscription exists, no paid phase started." >&2; phase_failed "$PHASE" ;;
+    EMPTY|PENDING|NO_EXACT) echo "refused: no confirmed exact budget email subscription, confirm the approved address before paid phases, no change made." >&2; phase_failed "$PHASE" ;;
+    DUPLICATE) echo "refused: duplicate budget email subscriptions, status ambiguous, no change made." >&2; phase_failed "$PHASE" ;;
+    AMBIGUOUS) echo "refused: ambiguous budget subscriptions with extra confirmed entries, no change made." >&2; phase_failed "$PHASE" ;;
+    WRONG) echo "refused: confirmed subscription is not the approved exact endpoint and protocol, no change made." >&2; phase_failed "$PHASE" ;;
+    *) echo "refused: SNS subscription status unreadable, treated as not confirmed, no change made." >&2; phase_failed "$PHASE" ;;
   esac
+}
+
+# Paid gates for every spending phase, read-only and fail-closed. They verify
+# the owned foundation stack tags and COMPLETE status, the exact foundation
+# budget filter plus alert thresholds, the exact confirmed SNS subscription,
+# and the foundation parameters file. CE Active and the Nov 9 expiry guard
+# already ran globally before any paid phase. The app stack owns no budget.
+check_paid_gates() {
+  PAID_LABEL="$1"
+  check_foundation_stack
+  if [ "$FOUNDATION_EXISTS" -eq 0 ]; then
+    echo "refused: foundation stack absent, deploy --phase foundation to COMPLETE first, no paid phase started." >&2
+    phase_failed "$PAID_LABEL"
+  fi
+  case "$FOUNDATION_STATUS" in
+    CREATE_COMPLETE|UPDATE_COMPLETE) echo "Verified owned foundation $FOUNDATION_STATUS before paid phase $PAID_LABEL" ;;
+    *) echo "refused: foundation stack status is $FOUNDATION_STATUS, required CREATE_COMPLETE or UPDATE_COMPLETE before paid phase $PAID_LABEL." >&2; phase_failed "$PAID_LABEL" ;;
+  esac
+  check_foundation_params
+  check_foundation_budget_filter
+  check_foundation_notifications
+  check_sns_exact_gate
+  echo "Paid gates verified for $PAID_LABEL: owned foundation COMPLETE, exact budget filter plus alerts, exact confirmed SNS, Project Active, expiry guard passed."
+}
+
+# Read-only prereqs readiness for --phase all, never a deploy. It verifies
+# the owned prereqs stack tags and COMPLETE status, the four owned secret
+# metadata records, and the exact ISSUED certificate with export enabled.
+# A PENDING_VALIDATION cert stops as PENDING with no ready claim and no
+# receipt write; the explicit --phase prereqs run owns the receipt step.
+# Any other non-ISSUED status refuses without a ready claim.
+check_prereqs_readiness() {
+  check_prereqs_stack
+  if [ "$PREREQS_EXISTS" -eq 0 ]; then
+    echo "refused: prereqs stack absent, run explicit --phase prereqs to COMPLETE first, no ready claim." >&2
+    phase_failed all
+  fi
+  case "$PREREQS_STATUS" in
+    CREATE_COMPLETE|UPDATE_COMPLETE) echo "Verified owned prereqs $PREREQS_STATUS before app phases" ;;
+    *_IN_PROGRESS) echo "Prereqs stack $PREREQS_STATUS in progress, PENDING not ready, rerun --phase prereqs to resume read-only." >&2; phase_failed all ;;
+    *) echo "refused: prereqs stack status is $PREREQS_STATUS, explicit review required, no ready claim." >&2; phase_failed all ;;
+  esac
+  READY_MASTER="$(prereq_stack_resource "$PREREQS_STACK_NAME" MasterSecret 2>"$TMP_ERR")" || { echo "prereqs master secret lookup failed, no ready claim." >&2; phase_failed all; }
+  READY_RUNTIME="$(prereq_stack_resource "$PREREQS_STACK_NAME" RuntimeSecret 2>"$TMP_ERR")" || { echo "prereqs runtime secret lookup failed, no ready claim." >&2; phase_failed all; }
+  READY_MIGRATION="$(prereq_stack_resource "$PREREQS_STACK_NAME" MigrationSecret 2>"$TMP_ERR")" || { echo "prereqs migration secret lookup failed, no ready claim." >&2; phase_failed all; }
+  READY_TLS="$(prereq_stack_resource "$PREREQS_STACK_NAME" TlsSecret 2>"$TMP_ERR")" || { echo "prereqs TLS secret lookup failed, no ready claim." >&2; phase_failed all; }
+  READY_CERT="$(prereq_stack_resource "$PREREQS_STACK_NAME" DemoCertificate 2>"$TMP_ERR")" || { echo "prereqs certificate lookup failed, no ready claim." >&2; phase_failed all; }
+  READY_MASTER="$(printf '%s' "$READY_MASTER" | tr -d '[:space:]')"
+  READY_RUNTIME="$(printf '%s' "$READY_RUNTIME" | tr -d '[:space:]')"
+  READY_MIGRATION="$(printf '%s' "$READY_MIGRATION" | tr -d '[:space:]')"
+  READY_TLS="$(printf '%s' "$READY_TLS" | tr -d '[:space:]')"
+  READY_CERT="$(printf '%s' "$READY_CERT" | tr -d '[:space:]')"
+  [ "$READY_MASTER" = "$MASTER_SECRET_ARN" ] || { echo "refused: prereqs master secret does not equal the validated CLI ARN, no ready claim." >&2; phase_failed all; }
+  [ "$READY_RUNTIME" = "$RUNTIME_SECRET_ARN" ] || { echo "refused: prereqs runtime secret does not equal the validated CLI ARN, no ready claim." >&2; phase_failed all; }
+  [ "$READY_MIGRATION" = "$MIGRATION_SECRET_ARN" ] || { echo "refused: prereqs migration secret does not equal the validated CLI ARN, no ready claim." >&2; phase_failed all; }
+  [ "$READY_TLS" = "$TLS_SECRET_ARN" ] || { echo "refused: prereqs TLS secret does not equal the validated CLI ARN, no ready claim." >&2; phase_failed all; }
+  case "$READY_CERT" in
+    arn:aws:acm:*:*:certificate/*) ;;
+    *) echo "refused: prereqs certificate ARN is malformed, no ready claim." >&2; phase_failed all ;;
+  esac
+  [ "$(printf '%s' "$READY_CERT" | cut -d: -f4)" = "$EXPECTED_REGION" ] || { echo "refused: prereqs certificate region mismatch, no ready claim." >&2; phase_failed all; }
+  [ "$(printf '%s' "$READY_CERT" | cut -d: -f5)" = "$EXPECTED_ACCOUNT" ] || { echo "refused: prereqs certificate account mismatch, no ready claim." >&2; phase_failed all; }
+  READY_CERT_JSON="$(mktemp /tmp/launchcrew-ready-cert-XXXXXX)"
+  if ! "$AWS_BIN" acm describe-certificate --certificate-arn "$READY_CERT" --region "$EXPECTED_REGION" --output json >"$READY_CERT_JSON" 2>"$TMP_ERR"; then
+    rm -f "$READY_CERT_JSON"
+    echo "certificate state unreadable, no ready claim." >&2
+    phase_failed all
+  fi
+  READY_PARSED="$(python3 - "$READY_CERT_JSON" "$READY_CERT" 2>/dev/null <<'PYEOF'
+import json, sys
+cert_file, expected_arn = sys.argv[1:3]
+expected_domain = "launchcrew.summitsingh.com"
+try:
+    doc = json.load(open(cert_file))
+except Exception:
+    sys.exit(1)
+cert = doc.get("Certificate", {})
+if not isinstance(cert, dict):
+    cert = {}
+status = cert.get("Status", "") or ""
+domain = cert.get("DomainName", "") or ""
+returned_arn = cert.get("CertificateArn", "") or ""
+cert_type = cert.get("Type", "") or ""
+options = cert.get("Options", {}) or {}
+if not isinstance(options, dict):
+    options = {}
+export_flag = options.get("Export", "") or ""
+sans = cert.get("SubjectAlternativeNames", None)
+proof = "CERT_OK"
+if returned_arn != expected_arn:
+    proof = "ARN_MISMATCH"
+elif domain != expected_domain:
+    proof = "DOMAIN_MISMATCH"
+elif not isinstance(sans, list) or sans != [expected_domain]:
+    proof = "SAN_MISMATCH"
+elif cert_type != "AMAZON_ISSUED":
+    proof = "TYPE_MISMATCH"
+elif export_flag != "ENABLED":
+    proof = "EXPORT_MISMATCH"
+print("STATUS\t%s" % status)
+print("PROOF\t%s" % proof)
+PYEOF
+)" || { rm -f "$READY_CERT_JSON"; echo "certificate state unreadable, no ready claim." >&2; phase_failed all; }
+  rm -f "$READY_CERT_JSON"
+  READY_STATUS="$(printf '%s\n' "$READY_PARSED" | awk -F'\t' '$1=="STATUS"{print $2}')"
+  READY_PROOF="$(printf '%s\n' "$READY_PARSED" | awk -F'\t' '$1=="PROOF"{print $2}')"
+  READY_STATUS="$(printf '%s' "$READY_STATUS" | tr -d '[:space:]')"
+  READY_PROOF="$(printf '%s' "$READY_PROOF" | tr -d '[:space:]')"
+  [ "$READY_PROOF" = "CERT_OK" ] || { echo "refused: prereqs certificate identity mismatch ($READY_PROOF), no ready claim." >&2; phase_failed all; }
+  if [ "$READY_STATUS" = "PENDING_VALIDATION" ]; then
+    echo "Prereqs certificate PENDING_VALIDATION, PENDING not ready: add the CNAME via explicit --phase prereqs, then rerun. No ready claim." >&2
+    phase_failed all
+  fi
+  [ "$READY_STATUS" = "ISSUED" ] || { echo "refused: prereqs certificate status is $READY_STATUS, expected ISSUED, no ready claim." >&2; phase_failed all; }
+  echo "Prereqs ready: owned COMPLETE stack, four owned secret metadata records, ISSUED exportable cert."
 }
 
 prereqs_deploy() {
@@ -1195,7 +1460,8 @@ if [ "$PHASE" = "foundation" ]; then
   fi
   require_foundation_complete
   check_foundation_budget_filter
-  echo "Phase foundation complete: Budget plus SNS deployed, subscription confirmation stays an explicit operator step before paid prereqs"
+  check_foundation_notifications
+  echo "Phase foundation complete: Budget plus SNS deployed, subscription confirmation stays an explicit operator step before paid phases"
   mark_done foundation
 fi
 
@@ -1212,6 +1478,7 @@ if [ "$PHASE" = "prereqs" ]; then
   esac
   check_foundation_params
   check_foundation_budget_filter
+  check_foundation_notifications
   check_sns_exact_gate
   check_prereqs_stack
   prereqs_deploy
@@ -1501,6 +1768,17 @@ PYEOF
   fi
 fi
 
+# Full-chain readiness for --phase all, read-only before any app mutation.
+# Already issued owned stacks verify by readback; PENDING stops, not ready.
+if [ "$PHASE" = "all" ]; then
+  echo "Phase all readiness: owned foundation plus owned prereqs"
+  check_paid_gates all
+  check_prereqs_readiness
+fi
+case "$PHASE" in
+  infra|init|material|dbroles|migrate|enable) check_paid_gates "$PHASE" ;;
+esac
+
 if wants_phase infra; then
   echo "Phase infra: deploy stack"
   if [ "$STACK_EXISTS" -eq 1 ]; then
@@ -1548,14 +1826,57 @@ fetch_taskdef_json() {
     --region "$EXPECTED_REGION" --output json >"$FETCH_OUT" 2>"$TMP_ERR"
 }
 
+# Resolve the exact owned physical IAM role ARN for a stack logical role ID.
+# CloudFormation generates physical role names that differ from logical IDs,
+# so the logical ID is never treated as an ARN. The physical name comes from
+# describe-stack-resource, then iam get-role returns the exact ARN, which must
+# carry the expected account. Prints the ARN on stdout.
+resolve_role_arn() {
+  RESOLVE_LOGICAL="$1"
+  RESOLVE_NAME="$(stack_resource "$RESOLVE_LOGICAL" 2>"$TMP_ERR")" || return 1
+  RESOLVE_NAME="$(printf '%s' "$RESOLVE_NAME" | tr -d '[:space:]')"
+  [ -n "$RESOLVE_NAME" ] && [ "$RESOLVE_NAME" != "None" ] || return 1
+  RESOLVE_ARN=""
+  if ! RESOLVE_ARN="$("$AWS_BIN" iam get-role --role-name "$RESOLVE_NAME" --query Role.Arn --output text --region "$EXPECTED_REGION" 2>"$TMP_ERR")"; then
+    return 1
+  fi
+  RESOLVE_ARN="$(printf '%s' "$RESOLVE_ARN" | tr -d '[:space:]')"
+  case "$RESOLVE_ARN" in
+    "arn:aws:iam::$EXPECTED_ACCOUNT:role/"*) printf '%s' "$RESOLVE_ARN" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Resolve the exact owned physical IAM role name for a stack logical role ID.
+# Used for LAUNCHCREW_EXPECTED_ROLE, which carries the !Ref role name, not an
+# ARN. Prints the name on stdout.
+resolve_role_name() {
+  RESOLVE_LOGICAL="$1"
+  RESOLVE_NAME="$(stack_resource "$RESOLVE_LOGICAL" 2>"$TMP_ERR")" || return 1
+  RESOLVE_NAME="$(printf '%s' "$RESOLVE_NAME" | tr -d '[:space:]')"
+  [ -n "$RESOLVE_NAME" ] && [ "$RESOLVE_NAME" != "None" ] || return 1
+  printf '%s' "$RESOLVE_NAME"
+}
+
 # Require the owned task definition to inject exactly the validated secrets
-# and to run under the expected owned execution role. Each pair is
-# container.SECRETNAME=exact-ValueFrom. Inspection happens here, before any
-# one-off task starts and secret values are injected.
+# and to run under the exact owned physical execution and task roles. Each
+# pair is container.SECRETNAME=exact-ValueFrom. Both role ARNs resolve via
+# describe-stack-resource plus iam get-role, never from the logical ID.
+# Inspection happens here, before any one-off task starts and secret values
+# are injected.
 check_taskdef_binding() {
   BIND_LOGICAL="$1"
-  BIND_ROLE="$2"
-  shift 2
+  BIND_EXEC_LOGICAL="$2"
+  BIND_TASK_LOGICAL="$3"
+  shift 3
+  if ! BIND_EXEC_ARN="$(resolve_role_arn "$BIND_EXEC_LOGICAL")"; then
+    echo "$BIND_LOGICAL owned execution role $BIND_EXEC_LOGICAL unresolvable, secrets not tied to an owned task." >&2
+    phase_failed "$PHASE"
+  fi
+  if ! BIND_TASK_ARN="$(resolve_role_arn "$BIND_TASK_LOGICAL")"; then
+    echo "$BIND_LOGICAL owned task role $BIND_TASK_LOGICAL unresolvable, secrets not tied to an owned task." >&2
+    phase_failed "$PHASE"
+  fi
   BIND_JSON="$(mktemp /tmp/launchcrew-bind-XXXXXX)"
   if ! fetch_taskdef_json "$BIND_LOGICAL" "$BIND_JSON"; then
     rm -f "$BIND_JSON"
@@ -1564,7 +1885,7 @@ check_taskdef_binding() {
   fi
   BIND_EXPECTED="$(mktemp /tmp/launchcrew-expected-XXXXXX)"
   printf '%s\n' "$@" >"$BIND_EXPECTED"
-  BIND_PROOF="$(python3 - "$BIND_JSON" "$BIND_EXPECTED" "$EXPECTED_ACCOUNT" "$BIND_ROLE" 2>/dev/null <<'PYEOF'
+  BIND_PROOF="$(python3 - "$BIND_JSON" "$BIND_EXPECTED" "$BIND_EXEC_ARN" "$BIND_TASK_ARN" 2>/dev/null <<'PYEOF'
 import json, sys
 try:
     doc = json.load(open(sys.argv[1]))
@@ -1576,11 +1897,13 @@ for line in open(sys.argv[2]):
     if line and "=" in line:
         key, value = line.split("=", 1)
         wanted[key] = value
-account, role = sys.argv[3], sys.argv[4]
+exec_arn, task_arn = sys.argv[3], sys.argv[4]
 taskdef = doc.get("taskDefinition", doc)
-role_arn = "arn:aws:iam::%s:role/%s" % (account, role)
-if (taskdef.get("executionRoleArn", "") or "") != role_arn:
-    print("ROLE_MISMATCH")
+if (taskdef.get("executionRoleArn", "") or "") != exec_arn:
+    print("EXEC_ROLE_MISMATCH")
+    sys.exit(0)
+if (taskdef.get("taskRoleArn", "") or "") != task_arn:
+    print("TASK_ROLE_MISMATCH")
     sys.exit(0)
 actual = {}
 for container in taskdef.get("containerDefinitions", []) or []:
@@ -1605,8 +1928,152 @@ PYEOF
   rm -f "$BIND_JSON" "$BIND_EXPECTED"
   BIND_PROOF="$(printf '%s' "$BIND_PROOF" | tr -d '[:space:]')"
   case "$BIND_PROOF" in
-    OK) echo "Verified owned task definition secrets and execution role: $BIND_LOGICAL" ;;
+    OK) echo "Verified owned task definition secrets plus execution and task roles: $BIND_LOGICAL" ;;
     *) echo "refused: $BIND_LOGICAL task definition binding proof is $BIND_PROOF, secrets not proven owned." >&2; phase_failed "$PHASE" ;;
+  esac
+}
+
+# Read one parameter value from the app parameters file by key. Prints the
+# value or fails. Used for the ACM certificate ARN the SDK jobs expect.
+params_file_value() {
+  python3 - "$PARAMETERS_FILE" "$1" 2>/dev/null <<'PYEOF'
+import json, sys
+params_file, want = sys.argv[1:3]
+with open(params_file) as handle:
+    doc = json.load(handle)
+if isinstance(doc, dict) and "Parameters" in doc:
+    doc = doc["Parameters"]
+for entry in doc:
+    if isinstance(entry, dict) and entry.get("ParameterKey") == want:
+        value = entry.get("ParameterValue", "")
+        if isinstance(value, str) and value:
+            print(value)
+            sys.exit(0)
+sys.exit(1)
+PYEOF
+}
+
+# Resolve the exact owned RDS endpoint address read-only. The Database stack
+# resource yields the instance identifier, then rds describe-db-instances
+# returns the live Endpoint Address. Prints the address on stdout.
+owned_db_endpoint() {
+  DB_INSTANCE="$(stack_resource Database 2>"$TMP_ERR")" || return 1
+  DB_INSTANCE="$(printf '%s' "$DB_INSTANCE" | tr -d '[:space:]')"
+  [ -n "$DB_INSTANCE" ] && [ "$DB_INSTANCE" != "None" ] || return 1
+  DB_ENDPOINT=""
+  if ! DB_ENDPOINT="$("$AWS_BIN" rds describe-db-instances --db-instance-identifier "$DB_INSTANCE" --region "$EXPECTED_REGION" --query "DBInstances[0].Endpoint.Address" --output text 2>"$TMP_ERR")"; then
+    return 1
+  fi
+  DB_ENDPOINT="$(printf '%s' "$DB_ENDPOINT" | tr -d '[:space:]')"
+  [ -n "$DB_ENDPOINT" ] && [ "$DB_ENDPOINT" != "None" ] || return 1
+  printf '%s' "$DB_ENDPOINT"
+}
+
+# Require the owned SDK task definition to carry the exact job shape before
+# any RunTask: the verified bootstrap image, explicit EntryPoint to
+# populate_prereqs.py, exact Command flag, exact metadata env with zero
+# injected Secrets entries, and the exact owned physical execution and task
+# roles. Args: taskdef logical, exec role logical, task role logical,
+# container name, command flag (--populate or --verify-material).
+check_sdk_taskdef() {
+  SDK_LOGICAL="$1"
+  SDK_EXEC_LOGICAL="$2"
+  SDK_TASK_LOGICAL="$3"
+  SDK_CONTAINER="$4"
+  SDK_COMMAND="$5"
+  if ! SDK_EXEC_ARN="$(resolve_role_arn "$SDK_EXEC_LOGICAL")"; then
+    echo "$SDK_LOGICAL owned execution role $SDK_EXEC_LOGICAL unresolvable, SDK job not proven owned." >&2
+    phase_failed "$PHASE"
+  fi
+  if ! SDK_TASK_ARN="$(resolve_role_arn "$SDK_TASK_LOGICAL")"; then
+    echo "$SDK_LOGICAL owned task role $SDK_TASK_LOGICAL unresolvable, SDK job not proven owned." >&2
+    phase_failed "$PHASE"
+  fi
+  if ! SDK_TASK_NAME="$(resolve_role_name "$SDK_TASK_LOGICAL")"; then
+    echo "$SDK_LOGICAL owned task role name unresolvable, SDK job not proven owned." >&2
+    phase_failed "$PHASE"
+  fi
+  if ! SDK_CERT_ARN="$(params_file_value AcmCertificateArn)"; then
+    echo "$SDK_LOGICAL certificate ARN missing from parameters file, SDK job not proven owned." >&2
+    phase_failed "$PHASE"
+  fi
+  SDK_CERT_ARN="$(printf '%s' "$SDK_CERT_ARN" | tr -d '[:space:]')"
+  if ! SDK_DB_HOST="$(owned_db_endpoint)"; then
+    echo "$SDK_LOGICAL owned database endpoint unreadable, SDK job not proven owned." >&2
+    phase_failed "$PHASE"
+  fi
+  SDK_JSON="$(mktemp /tmp/launchcrew-sdk-XXXXXX)"
+  if ! fetch_taskdef_json "$SDK_LOGICAL" "$SDK_JSON"; then
+    rm -f "$SDK_JSON"
+    echo "$SDK_LOGICAL task definition missing, SDK job not tied to an owned task." >&2
+    phase_failed "$PHASE"
+  fi
+  SDK_PROOF="$(python3 - "$SDK_JSON" "$SDK_CONTAINER" "$BOOTSTRAP_IMAGE" "$SDK_COMMAND" "$SDK_EXEC_ARN" "$SDK_TASK_ARN" "$SDK_TASK_NAME" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$MASTER_SECRET_ARN" "$RUNTIME_SECRET_ARN" "$MIGRATION_SECRET_ARN" "$TLS_SECRET_ARN" "$SDK_CERT_ARN" "$SDK_DB_HOST" 2>/dev/null <<'PYEOF'
+import json, sys
+(doc_file, want_container, want_image, want_command, want_exec, want_task,
+ want_role_name, want_account, want_region, want_master, want_runtime,
+ want_migration, want_tls, want_cert, want_host) = sys.argv[1:16]
+try:
+    doc = json.load(open(doc_file))
+except Exception:
+    sys.exit(1)
+taskdef = doc.get("taskDefinition", doc)
+if (taskdef.get("executionRoleArn", "") or "") != want_exec:
+    print("EXEC_ROLE_MISMATCH")
+    sys.exit(0)
+if (taskdef.get("taskRoleArn", "") or "") != want_task:
+    print("TASK_ROLE_MISMATCH")
+    sys.exit(0)
+containers = taskdef.get("containerDefinitions", []) or []
+target = None
+for container in containers:
+    if (container.get("name", "") or "") == want_container:
+        target = container
+        break
+if target is None:
+    print("MISSING_CONTAINER")
+    sys.exit(0)
+if (target.get("image", "") or "") != want_image:
+    print("IMAGE_MISMATCH")
+    sys.exit(0)
+if (target.get("entryPoint", None) or []) != ["/opt/venv/bin/python", "/app/scripts/populate_prereqs.py"]:
+    print("ENTRYPOINT_MISMATCH")
+    sys.exit(0)
+if (target.get("command", None) or []) != [want_command]:
+    print("COMMAND_MISMATCH")
+    sys.exit(0)
+if target.get("secrets", None):
+    print("SECRET_INJECTION_REFUSED")
+    sys.exit(0)
+env = {}
+for item in target.get("environment", []) or []:
+    if isinstance(item, dict) and item.get("name"):
+        env[item.get("name")] = item.get("value", "")
+want_env = {
+    "LAUNCHCREW_EXPECTED_ACCOUNT": want_account,
+    "LAUNCHCREW_EXPECTED_REGION": want_region,
+    "LAUNCHCREW_EXPECTED_ROLE": want_role_name,
+    "LAUNCHCREW_MASTER_SECRET_ARN": want_master,
+    "LAUNCHCREW_RUNTIME_SECRET_ARN": want_runtime,
+    "LAUNCHCREW_MIGRATION_SECRET_ARN": want_migration,
+    "LAUNCHCREW_TLS_SECRET_ARN": want_tls,
+    "LAUNCHCREW_CERT_ARN": want_cert,
+    "LAUNCHCREW_DB_HOST": want_host,
+    "LAUNCHCREW_DB_TLS_MODE": "verify-full",
+    "DATABASE_SSL_ROOTCERT": "/app/rds-ca-bundle.pem",
+}
+for key in sorted(want_env):
+    if env.get(key, None) != want_env[key]:
+        print("ENV_MISMATCH:" + key)
+        sys.exit(0)
+print("OK")
+PYEOF
+)" || { rm -f "$SDK_JSON"; echo "$SDK_LOGICAL SDK task definition unreadable, not treated as matching." >&2; phase_failed "$PHASE"; }
+  rm -f "$SDK_JSON"
+  SDK_PROOF="$(printf '%s' "$SDK_PROOF" | tr -d '[:space:]')"
+  case "$SDK_PROOF" in
+    OK) echo "Verified owned SDK task definition image, EntryPoint, Command, env, roles, zero secret injection: $SDK_LOGICAL" ;;
+    *) echo "refused: $SDK_LOGICAL SDK task definition proof is $SDK_PROOF, job not proven owned." >&2; phase_failed "$PHASE" ;;
   esac
 }
 
@@ -1704,47 +2171,234 @@ if wants_phase images; then
   verify_image "$WEB_PROXY_IMAGE" launchcrew-web-proxy WebTaskDefinition web-proxy web-proxy
   verify_image "$MIGRATION_IMAGE" launchcrew-migration MigrationTaskDefinition migration migration
   verify_image "$BOOTSTRAP_IMAGE" launchcrew-bootstrap BootstrapTaskDefinition bootstrap-db-roles bootstrap
-  check_taskdef_binding ApiTaskDefinition ApiExecutionRole \
+  verify_image "$BOOTSTRAP_IMAGE" launchcrew-bootstrap SdkInitTaskDefinition sdk-init bootstrap-sdk-init
+  verify_image "$BOOTSTRAP_IMAGE" launchcrew-bootstrap SdkMaterialTaskDefinition sdk-material bootstrap-sdk-material
+  check_taskdef_binding ApiTaskDefinition ApiExecutionRole ApiTaskRole \
     "api.DATABASE_URL=$RUNTIME_SECRET_ARN:database-url::" \
     "api.TLS_CERT_B64=$TLS_SECRET_ARN:tls-cert-b64::" \
     "api.TLS_KEY_B64=$TLS_SECRET_ARN:tls-key-b64::"
-  check_taskdef_binding WebTaskDefinition WebExecutionRole \
+  check_taskdef_binding WebTaskDefinition WebExecutionRole WebTaskRole \
     "web-proxy.TLS_CERT_B64=$TLS_SECRET_ARN:tls-cert-b64::" \
     "web-proxy.TLS_KEY_B64=$TLS_SECRET_ARN:tls-key-b64::"
   mark_done images
   echo "Phase images complete: five verified images, no placeholder running"
 fi
+# Write one private mode 600 metadata-only launch journal atomically. Args:
+# journal path, outcome token, task ARN or empty. The journal carries only
+# launch metadata (stack, phase, label, taskdef, cluster, client token,
+# timestamp, outcome, adopted task ARN); no secret value ever appears here.
+write_launch_journal() {
+  JOURNAL_PATH="$1"
+  JOURNAL_OUTCOME="$2"
+  JOURNAL_TASK="$3"
+  (umask 077; python3 - "$JOURNAL_PATH" "$STACK_NAME" "$TASK_PHASE" "$TASK_LABEL" "$TASKDEF_LOGICAL" "$TASKDEF_ARN" "$CLUSTER_NAME" "$CLIENT_TOKEN" "$EXPECTED_REGION" "$EXPECTED_ACCOUNT" "$JOURNAL_OUTCOME" "$JOURNAL_TASK" <<'PYEOF'
+import json, os, sys, tempfile
+(path, stack, phase, label, taskdef_logical, taskdef_arn, cluster,
+ token, region, account, outcome, task_arn) = sys.argv[1:13]
+if os.path.islink(path):
+    raise SystemExit("refused: journal path is a symlink")
+try:
+    import datetime
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+except Exception:
+    stamp = ""
+doc = {
+    "version": 1,
+    "stack": stack,
+    "phase": phase,
+    "label": label,
+    "taskdef_logical": taskdef_logical,
+    "taskdef_arn": taskdef_arn,
+    "cluster": cluster,
+    "client_token": token,
+    "region": region,
+    "account": account,
+    "outcome": outcome,
+    "task_arn": task_arn,
+    "updated_utc": stamp,
+}
+directory = os.path.dirname(os.path.abspath(path)) or "."
+fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".launch-journal-")
+try:
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as out:
+        json.dump(doc, out, indent=2, sort_keys=True)
+        out.write("\n")
+    os.replace(tmp_path, path)
+    os.chmod(path, 0o600)
+except Exception:
+    try:
+        os.unlink(tmp_path)
+    except Exception:
+        pass
+    raise
+PYEOF
+) || { echo "$TASK_LABEL launch journal write failed, no launch attempted." >&2; phase_failed "$TASK_PHASE"; }
+  chmod 600 "$JOURNAL_PATH" 2>/dev/null || { echo "$TASK_LABEL launch journal mode failed, no launch attempted." >&2; phase_failed "$TASK_PHASE"; }
+}
+
+# Read-only recovery for an ambiguously failed run-task call, before any
+# rerun. It lists tasks by the exact owned cluster plus the exact client
+# token as startedBy, then describes the single candidate and verifies the
+# exact owned cluster, token, and taskdef identity. Zero tasks confirms
+# nothing started with this token; one verified task is adopted; multiple,
+# mismatched, or unreadable tasks stop as ambiguous with no terminal status
+# manufactured and no automatic resend. Sets RECOVERED_ARN on adoption.
+recover_ambiguous_launch() {
+  RECOVER_JSON="$(mktemp /tmp/launchcrew-recover-XXXXXX)"
+  if ! "$AWS_BIN" ecs list-tasks --cluster "$CLUSTER_NAME" --started-by "$CLIENT_TOKEN" --region "$EXPECTED_REGION" --output json >"$RECOVER_JSON" 2>"$TMP_ERR"; then
+    rm -f "$RECOVER_JSON"
+    write_launch_journal "$JOURNAL_FILE" "ambiguous_list_failed" ""
+    echo "refused: $TASK_LABEL launch ambiguous and recovery list failed; a task may have started. No automatic resend. Inspect journal $JOURNAL_FILE and rerun manually after review." >&2
+    phase_failed "$TASK_PHASE"
+  fi
+  RECOVER_ARNS="$(python3 - "$RECOVER_JSON" 2>/dev/null <<'PYEOF'
+import json, sys
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+arns = doc.get("taskArns", None)
+if not isinstance(arns, list):
+    print("MALFORMED")
+    sys.exit(0)
+clean = [a for a in arns if isinstance(a, str) and a and a != "None"]
+if not clean:
+    print("NONE")
+else:
+    for arn in clean:
+        print(arn)
+PYEOF
+)" || { rm -f "$RECOVER_JSON"; write_launch_journal "$JOURNAL_FILE" "ambiguous_list_unreadable" ""; echo "refused: $TASK_LABEL launch ambiguous and recovery list unreadable; a task may have started. No automatic resend. Inspect journal $JOURNAL_FILE and rerun manually after review." >&2; phase_failed "$TASK_PHASE"; }
+  rm -f "$RECOVER_JSON"
+  case "$RECOVER_ARNS" in
+    NONE|"")
+      write_launch_journal "$JOURNAL_FILE" "confirmed_none" ""
+      echo "refused: $TASK_LABEL run-task failed and recovery confirms zero tasks for this token; nothing started with token $CLIENT_TOKEN. No automatic resend; rerun manually with a new token after review." >&2
+      phase_failed "$TASK_PHASE" ;;
+    MALFORMED)
+      write_launch_journal "$JOURNAL_FILE" "ambiguous_list_unreadable" ""
+      echo "refused: $TASK_LABEL launch ambiguous and recovery list malformed; a task may have started. No automatic resend. Inspect journal $JOURNAL_FILE and rerun manually after review." >&2
+      phase_failed "$TASK_PHASE" ;;
+  esac
+  RECOVER_COUNT="$(printf '%s\n' "$RECOVER_ARNS" | grep -c . 2>/dev/null || echo 0)"
+  RECOVER_COUNT="$(printf '%s' "$RECOVER_COUNT" | tr -d '[:space:]')"
+  if [ "$RECOVER_COUNT" != "1" ]; then
+    write_launch_journal "$JOURNAL_FILE" "ambiguous_multiple" ""
+    echo "refused: $TASK_LABEL launch ambiguous with $RECOVER_COUNT tasks for this token; manual review required. No automatic resend. Inspect journal $JOURNAL_FILE." >&2
+    phase_failed "$TASK_PHASE"
+  fi
+  RECOVERED_ARN="$(printf '%s' "$RECOVER_ARNS" | tr -d '[:space:]')"
+  RECOVER_DESC="$(mktemp /tmp/launchcrew-recover-desc-XXXXXX)"
+  if ! "$AWS_BIN" ecs describe-tasks --cluster "$CLUSTER_NAME" --tasks "$RECOVERED_ARN" --region "$EXPECTED_REGION" --output json >"$RECOVER_DESC" 2>"$TMP_ERR"; then
+    rm -f "$RECOVER_DESC"
+    write_launch_journal "$JOURNAL_FILE" "ambiguous_describe_failed" "$RECOVERED_ARN"
+    echo "refused: $TASK_LABEL launch ambiguous and recovery describe failed; task state unknown. No automatic resend. Inspect journal $JOURNAL_FILE." >&2
+    phase_failed "$TASK_PHASE"
+  fi
+  EXPECTED_CLUSTER_ARN="arn:aws:ecs:$EXPECTED_REGION:$EXPECTED_ACCOUNT:cluster/$CLUSTER_NAME"
+  RECOVER_PROOF="$(python3 - "$RECOVER_DESC" "$RECOVERED_ARN" "$TASKDEF_ARN" "$EXPECTED_CLUSTER_ARN" "$CLIENT_TOKEN" 2>/dev/null <<'PYEOF'
+import json, sys
+desc_file, want_arn, want_taskdef, want_cluster, want_token = sys.argv[1:6]
+try:
+    doc = json.load(open(desc_file))
+except Exception:
+    sys.exit(1)
+tasks = doc.get("tasks", [])
+failures = doc.get("failures", [])
+if failures or len(tasks) != 1:
+    print("UNCONFIRMED")
+    sys.exit(0)
+task = tasks[0]
+if (task.get("taskArn", "") or "") != want_arn:
+    print("WRONG_TASK_ARN")
+    sys.exit(0)
+if (task.get("taskDefinitionArn", "") or "") != want_taskdef:
+    print("WRONG_TASKDEF")
+    sys.exit(0)
+if (task.get("clusterArn", "") or "") != want_cluster:
+    print("WRONG_CLUSTER")
+    sys.exit(0)
+if (task.get("startedBy", "") or "") != want_token:
+    print("WRONG_TOKEN")
+    sys.exit(0)
+print("ADOPTED")
+PYEOF
+)" || { rm -f "$RECOVER_DESC"; write_launch_journal "$JOURNAL_FILE" "ambiguous_describe_unreadable" "$RECOVERED_ARN"; echo "refused: $TASK_LABEL launch ambiguous and recovery describe unreadable; task state unknown. No automatic resend. Inspect journal $JOURNAL_FILE." >&2; phase_failed "$TASK_PHASE"; }
+  rm -f "$RECOVER_DESC"
+  RECOVER_PROOF="$(printf '%s' "$RECOVER_PROOF" | tr -d '[:space:]')"
+  if [ "$RECOVER_PROOF" != "ADOPTED" ]; then
+    write_launch_journal "$JOURNAL_FILE" "ambiguous_unconfirmed" "$RECOVERED_ARN"
+    echo "refused: $TASK_LABEL launch ambiguous and recovery proof is $RECOVER_PROOF; manual review required. No automatic resend. Inspect journal $JOURNAL_FILE." >&2
+    phase_failed "$TASK_PHASE"
+  fi
+  write_launch_journal "$JOURNAL_FILE" "adopted" "$RECOVERED_ARN"
+  echo "$TASK_LABEL ambiguous launch recovered exactly one owned task, adopted for terminal proof: $RECOVERED_ARN"
+}
+
 # Run one isolated one-off task and prove its terminal state. Jobs run in the
 # public subnets with a public IP under a group with no inbound rules: the
 # database stays private, and the job can actually reach ECR, Secrets Manager,
-# and Logs. A run-task response with an empty task ARN or reported failures is
-# refused; the wait exit code is only a hint; proof is STOPPED lastStatus, the
-# exact expected task ARN and task definition ARN, the exact owned cluster
-# ARN, and exit code 0 with STOPPED from every expected essential container,
-# never the first container alone. The real DescribeTasks container model
-# carries no essential flag, so the expected essential set comes from the
-# owned task definition document, where an omitted essential key defaults to
-# true. Proof codes are bounded tokens only, never raw reasons or traces.
+# and Logs. A private mode 600 metadata-only journal is written before the
+# run-task call with a bounded client token; the call carries that token as
+# both client-token and startedBy with no automatic resend. A run-task
+# response with an empty task ARN or reported failures is ambiguous, never
+# claimed as nothing started: read-only recovery by exact owned cluster,
+# token, and taskdef identity confirms zero, adopts exactly one, or stops on
+# multiple or unconfirmed tasks. The wait exit code is only a hint; proof is
+# STOPPED lastStatus, the exact expected task ARN and task definition ARN,
+# the exact owned cluster ARN, and exit code 0 with STOPPED from every
+# expected essential container, never the first container alone. The real
+# DescribeTasks container model carries no essential flag, so the expected
+# essential set comes from the owned task definition document, where an
+# omitted essential key defaults to true. Proof codes are bounded tokens
+# only, never raw reasons or traces. No secret value appears in argv, files,
+# logs, or the journal.
 run_one_off_task() {
   TASKDEF_LOGICAL="$1"
   TASK_LABEL="$2"
   TASK_PHASE="$3"
-  TASKDEF_ARN="$(stack_resource "$TASKDEF_LOGICAL" 2>"$TMP_ERR")" || { echo "$TASK_LABEL task definition lookup failed, no task started." >&2; phase_failed "$TASK_PHASE"; }
+  TASKDEF_ARN="$(stack_resource "$TASKDEF_LOGICAL" 2>"$TMP_ERR")" || { echo "$TASK_LABEL task definition lookup failed before any launch, no run attempted." >&2; phase_failed "$TASK_PHASE"; }
   TASKDEF_ARN="$(printf '%s' "$TASKDEF_ARN" | tr -d '[:space:]')"
-  [ -n "$TASKDEF_ARN" ] && [ "$TASKDEF_ARN" != "None" ] || { echo "$TASK_LABEL task definition missing, no task started." >&2; phase_failed "$TASK_PHASE"; }
-  SUBNET_A="$(stack_resource PublicSubnetA 2>"$TMP_ERR")" || { echo "subnet lookup failed, no task started." >&2; phase_failed "$TASK_PHASE"; }
-  SUBNET_B="$(stack_resource PublicSubnetB 2>"$TMP_ERR")" || { echo "subnet lookup failed, no task started." >&2; phase_failed "$TASK_PHASE"; }
-  JOB_SG="$(stack_resource JobSecurityGroup 2>"$TMP_ERR")" || { echo "security group lookup failed, no task started." >&2; phase_failed "$TASK_PHASE"; }
+  [ -n "$TASKDEF_ARN" ] && [ "$TASKDEF_ARN" != "None" ] || { echo "$TASK_LABEL task definition missing before any launch, no run attempted." >&2; phase_failed "$TASK_PHASE"; }
+  SUBNET_A="$(stack_resource PublicSubnetA 2>"$TMP_ERR")" || { echo "subnet lookup failed before any launch, no run attempted." >&2; phase_failed "$TASK_PHASE"; }
+  SUBNET_B="$(stack_resource PublicSubnetB 2>"$TMP_ERR")" || { echo "subnet lookup failed before any launch, no run attempted." >&2; phase_failed "$TASK_PHASE"; }
+  JOB_SG="$(stack_resource JobSecurityGroup 2>"$TMP_ERR")" || { echo "security group lookup failed before any launch, no run attempted." >&2; phase_failed "$TASK_PHASE"; }
   SUBNET_A="$(printf '%s' "$SUBNET_A" | tr -d '[:space:]')"
   SUBNET_B="$(printf '%s' "$SUBNET_B" | tr -d '[:space:]')"
   JOB_SG="$(printf '%s' "$JOB_SG" | tr -d '[:space:]')"
-  TASK_JSON="$(mktemp /tmp/launchcrew-run-XXXXXX)"
-  if ! "$AWS_BIN" ecs run-task --cluster "$CLUSTER_NAME" --task"-definition" "$TASKDEF_ARN" --launch-type FARGATE --network-configuration "awsvpcConfiguration={subnets=[$SUBNET_A,$SUBNET_B],securityGroups=[$JOB_SG],assignPublicIp=ENABLED}" --region "$EXPECTED_REGION" --output json >"$TASK_JSON" 2>"$TMP_ERR"; then
-    rm -f "$TASK_JSON"
-    echo "$TASK_LABEL run-task failed, nothing started beyond this point." >&2
-    phase_failed "$TASK_PHASE"
+  [ -n "$LAUNCH_JOURNAL_DIR" ] || { echo "$TASK_LABEL journal directory missing, no launch attempted." >&2; phase_failed "$TASK_PHASE"; }
+  if [ -L "$LAUNCH_JOURNAL_DIR" ]; then echo "$TASK_LABEL journal directory is a symlink, no launch attempted." >&2; phase_failed "$TASK_PHASE"; fi
+  if [ ! -d "$LAUNCH_JOURNAL_DIR" ]; then
+    if ! mkdir -p "$LAUNCH_JOURNAL_DIR" 2>/dev/null; then echo "$TASK_LABEL journal directory unwritable, no launch attempted." >&2; phase_failed "$TASK_PHASE"; fi
   fi
-  TASK_ARN="$(python3 - "$TASK_JSON" 2>/dev/null <<'PYEOF'
+  if ! CLIENT_TOKEN="$(python3 - 2>/dev/null <<'PYEOF'
+import uuid
+print("lc-" + uuid.uuid4().hex[:30])
+PYEOF
+)"; then echo "$TASK_LABEL client token generation failed, no launch attempted." >&2; phase_failed "$TASK_PHASE"; fi
+  CLIENT_TOKEN="$(printf '%s' "$CLIENT_TOKEN" | tr -d '[:space:]')"
+  case "$CLIENT_TOKEN" in
+    lc-??????????????????????????????) ;;
+    *) echo "$TASK_LABEL client token malformed, no launch attempted." >&2; phase_failed "$TASK_PHASE" ;;
+  esac
+  JOURNAL_FILE="$LAUNCH_JOURNAL_DIR/launchcrew-$STACK_NAME-$TASK_PHASE-$TASK_LABEL-$CLIENT_TOKEN.json"
+  write_launch_journal "$JOURNAL_FILE" "pending" ""
+  echo "$TASK_LABEL launch journal written before run-task: $JOURNAL_FILE"
+  TASK_JSON="$(mktemp /tmp/launchcrew-run-XXXXXX)"
+  RUN_OK=1
+  if ! "$AWS_BIN" ecs run-task --cluster "$CLUSTER_NAME" --task"-definition" "$TASKDEF_ARN" --launch-type FARGATE --network-configuration "awsvpcConfiguration={subnets=[$SUBNET_A,$SUBNET_B],securityGroups=[$JOB_SG],assignPublicIp=ENABLED}" --client-token "$CLIENT_TOKEN" --started-by "$CLIENT_TOKEN" --region "$EXPECTED_REGION" --output json >"$TASK_JSON" 2>"$TMP_ERR"; then
+    RUN_OK=0
+  fi
+  if [ "$RUN_OK" -eq 0 ]; then
+    rm -f "$TASK_JSON"
+    write_launch_journal "$JOURNAL_FILE" "ambiguous_call_failed" ""
+    echo "$TASK_LABEL run-task call failed; launch is ambiguous, recovering read-only before any claim." >&2
+    RECOVERED_ARN=""
+    recover_ambiguous_launch
+    TASK_ARN="$RECOVERED_ARN"
+  else
+    TASK_ARN="$(python3 - "$TASK_JSON" 2>/dev/null <<'PYEOF'
 import json, sys
 try:
     doc = json.load(open(sys.argv[1]))
@@ -1756,18 +2410,27 @@ if failures:
     print("FAILURES")
 elif not tasks:
     print("EMPTY")
+elif len(tasks) != 1:
+    print("MULTIPLE")
 else:
     arn = (tasks[0] or {}).get("taskArn", "")
     print(arn if arn and arn != "None" else "EMPTY")
 PYEOF
-)" || { rm -f "$TASK_JSON"; echo "$TASK_LABEL run-task response unreadable, not treated as started." >&2; phase_failed "$TASK_PHASE"; }
-  rm -f "$TASK_JSON"
-  TASK_ARN="$(printf '%s' "$TASK_ARN" | tr -d '[:space:]')"
-  case "$TASK_ARN" in
-    FAILURES) echo "refused: $TASK_LABEL run-task reported failures, no task to wait on." >&2; phase_failed "$TASK_PHASE" ;;
-    EMPTY|"") echo "refused: $TASK_LABEL run-task returned no task ARN, nothing started." >&2; phase_failed "$TASK_PHASE" ;;
-  esac
-  echo "$TASK_LABEL task started in isolated public subnets with no inbound: $TASK_ARN"
+)" || TASK_ARN="UNREADABLE"
+    rm -f "$TASK_JSON"
+    TASK_ARN="$(printf '%s' "$TASK_ARN" | tr -d '[:space:]')"
+    case "$TASK_ARN" in
+      FAILURES|EMPTY|MULTIPLE|UNREADABLE|"")
+        write_launch_journal "$JOURNAL_FILE" "ambiguous_response" ""
+        echo "$TASK_LABEL run-task response is ${TASK_ARN:-empty}; launch is ambiguous, recovering read-only before any claim." >&2
+        RECOVERED_ARN=""
+        recover_ambiguous_launch
+        TASK_ARN="$RECOVERED_ARN" ;;
+      *)
+        write_launch_journal "$JOURNAL_FILE" "started" "$TASK_ARN"
+        echo "$TASK_LABEL task started in isolated public subnets with no inbound: $TASK_ARN" ;;
+    esac
+  fi
   if ! "$AWS_BIN" ecs wait tasks-stopped --cluster "$CLUSTER_NAME" --tasks "$TASK_ARN" --region "$EXPECTED_REGION" 2>"$TMP_ERR"; then
     ERR="$(cat "$TMP_ERR" 2>/dev/null || true)"
     echo "$TASK_LABEL wait reported, verifying terminal state before any claim." >&2
@@ -1840,15 +2503,47 @@ PYEOF
   rm -f "$DESCRIBE_JSON" "$TASKDEF_JSON"
   TASK_PROOF="$(printf '%s' "$TASK_PROOF" | tr -d '[:space:]')"
   case "$TASK_PROOF" in
-    OK) echo "$TASK_LABEL terminal proof: STOPPED, exact owned task and cluster ARNs, every expected container exit 0" ;;
+    OK)
+      write_launch_journal "$JOURNAL_FILE" "complete" "$TASK_ARN"
+      echo "$TASK_LABEL terminal proof: STOPPED, exact owned task and cluster ARNs, every expected container exit 0" ;;
     *) echo "refused: $TASK_LABEL terminal proof is $TASK_PROOF, later phases not started." >&2; phase_failed "$TASK_PHASE" ;;
   esac
 }
 
+if wants_phase init; then
+  echo "Phase init: isolated SDK populate task writes canonical prereq materials in task memory"
+  [ "$STACK_EXISTS" -eq 1 ] || { echo "refused: no stack owns the SDK init task; run --phase infra first" >&2; phase_failed init; }
+  require_stack_complete init
+  case "$COMPLETED" in
+    *images*) echo "Init precondition: images already proved in this run" ;;
+    *)
+      verify_image "$BOOTSTRAP_IMAGE" launchcrew-bootstrap BootstrapTaskDefinition bootstrap-db-roles bootstrap
+      echo "Init precondition: bootstrap image re-proved published with digest" ;;
+  esac
+  check_sdk_taskdef SdkInitTaskDefinition SdkInitExecutionRole SdkInitTaskRole sdk-init --populate
+  run_one_off_task SdkInitTaskDefinition sdk-init init
+  mark_done init
+  echo "Phase init complete: canonical runtime, migration, and TLS materials populated"
+fi
+
+if wants_phase material; then
+  echo "Phase material: isolated SDK material verify task, read-only with zero Put and zero Export"
+  [ "$STACK_EXISTS" -eq 1 ] || { echo "refused: no stack owns the SDK material task; run --phase infra first" >&2; phase_failed material; }
+  require_stack_complete material
+  case "$COMPLETED" in
+    *init*) echo "Material precondition: init already proved in this run" ;;
+    *) echo "Material precondition: init materials assumed from a previous run, verified read-only here" ;;
+  esac
+  check_sdk_taskdef SdkMaterialTaskDefinition SdkMaterialExecutionRole SdkMaterialTaskRole sdk-material --verify-material
+  run_one_off_task SdkMaterialTaskDefinition sdk-material material
+  mark_done material
+  echo "Phase material complete: runtime, migration, and TLS materials verified read-only"
+fi
+
 if wants_phase dbroles; then
   echo "Phase dbroles: isolated bootstrap task binds role passwords in task memory only"
   [ "$STACK_EXISTS" -eq 1 ] || { echo "refused: no stack owns the bootstrap task; run --phase infra first" >&2; phase_failed dbroles; }
-  check_taskdef_binding BootstrapTaskDefinition BootstrapExecutionRole \
+  check_taskdef_binding BootstrapTaskDefinition BootstrapExecutionRole BootstrapTaskRole \
     "bootstrap-db-roles.MASTER_DB_PASSWORD=$MASTER_SECRET_ARN:password::" \
     "bootstrap-db-roles.RUNTIME_DB_URL=$RUNTIME_SECRET_ARN:database-url::" \
     "bootstrap-db-roles.MIGRATION_DB_URL=$MIGRATION_SECRET_ARN:database-url::"
@@ -1860,9 +2555,9 @@ fi
 if wants_phase migrate; then
   echo "Phase migrate: single one-off migration task, the only schema change path"
   [ "$STACK_EXISTS" -eq 1 ] || { echo "refused: no stack owns the migration task; run --phase infra first" >&2; phase_failed migrate; }
-  check_taskdef_binding MigrationTaskDefinition MigrationExecutionRole \
+  check_taskdef_binding MigrationTaskDefinition MigrationExecutionRole MigrationTaskRole \
     "migration.DATABASE_URL=$MIGRATION_SECRET_ARN:database-url::"
-  check_taskdef_binding VerifyTaskDefinition VerifyExecutionRole \
+  check_taskdef_binding VerifyTaskDefinition VerifyExecutionRole VerifyTaskRole \
     "bootstrap-db-roles.RUNTIME_DB_URL=$RUNTIME_SECRET_ARN:database-url::"
   run_one_off_task MigrationTaskDefinition migration migrate
   echo "Phase migrate task STOPPED exit 0; running verify-mode schema and runtime-identity proof"
@@ -1873,64 +2568,19 @@ if wants_phase migrate; then
   echo "Phase migrate complete: migration STOPPED exit 0 with schema and runtime read-only proof"
 fi
 
-# Budget filter readback on enable, read-only and fail-closed. It never
-# activates a cost allocation tag and never changes billing. It requires the
-# owned DemoBudget FilterExpression to be exactly the template shape, Tags
-# Key Project with the single value LaunchCrew and the single MatchOption
-# EQUALS, because an unfiltered budget would count the whole account, extra
-# values would count other projects, and broader match options would widen
-# the scope. Legacy CostFilters or BudgetFilters entries are refused without
-# verified semantics, as are Or/And/Not wrappers and ambiguous responses.
-# Activation is a separate gate that already passed before any paid phase;
-# this readback only proves the filter, never cost data, never a hard cap:
-# filtered spend with no data or 0 is not proof of zero spend, spend starts
-# at infra, RDS, and ALB creation even at DesiredCount 0, and the manual
-# billing guard stays on the operator.
+# Foundation budget readiness on enable, read-only and fail-closed. The app
+# stack owns no budget: this re-reads the exact owned foundation budget
+# filter plus the exact ACTUAL 80 and FORECASTED 100 alert thresholds and
+# the exact confirmed SNS subscription. It never activates a cost allocation
+# tag and never changes billing. This readback only proves the filter and
+# the alert wiring, never cost data, never a hard cap: filtered spend with
+# no data or 0 is not proof of zero spend, spend starts at infra, RDS, and
+# ALB creation even at DesiredCount 0, and the manual billing guard stays on
+# the operator.
 check_budget_readiness() {
-  BUDGET_JSON="$(mktemp /tmp/launchcrew-budget-XXXXXX)"
-  if ! "$AWS_BIN" budgets describe-budget --account-id "$EXPECTED_ACCOUNT" --budget-name launchcrew-demo --output json >"$BUDGET_JSON" 2>"$TMP_ERR"; then
-    rm -f "$BUDGET_JSON"
-    ERR="$(cat "$TMP_ERR" 2>/dev/null || true)"
-    echo "budget readiness unreadable, project spend monitoring UNVERIFIED, no claim made." >&2
-    if is_auth_error "$ERR"; then
-      echo "authorization or API failure, not absence: budgets:DescribeBudget read permission is required." >&2
-    fi
-    phase_failed enable
-  fi
-  BUDGET_PROOF="$(python3 - "$BUDGET_JSON" 2>/dev/null <<'PYEOF'
-import json, sys
-try:
-    doc = json.load(open(sys.argv[1]))
-except Exception:
-    print("MALFORMED")
-    sys.exit(0)
-budget = doc.get("Budget", None)
-if not isinstance(budget, dict):
-    print("MALFORMED")
-    sys.exit(0)
-if "CostFilters" in budget or "BudgetFilters" in budget:
-    print("LEGACY")
-    sys.exit(0)
-expr = budget.get("FilterExpression", None)
-if not isinstance(expr, dict) or set(expr.keys()) != {"Tags"}:
-    print("FILTER_MISSING")
-    sys.exit(0)
-tags = expr.get("Tags", None)
-if not isinstance(tags, dict):
-    print("FILTER_MISSING")
-    sys.exit(0)
-if (tags.get("Key", "") == "Project"
-        and tags.get("Values", None) == ["LaunchCrew"]
-        and tags.get("MatchOptions", None) == ["EQUALS"]):
-    print("FILTER_OK")
-else:
-    print("FILTER_MISSING")
-PYEOF
-)" || { rm -f "$BUDGET_JSON"; echo "budget filter unreadable, project spend monitoring UNVERIFIED." >&2; phase_failed enable; }
-  rm -f "$BUDGET_JSON"
-  BUDGET_PROOF="$(printf '%s' "$BUDGET_PROOF" | tr -d '[:space:]')"
-  [ "$BUDGET_PROOF" = "FILTER_OK" ] || { echo "refused: DemoBudget lacks the exact Project=LaunchCrew EQUALS-only filter, project spend monitoring UNVERIFIED." >&2; phase_failed enable; }
-  echo "Verified DemoBudget filter: Tags Project=LaunchCrew EQUALS only, read back from live state."
+  check_foundation_budget_filter
+  check_foundation_notifications
+  check_sns_exact_gate
   echo "Budget readiness: activation already verified Active before paid phases; this script never activates tags."
   echo "Budget readiness: filtered spend with no data or 0 is NOT proof of zero spend and NOT a hard cap. Spend starts at infra, RDS, and ALB creation even at DesiredCount 0. Manual billing guard stays on the operator."
 }
@@ -1942,25 +2592,33 @@ if wants_phase enable; then
   check_budget_readiness
   # Resume guard: a standalone enable re-proves everything boot would rely
   # on, because nothing is assumed from memory. Refresh the full image
-  # digest and task definition ref proof, the owned secrets and execution
-  # role bindings including TLS material, and the runtime-only verify proof
-  # (expected head, runtime identity, rolled-back write, DDL refusal) before
-  # any deploy. Migration and provider work are never rerun here.
+  # digest and task definition ref proof, the owned secrets and role bindings
+  # including TLS material, the read-only material verify proof, and the
+  # runtime-only verify proof (expected head, runtime identity, rolled-back
+  # write, DDL refusal) before any deploy. Standalone enable never
+  # populates, exports, binds, or migrates.
   verify_image "$API_IMAGE" launchcrew-api ApiTaskDefinition api api
   verify_image "$WEB_IMAGE" launchcrew-web WebTaskDefinition web-app web
   verify_image "$WEB_PROXY_IMAGE" launchcrew-web-proxy WebTaskDefinition web-proxy web-proxy
   verify_image "$MIGRATION_IMAGE" launchcrew-migration MigrationTaskDefinition migration migration
   verify_image "$BOOTSTRAP_IMAGE" launchcrew-bootstrap BootstrapTaskDefinition bootstrap-db-roles bootstrap
-  check_taskdef_binding ApiTaskDefinition ApiExecutionRole \
+  verify_image "$BOOTSTRAP_IMAGE" launchcrew-bootstrap SdkInitTaskDefinition sdk-init bootstrap-sdk-init
+  verify_image "$BOOTSTRAP_IMAGE" launchcrew-bootstrap SdkMaterialTaskDefinition sdk-material bootstrap-sdk-material
+  check_taskdef_binding ApiTaskDefinition ApiExecutionRole ApiTaskRole \
     "api.DATABASE_URL=$RUNTIME_SECRET_ARN:database-url::" \
     "api.TLS_CERT_B64=$TLS_SECRET_ARN:tls-cert-b64::" \
     "api.TLS_KEY_B64=$TLS_SECRET_ARN:tls-key-b64::"
-  check_taskdef_binding WebTaskDefinition WebExecutionRole \
+  check_taskdef_binding WebTaskDefinition WebExecutionRole WebTaskRole \
     "web-proxy.TLS_CERT_B64=$TLS_SECRET_ARN:tls-cert-b64::" \
     "web-proxy.TLS_KEY_B64=$TLS_SECRET_ARN:tls-key-b64::"
-  check_taskdef_binding VerifyTaskDefinition VerifyExecutionRole \
+  check_taskdef_binding VerifyTaskDefinition VerifyExecutionRole VerifyTaskRole \
     "bootstrap-db-roles.RUNTIME_DB_URL=$RUNTIME_SECRET_ARN:database-url::"
-  echo "Enable precheck: all five owned task definition images, secrets, and execution roles match validated values"
+  check_sdk_taskdef SdkMaterialTaskDefinition SdkMaterialExecutionRole SdkMaterialTaskRole sdk-material --verify-material
+  echo "Enable precheck: all five owned task definition images, secrets, and owned roles match validated values, SDK material shape proven"
+  case "$COMPLETED" in
+    *material*) echo "Enable proof: material already proved verify in this run, no rerun" ;;
+    *) run_one_off_task SdkMaterialTaskDefinition sdk-material enable ;;
+  esac
   case "$COMPLETED" in
     *migrate*) echo "Enable proof: migrate already proved verify in this run, no rerun" ;;
     *) run_one_off_task VerifyTaskDefinition verify enable ;;
