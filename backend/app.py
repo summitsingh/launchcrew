@@ -141,8 +141,18 @@ class ModelUsage(BaseModel):
     wonder_attempts: int = 0
     token_counts: dict[str, int] = {}
     tokens_known: bool = False
-    data_mode: str = 'standard_no_train'
+    data_mode: str = 'unknown'
     data_mode_note: str = ''
+
+
+class ModelCapabilities(Strict):
+    spark_configured: bool = False
+    wonder_configured: bool = False
+    sam_configured: bool = False
+    spark_variant: Literal['standard', 'contributor', 'unknown', 'not_configured'] = 'not_configured'
+    wonder_variant: Literal['standard', 'unknown', 'not_configured'] = 'not_configured'
+    note: str = ('Key presence means configured only; it does not prove the API works, '
+                 'credits, or authorization. No live call is made here.')
 
 
 class Receipt(BaseModel):
@@ -263,6 +273,43 @@ def health() -> dict[str, str]:
 @app.get('/api/checker-policies', response_model=CheckerPoliciesOut)
 def checker_policies(actor: str = Depends(auth.actor)):
     return {'supported': describe_supported(), 'floor_note': FLOOR_NOTE, 'matching': MATCHING_NOTE}
+
+
+STANDARD_SPARK_IDS = frozenset({'muse-spark-1.3', 'muse-spark-1.2', 'muse-spark-1.1'})
+CONTRIBUTOR_SPARK_IDS = frozenset({'muse-spark-1.3-contributor', 'muse-spark-1.2-contributor'})
+STANDARD_WONDER_IDS = frozenset({'muse-wonder-1.0'})
+
+
+def _capability_snapshot():
+    import os
+    key = bool(os.environ.get('META_API_KEY', '').strip())
+    spark_raw = os.environ.get('META_MODEL', 'muse-spark-1.3').strip() if key else ''
+    wonder_raw = os.environ.get('META_WONDER_MODEL', '').strip() if key else ''
+    sam_raw = os.environ.get('LAUNCHCREW_SAM_DEMO_PHOTO', '').strip() if key else ''
+    if not key:
+        spark_variant: str = 'not_configured'
+    elif spark_raw in STANDARD_SPARK_IDS:
+        spark_variant = 'standard'
+    elif spark_raw in CONTRIBUTOR_SPARK_IDS:
+        spark_variant = 'contributor'
+    else:
+        spark_variant = 'unknown'
+    if not key or not wonder_raw:
+        wonder_variant: str = 'not_configured'
+    elif wonder_raw in STANDARD_WONDER_IDS:
+        wonder_variant = 'standard'
+    else:
+        wonder_variant = 'unknown'
+    return {'spark_configured': key,
+            'wonder_configured': bool(key and wonder_raw),
+            'sam_configured': bool(key and sam_raw),
+            'spark_variant': spark_variant,
+            'wonder_variant': wonder_variant}
+
+
+@app.get('/api/model-capabilities', response_model=ModelCapabilities)
+def model_capabilities(actor: str = Depends(auth.actor)):
+    return _capability_snapshot()
 
 
 @app.get('/api/agents', response_model=list[Profile])

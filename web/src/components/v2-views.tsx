@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { api, unwrap } from '@/lib/api';
 import { canApproveDay, canExportDay, memoryEditPayload } from '@/lib/v2';
+import { dataModeCopy } from '@/components/model-status';
 import type { components } from '@/lib/schema';
 
 type Receipt = components['schemas']['Receipt'];
@@ -135,7 +136,7 @@ export function ScoutFactsSection({ receipt }: { receipt: Receipt }) {
     <p className="hint">Demo risks are hypotheses for your review, never approved product facts.</p>
     {risks.length === 0 && <p className="hint">No stored risks on this receipt.</p>}
     <ul className="scout-list">{risks.map((risk, i) => <li key={i} className="scout-risk"><div className="scout-row"><span>{risk}</span><span className="tag">{risk.startsWith('Unverified model risk:') ? 'Unverified model hypothesis' : 'Demo risk, unverified'}</span></div></li>)}</ul>
-    <p className="hint">Model synthesis: {synthesized ? 'spark (optional Scout synthesis received)' : 'none, deterministic fallback'}{scout.model_note ? ` · ${scout.model_note}` : ''}{usage ? ` · Stored usage: ${usage.mode}, ${usage.spark_calls} Spark calls, model ${usage.model_used}.` : ' · Stored model usage unavailable on this receipt.'}</p>
+    <p className="hint">Model synthesis: {synthesized ? 'spark (optional Scout synthesis received)' : 'none, deterministic fallback'}{scout.model_note ? ` · ${scout.model_note}` : ''}{usage ? ` · Stored usage: ${usage.mode}, ${usage.spark_calls} Spark calls, model ${usage.model_used}. Data: ${dataModeCopy(usage)}.` : ' · Stored model usage unavailable on this receipt. Data: unknown.'}</p>
     {sourceLabels.length > 0 && <p className="hint">Fact sources on this receipt: {sourceLabels.join(', ')}.</p>}
   </section>;
 }

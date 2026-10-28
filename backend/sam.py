@@ -86,13 +86,13 @@ def verify_demo_photo(photo=None, *, enabled=False):
             raise ValueError('Demo photo required')
         deadline = monotonic() + 30
 
-        def send(endpoint, body, content_type):
+        def send(endpoint, body, content_type, accept):
             remaining = deadline - monotonic()
             if remaining <= 0:
                 raise TimeoutError()
             return urlopen(Request(os.environ.get('META_API_BASE_URL', 'https://api.meta.ai/v1').rstrip('/') + endpoint,
                                    data=body, headers={'Authorization': 'Bearer ' + key,
-                                                       'Content-Type': content_type, 'Accept': 'text/event-stream'}),
+                                                       'Content-Type': content_type, 'Accept': accept}),
                            timeout=remaining)
 
         boundary = 'launchcrew' + uuid4().hex
@@ -100,14 +100,14 @@ def verify_demo_photo(photo=None, *, enabled=False):
         body = (f'--{boundary}\r\nContent-Disposition: form-data; name="purpose"\r\n\r\nuser_data\r\n'
                 f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="demo{path.suffix.lower()}"\r\n'
                 f'Content-Type: {mime}\r\n\r\n').encode() + path.read_bytes() + f'\r\n--{boundary}--\r\n'.encode()
-        with send('/files', body, 'multipart/form-data; boundary=' + boundary) as response:
+        with send('/files', body, 'multipart/form-data; boundary=' + boundary, 'application/json') as response:
             file_id = json.load(response)['id']
         if not isinstance(file_id, str) or not file_id:
             raise ValueError('Missing file id')
         payload = {'model': 'sam-3.1', 'input': [{'type': 'message', 'role': 'user', 'content': [
             {'type': 'input_text', 'text': 'jacket'}, {'type': 'input_image', 'file_id': file_id}]}],
             'stream': True, 'metadata': {'mask_encoding': 'lossless'}}
-        with send('/responses', json.dumps(payload).encode(), 'application/json') as response:
+        with send('/responses', json.dumps(payload).encode(), 'application/json', 'text/event-stream') as response:
             def bounded_lines():
                 for line in response:
                     if monotonic() >= deadline:

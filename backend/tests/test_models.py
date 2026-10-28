@@ -228,7 +228,8 @@ def test_non_model_routes_do_not_call_transport(client, monkeypatch):
             ('post', '/api/runs/' + run['run_id'] + '/approve', {}),
             ('post', '/api/runs/' + run['run_id'] + '/export', {}),
             ('get', '/api/auth/status', None), ('post', '/api/auth/logout', {}),
-            ('get', '/api/auth/google/login', None), ('get', '/api/auth/facebook/callback', None)]:
+            ('get', '/api/auth/google/login', None), ('get', '/api/auth/facebook/callback', None),
+            ('get', '/api/model-capabilities', None), ('get', '/api/checker-policies', None)]:
             response = getattr(client, method)(path, **({'json': body} if body is not None else {}))
             assert response.status_code in (200, 201, 404)
     network.assert_not_called()

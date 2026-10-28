@@ -22,3 +22,17 @@ runs
 **/*.py[cod]
 **/.env
 **/.env.*
+facts/demo_photos/
+facts/demo_photos/**
+**/demo_photos/
+**/demo_photos/**
+facts/**/*.jpg
+facts/**/*.jpeg
+facts/**/*.png
+facts/**/*.heic
+facts/**/*.webp
+**/*.jpg
+**/*.jpeg
+**/*.png
+**/*.heic
+**/*.webp

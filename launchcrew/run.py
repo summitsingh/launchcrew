@@ -72,23 +72,77 @@ def make_draft(claims):
     return {'post': text, 'email': text, 'claims': list(claims)}
 
 
+STANDARD_SPARK_MODELS = frozenset({'muse-spark-1.3', 'muse-spark-1.2', 'muse-spark-1.1'})
+CONTRIBUTOR_SPARK_MODELS = frozenset({'muse-spark-1.3-contributor', 'muse-spark-1.2-contributor'})
+STANDARD_WONDER_MODELS = frozenset({'muse-wonder-1.0'})
+
+
+def _sanitized_model_name(name):
+    if isinstance(name, str) and (name in STANDARD_SPARK_MODELS
+                                  or name in CONTRIBUTOR_SPARK_MODELS
+                                  or name in STANDARD_WONDER_MODELS):
+        return name
+    return 'unknown'
+
+
+def _attempt_variant(kind, result):
+    if not result.get('attempted', False):
+        return None
+    if result.get('mode') == 'spark':
+        name = result.get('model_used')
+    else:
+        name = result.get('attempted_model', result.get('model_used'))
+    if kind == 'wonder':
+        return 'standard' if name in STANDARD_WONDER_MODELS else 'unknown'
+    if name in STANDARD_SPARK_MODELS or name in STANDARD_WONDER_MODELS:
+        return 'standard'
+    if name in CONTRIBUTOR_SPARK_MODELS:
+        return 'contributor'
+    return 'unknown'
+
+
+def _data_mode_for_attempts(attempted_variants):
+    if not attempted_variants:
+        return ('not_sent', 'No model request was attempted on this run, so nothing was sent.')
+    unique = set(attempted_variants)
+    if unique == {'standard'}:
+        return ('standard_no_train',
+                'Standard model requests only on this run. Official pricing and rate limits '
+                'document Standard as not used for training. Applies to actual requests on this '
+                'run, not to current configuration.')
+    if unique == {'contributor'}:
+        return ('contributor',
+                'Contributor model requests on this run. No training guarantee is claimed.')
+    if unique == {'standard', 'contributor'}:
+        return ('mixed',
+                'Mixed Standard and Contributor requests on this run. No single training guarantee applies.')
+    return ('unknown', 'Unknown model variant on this run. No training guarantee is claimed.')
+
+
 def model_usage(attempts):
     """Only allowlisted metadata can reach persistent receipts."""
     successful = [r for _, r in attempts if r['mode'] == 'spark']
-    attempted = [r for _, r in attempts if r.get('attempted', False)]
+    attempted_pairs = [(kind, r) for kind, r in attempts if r.get('attempted', False)]
+    attempted = [r for _, r in attempted_pairs]
     errors = [r['error_type'] for _, r in attempts if r.get('error_type')]
+    variants = [_attempt_variant(kind, r) for kind, r in attempted_pairs]
+    variants = [v for v in variants if v is not None]
+    data_mode, data_mode_note = _data_mode_for_attempts(variants)
+    sanitized_successful = [_sanitized_model_name(r.get('model_used')) for r in successful]
+    first_model = successful[0].get('model_used') if successful else 'none'
+    first_model = first_model if first_model == 'none' or _sanitized_model_name(first_model) != 'unknown' else 'unknown'
     return {'spark_calls': sum(int(r.get('attempted', False)) for kind, r in attempts if kind == 'spark'),
             'spark_mode': 'spark' if successful else 'deterministic_fallback',
             'mode': 'spark' if successful else (errors[0] if errors else 'deterministic_fallback'),
-            'model_used': successful[0]['model_used'] if successful else 'none',
-            'models_used': sorted({r['model_used'] for r in successful}),
+            'model_used': first_model,
+            'models_used': sorted(set(sanitized_successful)),
             'error_types': errors, 'wonder_used': any(kind == 'wonder' and r['mode'] == 'spark' for kind, r in attempts),
             'wonder_attempts': sum(int(r.get('attempted', False)) for kind, r in attempts if kind == 'wonder'),
             'token_counts': {name: sum(r.get('usage', {}).get(name, 0) for _, r in attempts)
                              for name in ('prompt_tokens', 'completion_tokens', 'total_tokens')},
             'tokens_known': bool(attempted) and all('total_tokens' in r.get('usage', {}) for r in attempted),
-            'data_mode': 'standard_no_train',
-            'data_mode_note': 'Stated intent for user data, not a verified API setting.'}
+            'data_mode': data_mode,
+            'data_mode_note': data_mode_note}
 
 
 def _snapshot_examples(profile):

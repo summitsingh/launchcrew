@@ -613,11 +613,59 @@
         "title": "MemoryItemOut",
         "type": "object"
       },
+      "ModelCapabilities": {
+        "additionalProperties": false,
+        "properties": {
+          "note": {
+            "default": "Key presence means configured only; it does not prove the API works, credits, or authorization. No live call is made here.",
+            "title": "Note",
+            "type": "string"
+          },
+          "sam_configured": {
+            "default": false,
+            "title": "Sam Configured",
+            "type": "boolean"
+          },
+          "spark_configured": {
+            "default": false,
+            "title": "Spark Configured",
+            "type": "boolean"
+          },
+          "spark_variant": {
+            "default": "not_configured",
+            "enum": [
+              "standard",
+              "contributor",
+              "unknown",
+              "not_configured"
+            ],
+            "title": "Spark Variant",
+            "type": "string"
+          },
+          "wonder_configured": {
+            "default": false,
+            "title": "Wonder Configured",
+            "type": "boolean"
+          },
+          "wonder_variant": {
+            "default": "not_configured",
+            "enum": [
+              "standard",
+              "unknown",
+              "not_configured"
+            ],
+            "title": "Wonder Variant",
+            "type": "string"
+          }
+        },
+        "title": "ModelCapabilities",
+        "type": "object"
+      },
       "ModelUsage": {
         "additionalProperties": true,
         "properties": {
           "data_mode": {
-            "default": "standard_no_train",
+            "default": "unknown",
             "title": "Data Mode",
             "type": "string"
           },
@@ -2764,6 +2812,24 @@
           }
         },
         "summary": "Edit Memory"
+      }
+    },
+    "/api/model-capabilities": {
+      "get": {
+        "operationId": "model_capabilities_api_model_capabilities_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelCapabilities"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Model Capabilities"
       }
     },
     "/api/queue": {

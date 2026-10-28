@@ -299,6 +299,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/model-capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Model Capabilities */
+        get: operations["model_capabilities_api_model_capabilities_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/queue": {
         parameters: {
             query?: never;
@@ -664,11 +681,46 @@ export interface components {
              */
             updated_at: string;
         };
+        /** ModelCapabilities */
+        ModelCapabilities: {
+            /**
+             * Note
+             * @default Key presence means configured only; it does not prove the API works, credits, or authorization. No live call is made here.
+             */
+            note: string;
+            /**
+             * Sam Configured
+             * @default false
+             */
+            sam_configured: boolean;
+            /**
+             * Spark Configured
+             * @default false
+             */
+            spark_configured: boolean;
+            /**
+             * Spark Variant
+             * @default not_configured
+             * @enum {string}
+             */
+            spark_variant: "standard" | "contributor" | "unknown" | "not_configured";
+            /**
+             * Wonder Configured
+             * @default false
+             */
+            wonder_configured: boolean;
+            /**
+             * Wonder Variant
+             * @default not_configured
+             * @enum {string}
+             */
+            wonder_variant: "standard" | "unknown" | "not_configured";
+        };
         /** ModelUsage */
         ModelUsage: {
             /**
              * Data Mode
-             * @default standard_no_train
+             * @default unknown
              */
             data_mode: string;
             /**
@@ -1817,6 +1869,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    model_capabilities_api_model_capabilities_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelCapabilities"];
                 };
             };
         };
