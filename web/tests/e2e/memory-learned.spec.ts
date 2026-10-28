@@ -33,7 +33,18 @@ test('learned memory rules and multiline crew survive the desk', async ({ page, 
   await expect(await page.getByLabel('Expertise', { exact: true }).evaluate((node) => node.tagName)).toBe('TEXTAREA');
   await page.getByLabel('Personality', { exact: true }).fill('Grounded editor\nSecond line of judgment');
   await page.getByLabel('Expertise', { exact: true }).fill('Austin commuter voice\nPlain words only');
+  // The clone below reads the saved server profile, so wait for this edit's
+  // actual successful PUT (not the earlier create's identical status text).
+  const makerPut = page.waitForResponse(
+    (response) => response.url().endsWith(`/api/agents/${agentName}`) && response.request().method() === 'PUT',
+  );
   await page.getByRole('button', { name: 'Save agent', exact: true }).click();
+  expect((await makerPut).status()).toBe(200);
+  const persistedMaker = (await (await request.get(`/api/agents/${agentName}`)).json()) as {
+    personality: string; expertise: string;
+  };
+  expect(persistedMaker.personality).toBe('Grounded editor\nSecond line of judgment');
+  expect(persistedMaker.expertise).toBe('Austin commuter voice\nPlain words only');
   await page.getByLabel('Clone with a new name').fill(`${agentName}Copy`);
   await page.getByRole('button', { name: 'Clone agent', exact: true }).click();
   await expect(page.getByRole('status').first()).toContainText(`Cloned agent ${agentName}Copy`);
@@ -47,7 +58,18 @@ test('learned memory rules and multiline crew survive the desk', async ({ page, 
   await expect(page.getByRole('status')).toContainText(`Saved agent ${guardName}`);
   await page.getByLabel('Decision rules (one per line)').fill('Block price claims');
   await page.getByLabel('Veto scope (one per line)').fill('price_claims');
+  // Later runs enforce this guard's saved policy, so wait for this edit's
+  // actual successful PUT before leaving the builder.
+  const guardPut = page.waitForResponse(
+    (response) => response.url().endsWith(`/api/agents/${guardName}`) && response.request().method() === 'PUT',
+  );
   await page.getByRole('button', { name: 'Save agent', exact: true }).click();
+  expect((await guardPut).status()).toBe(200);
+  const persistedGuard = (await (await request.get(`/api/agents/${guardName}`)).json()) as {
+    decision_rules: string[]; veto_scope: string[];
+  };
+  expect(persistedGuard.decision_rules).toContain('Block price claims');
+  expect(persistedGuard.veto_scope).toContain('price_claims');
 
   // Policy-triggered run: no unsupported seed, the $49 claim is real.
   await page.getByRole('button', { name: 'Launch brief', exact: false }).click();
