@@ -14,7 +14,7 @@ describe('v2 review controls', () => {
     expect(canApproveDay(day)).toBe(true);
     expect(card(day)).toContain('Approve for export');
     expect(card(day)).not.toContain('Export pack');
-    for (const unsafe of [{ ...day, checker_v2_blocked_count: 1 }, { ...day, checker_v2_blocked_count: null }, { ...day, status: 'failed' }]) {
+    for (const unsafe of [{ ...day, checker_v2_blocked_count: 1 }, { ...day, checker_v2_blocked_count: null }, { ...day, status: 'failed' }, { ...day, status: 'running' }, { ...day, status: 'unknown' }]) {
       expect(canApproveDay(unsafe)).toBe(false);
       expect(card(unsafe)).not.toContain('Approve for export');
     }
@@ -26,6 +26,10 @@ describe('v2 review controls', () => {
     expect(canExportDay(approved)).toBe(true);
     expect(card(approved)).toContain('Export pack');
     expect(card(approved)).not.toContain('Approve for export');
+    for (const bad of [{ ...approved, status: 'failed' }, { ...approved, status: 'running' }, { ...approved, status: 'unknown' }]) {
+      expect(canExportDay(bad)).toBe(false);
+      expect(card(bad)).not.toContain('Export pack');
+    }
   });
   it('renders both review views without a live backend', () => {
     const html = renderToStaticMarkup(<QueryClientProvider client={new QueryClient()}><ReplayView queue={[]} /><CampaignView profiles={[]} /></QueryClientProvider>);

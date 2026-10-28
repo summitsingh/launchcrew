@@ -11,8 +11,8 @@ export function memoryEditPayload(title: string, contentJson: string): Pick<comp
 }
 
 export function canApproveDay(day: Day) {
-  return day.approval_state === 'pending_approval' && day.status !== 'failed' && day.checker_v2_blocked_count === 0;
+  return day.status === 'completed' && day.approval_state === 'pending_approval' && day.checker_v2_blocked_count === 0;
 }
 export function canExportDay(day: Day) {
-  return day.approval_state === 'approved_for_export';
+  return day.status === 'completed' && day.approval_state === 'approved_for_export';
 }
