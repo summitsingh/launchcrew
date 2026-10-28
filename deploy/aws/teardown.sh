@@ -50,6 +50,8 @@ if [ "$CONFIRM" -ne 1 ]; then
   echo "To run for real, after separate authorization:"
   echo "  $0 --confirm --stack-arn <exact-stack-arn> --expected-account <12-digit> --expected-region <region>"
   echo "Steps when confirmed: verify caller account, verify Project LaunchCrew and Environment demo tags, delete-stack, wait stack-delete-complete, verify terminal absence."
+  echo "Terminal proof accepts describe-stacks not-found or a DELETE_COMPLETE record for the exact stack ID. A DELETE_COMPLETE record is then checked for DELETE_SKIPPED retained resources."
+  echo "DELETE_SKIPPED or retained resources are reported as incomplete cleanup, distinct from complete resource cleanup."
   echo "No prefix deletion. No shared or outside-stack deletion."
   remaining_scope
   exit 0
@@ -156,6 +158,32 @@ fi
 
 if STACK_STATUS="$("$AWS_BIN" cloudformation describe-stacks --stack-name "$STACK_ARN" --region "$EXPECTED_REGION" --query "Stacks[0].StackStatus" --output text 2>"$TMP_ERR")"; then
   STACK_STATUS="$(printf '%s' "$STACK_STATUS" | tr -d '[:space:]')"
+  if [ "$STACK_STATUS" = "DELETE_COMPLETE" ]; then
+    echo "Stack deleted, verified by DELETE_COMPLETE status for exact stack ID: $STACK_ARN"
+    if SKIPPED="$("$AWS_BIN" cloudformation describe-stack-resources --stack-name "$STACK_ARN" --region "$EXPECTED_REGION" --query "StackResources[?ResourceStatus=='DELETE_SKIPPED'].LogicalResourceId" --output text 2>"$TMP_ERR")"; then
+      SKIPPED_TRIMMED="$(printf '%s' "$SKIPPED" | tr -d '[:space:]')"
+      if [ -n "$SKIPPED_TRIMMED" ] && [ "$SKIPPED_TRIMMED" != "None" ]; then
+        echo "DELETE_SKIPPED retained resources remain, not complete cleanup: $SKIPPED" >&2
+        echo "Inspect the exact stack ARN for retained resources. No prefix deletion is attempted." >&2
+        remaining_scope
+        exit 1
+      fi
+      echo "No DELETE_SKIPPED resources. Complete resource cleanup for stack scope."
+      remaining_scope
+      exit 0
+    else
+      ERR="$(cat "$TMP_ERR" 2>/dev/null || true)"
+      if is_not_found "$ERR"; then
+        echo "No DELETE_SKIPPED resources. Complete resource cleanup for stack scope."
+        remaining_scope
+        exit 0
+      fi
+      echo "retained resource check failed, complete cleanup not proven: $ERR" >&2
+      if is_auth_error "$ERR"; then echo "authorization or API failure, not absence" >&2; fi
+      remaining_scope
+      exit 1
+    fi
+  fi
   echo "stack still present with status $STACK_STATUS, cleanup incomplete" >&2
   echo "Inspect the exact stack ARN in the console for retained resources. No prefix deletion is attempted." >&2
   remaining_scope
@@ -164,6 +192,7 @@ else
   ERR="$(cat "$TMP_ERR" 2>/dev/null || true)"
   if is_not_found "$ERR"; then
     echo "Stack absent, verified by describe-stacks not-found: $STACK_ARN"
+    echo "No DELETE_SKIPPED resources. Complete resource cleanup for stack scope."
     remaining_scope
     exit 0
   fi

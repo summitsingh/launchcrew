@@ -44,9 +44,13 @@ def call_spark_strict_json(system_prompt, user_prompt, schema_hint):
     return _call(system_prompt, user_prompt, schema_hint, os.environ.get('META_MODEL', 'muse-spark-1.3'))
 
 
-def spark_for_agent(agent, task_text):
+def spark_for_agent(agent, task_text, stage=None):
     prompt = '\n'.join([agent['name'], agent['role'], agent['personality'],
                         *agent['decision_rules'], agent['expertise']])
+    if stage is not None:
+        is_scout = (stage == 'Scout')
+    else:
+        is_scout = (agent.get('name') == 'Scout')
     schema = ({'facts_used': ['approved claim'], 'risks': ['demo risk, no statistics']}
-              if agent['name'] == 'Scout' else {'claims': ['copy approved claims exactly']})
+              if is_scout else {'claims': ['copy approved claims exactly']})
     return call_spark_strict_json(prompt, task_text, schema)

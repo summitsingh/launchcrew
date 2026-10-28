@@ -1,10 +1,12 @@
 """LaunchCrew demo pipeline. Local drafts and receipts only."""
 import argparse
+import copy
 import json
 import os
 from pathlib import Path
 
 from . import agents
+from .checker_policies import effective_policies, parse_checker_agent, policy_blocks, policy_reason
 from .facts import check_sentence, check_claims, check_draft, load_facts, normalize
 from .receipts import create_receipt, save_receipt, timestamp, failed_receipt
 from .spark import spark_for_agent
@@ -12,16 +14,30 @@ from .wonder import wonder_synthesize_for_scout
 
 
 STRICT_HYPE = ('amazing', 'incredible', 'revolutionary', 'unbeatable', 'perfect',
-              'best', 'greatest', 'fastest', 'cheapest', 'only', 'guaranteed')
+               'best', 'greatest', 'fastest', 'cheapest', 'only', 'guaranteed')
 
 
 def _blocked_names(blocked_claims):
     return {normalize(c) for c in (blocked_claims or []) if isinstance(c, str) and normalize(c)}
 
 
-def check_pack(draft, facts, blocked_claims=None, checker_profile='standard'):
+def _effective_policies(checker_profile, checker_policies, checker_agent):
+    if checker_policies is not None:
+        return sorted({str(p) for p in checker_policies if isinstance(p, str)})
+    return effective_policies(checker_profile, checker_agent)
+
+
+def _policy_block_for_claim(claim, policies):
+    for policy in policies:
+        if policy_blocks(policy, claim):
+            return {'claim': claim, 'reason': policy_reason(policy)}
+    return None
+
+
+def check_pack(draft, facts, blocked_claims=None, checker_profile='standard', checker_policies=None, checker_agent=None):
     # Deterministic claim safety is never skipped: blocked_claims and the
-    # strict profile only add blocks, they never verify an unverified claim.
+    # supported policies only add blocks, they never verify an unverified claim.
+    policies = _effective_policies(checker_profile, checker_policies, checker_agent)
     blocked_names = _blocked_names(blocked_claims)
     results = check_claims(draft['claims'], facts)
     blocked = []
@@ -30,16 +46,20 @@ def check_pack(draft, facts, blocked_claims=None, checker_profile='standard'):
             blocked.append({'claim': r['claim'], 'reason': 'Blocked by selected memory rule'})
         elif not r['verified']:
             blocked.append(r)
-        elif checker_profile == 'strict' and any(word in normalize(r['claim']).split() for word in STRICT_HYPE):
-            blocked.append({'claim': r['claim'], 'reason': 'Blocked by strict Checker profile: superlative or hype'})
+        else:
+            hit = _policy_block_for_claim(r['claim'], policies)
+            if hit is not None:
+                blocked.append(hit)
     for result in check_draft(draft['post'] + '\n' + draft['email'], facts):
         if result['claim'] not in [r['claim'] for r in blocked]:
             if normalize(result['claim']) in blocked_names:
                 blocked.append({'claim': result['claim'], 'reason': 'Blocked by selected memory rule'})
-            elif checker_profile == 'strict' and any(word in normalize(result['claim']).split() for word in STRICT_HYPE):
-                blocked.append({'claim': result['claim'], 'reason': 'Blocked by strict Checker profile: superlative or hype'})
             else:
-                blocked.append(result)
+                hit = _policy_block_for_claim(result['claim'], policies)
+                if hit is not None:
+                    blocked.append(hit)
+                else:
+                    blocked.append(result)
     verified = sum(1 for c in draft['claims'] if c not in [b['claim'] for b in blocked])
     return {'verified_count': verified, 'blocked_count': len(blocked),
             'blocked_claims': [{'claim': r['claim'], 'reason': r['reason']} for r in blocked],
@@ -58,26 +78,47 @@ def model_usage(attempts):
     attempted = [r for _, r in attempts if r.get('attempted', False)]
     errors = [r['error_type'] for _, r in attempts if r.get('error_type')]
     return {'spark_calls': sum(int(r.get('attempted', False)) for kind, r in attempts if kind == 'spark'),
-             'spark_mode': 'spark' if successful else 'deterministic_fallback',
-             'mode': 'spark' if successful else (errors[0] if errors else 'deterministic_fallback'),
-             'model_used': successful[0]['model_used'] if successful else 'none',
-             'models_used': sorted({r['model_used'] for r in successful}),
-             'error_types': errors, 'wonder_used': any(kind == 'wonder' and r['mode'] == 'spark' for kind, r in attempts),
-             'wonder_attempts': sum(int(r.get('attempted', False)) for kind, r in attempts if kind == 'wonder'),
-             'token_counts': {name: sum(r.get('usage', {}).get(name, 0) for _, r in attempts)
-                              for name in ('prompt_tokens', 'completion_tokens', 'total_tokens')},
-             'tokens_known': bool(attempted) and all('total_tokens' in r.get('usage', {}) for r in attempted),
-             'data_mode': 'standard_no_train',
-             'data_mode_note': 'Stated intent for user data, not a verified API setting.'}
+            'spark_mode': 'spark' if successful else 'deterministic_fallback',
+            'mode': 'spark' if successful else (errors[0] if errors else 'deterministic_fallback'),
+            'model_used': successful[0]['model_used'] if successful else 'none',
+            'models_used': sorted({r['model_used'] for r in successful}),
+            'error_types': errors, 'wonder_used': any(kind == 'wonder' and r['mode'] == 'spark' for kind, r in attempts),
+            'wonder_attempts': sum(int(r.get('attempted', False)) for kind, r in attempts if kind == 'wonder'),
+            'token_counts': {name: sum(r.get('usage', {}).get(name, 0) for _, r in attempts)
+                             for name in ('prompt_tokens', 'completion_tokens', 'total_tokens')},
+            'tokens_known': bool(attempted) and all('total_tokens' in r.get('usage', {}) for r in attempted),
+            'data_mode': 'standard_no_train',
+            'data_mode_note': 'Stated intent for user data, not a verified API setting.'}
 
 
-def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverified_claim=False, receipt_writer=save_receipt, model_enabled=True, visual_verifier=None, memory_claims=None, blocked_claims=None, checker_profile='standard', brief=None, campaign_day=None):
+def _stage_snapshot(profile):
+    return {'name': profile.get('name'), 'role': profile.get('role'),
+            'personality': profile.get('personality'), 'expertise': profile.get('expertise'),
+            'decision_rules': list(profile.get('decision_rules', [])),
+            'veto_scope': list(profile.get('veto_scope', []))}
+
+
+def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverified_claim=False, receipt_writer=save_receipt, model_enabled=True, visual_verifier=None, memory_claims=None, blocked_claims=None, checker_profile='standard', brief=None, campaign_day=None, scout_profile=None, maker_profile=None, checker_agent=None):
     model_enabled = model_enabled and bool(os.environ.get('META_API_KEY', '').strip())
     events = []
     attempts = []
     step = 'load_agents'
+    profiles = None
+    effective = []
+    enforcement = None
     try:
-        profiles = {name: agents.load_agent(name, agents_path) for name in ('Scout', 'Maker', 'Checker')}
+        overrides = {'Scout': scout_profile, 'Maker': maker_profile, 'Checker': checker_agent}
+        profiles = {}
+        for name in ('Scout', 'Maker', 'Checker'):
+            override = overrides.get(name)
+            if override is not None:
+                profiles[name] = agents.validate(copy.deepcopy(override))
+            else:
+                profiles[name] = agents.load_agent(name, agents_path)
+        effective = effective_policies(checker_profile, profiles['Checker'])
+        enforcement = parse_checker_agent(profiles['Checker'])
+        enforcement['effective_policies'] = list(effective)
+        enforcement['legacy_checker_profile'] = checker_profile
         step = 'load_facts'
         facts, _ = load_facts(facts_path)
         claims = list(facts['approved_claims'])
@@ -93,17 +134,18 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
         if initial['blocked_count']:
             raise ValueError('Approved facts failed deterministic checks')
 
-        def event(step, agent, action):
-            events.append({'step': step, 'agent': agent, 'action': action, 'timestamp': timestamp()})
+        def event(step, agent, action, profile_name=None):
+            events.append({'step': step, 'agent': agent, 'profile': profile_name or agent,
+                           'action': action, 'timestamp': timestamp()})
 
-        event('deterministic_checks', 'Scout', 'Checked facts file before optional synthesis')
+        event('deterministic_checks', 'Scout', 'Checked facts file before optional synthesis', profiles['Scout']['name'])
         task = json.dumps({'idea': idea, 'approved_claims': claims, 'sources': facts['sources']})
         step = 'scout'
-        wonder = wonder_synthesize_for_scout(task, None) if model_enabled else None
+        wonder = wonder_synthesize_for_scout(task, None, profiles['Scout']) if model_enabled else None
         if wonder is not None:
             attempts.append(('wonder', wonder))
         wonder_used = wonder is not None and wonder['mode'] == 'spark'
-        model = wonder if wonder_used else (spark_for_agent(profiles['Scout'], task) if model_enabled else {
+        model = wonder if wonder_used else (spark_for_agent(profiles['Scout'], task, stage='Scout') if model_enabled else {
             'mode': 'deterministic_fallback', 'model_used': 'none', 'attempted': False})
         if not wonder_used:
             attempts.append(('spark', model))
@@ -111,13 +153,14 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
         def model_candidate(name, text):
             if not model_enabled:
                 return None
-            result = spark_for_agent(profiles[name], text)
+            result = spark_for_agent(profiles[name], text, stage=name)
             attempts.append(('spark', result))
             return result.get('raw_json') if result['mode'] == 'spark' else None
 
         scout = {'facts_used': [{'claim': c, 'verified': True, 'evidence': c, 'sources': facts['sources']} for c in claims],
-                 'risks': ['Demo risk: unsupported product claims require revision.',
-                           'Demo risk: channel suitability is unverified by this facts file.'],
+                 'risks': ['Risk 1: Unsupported product claims require revision.',
+                           'Risk 2: Channel suitability is unverified by this facts file.',
+                           'Risk 3: Price and availability need human review before export.'],
                  'sources': facts['sources'], 'model_mode': model['mode'],
                  'model_note': model.get('error_type', 'Optional Scout synthesis received.' if model['mode'] == 'spark' else 'No model synthesis.')}
         if model['mode'] == 'spark':
@@ -132,7 +175,7 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
             risks = raw.get('risks', [])
             if isinstance(risks, list):
                 scout['risks'].extend('Unverified model risk: ' + r for r in risks if isinstance(r, str))
-        event('scout', 'Scout', 'Produced sourced facts and demo risks; filtered optional model facts')
+        event('scout', 'Scout', 'Produced sourced facts and demo risks; filtered optional model facts', profiles['Scout']['name'])
         v1_claims = list(claims)
         if seed_unverified_claim:
             # Demo test seed only, not normal Maker behavior.
@@ -146,39 +189,45 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
             # Only exact, independently verified sentences can reach Maker.
             safe = [c for c in maker['claims'] if check_sentence(c, facts)['verified']]
             proposed = make_draft(safe) if safe else None
-            if proposed and not check_pack(proposed, facts, blocked_claims, checker_profile)['blocked_count']:
+            if proposed and not check_pack(proposed, facts, blocked_claims, checker_profile, effective)['blocked_count']:
                 v1_claims = safe + (['best in Texas'] if seed_unverified_claim else [])
         v1 = make_draft(v1_claims)
-        event('maker_draft_v1', 'Maker', 'Prepared local post and email drafts')
+        event('maker_draft_v1', 'Maker', 'Prepared local post and email drafts', profiles['Maker']['name'])
         step = 'checker_v1'
         suggestion = model_candidate('Checker', json.dumps({'draft': v1, 'approved_claims': claims}))
         if suggestion:
             # Candidate claims are checked but cannot change the actual draft verdict.
-            check_pack(make_draft(suggestion['claims']), facts, blocked_claims, checker_profile)
-        c1 = check_pack(v1, facts, blocked_claims, checker_profile)
-        event('checker_v1', 'Checker', 'Checked explicit claims and draft text; blocked_count=' + str(c1['blocked_count']))
+            check_pack(make_draft(suggestion['claims']), facts, blocked_claims, checker_profile, effective)
+        c1 = check_pack(v1, facts, blocked_claims, checker_profile, effective)
+        event('checker_v1', 'Checker', 'Checked explicit claims and draft text; blocked_count=' + str(c1['blocked_count']), profiles['Checker']['name'])
         # Rebuild from verified allowlist sentences, removing every blocked sentence.
-        # Blocked and strict-hype claims are excluded here, so the final draft
+        # Blocked and policy-blocked claims are excluded here, so the final draft
         # stays clean while v1 still records the verdict difference.
         step = 'maker_draft_v2'
         v2_claims = [c for c in claims
                      if normalize(c) not in blocked_names
-                     and not (checker_profile == 'strict' and any(word in normalize(c).split() for word in STRICT_HYPE))]
+                     and _policy_block_for_claim(c, effective) is None]
         v2 = make_draft(v2_claims)
-        event('maker_draft_v2', 'Maker', 'Revised using approved facts file claims')
+        event('maker_draft_v2', 'Maker', 'Revised using approved facts file claims', profiles['Maker']['name'])
         step = 'checker_v2'
-        c2 = check_pack(v2, facts, blocked_claims, checker_profile)
-        event('checker_v2', 'Checker', 'Rechecked revised drafts; blocked_count=' + str(c2['blocked_count']))
+        c2 = check_pack(v2, facts, blocked_claims, checker_profile, effective)
+        event('checker_v2', 'Checker', 'Rechecked revised drafts; blocked_count=' + str(c2['blocked_count']), profiles['Checker']['name'])
         if c2['blocked_count']:
             raise ValueError('Final draft has blocked claims')
         step = 'approval'
         if approve:
-            event('approval', 'demo_human', 'Simulated approval for local export')
-        event('receipt', 'LaunchCrew', 'Prepared receipt for storage; no submission attempted')
+            event('approval', 'demo_human', 'Simulated approval for local export', 'demo_human')
+        event('receipt', 'LaunchCrew', 'Prepared receipt for storage; no submission attempted', 'LaunchCrew')
         usage = model_usage(attempts)
         step = 'receipt'
         receipt = create_receipt(Path(out).stem, idea, scout, v1, c1, v2, c2, events, usage, approve)
         receipt['checker_profile'] = checker_profile
+        receipt['checker_policies'] = list(effective)
+        receipt['checker_enforcement'] = enforcement
+        receipt['stage_agents'] = {stage.lower(): _stage_snapshot(profiles[stage]) for stage in ('Scout', 'Maker', 'Checker')}
+        receipt['stage_bindings'] = {stage.lower(): profiles[stage]['name'] for stage in ('Scout', 'Maker', 'Checker')}
+        receipt['agents_used_detail'] = [profiles['Scout']['name'], profiles['Maker']['name'], profiles['Checker']['name'],
+                                         profiles['Maker']['name'], profiles['Checker']['name']]
         receipt['memory_claims'] = list(memory_claims or [])
         receipt['blocked_claims'] = list(blocked_claims or [])
         if brief is not None:
@@ -194,6 +243,15 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
                                  [e for e in events if e['step'] != 'receipt'], step, error)
         failure['model_usage'] = model_usage(attempts)
         failure['visual_verification'] = {'method': 'not_run', 'checked': False}
+        if isinstance(profiles, dict) and set(profiles) == {'Scout', 'Maker', 'Checker'}:
+            try:
+                failure['stage_agents'] = {stage.lower(): _stage_snapshot(profiles[stage]) for stage in ('Scout', 'Maker', 'Checker')}
+                failure['stage_bindings'] = {stage.lower(): profiles[stage]['name'] for stage in ('Scout', 'Maker', 'Checker')}
+                failure['checker_enforcement'] = enforcement or parse_checker_agent(profiles['Checker'])
+                failure['checker_policies'] = list(effective)
+            except Exception:
+                pass
+        failure['checker_profile'] = checker_profile
         receipt_writer(failure, out)
         raise
 

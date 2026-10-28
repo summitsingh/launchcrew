@@ -170,6 +170,62 @@
         "title": "Check",
         "type": "object"
       },
+      "CheckerPoliciesOut": {
+        "additionalProperties": false,
+        "properties": {
+          "floor_note": {
+            "title": "Floor Note",
+            "type": "string"
+          },
+          "matching": {
+            "title": "Matching",
+            "type": "string"
+          },
+          "supported": {
+            "items": {
+              "$ref": "#/components/schemas/CheckerPolicyOut"
+            },
+            "title": "Supported",
+            "type": "array"
+          }
+        },
+        "required": [
+          "supported",
+          "floor_note",
+          "matching"
+        ],
+        "title": "CheckerPoliciesOut",
+        "type": "object"
+      },
+      "CheckerPolicyOut": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "policy": {
+            "title": "Policy",
+            "type": "string"
+          },
+          "rule_line": {
+            "title": "Rule Line",
+            "type": "string"
+          },
+          "veto_token": {
+            "title": "Veto Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "policy",
+          "veto_token",
+          "rule_line",
+          "description"
+        ],
+        "title": "CheckerPolicyOut",
+        "type": "object"
+      },
       "Clone": {
         "additionalProperties": false,
         "properties": {
@@ -399,9 +455,32 @@
       },
       "Preview": {
         "properties": {
+          "checker_enforcement": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checker Enforcement"
+          },
           "dry_run": {
             "title": "Dry Run",
             "type": "boolean"
+          },
+          "enforcement_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Enforcement Note"
           },
           "first_action": {
             "title": "First Action",
@@ -421,6 +500,21 @@
           "side_effects": {
             "title": "Side Effects",
             "type": "boolean"
+          },
+          "supported_policies": {
+            "anyOf": [
+              {
+                "items": {
+                  "additionalProperties": true,
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supported Policies"
           }
         },
         "required": [
@@ -679,6 +773,28 @@
             "title": "Blocked Claims Only In B",
             "type": "array"
           },
+          "checker_name_a": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checker Name A"
+          },
+          "checker_name_b": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checker Name B"
+          },
           "checker_profile_a": {
             "anyOf": [
               {
@@ -836,6 +952,28 @@
             "title": "Idea",
             "type": "string"
           },
+          "maker_name_a": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maker Name A"
+          },
+          "maker_name_b": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maker Name B"
+          },
           "memory_ids_a": {
             "default": [],
             "items": {
@@ -876,6 +1014,33 @@
           },
           "same_idea": {
             "title": "Same Idea",
+            "type": "boolean"
+          },
+          "scout_name_a": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scout Name A"
+          },
+          "scout_name_b": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scout Name B"
+          },
+          "stage_bindings_changed": {
+            "default": false,
+            "title": "Stage Bindings Changed",
             "type": "boolean"
           },
           "status_a": {
@@ -923,11 +1088,25 @@
         "additionalProperties": false,
         "properties": {
           "agent_name": {
+            "description": "Legacy Maker selector. Preserved for compatibility. Maker stage uses maker_name when provided, else agent_name.",
             "title": "Agent Name",
             "type": "string"
           },
+          "checker_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Checker stage agent name. Defaults to built-in Checker.",
+            "title": "Checker Name"
+          },
           "checker_profile": {
             "default": "standard",
+            "description": "Legacy strictness. Strict adds the superlatives policy. Checker agent policies add blocks on top.",
             "enum": [
               "standard",
               "strict"
@@ -941,6 +1120,18 @@
             "title": "Idea",
             "type": "string"
           },
+          "maker_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Maker stage agent name. Defaults to agent_name for compatibility.",
+            "title": "Maker Name"
+          },
           "memory_ids": {
             "default": [],
             "items": {
@@ -948,6 +1139,18 @@
             },
             "title": "Memory Ids",
             "type": "array"
+          },
+          "scout_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Scout stage agent name. Defaults to built-in Scout.",
+            "title": "Scout Name"
           },
           "seed_unverified_claim": {
             "default": false,
@@ -1588,6 +1791,24 @@
           }
         },
         "summary": "Export Campaign Day"
+      }
+    },
+    "/api/checker-policies": {
+      "get": {
+        "operationId": "checker_policies_api_checker_policies_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckerPoliciesOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Checker Policies"
       }
     },
     "/api/health": {

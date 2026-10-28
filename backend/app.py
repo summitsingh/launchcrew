@@ -12,6 +12,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from backend import adapter, store, auth
 from launchcrew import agents, receipts
+from launchcrew.checker_policies import FLOOR_NOTE, MATCHING_NOTE, describe_supported
 
 
 class Strict(BaseModel):
@@ -37,10 +38,13 @@ class Idea(Strict):
 
 
 class RunInput(Idea):
-    agent_name: str
+    agent_name: str = Field(description='Legacy Maker selector. Preserved for compatibility. Maker stage uses maker_name when provided, else agent_name.')
+    scout_name: str | None = Field(default=None, description='Scout stage agent name. Defaults to built-in Scout.')
+    maker_name: str | None = Field(default=None, description='Maker stage agent name. Defaults to agent_name for compatibility.')
+    checker_name: str | None = Field(default=None, description='Checker stage agent name. Defaults to built-in Checker.')
     seed_unverified_claim: bool = False
     memory_ids: list[str] = []
-    checker_profile: Literal['standard', 'strict'] = 'standard'
+    checker_profile: Literal['standard', 'strict'] = Field(default='standard', description='Legacy strictness. Strict adds the superlatives policy. Checker agent policies add blocks on top.')
 
 
 class Clone(Strict):
@@ -96,6 +100,22 @@ class Preview(BaseModel):
     first_action: str
     model_called: bool
     side_effects: bool
+    checker_enforcement: dict[str, Any] | None = None
+    enforcement_note: str | None = None
+    supported_policies: list[dict[str, Any]] | None = None
+
+
+class CheckerPolicyOut(Strict):
+    policy: str
+    veto_token: str
+    rule_line: str
+    description: str
+
+
+class CheckerPoliciesOut(Strict):
+    supported: list[CheckerPolicyOut]
+    floor_note: str
+    matching: str
 
 
 @asynccontextmanager
@@ -151,6 +171,11 @@ def health() -> dict[str, str]:
     with store.connect() as db:
         db.execute(text('SELECT 1'))
     return {'status': 'ok', 'auth': 'enabled_unverified' if auth.enabled() else 'disabled_demo', 'approval_by': 'signed_in_user' if auth.enabled() else 'demo_placeholder'}
+
+
+@app.get('/api/checker-policies', response_model=CheckerPoliciesOut)
+def checker_policies(actor: str = Depends(auth.actor)):
+    return {'supported': describe_supported(), 'floor_note': FLOOR_NOTE, 'matching': MATCHING_NOTE}
 
 
 @app.get('/api/agents', response_model=list[Profile])
@@ -214,16 +239,34 @@ def load_memory_selection(db, memory_ids):
     return items
 
 
+def stage_names(body):
+    maker = body.maker_name or body.agent_name
+    scout = body.scout_name or 'Scout'
+    checker = body.checker_name or 'Checker'
+    return scout, maker, checker
+
+
+def load_stage_profiles(db, body):
+    legacy = get_profile(db, body.agent_name)
+    scout_name, maker_name, checker_name = stage_names(body)
+    scout = get_profile(db, scout_name)
+    maker = legacy if maker_name.lower() == body.agent_name.lower() else get_profile(db, maker_name)
+    checker = get_profile(db, checker_name)
+    return legacy, scout, maker, checker
+
+
 @app.post('/api/runs', response_model=Receipt, status_code=201)
 def create_run(body: RunInput, actor: str = Depends(auth.actor)):
     with store.connect() as db:
-        profile = get_profile(db, body.agent_name)
+        legacy, scout, maker, checker = load_stage_profiles(db, body)
         items = load_memory_selection(db, body.memory_ids)
+        _, maker_name, _ = stage_names(body)
     run_id = 'run_' + uuid4().hex
-    receipt = adapter.execute(run_id, body.idea, profile, body.seed_unverified_claim,
-                              memory_items=items, checker_profile=body.checker_profile)
+    receipt = adapter.execute(run_id, body.idea, legacy, body.seed_unverified_claim,
+                              memory_items=items, checker_profile=body.checker_profile,
+                              scout_profile=scout, maker_profile=maker, checker_agent=checker)
     with store.connect() as db:
-        save_run(db, receipt, body.agent_name, actor)
+        save_run(db, receipt, maker_name, actor)
     return receipt
 
 
@@ -389,6 +432,13 @@ class RunDiff(Strict):
     checker_profile_a: str | None = None
     checker_profile_b: str | None = None
     checker_profile_changed: bool = False
+    scout_name_a: str | None = None
+    scout_name_b: str | None = None
+    maker_name_a: str | None = None
+    maker_name_b: str | None = None
+    checker_name_a: str | None = None
+    checker_name_b: str | None = None
+    stage_bindings_changed: bool = False
     memory_ids_a: list[str] = []
     memory_ids_b: list[str] = []
     blocked_claims_only_in_a: list[dict[str, str]]
@@ -402,12 +452,28 @@ class RunDiff(Strict):
     receipt_keys_only_in_b: list[str]
 
 
+def stage_binding(receipt, stage):
+    bindings = receipt.get('stage_bindings') or {}
+    if isinstance(bindings, dict) and isinstance(bindings.get(stage), str):
+        return bindings.get(stage)
+    detail = (receipt.get('stage_agents') or {}).get(stage) or {}
+    if isinstance(detail, dict) and isinstance(detail.get('name'), str):
+        return detail.get('name')
+    return None
+
+
 def diff_receipts(a, b):
+    bindings_a = {stage: stage_binding(a, stage) for stage in ('scout', 'maker', 'checker')}
+    bindings_b = {stage: stage_binding(b, stage) for stage in ('scout', 'maker', 'checker')}
     result = {'run_a_id': a['run_id'], 'run_b_id': b['run_id'],
               'same_idea': a.get('idea') == b.get('idea'), 'idea': a.get('idea', ''),
               'approval_state_changed': a['approval_state'] != b['approval_state'],
               'checker_profile_a': a.get('checker_profile'), 'checker_profile_b': b.get('checker_profile'),
               'checker_profile_changed': a.get('checker_profile') != b.get('checker_profile'),
+              'scout_name_a': bindings_a['scout'], 'scout_name_b': bindings_b['scout'],
+              'maker_name_a': bindings_a['maker'], 'maker_name_b': bindings_b['maker'],
+              'checker_name_a': bindings_a['checker'], 'checker_name_b': bindings_b['checker'],
+              'stage_bindings_changed': bindings_a != bindings_b,
               'memory_ids_a': [m.get('id') for m in a.get('memory_used', []) if isinstance(m, dict)],
               'memory_ids_b': [m.get('id') for m in b.get('memory_used', []) if isinstance(m, dict)]}
     for version in ('v1', 'v2'):
@@ -488,17 +554,19 @@ def campaign_detail(db, campaign_id):
 def create_campaign(body: RunInput, actor: str = Depends(auth.actor)):
     campaign_id = 'camp_' + uuid4().hex
     with store.connect() as db:
-        profile = get_profile(db, body.agent_name)
+        legacy, scout, maker, checker = load_stage_profiles(db, body)
         items = load_memory_selection(db, body.memory_ids)
+        _, maker_name, _ = stage_names(body)
         db.execute(text('INSERT INTO campaigns(id,idea,agent_name) VALUES (:id,:idea,:agent)'),
-                   {'id': campaign_id, 'idea': body.idea, 'agent': body.agent_name})
+                   {'id': campaign_id, 'idea': body.idea, 'agent': maker_name})
         for day in range(1, 8):
             angle, brief, brief_claim = CAMPAIGN_BRIEF_BY_DAY[day]
             run_id = 'run_' + uuid4().hex
-            receipt = adapter.execute(run_id, body.idea, profile, body.seed_unverified_claim,
+            receipt = adapter.execute(run_id, body.idea, legacy, body.seed_unverified_claim,
                                       memory_items=items, checker_profile=body.checker_profile,
-                                      brief=brief, campaign_day=day, extra_claims=[brief_claim])
-            save_run(db, receipt, body.agent_name, actor)
+                                      brief=brief, campaign_day=day, extra_claims=[brief_claim],
+                                      scout_profile=scout, maker_profile=maker, checker_agent=checker)
+            save_run(db, receipt, maker_name, actor)
             db.execute(text('INSERT INTO campaign_days(campaign_id,day,run_id) VALUES (:id,:day,:run)'),
                        {'id': campaign_id, 'day': day, 'run': run_id})
         return campaign_detail(db, campaign_id)

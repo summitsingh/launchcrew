@@ -3,8 +3,9 @@
 No test contacts AWS. The fake AWS script logs calls and returns canned
 responses based on FAKE_MODE. Dry-run must make zero calls. Confirm path
 must refuse account or tag mismatch before any delete, must verify terminal
-absence via authoritative not-found, and must never treat auth or API
-failure as absence.
+absence via authoritative not-found or a DELETE_COMPLETE record for the
+exact stack ID, must distinguish DELETE_SKIPPED retained resources from
+complete cleanup, and must never treat auth or API failure as absence.
 """
 import os
 import stat
@@ -30,6 +31,19 @@ if [ "$1" = "sts" ] && [ "$2" = "get-caller-identity" ]; then
   printf '%s\\n' "${FAKE_CALLER:-111122223333}"
   exit 0
 fi
+if [ "$1" = "cloudformation" ] && [ "$2" = "describe-stack-resources" ]; then
+  case "$MODE" in
+    delete_skipped)
+      printf 'RetainedBucket\\n'; exit 0 ;;
+    resources_auth_fail)
+      echo "An error occurred (AccessDenied) when calling the DescribeStackResources operation: not authorized" >&2
+      exit 254 ;;
+    resources_not_found)
+      echo "An error occurred (ValidationError) when calling the DescribeStackResources operation: Stack with id test does not exist" >&2
+      exit 254 ;;
+    *) printf 'None\\n'; exit 0 ;;
+  esac
+fi
 if [ "$1" = "cloudformation" ] && [ "$2" = "describe-stacks" ]; then
   case "$*" in
     *StackStatus*)
@@ -38,6 +52,10 @@ if [ "$1" = "cloudformation" ] && [ "$2" = "describe-stacks" ]; then
           echo "An error occurred (AccessDenied) when calling the DescribeStacks operation: not authorized" >&2
           exit 254 ;;
         still_present) printf 'DELETE_FAILED\\n'; exit 0 ;;
+        delete_complete) printf 'DELETE_COMPLETE\\n'; exit 0 ;;
+        delete_skipped) printf 'DELETE_COMPLETE\\n'; exit 0 ;;
+        resources_auth_fail) printf 'DELETE_COMPLETE\\n'; exit 0 ;;
+        resources_not_found) printf 'DELETE_COMPLETE\\n'; exit 0 ;;
         *) echo "An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id test does not exist" >&2; exit 254 ;;
       esac ;;
     *Project*)
@@ -169,6 +187,47 @@ class TeardownTests(unittest.TestCase):
         self.assertIn("authorization or API failure, not absence", combined)
         self.assertIn("absence not proven", combined)
         self.assertNotIn("Stack absent, verified", combined)
+
+    def test_delete_complete_record_verified_with_no_skipped(self):
+        result, calls = self.run_teardown([
+            "--confirm", "--stack-arn", ARN,
+            "--expected-account", ACCOUNT, "--expected-region", REGION],
+            mode="delete_complete")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("DELETE_COMPLETE", result.stdout)
+        self.assertIn("Complete resource cleanup", result.stdout)
+        self.assertIn("Remaining work", result.stdout)
+        self.assertTrue(any("describe-stack-resources" in call for call in calls))
+
+    def test_delete_skipped_distinguished_from_complete_cleanup(self):
+        result, _ = self.run_teardown([
+            "--confirm", "--stack-arn", ARN,
+            "--expected-account", ACCOUNT, "--expected-region", REGION],
+            mode="delete_skipped")
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("DELETE_SKIPPED", combined)
+        self.assertIn("not complete cleanup", combined)
+        self.assertNotIn("Complete resource cleanup", combined)
+
+    def test_resources_auth_failure_is_not_complete(self):
+        result, _ = self.run_teardown([
+            "--confirm", "--stack-arn", ARN,
+            "--expected-account", ACCOUNT, "--expected-region", REGION],
+            mode="resources_auth_fail")
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("authorization or API failure, not absence", combined)
+        self.assertIn("complete cleanup not proven", combined)
+        self.assertNotIn("Complete resource cleanup", combined)
+
+    def test_resources_not_found_after_delete_complete_is_complete(self):
+        result, _ = self.run_teardown([
+            "--confirm", "--stack-arn", ARN,
+            "--expected-account", ACCOUNT, "--expected-region", REGION],
+            mode="resources_not_found")
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("Complete resource cleanup", result.stdout)
 
 
 if __name__ == "__main__":
