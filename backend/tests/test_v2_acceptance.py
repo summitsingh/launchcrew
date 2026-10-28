@@ -2,10 +2,12 @@
 
 Deterministic fixtures only, no live model calls, no credentials.
 Memory is consumed only when a run explicitly selects memory_ids, and only
-through the documented contract: brand_fact / profile / approval_example
-content.claim becomes a run allowlist claim, blocked_rule content.claim
-becomes a run blocked claim, profile content.expertise becomes the Maker
-profile expertise for that run. Items without those fields are recorded
+through the documented contract: brand_fact content.claim becomes a run
+allowlist claim, blocked_rule content.claim or content.blocked_claims
+(string or list-of-dicts entries) becomes a run blocked claim, profile
+content.expertise becomes the Maker profile expertise for that run, and
+approval_example idea/post/email becomes Maker prompt style context only
+(never an approved fact). Items without those fields are recorded
 in memory_used but do not change the draft, by design.
 """
 import json

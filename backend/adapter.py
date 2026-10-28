@@ -23,33 +23,77 @@ def preview(profile, idea):
 
 
 def _memory_effects(memory_items):
-    claims, blocked, expertise, used = [], [], None, []
+    # Only brand_fact content.claim may extend the authoritative allowlist.
+    # Approval examples are style context only and never become facts.
+    # Blocked rules accept the explicit string format and the learned
+    # list-of-dicts format; malformed values are ignored, never facts.
+    claims, blocked, blocked_rules, expertise, approval_examples, used = [], [], [], None, [], []
+    seen_blocked = set()
+
+    def add_blocked(claim, reason, source):
+        text = claim.strip()
+        if not text or text in seen_blocked:
+            return
+        seen_blocked.add(text)
+        blocked.append(text)
+        blocked_rules.append({'id': source.get('id'), 'title': source.get('title'),
+                              'claim': text, 'reason': reason})
+
     for item in (memory_items or []):
         content = item.get('content') if isinstance(item, dict) else {}
         if not isinstance(content, dict):
             content = {}
-        used.append({'id': item.get('id'), 'kind': item.get('kind'), 'title': item.get('title')})
-        claim = content.get('claim')
-        if isinstance(claim, str) and claim.strip():
-            if item.get('kind') == 'blocked_rule':
-                blocked.append(claim)
-            else:
-                claims.append(claim)
-        for extra in content.get('blocked_claims', []) if isinstance(content.get('blocked_claims'), list) else []:
-            if isinstance(extra, str) and extra.strip():
-                blocked.append(extra)
-        if item.get('kind') == 'profile' and isinstance(content.get('expertise'), str) and content['expertise'].strip():
-            expertise = content['expertise']
-    return claims, blocked, expertise, used
+        kind = item.get('kind')
+        used.append({'id': item.get('id'), 'kind': kind, 'title': item.get('title')})
+        if kind == 'brand_fact':
+            claim = content.get('claim')
+            if isinstance(claim, str) and claim.strip() and claim.strip() not in claims:
+                claims.append(claim.strip())
+        elif kind == 'blocked_rule':
+            claim = content.get('claim')
+            if isinstance(claim, str) and claim.strip():
+                add_blocked(claim, 'Selected memory rule', item)
+            raw = content.get('blocked_claims')
+            if isinstance(raw, list):
+                for entry in raw:
+                    if isinstance(entry, str) and entry.strip():
+                        add_blocked(entry, 'Selected memory rule', item)
+                    elif isinstance(entry, dict):
+                        entry_claim = entry.get('claim')
+                        entry_reason = entry.get('reason')
+                        if isinstance(entry_claim, str) and entry_claim.strip():
+                            reason = entry_reason if isinstance(entry_reason, str) and entry_reason.strip() else 'Learned blocked rule'
+                            add_blocked(entry_claim, reason.strip(), item)
+            # Any other blocked_rule fields are ignored: never approved facts.
+        elif kind == 'approval_example':
+            idea = content.get('idea')
+            post = content.get('post')
+            email = content.get('email')
+            if not isinstance(idea, str) and isinstance(content.get('input'), str):
+                idea = content.get('input')
+            if not isinstance(post, str) and isinstance(content.get('approved_output'), str):
+                post = content.get('approved_output')
+            idea = idea if isinstance(idea, str) else ''
+            post = post if isinstance(post, str) else ''
+            email = email if isinstance(email, str) else ''
+            if idea.strip() or post.strip() or email.strip():
+                approval_examples.append({'id': item.get('id'), 'kind': kind, 'title': item.get('title'),
+                                          'idea': idea, 'post': post, 'email': email})
+            # content.claim on an approval example is intentionally ignored.
+        elif kind == 'profile':
+            if isinstance(content.get('expertise'), str) and content['expertise'].strip():
+                expertise = content['expertise']
+            # content.claim on a profile is intentionally ignored for the allowlist.
+    return claims, blocked, blocked_rules, expertise, approval_examples, used
 
 
 def execute(run_id, idea, profile, seed, memory_items=None, checker_profile='standard', brief=None, campaign_day=None, extra_claims=None, profile_expertise=None, scout_profile=None, maker_profile=None, checker_agent=None):
     captured = []
     (ROOT / '.local').mkdir(exist_ok=True)
-    claims, blocked, expertise, used = _memory_effects(memory_items)
+    claims, blocked, blocked_rules, expertise, approval_examples, used = _memory_effects(memory_items)
     for claim in (extra_claims or []):
-        if isinstance(claim, str) and claim.strip() and claim not in claims:
-            claims.append(claim)
+        if isinstance(claim, str) and claim.strip() and claim.strip() not in claims:
+            claims.append(claim.strip())
     if profile_expertise and isinstance(profile_expertise, str) and profile_expertise.strip():
         expertise = profile_expertise
     effective_scout = copy.deepcopy(scout_profile) if scout_profile is not None else agents.load_agent('Scout', ROOT / 'agents')
@@ -59,6 +103,17 @@ def execute(run_id, idea, profile, seed, memory_items=None, checker_profile='sta
         agents.validate(candidate)
     if expertise:
         effective_maker['expertise'] = expertise
+    for example in approval_examples:
+        post = example.get('post', '')
+        email = example.get('email', '')
+        if post.strip() and email.strip() and email.strip() != post.strip():
+            approved_output = post + '\n\n--- email variant (style reference only) ---\n' + email
+        else:
+            approved_output = post if post.strip() else email
+        merged = {'input': example.get('idea', '') if example.get('idea', '').strip() else 'Approved example (style reference only)',
+                  'approved_output': approved_output if approved_output.strip() else 'Approved example output (style reference only)'}
+        effective_maker.setdefault('examples', []).append(merged)
+    agents.validate(effective_maker)
     with TemporaryDirectory(dir=ROOT / '.local') as directory:
         for stage, selected in (('Scout', effective_scout), ('Maker', effective_maker), ('Checker', effective_checker)):
             # Preserve the original profile identity in the stage file. The
@@ -81,6 +136,8 @@ def execute(run_id, idea, profile, seed, memory_items=None, checker_profile='sta
     receipt['checker_profile'] = checker_profile
     receipt['memory_claims'] = claims
     receipt['blocked_claims'] = blocked
+    receipt['memory_blocked_rules'] = blocked_rules
+    receipt['memory_examples'] = approval_examples
     receipt['legacy_agent_name'] = profile.get('name') if isinstance(profile, dict) else None
     if brief is not None:
         receipt['campaign_brief'] = brief
