@@ -22,6 +22,13 @@ import pytest
 
 from backend import store
 
+# Import-time reference to the real lru_cache-wrapped engine factory.
+# Pytest imports test modules during collection, before the session
+# integration fixture in conftest.py replaces store.engine with a plain
+# lambda, so this keeps pointing at the production factory in full-suite
+# runs and standalone runs alike. Calling __wrapped__ bypasses the cache.
+_REAL_ENGINE = store.engine
+
 ROOT = Path(__file__).resolve().parents[2]
 ASSET = ROOT / "backend" / "assets" / "rds-us-east-1-bundle.pem"
 API_IMAGE = ROOT / "containers" / "api.Containerfile"
@@ -256,7 +263,7 @@ def test_engine_wires_sslrootcert_connect_arg(monkeypatch, tmp_path):
         return "engine-sentinel"
 
     monkeypatch.setattr(store, "create_engine", fake_create_engine)
-    assert store.engine.__wrapped__() == "engine-sentinel"
+    assert _REAL_ENGINE.__wrapped__() == "engine-sentinel"
     assert seen["kwargs"]["connect_args"] == {"sslrootcert": str(bundle)}
 
 
@@ -274,4 +281,4 @@ def test_engine_refuses_effective_destination_override(monkeypatch, tmp_path):
 
     monkeypatch.setattr(store, "create_engine", fake_create_engine)
     with pytest.raises(ValueError, match="host"):
-        store.engine.__wrapped__()
+        _REAL_ENGINE.__wrapped__()
