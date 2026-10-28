@@ -3,7 +3,7 @@ import io
 import json
 from unittest.mock import patch
 
-from backend import app as backend_app
+from backend import app as backend_app, sam
 from launchcrew import model_meta, run, spark
 
 
@@ -15,7 +15,7 @@ def completion(raw, usage=None):
 def test_keyless_zero_attempt_is_not_sent(monkeypatch):
     monkeypatch.delenv('META_API_KEY', raising=False)
     monkeypatch.delenv('META_WONDER_MODEL', raising=False)
-    monkeypatch.delenv('LAUNCHCREW_SAM_DEMO_PHOTO', raising=False)
+    monkeypatch.delenv('LAUNCHCREW_PHOTO_SAM_ENABLED', raising=False)
     with patch('launchcrew.spark.urlopen', side_effect=AssertionError('no network')), \
             patch('backend.sam.urlopen', side_effect=AssertionError('no network')):
         result = spark.call_spark_strict_json('s', 'u', {'claims': []})
@@ -39,7 +39,7 @@ def test_keyless_zero_attempt_is_not_sent(monkeypatch):
 def test_configured_reports_present_without_proving_api(monkeypatch):
     monkeypatch.setenv('META_API_KEY', 'offline-fixture')
     monkeypatch.delenv('META_WONDER_MODEL', raising=False)
-    monkeypatch.delenv('LAUNCHCREW_SAM_DEMO_PHOTO', raising=False)
+    monkeypatch.delenv('LAUNCHCREW_PHOTO_SAM_ENABLED', raising=False)
     with patch('launchcrew.spark.urlopen', side_effect=AssertionError('must not call')), \
             patch('backend.sam.urlopen', side_effect=AssertionError('must not call')):
         snapshot = backend_app._capability_snapshot()
@@ -48,6 +48,19 @@ def test_configured_reports_present_without_proving_api(monkeypatch):
     assert snapshot['sam_configured'] is False
     assert snapshot['spark_variant'] == 'standard'
     assert snapshot['wonder_variant'] == 'not_configured'
+
+
+def test_sam_flag_follows_operator_setting_not_legacy_env(monkeypatch):
+    monkeypatch.setenv('META_API_KEY', 'offline-fixture')
+    monkeypatch.setenv('LAUNCHCREW_SAM_DEMO_PHOTO', 'legacy-photo.jpg')
+    monkeypatch.delenv('LAUNCHCREW_PHOTO_SAM_ENABLED', raising=False)
+    assert backend_app._capability_snapshot()['sam_configured'] is False
+    monkeypatch.setenv('LAUNCHCREW_PHOTO_SAM_ENABLED', 'true')
+    assert backend_app._capability_snapshot()['sam_configured'] is True
+    assert sam.photo_sam_operable() is True
+    monkeypatch.delenv('META_API_KEY', raising=False)
+    assert sam.photo_sam_operable() is False
+    assert backend_app._capability_snapshot()['sam_configured'] is False
 
 
 def test_configured_unknown_model_makes_no_guarantee(monkeypatch):

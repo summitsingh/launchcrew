@@ -124,3 +124,72 @@ def verify_demo_photo(photo=None, *, enabled=False):
 def verify_configured_demo():
     name = os.environ.get('LAUNCHCREW_SAM_DEMO_PHOTO', '')
     return verify_demo_photo(DEMO_PHOTOS / name if name else None, enabled=bool(name))
+
+
+class SamTransportError(RuntimeError):
+    """A bounded SAM Files-to-Responses sequence did not complete."""
+
+
+def photo_sam_operable():
+    """Operator feature flag plus key presence. Never proof of credits."""
+    key = os.environ.get('META_API_KEY', '').strip()
+    enabled = os.environ.get('LAUNCHCREW_PHOTO_SAM_ENABLED', '').strip().lower() == 'true'
+    return bool(key and enabled)
+
+
+def upload_and_segment(raw_bytes, mime, concept='product', timeout_s=30.0):
+    """One Files upload plus one Responses segmentation, no retries.
+
+    The Responses call happens only after a valid upload ID held in
+    memory. A redirect that would resend the body is refused instead.
+    Raises SamTransportError on any failure. Returns parsed records.
+    """
+    key = os.environ.get('META_API_KEY', '').strip()
+    if not key:
+        raise SamTransportError('SAM not configured')
+    if mime not in ('image/png', 'image/jpeg'):
+        raise SamTransportError('Unsupported image mime')
+    deadline = monotonic() + timeout_s
+
+    def send(endpoint, body, content_type, accept):
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise SamTransportError('SAM sequence timed out')
+        request = Request(os.environ.get('META_API_BASE_URL', 'https://api.meta.ai/v1').rstrip('/') + endpoint,
+                          data=body, headers={'Authorization': 'Bearer ' + key,
+                                              'Content-Type': content_type, 'Accept': accept})
+        try:
+            response = urlopen(request, timeout=remaining)
+        except SamTransportError:
+            raise
+        except Exception as error:
+            raise SamTransportError(type(error).__name__ + ': transport failed')
+        final_url = getattr(response, 'geturl', lambda: None)()
+        if final_url and not final_url.endswith(endpoint):
+            raise SamTransportError('redirect refused; body not resent')
+        return response
+
+    try:
+        boundary = 'launchcrew' + uuid4().hex
+        suffix = '.png' if mime == 'image/png' else '.jpg'
+        body = (f'--{boundary}\r\nContent-Disposition: form-data; name="purpose"\r\n\r\nuser_data\r\n'
+                f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="photo{suffix}"\r\n'
+                f'Content-Type: {mime}\r\n\r\n').encode() + raw_bytes + f'\r\n--{boundary}--\r\n'.encode()
+        with send('/files', body, 'multipart/form-data; boundary=' + boundary, 'application/json') as response:
+            file_id = json.load(response)['id']
+        if not isinstance(file_id, str) or not file_id:
+            raise SamTransportError('Missing file id')
+        payload = {'model': 'sam-3.1', 'input': [{'type': 'message', 'role': 'user', 'content': [
+            {'type': 'input_text', 'text': concept}, {'type': 'input_image', 'file_id': file_id}]}],
+            'stream': True, 'metadata': {'mask_encoding': 'lossless'}}
+        with send('/responses', json.dumps(payload).encode(), 'application/json', 'text/event-stream') as response:
+            def bounded_lines():
+                for line in response:
+                    if monotonic() >= deadline:
+                        raise SamTransportError('SAM sequence timed out')
+                    yield line
+            return parse_sse(bounded_lines())
+    except SamTransportError:
+        raise
+    except Exception as error:
+        raise SamTransportError(type(error).__name__ + ': segmentation failed')

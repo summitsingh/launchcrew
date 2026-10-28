@@ -5,7 +5,6 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from launchcrew import agents, run, receipts
 from launchcrew.checker_policies import FLOOR_NOTE, MATCHING_NOTE, describe_supported, parse_checker_agent
-from backend.sam import verify_configured_demo
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -124,7 +123,6 @@ def execute(run_id, idea, profile, seed, memory_items=None, checker_profile='sta
         try:
             run.run_pipeline(idea, ROOT / 'facts/demo_facts.json', directory, run_id,
                              seed_unverified_claim=seed, model_enabled=True,
-                             visual_verifier=verify_configured_demo,
                              receipt_writer=lambda receipt, path: captured.append(receipt),
                              memory_claims=claims, blocked_claims=blocked,
                              checker_profile=checker_profile, brief=brief, campaign_day=campaign_day)

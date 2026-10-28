@@ -165,12 +165,26 @@ def test_sam_parser_pairs_lossless_box_mask():
         sam.parse_sse(sse({'type': 'response.failed'}))
 
 
-def test_sam_transport_and_safe_receipt(tmp_path, monkeypatch, caplog):
+def test_pipeline_performs_zero_automatic_sam_calls(tmp_path, monkeypatch, caplog):
     monkeypatch.setenv('META_API_KEY', 'offline-fixture')
     monkeypatch.setattr(sam, 'DEMO_PHOTOS', tmp_path)
     photo = tmp_path / 'wallet.png'
     photo.write_bytes(b'demo photo fixture')
     assert sam.verify_demo_photo(photo) == {'method': 'not_run', 'checked': False}
+    monkeypatch.setenv('LAUNCHCREW_SAM_DEMO_PHOTO', photo.name)
+    monkeypatch.setenv('LAUNCHCREW_PHOTO_SAM_ENABLED', 'true')
+    with patch('backend.sam.urlopen', side_effect=AssertionError('no automatic SAM expected')) as visual:
+        receipt = execute()
+    visual.assert_not_called()
+    assert receipt['visual_verification'] == {'method': 'not_run', 'checked': False}
+    assert 'offline-fixture' not in json.dumps(receipt) + caplog.text
+
+
+def test_sam_diagnostic_seam_still_exercises_transport(tmp_path, monkeypatch, caplog):
+    monkeypatch.setenv('META_API_KEY', 'offline-fixture')
+    monkeypatch.setattr(sam, 'DEMO_PHOTOS', tmp_path)
+    photo = tmp_path / 'wallet.png'
+    photo.write_bytes(b'demo photo fixture')
     calls = []
 
     def transport(request, timeout):
@@ -187,24 +201,24 @@ def test_sam_transport_and_safe_receipt(tmp_path, monkeypatch, caplog):
         assert body['input'][0]['content'][1] == {'type': 'input_image', 'file_id': 'file-demo'}
         return stream()
 
-    monkeypatch.setenv('LAUNCHCREW_SAM_DEMO_PHOTO', photo.name)
     with patch('backend.sam.urlopen', side_effect=transport):
-        receipt = execute()
-    assert receipt['visual_verification'] == {'method': 'sam-3.1', 'checked': True}
+        assert sam.verify_demo_photo(photo, enabled=True) == {'method': 'sam-3.1', 'checked': True}
     assert len(calls) == 2
     for private in ('demo-payload', 'file-demo', 'demo photo fixture', 'Authorization', 'offline-fixture'):
-        assert private not in json.dumps(receipt) + caplog.text
+        assert private not in caplog.text
 
 
-def test_sam_failure_does_not_block_approval_or_export(tmp_path, monkeypatch):
+def test_pipeline_ignores_sam_env_and_still_approves(tmp_path, monkeypatch):
     monkeypatch.setenv('META_API_KEY', 'offline-fixture')
     monkeypatch.setattr(sam, 'DEMO_PHOTOS', tmp_path)
     photo = tmp_path / 'wallet.png'
     photo.write_bytes(b'demo')
     monkeypatch.setenv('LAUNCHCREW_SAM_DEMO_PHOTO', photo.name)
-    with patch('backend.sam.urlopen', side_effect=OSError('Authorization private')):
+    monkeypatch.setenv('LAUNCHCREW_PHOTO_SAM_ENABLED', 'true')
+    with patch('backend.sam.urlopen', side_effect=AssertionError('no automatic SAM expected')) as visual:
         receipt = execute()
-    assert receipt['visual_verification'] == {'method': 'sam-3.1', 'checked': False, 'error_type': 'OSError'}
+    visual.assert_not_called()
+    assert receipt['visual_verification'] == {'method': 'not_run', 'checked': False}
     from launchcrew.receipts import approve_receipt
     approve_receipt(receipt, 'demo')
     assert json.loads(adapter.export_pack(receipt))['approval_state'] == 'approved_for_export'
