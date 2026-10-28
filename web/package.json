@@ -2,7 +2,7 @@
   "name": "launchcrew-web", "version": "0.1.0", "private": true,
   "packageManager": "pnpm@10.20.0",
   "scripts": {"dev": "next dev --hostname 127.0.0.1", "build": "next build", "start": "next start --hostname 0.0.0.0", "test": "vitest run", "test:e2e": "playwright test", "client:generate": "openapi-typescript ../backend/openapi.json -o src/lib/schema.d.ts", "typecheck": "tsc --noEmit"},
-  "dependencies": {"next": "15.5.9", "react": "19.1.4", "react-dom": "19.1.4", "@tanstack/react-query": "5.90.5", "openapi-fetch": "0.15.0", "@radix-ui/react-slot": "1.2.3", "class-variance-authority": "0.7.1", "clsx": "2.1.1", "tailwind-merge": "3.3.1", "lucide-react": "0.548.0"},
+  "dependencies": {"next": "15.5.28", "react": "19.1.4", "react-dom": "19.1.4", "@tanstack/react-query": "5.90.5", "openapi-fetch": "0.15.0", "@radix-ui/react-slot": "1.2.3", "class-variance-authority": "0.7.1", "clsx": "2.1.1", "tailwind-merge": "3.3.1", "lucide-react": "0.548.0"},
   "devDependencies": {"typescript": "5.9.3", "@types/node": "22.18.10", "@types/react": "19.1.16", "@types/react-dom": "19.1.9", "tailwindcss": "4.1.16", "@tailwindcss/postcss": "4.1.16", "openapi-typescript": "7.10.1", "vitest": "4.1.12", "@playwright/test": "1.56.1"},
   "pnpm": {"overrides": {"postcss": "8.5.32"}}
 }
