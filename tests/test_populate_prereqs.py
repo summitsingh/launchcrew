@@ -507,7 +507,8 @@ class MakeClientsTests(unittest.TestCase):
             REGION, _client_factory=fake_client,
             _config_cls=RealConfig)
         self.assertEqual(set(clients.keys()), {"sts", "sm", "acm"})
-        self.assertEqual(set(captured.keys()), {"sts", "sm", "acm"})
+        self.assertEqual(set(captured.keys()),
+                         {"sts", "secretsmanager", "acm"})
         for service, cfg in captured.items():
             self.assertIsInstance(cfg, RealConfig)
             retries = cfg.retries

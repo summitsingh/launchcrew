@@ -389,8 +389,8 @@ admin_cur.execute("ALTER SCHEMA public OWNER TO lc_bind_admin")
 admin_conn.close()
 ' || fail "fixture admin creation failed"
   log "fixture admin is LOGIN NOSUPERUSER CREATEROLE and owns DB and schema"
-  admin_flags="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=postgres user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT rolsuper::text || \",\" || rolcreaterole::text || \",\" || rolcanlogin::text FROM pg_roles WHERE rolname='"$BIND_ADMIN"';" | tr -d '[:space:]')" || true
-  [ "$admin_flags" = "False,True,True" ] || fail "fixture admin flags are $admin_flags, expected False,True,True"
+  admin_flags="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=postgres user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT rolsuper::text || ',' || rolcreaterole::text || ',' || rolcanlogin::text FROM pg_roles WHERE rolname='"$BIND_ADMIN"';" | tr -d '[:space:]')" || true
+  [ "$admin_flags" = "false,true,true" ] || fail "fixture admin flags are $admin_flags, expected false,true,true"
   db_owner="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=postgres user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname='"$BIND_DB"';" | tr -d '[:space:]')" || true
   [ "$db_owner" = "$BIND_ADMIN" ] || fail "bind DB owner is $db_owner, expected $BIND_ADMIN"
   schema_owner="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname='public';" | tr -d '[:space:]')" || true
@@ -484,11 +484,11 @@ sys.stdout.write(text[:2000])
 
   log "inspect the automatic native admin membership rows"
   for managed in "$BIND_RT" "$BIND_MG"; do
-    native_row="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT target.rolname || ',' || member.rolname || ',' || grantor.rolname || ',' || grantor.rolsuper::text || ',' || m.admin_option::text || ',' || m.inherit_option::text || ',' || m.set_option::text FROM pg_auth_members m JOIN pg_roles target ON target.oid = m.roleid JOIN pg_roles member ON member.oid = m.member JOIN pg_roles grantor ON grantor.oid = m.grantor WHERE m.roleid = (SELECT oid FROM pg_roles WHERE rolname = '$managed') OR m.member = (SELECT oid FROM pg_roles WHERE rolname = '$managed');" | tr -d '[:space:]')" || true
-    expected_row="$managed,$BIND_ADMIN,$SUPERUSER,True,True,False,False"
+    native_row="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT target.rolname || ',' || member.rolname || ',' || grantor.rolname || ',' || m.grantor::text || ',' || grantor.rolsuper::text || ',' || m.admin_option::text || ',' || m.inherit_option::text || ',' || m.set_option::text FROM pg_auth_members m JOIN pg_roles target ON target.oid = m.roleid JOIN pg_roles member ON member.oid = m.member JOIN pg_roles grantor ON grantor.oid = m.grantor WHERE m.roleid = (SELECT oid FROM pg_roles WHERE rolname = '$managed') OR m.member = (SELECT oid FROM pg_roles WHERE rolname = '$managed');" | tr -d '[:space:]')" || true
+    expected_row="$managed,$BIND_ADMIN,$SUPERUSER,10,true,true,false,false"
     [ "$native_row" = "$expected_row" ] || fail "native membership for $managed is [$native_row], expected [$expected_row]"
   done
-  log "pass: native rows are roleid managed, member admin, grantor $SUPERUSER, ADMIN TRUE SET FALSE INHERIT FALSE"
+  log "pass: native rows are roleid managed, member admin, grantor OID 10 ($SUPERUSER), ADMIN true SET false INHERIT false"
 
   pwset="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT count(*) FROM pg_authid WHERE rolname IN ('$BIND_RT','$BIND_MG') AND rolpassword IS NOT NULL;" | tr -d '[:space:]')" || true
   [ "$pwset" = "2" ] || fail "bind did not set both role passwords"
@@ -689,19 +689,76 @@ print("42501 ok")
 
   log "negative: foreign-owned object is refused and never transferred"
   "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "CREATE TABLE $APP_SCHEMA.foreign_owned_demo (id integer);" >/dev/null
+  own_pw_before_rt="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT rolpassword FROM pg_authid WHERE rolname='$BIND_RT';" | tr -d '[:space:]')" || true
+  own_pw_before_mg="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT rolpassword FROM pg_authid WHERE rolname='$BIND_MG';" | tr -d '[:space:]')" || true
+  own_acl_before="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT COALESCE(nspacl::text,'') FROM pg_namespace WHERE nspname='$APP_SCHEMA';" | tr -d '[:space:]')" || true
   set +e
   OWN_OUT="$(bind_job "$BIND_RT" 2>&1)"
   OWN_CODE=$?
   set -e
+  own_pw_after_rt="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT rolpassword FROM pg_authid WHERE rolname='$BIND_RT';" | tr -d '[:space:]')" || true
+  own_pw_after_mg="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT rolpassword FROM pg_authid WHERE rolname='$BIND_MG';" | tr -d '[:space:]')" || true
+  own_acl_after="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT COALESCE(nspacl::text,'') FROM pg_namespace WHERE nspname='$APP_SCHEMA';" | tr -d '[:space:]')" || true
   "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "DROP TABLE $APP_SCHEMA.foreign_owned_demo;" >/dev/null
   [ "$OWN_CODE" -ne 0 ] || fail "bind granted over a foreign-owned object"
   case "$OWN_OUT" in *"unexpected owner"*) ;; *) printf '%s' "$OWN_OUT" | safe_emit >&2; fail "foreign owner refusal missed the marker" ;; esac
+  [ "$own_pw_before_rt" = "$own_pw_after_rt" ] || fail "refused bind mutated the runtime password"
+  [ "$own_pw_before_mg" = "$own_pw_after_mg" ] || fail "refused bind mutated the migration password"
+  [ "$own_acl_before" = "$own_acl_after" ] || fail "refused bind mutated the schema ACL"
+  unset own_pw_before_rt own_pw_before_mg own_pw_after_rt own_pw_after_mg own_acl_before own_acl_after
   set +e
   OWN_FIX_OUT="$(bind_job "$BIND_RT" 2>&1)"
   OWN_FIX_CODE=$?
   set -e
   [ "$OWN_FIX_CODE" -eq 0 ] || { printf '%s' "$OWN_FIX_OUT" | safe_emit >&2; fail "rebind failed after foreign object cleanup"; }
-  log "pass: foreign-owned object refused, recovery rebind ok"
+  log "pass: foreign-owned object refused with passwords and schema ACL unchanged, recovery rebind ok"
+
+  log "negative: foreign-owned view is refused before password and ACL mutation"
+  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "CREATE VIEW $APP_SCHEMA.foreign_owned_view AS SELECT 1;" >/dev/null
+  view_pw_before_rt="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT rolpassword FROM pg_authid WHERE rolname='$BIND_RT';" | tr -d '[:space:]')" || true
+  view_pw_before_mg="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT rolpassword FROM pg_authid WHERE rolname='$BIND_MG';" | tr -d '[:space:]')" || true
+  view_acl_before="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT COALESCE(nspacl::text,'') FROM pg_namespace WHERE nspname='$APP_SCHEMA';" | tr -d '[:space:]')" || true
+  set +e
+  VIEW_OUT="$(bind_job "$BIND_RT" 2>&1)"
+  VIEW_CODE=$?
+  set -e
+  view_pw_after_rt="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT rolpassword FROM pg_authid WHERE rolname='$BIND_RT';" | tr -d '[:space:]')" || true
+  view_pw_after_mg="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT rolpassword FROM pg_authid WHERE rolname='$BIND_MG';" | tr -d '[:space:]')" || true
+  view_acl_after="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT COALESCE(nspacl::text,'') FROM pg_namespace WHERE nspname='$APP_SCHEMA';" | tr -d '[:space:]')" || true
+  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "DROP VIEW $APP_SCHEMA.foreign_owned_view;" >/dev/null
+  [ "$VIEW_CODE" -ne 0 ] || fail "bind granted over a foreign-owned view"
+  case "$VIEW_OUT" in *"unexpected owner"*) ;; *) printf '%s' "$VIEW_OUT" | safe_emit >&2; fail "foreign view refusal missed the marker" ;; esac
+  [ "$view_pw_before_rt" = "$view_pw_after_rt" ] || fail "refused bind mutated the runtime password"
+  [ "$view_pw_before_mg" = "$view_pw_after_mg" ] || fail "refused bind mutated the migration password"
+  [ "$view_acl_before" = "$view_acl_after" ] || fail "refused bind mutated the schema ACL"
+  unset view_pw_before_rt view_pw_before_mg view_pw_after_rt view_pw_after_mg view_acl_before view_acl_after
+  set +e
+  VIEW_FIX_OUT="$(bind_job "$BIND_RT" 2>&1)"
+  VIEW_FIX_CODE=$?
+  set -e
+  [ "$VIEW_FIX_CODE" -eq 0 ] || { printf '%s' "$VIEW_FIX_OUT" | safe_emit >&2; fail "rebind failed after foreign view cleanup"; }
+  log "pass: foreign-owned view refused with passwords and schema ACL unchanged, recovery rebind ok"
+
+  log "negative: foreign SUPERUSER grantor is refused, only OID 10 is native"
+  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "CREATE ROLE lc_evil_super SUPERUSER NOLOGIN;" >/dev/null
+  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "REVOKE $BIND_RT FROM $BIND_ADMIN;" >/dev/null
+  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "SET ROLE lc_evil_super; GRANT $BIND_RT TO $BIND_ADMIN; RESET ROLE;" >/dev/null
+  evil_grantor="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT m.grantor::text || ',' || grantor.rolsuper::text FROM pg_auth_members m JOIN pg_roles grantor ON grantor.oid = m.grantor WHERE m.roleid = (SELECT oid FROM pg_roles WHERE rolname = '$BIND_RT') AND m.member = (SELECT oid FROM pg_roles WHERE rolname = '$BIND_ADMIN');" | tr -d '[:space:]')" || true
+  case "$evil_grantor" in *,true) ;; *) fail "foreign grantor fixture did not stage a superuser grantor" ;; esac
+  case "$evil_grantor" in 10,*) fail "foreign grantor fixture unexpectedly used OID 10" ;; esac
+  set +e
+  EVIL_OUT="$(bind_job "$BIND_RT" 2>&1)"
+  EVIL_CODE=$?
+  set -e
+  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "REVOKE $BIND_RT FROM $BIND_ADMIN; DROP ROLE lc_evil_super;" >/dev/null
+  [ "$EVIL_CODE" -ne 0 ] || fail "bind accepted a foreign SUPERUSER grantor"
+  case "$EVIL_OUT" in *"memberships"*) ;; *) printf '%s' "$EVIL_OUT" | safe_emit >&2; fail "foreign grantor refusal missed the marker" ;; esac
+  set +e
+  EVIL_FIX_OUT="$(bind_job "$BIND_RT" 2>&1)"
+  EVIL_FIX_CODE=$?
+  set -e
+  [ "$EVIL_FIX_CODE" -eq 0 ] || { printf '%s' "$EVIL_FIX_OUT" | safe_emit >&2; fail "rebind failed after foreign grantor cleanup"; }
+  log "pass: foreign SUPERUSER grantor refused, zero-row recovery rebind ok"
 
   log "negative: wrong head is refused by verify"
   "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "UPDATE alembic_version SET version_num='003';" >/dev/null
@@ -721,7 +778,7 @@ print("42501 ok")
 
   bind_as "$BIND_MG" "$BIND_MG_PW" "DROP TABLE $APP_SCHEMA.bind_items;" >/dev/null || fail "owned bind table cleanup failed"
   unset ADMIN_PW BIND_RT_PW BIND_MG_PW INTR_PW RT_URL MG_URL INTR_URL
-  unset BIND_OUT VERIFY_OUT MIG_OUT INTR_OUT BYPASS_OUT FOREIGN_OUT FOREIGN_FIX_OUT GRP_OUT GRP_FIX_OUT OPTS_OUT OPTS_FIX_OUT OWN_OUT OWN_FIX_OUT OLD_OUT AGAIN_OUT REBIND_OUT POSTMIG_OUT
+  unset BIND_OUT VERIFY_OUT MIG_OUT INTR_OUT BYPASS_OUT FOREIGN_OUT FOREIGN_FIX_OUT GRP_OUT GRP_FIX_OUT OPTS_OUT OPTS_FIX_OUT OWN_OUT OWN_FIX_OUT VIEW_OUT VIEW_FIX_OUT EVIL_OUT EVIL_FIX_OUT OLD_OUT AGAIN_OUT REBIND_OUT POSTMIG_OUT
   log "PASS: bind and verify job proof complete on disposable 127.0.0.1:$PORT"
   log "loopback self-signed CA only, NOT live RDS TLS proof"
   log "admin fixture proves binder logic only, NOT RDS identity proof"
