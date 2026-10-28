@@ -1,18 +1,27 @@
 # LaunchCrew demo approval pack, isolated KoruShield demo
 
-Status: review only, refreshed Oct 28, 2026. No apply, no DNS, no secret,
-no paid resource, no deployment from this pack. Read-only validation was
+Status: review only, refreshed Oct 28, 2026. No app apply, no DNS,
+no AWS secret value, no paid resource, no deployment from this pack.
+Publisher access prereqs applied Oct 28, 2026 as the ONLY
+human-approved scope under its own review, see publisher section
+below; publisher execution remains UNRUN. Read-only validation was
 completed Oct 28, 2026 against us-east-1 with a limited inventory scope:
-Active CloudFormation stacks 0, ACM certificates 0, ECS clusters 0, ECR
-private repositories 0, Secrets Manager list 0 with no secret values
-retrieved; two available VPCs seen (default 172.31/16 and one existing
-nondefault 10.0.0.0/16) with no peering and no touch of existing
-resources; public DNS nameservers are Cloudflare and the demo hostname
-has no A, CNAME, or AAAA answer (NODATA or NOERROR), so it is not live
-TLS; browser read access proof only, never permission to provision or
-automate. No account ID, production names, resource names, spend amounts,
-or private URLs appear in public source or docs. This pack authorizes
-nothing; provisioning and any DNS record each need a separate user
+initial Active CloudFormation stacks 0, ACM certificates 0, ECS
+clusters 0, ECR private repositories 0, Secrets Manager list 0 with
+no secret values retrieved; two available VPCs seen (default
+172.31/16 and one existing nondefault 10.0.0.0/16) with no peering
+and no touch of existing resources; public DNS nameservers are
+Cloudflare and the demo hostname has no A, CNAME, or AAAA answer
+(NODATA or NOERROR), so it is not live TLS; browser read access
+proof only, never permission to provision or automate. That zero
+inventory is dated history now superseded for publisher scope only
+by the fulfilled `launchcrew-publisher` stack plus OIDC provider,
+role, and two GitHub secrets below; app demo stack, ACM, ECR app
+repos, AWS secret values, and DNS remain none. No account ID,
+production names, resource names, spend amounts, or private URLs
+appear in public source or docs. This pack authorizes nothing;
+publisher prereqs needed no reask once fulfilled, while app
+provisioning and any DNS record each still need a separate user
 authorization tap after this pack is reviewed. Every figure below is
 recomputed from primary public price evidence read Oct 28, 2026
 (Codex read-only, no AWS account), not copied from a fake total. Nothing
@@ -300,38 +309,83 @@ readbacks refuse with no EnableServices deploy). No AWS API is used by
 those checks. The shared PROJECT key activation stays a gated Billing
 approval with no resources changed by it.
 
-## Manual ECR publisher role and cleanup scope added in this source pass, not run here
+## Manual ECR publisher, source added in prior pass, prereqs applied Oct 28, 2026, execution UNRUN
 
-Source preparation only: `.github/workflows/publish-ecr.yml`
-(dispatch only, exact repo and main guard, one concurrent run without
-cancel of an active run, bounded timeout, contents read plus id-token
-write only, pinned official actions, private secrets for the expected
-account and the publisher role ARN), `scripts/publish-ecr.sh` (dry run
-default with zero calls, exact source SHA and clean tracked tree,
-assumed role identity with ROOT refused, owned stack proof, exact
-stack tags, CE Project Active UserDefined, five stack bindings,
-IMMUTABLE with no exclusions and exact resource tags everywhere, any
-existing tag refused before any build or push with no overwrite and no
-replay, full SHA tags, five app pushes never db, digest file only with
-push stdout never parsed, stdin login with private auth file cleanup,
+Source added in prior pass, preserved dated history:
+`.github/workflows/publish-ecr.yml` (dispatch only, exact repo and
+main guard, one concurrent run without cancel of an active run,
+bounded timeout, contents read plus id-token write only, pinned
+official actions, private secrets for the expected account and the
+publisher role ARN), `scripts/publish-ecr.sh` (dry run default with
+zero calls, exact source SHA and clean tracked tree, assumed role
+identity with ROOT refused, owned stack proof, exact stack tags, CE
+Project Active UserDefined, five stack bindings, IMMUTABLE with no
+exclusions and exact resource tags everywhere, any existing tag
+refused before any build or push with no overwrite and no replay,
+full SHA tags, five app pushes never db, digest file only with push
+stdout never parsed, stdin login with private auth file cleanup,
 fixed errors with no raw streams, manifest only on five matching
-readbacks and never over a preexisting file), `deploy/aws/publisher-role.yaml` (exact immutable main
-subject plus audience, existing provider ARN parameter with no shared
-provider change, five exact repo ARNs, GetAuthorizationToken on
-Resource star only, CE metadata read only, minimum reads on the owned
-stack ARN only, no stack write or IAM mutation or pass through or
-deployment access, 3600 second max session, Project and Environment
-demo tags), `ImageTagMutability: IMMUTABLE` on the five existing ECR
-resources in `deploy/aws/fargate.yaml`, and `docs/ecr-publication.md`
-for setup, publish, verify, and teardown. Read-only preflight fact:
-CloudShell already proves the operator identity is ROOT, so the helper
-refuses that identity before any push; no account ID appears here.
-Cleanup scope: publication creates no stack. The five repositories
-empty and delete with the demo stack delete. The publisher role and
-the two private secrets live outside the stack and are deleted by
-their own step after the demo window. No role, provider, secret,
-dispatch, push, deploy, DNS, spend, or recording action is approved or
-claimed by this pack. Host checks after the authoring terminal are
-mandatory before any publish: focused offline tests in
-`tests/test_publish_ecr.py`, static parses of the role and workflow,
-plus the full suite.
+readbacks and never over a preexisting file),
+`deploy/aws/publisher-role.yaml` (exact immutable main subject plus
+audience, existing provider ARN parameter with no shared provider
+change, five exact repo ARNs, GetAuthorizationToken on Resource star
+only, CE metadata read only, minimum reads on the owned stack ARN
+only, no stack write or IAM mutation or pass through or deployment
+access, 3600 second max session, Project and Environment demo tags),
+`ImageTagMutability: IMMUTABLE` on the five existing ECR resources
+in `deploy/aws/fargate.yaml`, and `docs/ecr-publication.md` for
+setup, publish, verify, and teardown. Read-only preflight fact,
+preserved dated history: CloudShell already proves the preflight
+operator identity is ROOT, so the helper refuses that identity
+before any push; no account ID appears here.
+
+Applied Oct 28, 2026 as the ONLY human-approved scope, after review
+of published f08 policy; app infra, deploy, spend, ECR push,
+dispatch, DNS, and model calls remain unapproved and unrun. Full
+readbacks live in `docs/ecr-publication.md`; summary here with no
+private IDs. Published main
+`f08b3c3464abe11bf88806db7a0bdd5090383f39` is clean; Exact CI
+`40738345974` is TERMINAL SUCCESS:
+https://github.com/summitsingh/launchcrew/actions/runs/40738345974
+(296 core, 271 backend, 71 Vitest plus contracts plus typecheck
+plus build with zero scans, 24 browser, 6 Linux image builds
+including bootstrap, real container create plus receipt plus block
+plus export gates plus queue PASS, no model calls). Actual new
+GitHub OIDC provider created with canonical issuer, audience ONLY
+`sts.amazonaws.com`, owner tags, and 1 AWS retrieved thumbprint;
+no shared provider changed. Separate stack
+`launchcrew-publisher` used the exact f08 template snapshot hash
+`5e9083f644efb5a93cae9c8b1088ef610aeb55bcc64f43adfc077a986aad420c`,
+ValidateTemplate accepted with CAPABILITY_NAMED_IAM then CREATE
+ONLY to TERMINAL CREATE_COMPLETE; sole resource PublisherRole
+`launchcrew-ecr-publisher` CREATE_COMPLETE with both owner tags;
+exact ARNs held PRIVATE. GetRole trust is the exact immutable main
+subject plus audience on the same-account provider with
+AssumeRoleWithWebIdentity only, 3600 max and 900 workflow;
+GetRolePolicy is the exact five app ECR ARNs plus token star plus
+CE metadata star plus own demo stack reads, with no IAM, PassRole,
+ECS, SecretsManager, S3, or deploy actions; attached policies
+EMPTY and inline exactly `ecr-publish-readback`; no root
+credentials used and no OIDC session requested. GitHub OIDC
+readback use_default true plus use_immutable_subject true with
+matching prefix; repo secrets started at 0, created ONLY the two
+publisher names via gh stdin encryption with account metadata
+plus RoleARN only, metadata readback total 2 at Oct 28 T18:09Z,
+values never readable back; no static key. No dispatch, publish,
+app infra, DNS, SNS, model call, recording, or submission. Live
+IAM proof is retained privately and cannot be verified from public
+CI or source alone; no public Cloud proof URL or ID is invented.
+Publisher execution, actual RDS privileges, live TLS,
+credentials, and gated deploy remain unknown and unproven; loopback
+PG plus self-signed TLS is NOT RDS proof.
+
+Cleanup scope: image publication creates no app stack. The five
+repositories empty and delete with the demo stack delete. The
+fulfilled publisher stack plus OIDC provider, role, and two
+private secrets live outside the demo stack and are deleted by
+their own step after the demo window. No app role, provider,
+secret value, dispatch, push, deploy, DNS, spend, recording, or
+model action is approved or claimed by this pack. Host checks
+after the authoring terminal are mandatory before any publish:
+focused offline tests in `tests/test_publish_ecr.py`, static
+parses of the role and workflow, plus the full suite.

@@ -1,15 +1,21 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  LaunchCrew manual ECR publisher role, review only, NOT applied.
-  No provider, role, secret, dispatch, push, or deployment is created by
-  this file. The role trusts one exact immutable GitHub OIDC subject on
-  the main ref plus the exact audience, and grants only ECR upload,
-  readback, describe, and list tags on the five exact app repositories,
-  plus metadata reads needed by scripts/publish-ecr.sh. No stack write,
-  no IAM mutation, no PassRole, no ECS, no SecretsManager, no S3, no
-  deployment access, no broad managed policy, no chaining, no runtime
-  secret. Region, account, provider, and image URIs stay parameters or
-  pseudo references, never committed values.
+  LaunchCrew manual ECR publisher role. The role trusts one exact
+  immutable GitHub OIDC subject on the main ref plus the exact audience,
+  and grants only ECR upload, readback, describe, and list tags on the
+  five exact app repositories, plus metadata reads needed by
+  scripts/publish-ecr.sh. No stack write, no IAM mutation, no PassRole,
+  no ECS, no SecretsManager, no S3, no deployment access, no broad
+  managed policy, no chaining, no runtime secret. Region, account,
+  provider, and image URIs stay parameters or pseudo references, never
+  committed values. First applied Oct 28, 2026 from published main
+  f08b3c3 snapshot with template hash
+  5e9083f644efb5a93cae9c8b1088ef610aeb55bcc64f43adfc077a986aad420c
+  via separate stack launchcrew-publisher, ValidateTemplate accepted
+  with CAPABILITY_NAMED_IAM then CREATE only to CREATE_COMPLETE. This
+  edited description text is not the applied bytes; the f08 snapshot
+  hash above remains the immutable applied evidence. Publisher workflow
+  execution remains UNRUN.
 Parameters:
   GitHubOidcProviderArn:
     Type: String

@@ -1,33 +1,103 @@
-# Manual ECR publication, source only
+# Manual ECR publication, execution UNRUN
 
-Status: source preparation only. No role, provider, secret, dispatch,
-push, deploy, or paid action is created or run by this document or the
-source it describes. All checks run on the host after the authoring
-terminal exits.
+Status: publisher access prereqs applied Oct 28, 2026 as the ONLY
+human-approved scope; publisher workflow execution remains UNRUN.
+Human explicitly approved ONLY publisher access prereqs after
+reviewing published f08 policy, NOT app infra, deploy, spend, ECR
+push, dispatch, DNS, or model calls. No dispatch, push, deploy, or
+paid action is run by this document or the source it describes.
+Source published does NOT grant further actions. All checks run on
+the host after the authoring terminal exits.
 
-## Setup (separately gated, not done here)
+## Applied state Oct 28, 2026, prereqs fulfilled, execution UNRUN
 
-1. If absent, create the account-global GitHub OIDC provider once
+Published main `f08b3c3464abe11bf88806db7a0bdd5090383f39` is clean.
+Exact CI `40738345974` is TERMINAL SUCCESS:
+https://github.com/summitsingh/launchcrew/actions/runs/40738345974.
+Actual 296 core 34.684s, 271 backend 10.98s, 71 Vitest plus contracts
+plus typecheck plus build with all zero scans, 24 browser 2.3min, 6
+actual Linux image builds including bootstrap, real container
+API/web/proxy create plus receipt plus seeded block plus export 422
+before approval plus export 200 after approval plus queue PASS; no
+model calls. Full host `3a30a8a` previous 271 backend plus 291 core
+plus 71 Vitest plus 24 browser 1.9min PASS; final f08 affected 43
+publisher 84.208s PASS. Public source and CI links support
+source and runtime keyless proof only.
+
+Actual new GitHub OIDC provider created, with persisted get
+readback canonical issuer `token.actions.githubusercontent.com`,
+audience ONLY `sts.amazonaws.com`, Project LaunchCrew plus
+Environment demo tags, and AWS retrieved 1 thumbprint normal
+CA/TLS. No shared provider changed.
+
+Separate stack `launchcrew-publisher` used the exact f08 published
+`publisher-role.yaml` snapshot hash
+`5e9083f644efb5a93cae9c8b1088ef610aeb55bcc64f43adfc077a986aad420c`.
+Actual AWS ValidateTemplate accepted with
+CAPABILITY_NAMED_IAM, then CREATE ONLY. Exact stack ARN is held
+PRIVATE. Actual DescribeStacks is TERMINAL CREATE_COMPLETE; sole
+StackResource is PublisherRole type AWS::IAM::Role name
+`launchcrew-ecr-publisher` CREATE_COMPLETE, with both owner tags.
+
+Actual GetRole trust is the exact immutable main subject
+`repo:summitsingh@400621/launchcrew@1436365964:ref:refs/heads/main`
+plus audience `sts.amazonaws.com` on the Federated same-account
+GitHub provider, Action AssumeRoleWithWebIdentity only, max
+session 3600 and workflow 900. Actual GetRolePolicy is the exact
+source five app ECR ARNs plus token star plus CE tag metadata star
+plus own `launchcrew-demo` stack reads, with no IAM, PassRole,
+ECS, SecretsManager, S3, or deploy actions.
+List-attached-role-policies is EMPTY; list-role-policies is
+exactly `ecr-publish-readback`. No root credentials were used for
+publisher login or push, and no actual OIDC session was requested.
+
+GitHub settings actual OIDC readback is use_default true plus
+use_immutable_subject true, with the prefix matching the role
+policy. Target repo secret LIST started at total 0 and matching
+none. Created ONLY `ECR_PUBLISH_EXPECTED_ACCOUNT_ID` plus
+`ECR_PUBLISHER_ROLE_ARN` through gh client stdin encryption,
+with inputs account metadata plus readback RoleARN only and no
+Meta or DB keys. Persisted API metadata readback is total 2 with
+the two correct names and creation timestamps Oct 28 T18:09Z.
+Values are not readable back by the GitHub API; this is metadata
+readback, not secret value readback. No new static access key. No
+dispatch, ECR publish, app infra, DNS, SNS subscription, model
+call, recording, or submission.
+
+Proof of live AWS IAM state is retained privately with the user
+and cannot be verified from public CI or source alone. No public
+Cloud proof URL or ID is invented here. Dated source-only design
+remains history; the old no role, provider, or secret EVER wording
+is now superseded for publisher prereqs only. App infra, ECR
+push, dispatch, DNS, spend, and model calls remain unapproved and
+unrun.
+
+## Setup, fulfilled Oct 28, 2026 under its own approval
+
+1. Done: the account-global GitHub OIDC provider was created once
    (URL https://token.actions.githubusercontent.com, client ID
-   sts.amazonaws.com) under its own approval. Provider existence is
-   otherwise unverified here. Never alter shared provider state from
-   the publisher template: no provider create, update, delete, or
-   GitHub subject customization change.
-2. Apply `deploy/aws/publisher-role.yaml` under its own approval with
-   the existing provider ARN as parameter. The parameter pattern only
-   accepts `arn:aws:iam::` plus 12 digits plus
-   `:oidc-provider/token.actions.githubusercontent.com`. The operator
-   pre-apply review still confirms the same signed-in account, the
-   provider URL, the audience, and that no shared provider change is
-   included. Record the output role ARN privately.
-3. Store two private repository secrets, values never in public
-   source: `ECR_PUBLISH_EXPECTED_ACCOUNT_ID` (12 digits) and
-   `ECR_PUBLISHER_ROLE_ARN`. No account ID or ARN appears in dispatch
-   inputs, manifests, logs, or artifacts.
-4. Read-only preflight fact: CloudShell already proves the operator
-   identity is ROOT (not the publisher), so a publish attempt from the
-   preflight identity would be refused by the helper before any cloud
-   mutation. No account ID is published here.
+   sts.amazonaws.com) with the readback above. Never alter shared
+   provider state from the publisher template: no provider create,
+   update, delete, or GitHub subject customization change.
+2. Done: `deploy/aws/publisher-role.yaml` f08 snapshot hash above
+   was applied under its own approval with the existing provider
+   ARN as parameter. The parameter pattern only accepts
+   `arn:aws:iam::` plus 12 digits plus
+   `:oidc-provider/token.actions.githubusercontent.com`. The
+   operator pre-apply review confirmed the same signed-in account,
+   the provider URL, the audience, and no shared provider change.
+   The output role ARN was recorded privately.
+3. Done: two private repository secrets exist, values never in
+   public source: `ECR_PUBLISH_EXPECTED_ACCOUNT_ID` (12 digits)
+   and `ECR_PUBLISHER_ROLE_ARN`. No account ID or ARN appears in
+   dispatch inputs, manifests, logs, or artifacts.
+4. Read-only preflight fact, preserved dated history: CloudShell
+   already proves the preflight operator identity is ROOT (not the
+   publisher), so a publish attempt from that preflight identity
+   would be refused by the helper before any cloud mutation. No
+   root credentials were used for publisher login or push, and no
+   actual OIDC session was requested. No account ID is published
+   here.
 
 ## Publish
 
@@ -67,11 +137,13 @@ in public source.
 
 ## Teardown and cleanup scope
 
-Publication creates no stack and no standing resource. The five ECR
-repositories empty and delete with the demo stack delete. The
-publisher role and the two private secrets are outside the stack and
-are removed by their own delete step after the demo window closes.
-Teardown of the demo stays in `deploy/aws/teardown.sh`.
+Image publication creates no app stack. The fulfilled publisher
+access stack `launchcrew-publisher` plus the OIDC provider, the
+publisher role, and the two private secrets live outside the demo
+stack and are removed by their own delete step after the demo
+window closes. The five ECR repositories empty and delete with the
+demo stack delete. Teardown of the demo stays in
+`deploy/aws/teardown.sh`.
 
 ## Boundaries
 
@@ -86,6 +158,8 @@ AWS CLI to Podman only, never in argv, files, or output. The Podman
 auth file holds registry credentials as reversible credential storage
 on local disk during the run (valid empty JSON, private mode 600
 inside an owned mode 700 temp dir, set before login) and is always
-removed on success and on failure. Cost,
-deploy, IAM, secret, DNS, recording, and submission approvals remain
-pending and unchanged.
+removed on success and on failure. Publisher access prereqs are
+fulfilled and need no reask; app deploy, spend, ECR push,
+publisher execution, DNS, recording, submission, and model call
+approvals remain pending and unchanged. Source published does NOT
+grant further actions.
