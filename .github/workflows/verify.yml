@@ -17,6 +17,8 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           version: '0.11.32'
+          # Fallback: a stray uv process must not fail post-job cache pruning.
+          prune-cache: false
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -51,9 +53,13 @@ jobs:
           mkdir -p .local
           uv run alembic upgrade head
           uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000 --no-access-log > .local/api.log 2>&1 &
+          API_PID=$!
           pnpm --dir web start > .local/web.log 2>&1 &
+          WEB_PID=$!
+          trap 'kill $API_PID $WEB_PID 2>/dev/null || true' EXIT
           for attempt in {1..60}; do if curl -fsS http://127.0.0.1:3000/api/health; then break; fi; sleep 1; done
           pnpm --dir web test:e2e
+          kill $API_PID $WEB_PID 2>/dev/null || true
       - name: Podman OCI build and run
         run: |
           podman --version
