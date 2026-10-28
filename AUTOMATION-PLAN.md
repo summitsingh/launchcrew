@@ -1,3 +1,7 @@
+# Historical automation plan
+
+The FastAPI and Postgres replacement uses README.md as its local runbook. File receipt storage below describes only the retained legacy CLI.
+
 # LaunchCrew automation plan
 
 ## Machine fallback
@@ -51,7 +55,7 @@ Concrete resources for coordinator pricing and confirmation:
 - Separate IAM runtime and deployment roles, minimal permissions, isolated storage only if needed for receipts.
 - No database in v1 unless the coordinator explicitly approves one. No load balancer unless required.
 
-Recommend us-east-1 for coordinator confirmation. File receipts require a single instance and writable runs directory. Serverless ephemeral storage may lose receipts on restart; coordinator must choose an appropriate demo storage lifecycle and verify this limitation before deploying. Dockerfile is preparation only. Do not provision AWS or create DNS in this run.
+Recommend us-east-1 for coordinator confirmation. File receipts require a single instance and writable runs directory. Serverless ephemeral storage may lose receipts on restart; coordinator must choose an appropriate demo storage lifecycle and verify this limitation before deploying. The old Dockerfile is superseded by the Podman Containerfiles. See README.md and docs/aws-prep.md for the replacement stack. Do not provision AWS or create DNS in this run.
 
 ## AWS and DNS findings
 

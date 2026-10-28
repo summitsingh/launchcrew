@@ -1,3 +1,7 @@
+# Historical deployment checklist
+
+The replacement stack uses Podman and containers/*.Containerfile. Follow README.md and docs/aws-prep.md; older stdlib storage notes below are superseded for new runs. No provisioning or DNS is authorized in this run.
+
 # LaunchCrew deployment checklist, preparation only
 
 No AWS or DNS commands are authorized in this run. Target is launchcrew.summitsingh.com only. This is an isolated demo, separate from Koru Shield production.
@@ -5,7 +9,7 @@ No AWS or DNS commands are authorized in this run. Target is launchcrew.summitsi
 - [ ] Coordinator prices a smallest suitable container host or serverless container, TLS, logs, and Cloudflare custom-domain record. Recommend us-east-1, subject to confirmation.
 - [ ] Summit fills cost cap: __________, budget period: __________, before actual provisioning. Provisioning is approved in principle when the web UI is ready; no provisioning in Stage C.
 - [ ] Separate deployment and runtime IAM roles and resources, no production data, production credentials, or shared secrets. No database unless coordinator approved.
-- [ ] Build Dockerfile locally and inspect the image contents. Python standard library only. No API key, .env, credentials, or receipt history in image. Run as non-root.
+- [ ] Build containers/*.Containerfile locally with scripts/podman-local.sh build and inspect the OCI images. The replacement uses FastAPI, Next.js, and Postgres. No API key, .env, credentials, or receipt history in image. Run as non-root.
 - [ ] Configure PORT (default 8765); container explicitly binds 0.0.0.0. Host startup remains local-only by default.
 - [ ] Provide writable runs storage for non-root UID 10001. Single instance only for file-based receipts. Confirm restart persistence or accept temporary demo receipts explicitly.
 - [ ] Set bounded log retention, no request bodies, headers, or secrets. Report inventory and cost before and after deployment.
