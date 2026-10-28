@@ -13,6 +13,9 @@
 # Env:
 #   PG_BIN=/path/to/pg18/bin (dir with initdb, pg_ctl, psql)
 #   PG_VERIFY_PORT=55432 (optional nondefault loopback port)
+# Stage 2 also needs python3 with psycopg, alembic, sqlalchemy plus the
+# backend store importable, and openssl for the disposable certificate.
+# Every missing piece fails with its own message, never a silent pass.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -326,4 +329,201 @@ expect_success "migration DROP TABLE proof" "$MIGRATION_USER" "DROP TABLE $APP_S
 log "verify_items still present after rejected runtime DROP"
 expect_success "migration SELECT verify_items" "$MIGRATION_USER" "SELECT count(*) FROM $APP_SCHEMA.verify_items;"
 
-log "PASS: db-roles verification complete on disposable 127.0.0.1:$PORT"
+log "PASS: db-roles file proof complete on disposable 127.0.0.1:$PORT"
+
+bind_verify_live() {
+  log "stage 2: actual bind and verify job on the disposable cluster"
+  log "loopback only with a disposable self-signed CA; this exercises the"
+  log "real verify-full code path but is NOT live RDS TLS proof"
+  command -v python3 >/dev/null 2>&1 || fail "python3 is required for stage 2"
+  command -v openssl >/dev/null 2>&1 || fail "openssl is required for stage 2 certificates, no bundle can be made without it"
+  python3 -c "import psycopg" 2>/dev/null || fail "python3 psycopg is required for stage 2, no database driver means no invented pass"
+  python3 -c "import alembic, sqlalchemy" 2>/dev/null || fail "python3 alembic and sqlalchemy are required for stage 2, no migration run without them means no invented pass"
+  (cd "$REPO_ROOT" && python3 -c "import backend.store" 2>/dev/null) || fail "backend.store must import for the alembic run in stage 2"
+  head_expected="$(grep -E "^revision = " "$REPO_ROOT/backend/migrations/versions/004_run_steps.py" | cut -d"'" -f2)" || true
+  head_script="$(grep -E "^EXPECTED_HEAD = " "$REPO_ROOT/scripts/bootstrap_db_roles.py" | cut -d'"' -f2)" || true
+  [ -n "$head_expected" ] || fail "migration head unreadable, no invented pass"
+  [ "$head_expected" = "$head_script" ] || fail "EXPECTED_HEAD $head_script does not match migration head $head_expected"
+
+  BIND_DB="lc_bind_db"
+  BIND_RT="lc_bind_runtime"
+  BIND_MG="lc_bind_migration"
+  log "create disposable bind database $BIND_DB"
+  "$PG_BIN_DIR/createdb" -h 127.0.0.1 -p "$PORT" -U "$SUPERUSER" "$BIND_DB"
+
+  log "apply actual db-roles.sql with bind identities"
+  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" \
+    -v ON_ERROR_STOP=1 --single-transaction \
+    -v runtime_user="$BIND_RT" \
+    -v migration_user="$BIND_MG" \
+    -v app_schema="$APP_SCHEMA" \
+    -f "$SQL_FILE"
+
+  CERTDIR="$PGDATA/certs"
+  mkdir -p "$CERTDIR"
+  chmod 700 "$CERTDIR"
+  openssl req -x509 -newkey rsa:2048 -keyout "$CERTDIR/server.key" \
+    -out "$CERTDIR/server.crt" -days 2 -nodes \
+    -subj "/CN=127.0.0.1" \
+    -addext "subjectAltName=IP:127.0.0.1,DNS:localhost" >/dev/null 2>&1 \
+    || fail "openssl could not create the disposable certificate"
+  chmod 600 "$CERTDIR/server.key"
+  {
+    echo "ssl = on"
+    echo "ssl_cert_file = '$CERTDIR/server.crt'"
+    echo "ssl_key_file = '$CERTDIR/server.key'"
+  } >>"$PGDATA/postgresql.conf"
+  "$PG_BIN_DIR/pg_ctl" -D "$PGDATA" -l "$LOGFILE" \
+    -o "-h 127.0.0.1 -p $PORT -k $SOCKDIR -c listen_addresses='127.0.0.1'" -w restart
+  ssl_on="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=postgres user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SHOW ssl;" | tr -d '[:space:]')" || true
+  [ "$ssl_on" = "on" ] || fail "disposable server has no SSL support, cannot exercise verify-full, no invented pass"
+  log "disposable server SSL is on with a fresh self-signed CA"
+
+  HBA="$PGDATA/pg_hba.conf"
+  {
+    echo "host $BIND_DB $BIND_RT 127.0.0.1/32 scram-sha-256"
+    echo "host $BIND_DB $BIND_MG 127.0.0.1/32 scram-sha-256"
+    cat "$HBA"
+  } >"$HBA.new" || fail "could not stage password-auth pg_hba"
+  mv "$HBA.new" "$HBA" || fail "could not install password-auth pg_hba"
+  "$PG_BIN_DIR/pg_ctl" -D "$PGDATA" -w reload
+  log "bind roles use password auth, everything else keeps trust auth"
+
+  BIND_RT_PW="$(python3 -c 'import secrets; print(secrets.token_hex(18))')"
+  BIND_MG_PW="$(python3 -c 'import secrets; print(secrets.token_hex(18))')"
+  MASTER_PW="$(python3 -c 'import secrets; print(secrets.token_hex(18))')"
+  INTR_PW="$(python3 -c 'import secrets; print(secrets.token_hex(18))')"
+  [ "${#BIND_RT_PW}" -ge 32 ] || fail "synthetic password generation failed"
+  RT_URL="postgresql://${BIND_RT}:${BIND_RT_PW}@127.0.0.1:${PORT}/${BIND_DB}?sslmode=verify-full"
+  MG_URL="postgresql://${BIND_MG}:${BIND_MG_PW}@127.0.0.1:${PORT}/${BIND_DB}?sslmode=verify-full"
+  INTR_URL="postgresql://lc_intruder_demo:${INTR_PW}@127.0.0.1:${PORT}/${BIND_DB}?sslmode=verify-full"
+
+  bind_job() {
+    LAUNCHCREW_DB_TLS_MODE=verify-full DATABASE_SSL_ROOTCERT="$CERTDIR/server.crt" \
+      DB_HOST=127.0.0.1 DB_PORT="$PORT" DB_NAME="$BIND_DB" \
+      DB_MASTER_USER="$SUPERUSER" MASTER_DB_PASSWORD="$MASTER_PW" \
+      RUNTIME_DB_URL="$RT_URL" MIGRATION_DB_URL="$MG_URL" \
+      RUNTIME_USER="$1" MIGRATION_USER="$BIND_MG" APP_SCHEMA="$APP_SCHEMA" \
+      python3 "$REPO_ROOT/scripts/bootstrap_db_roles.py" --bind 2>&1
+  }
+
+  log "run actual scripts/bootstrap_db_roles.py --bind"
+  set +e
+  BIND_OUT="$(bind_job "$BIND_RT")"
+  BIND_CODE=$?
+  set -e
+  [ "$BIND_CODE" -eq 0 ] || { echo "$BIND_OUT" >&2; fail "actual --bind failed"; }
+  case "$BIND_OUT" in *"BIND COMPLETE"*) ;; *) echo "$BIND_OUT" >&2; fail "actual --bind missed BIND COMPLETE" ;; esac
+  case "$BIND_OUT" in *"$BIND_RT_PW"*|*"$BIND_MG_PW"*|*"$MASTER_PW"*) fail "bind output leaked a synthetic password" ;; esac
+  log "pass: actual --bind complete with no password in output"
+
+  pwset="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT count(*) FROM pg_authid WHERE rolname IN ('$BIND_RT','$BIND_MG') AND rolpassword IS NOT NULL;" | tr -d '[:space:]')" || true
+  [ "$pwset" = "2" ] || fail "bind did not set both role passwords"
+  log "pass: both role passwords are set in the catalog"
+
+  bind_as() {
+    as_user="$1"
+    as_pw="$2"
+    as_sql="$3"
+    PGPASSWORD="$as_pw" "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$as_user sslmode=verify-full sslrootcert=$CERTDIR/server.crt" -v ON_ERROR_STOP=1 -tAc "$as_sql"
+  }
+
+  log "password auth with the bound password works, a wrong one fails"
+  set +e
+  bind_as "$BIND_RT" "$BIND_RT_PW" "SELECT 1;" >/dev/null 2>&1
+  auth_ok=$?
+  bind_as "$BIND_RT" "wrong-password-for-negative-check" "SELECT 1;" >/dev/null 2>&1
+  auth_bad=$?
+  set -e
+  [ "$auth_ok" -eq 0 ] || fail "password auth with the bound password failed"
+  [ "$auth_bad" -ne 0 ] || fail "password auth accepted a wrong password"
+  log "pass: bound password authenticates, wrong password is refused"
+
+  log "alembic upgrade head via the migration role"
+  set +e
+  MIG_OUT="$(cd "$REPO_ROOT" && DATABASE_URL="$MG_URL" LAUNCHCREW_DB_TLS_MODE=verify-full DATABASE_SSL_ROOTCERT="$CERTDIR/server.crt" python3 -m alembic upgrade head 2>&1)"
+  MIG_CODE=$?
+  set -e
+  [ "$MIG_CODE" -eq 0 ] || { echo "$MIG_OUT" >&2; fail "alembic upgrade head failed"; }
+  ver="$(bind_as "$BIND_MG" "$BIND_MG_PW" "SELECT version_num FROM alembic_version;" | tr -d '[:space:]')" || true
+  [ "$ver" = "004" ] || fail "alembic head is $ver, expected 004"
+  log "pass: alembic head 004 applied via the migration role"
+
+  verify_job() {
+    LAUNCHCREW_DB_TLS_MODE=verify-full DATABASE_SSL_ROOTCERT="$CERTDIR/server.crt" \
+      DB_HOST=127.0.0.1 DB_PORT="$PORT" DB_NAME="$BIND_DB" \
+      RUNTIME_DB_URL="$RT_URL" RUNTIME_USER="$BIND_RT" APP_SCHEMA="$APP_SCHEMA" \
+      python3 "$REPO_ROOT/scripts/bootstrap_db_roles.py" --verify 2>&1
+  }
+
+  log "run actual --verify with the runtime URL only"
+  set +e
+  VERIFY_OUT="$(verify_job)"
+  VERIFY_CODE=$?
+  set -e
+  [ "$VERIFY_CODE" -eq 0 ] || { echo "$VERIFY_OUT" >&2; fail "actual --verify failed at head 004"; }
+  case "$VERIFY_OUT" in *"VERIFY COMPLETE"*|*"revision=004"*) ;; *) echo "$VERIFY_OUT" >&2; fail "actual --verify missed proof markers" ;; esac
+  case "$VERIFY_OUT" in *"$BIND_RT_PW"*|*"$RT_URL"*) fail "verify output leaked a synthetic secret" ;; esac
+  log "pass: actual --verify proves 004, identity, rolled-back write, DDL refusal"
+
+  log "bind roles repeat the CRUD and DDL split directly"
+  bind_as "$BIND_MG" "$BIND_MG_PW" "CREATE TABLE $APP_SCHEMA.bind_items (id SERIAL PRIMARY KEY, note TEXT);" >/dev/null || fail "migration role cannot create"
+  bind_as "$BIND_RT" "$BIND_RT_PW" "INSERT INTO $APP_SCHEMA.bind_items(note) VALUES ('bind-row-1') RETURNING id;" >/dev/null || fail "runtime role cannot insert"
+  bind_as "$BIND_RT" "$BIND_RT_PW" "SELECT count(*) FROM $APP_SCHEMA.bind_items;" >/dev/null || fail "runtime role cannot select"
+  set +e
+  bind_as "$BIND_RT" "$BIND_RT_PW" "CREATE TABLE $APP_SCHEMA.bind_nope (id integer);" >/dev/null 2>&1
+  rt_ddl=$?
+  set -e
+  [ "$rt_ddl" -ne 0 ] || fail "runtime role created a table, split broken"
+  log "pass: runtime CRUD works and runtime DDL is refused"
+
+  log "negative: unowned superuser role is refused, never taken over"
+  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "CREATE ROLE lc_intruder_demo SUPERUSER LOGIN;" >/dev/null
+  set +e
+  INTR_OUT="$(RUNTIME_DB_URL="$INTR_URL" RUNTIME_USER=lc_intruder_demo LAUNCHCREW_DB_TLS_MODE=verify-full DATABASE_SSL_ROOTCERT="$CERTDIR/server.crt" \
+    DB_HOST=127.0.0.1 DB_PORT="$PORT" DB_NAME="$BIND_DB" \
+    DB_MASTER_USER="$SUPERUSER" MASTER_DB_PASSWORD="$MASTER_PW" \
+    MIGRATION_DB_URL="$MG_URL" \
+    MIGRATION_USER="$BIND_MG" APP_SCHEMA="$APP_SCHEMA" \
+    python3 "$REPO_ROOT/scripts/bootstrap_db_roles.py" --bind 2>&1)"
+  INTR_CODE=$?
+  set -e
+  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "DROP ROLE lc_intruder_demo;" >/dev/null
+  [ "$INTR_CODE" -ne 0 ] || fail "bind took over an unowned superuser role"
+  case "$INTR_OUT" in *"role-safety"*) ;; *) echo "$INTR_OUT" >&2; fail "superuser refusal missed the role-safety marker" ;; esac
+  log "pass: unowned superuser refused with role-safety"
+
+  log "negative: membership takeover is refused"
+  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "CREATE ROLE lc_group_demo NOLOGIN; GRANT lc_group_demo TO $BIND_RT;" >/dev/null
+  set +e
+  GRP_OUT="$(bind_job "$BIND_RT" 2>&1)"
+  GRP_CODE=$?
+  set -e
+  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "REVOKE lc_group_demo FROM $BIND_RT; DROP ROLE lc_group_demo;" >/dev/null
+  [ "$GRP_CODE" -ne 0 ] || fail "bind took over a role with memberships"
+  case "$GRP_OUT" in *"memberships"*) ;; *) echo "$GRP_OUT" >&2; fail "membership refusal missed the marker" ;; esac
+  log "pass: membership takeover refused"
+
+  log "negative: wrong head is refused by verify"
+  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "UPDATE alembic_version SET version_num='003';" >/dev/null
+  set +e
+  OLD_OUT="$(verify_job 2>&1)"
+  OLD_CODE=$?
+  set -e
+  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "UPDATE alembic_version SET version_num='004';" >/dev/null
+  [ "$OLD_CODE" -ne 0 ] || fail "verify accepted the old head 003"
+  case "$OLD_OUT" in *"FAIL"*) ;; *) echo "$OLD_OUT" >&2; fail "old head refusal left no FAIL marker" ;; esac
+  set +e
+  AGAIN_OUT="$(verify_job 2>&1)"
+  AGAIN_CODE=$?
+  set -e
+  [ "$AGAIN_CODE" -eq 0 ] || { echo "$AGAIN_OUT" >&2; fail "verify failed after restoring head 004"; }
+  log "pass: old head refused, restored head proves again"
+
+  unset BIND_RT_PW BIND_MG_PW MASTER_PW INTR_PW RT_URL MG_URL INTR_URL
+  unset BIND_OUT VERIFY_OUT MIG_OUT INTR_OUT GRP_OUT OLD_OUT AGAIN_OUT
+  log "PASS: bind and verify job proof complete on disposable 127.0.0.1:$PORT"
+  log "loopback self-signed CA only, NOT live RDS TLS proof"
+}
+
+bind_verify_live

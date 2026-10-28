@@ -17,8 +17,10 @@
 #   phase migrate run the single one-off migration task, require STOPPED exit
 #                 code 0, then run the separate verify task definition in
 #                 verify mode as schema and runtime-identity proof
-#   phase enable  update the stack with EnableServices=true for fixed count 1
-#                 each, then verify both services report desired 1 and running 1
+#   phase enable  re-prove images, owned secrets and execution roles, and the
+#                 runtime-only verify proof, then update the stack with
+#                 EnableServices=true for fixed count 1 each, then verify both
+#                 services report desired 1 and running 1
 # The migration task definition is the only schema change path; the bootstrap
 # task never runs alembic, and runtime tasks never run alembic or role binds,
 # so there are no duplicate migration controllers. This controller never calls
@@ -55,6 +57,7 @@ CLUSTER_NAME="launchcrew-demo"
 RUNTIME_SECRET_ARN=""
 MIGRATION_SECRET_ARN=""
 MASTER_SECRET_ARN=""
+TLS_SECRET_ARN=""
 
 usage() {
   echo "Usage: $0 [--confirm --stack-name NAME --expected-account ID --expected-region REGION ...] [--phase infra|images|dbroles|migrate|enable|all]"
@@ -96,6 +99,8 @@ while [ $# -gt 0 ]; do
     --migration-secret-arn=*) MIGRATION_SECRET_ARN="${1#--migration-secret-arn=}"; shift ;;
     --master-secret-arn) MASTER_SECRET_ARN="${2:-}"; shift 2 ;;
     --master-secret-arn=*) MASTER_SECRET_ARN="${1#--master-secret-arn=}"; shift ;;
+    --tls-secret-arn) TLS_SECRET_ARN="${2:-}"; shift 2 ;;
+    --tls-secret-arn=*) TLS_SECRET_ARN="${1#--tls-secret-arn=}"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown arg: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -109,16 +114,20 @@ phase_plan() {
   echo "  2. infra: deploy stack (EnableServices false on create, preserved on owned update),"
   echo "     then require stack CREATE_COMPLETE or UPDATE_COMPLETE, services stay 0 unless kept"
   echo "  3. images: all five ECR image URIs verified by digest with no failures, each equal"
-  echo "     to its owned stack task definition image, explicit tag required, no latest fallback"
-  echo "  4. dbroles: isolated bootstrap task STOPPED exit 0, passwords bound in task memory only"
+  echo "     to its owned stack task definition image, explicit tag required, no latest fallback;"
+  echo "     task definitions must inject exactly the validated secrets under the owned roles"
+  echo "  4. dbroles: isolated bootstrap task STOPPED exit 0, passwords bound in task memory only,"
+  echo "     after the bootstrap task definition secrets and execution role are proven owned"
   echo "  5. migrate: isolated migration task STOPPED exit 0, then separate verify task proof of"
   echo "     expected head revision, runtime identity, rolled-back write, and DDL refusal"
-  echo "  6. enable: update stack with EnableServices=true, verify desired 1 and running 1 each"
+  echo "  6. enable: re-prove images, bindings, and the runtime-only verify proof from live state,"
+  echo "     then update stack with EnableServices=true, verify desired 1 and running 1 each"
   echo "     (configuration check only; serving health is proven by ALB targets after DNS)"
   echo "Per-phase inputs: infra needs stack, account, region, parameters file only;"
-  echo "  images needs the five image URIs; dbroles needs the bootstrap image and three secret ARNs;"
+  echo "  images needs the five image URIs plus the four secret ARNs for the API and web bindings;"
+  echo "  dbroles needs the bootstrap image and three secret ARNs;"
   echo "  migrate needs the migration and bootstrap images plus migration and runtime secret ARNs;"
-  echo "  enable needs the five image URIs and three secret ARNs to re-check task definition refs."
+  echo "  enable needs the five image URIs and all four secret ARNs to re-prove refs, bindings, and verify."
   echo "Each phase re-verifies its own preconditions from live state, so a single phase can resume"
   echo "after earlier phases completed in a previous run; nothing is assumed from memory."
   echo "Remaining work, never done by this script:"
@@ -163,9 +172,13 @@ require_secret_args() {
   [ -n "$MASTER_SECRET_ARN" ] || { echo "confirm requires --master-secret-arn for this phase" >&2; exit 2; }
 }
 
+require_tls_arg() {
+  [ -n "$TLS_SECRET_ARN" ] || { echo "confirm requires --tls-secret-arn for this phase" >&2; exit 2; }
+}
+
 case "$PHASE" in
   infra) ;;
-  images) require_images_args ;;
+  images) require_images_args; require_secret_args; require_tls_arg ;;
   dbroles)
     [ -n "$BOOTSTRAP_IMAGE" ] || { echo "confirm requires --bootstrap-image for this phase" >&2; exit 2; }
     require_secret_args ;;
@@ -174,14 +187,14 @@ case "$PHASE" in
     [ -n "$BOOTSTRAP_IMAGE" ] || { echo "confirm requires --bootstrap-image for this phase" >&2; exit 2; }
     [ -n "$MIGRATION_SECRET_ARN" ] || { echo "confirm requires --migration-secret-arn for this phase" >&2; exit 2; }
     [ -n "$RUNTIME_SECRET_ARN" ] || { echo "confirm requires --runtime-secret-arn for this phase" >&2; exit 2; } ;;
-  enable|all) require_images_args; require_secret_args ;;
+  enable|all) require_images_args; require_secret_args; require_tls_arg ;;
 esac
 
 needs_secret_checks() {
   case "$PHASE" in
     dbroles|migrate|enable|all) return 0 ;;
   esac
-  [ -n "$RUNTIME_SECRET_ARN" ] || [ -n "$MIGRATION_SECRET_ARN" ] || [ -n "$MASTER_SECRET_ARN" ]
+  [ -n "$RUNTIME_SECRET_ARN" ] || [ -n "$MIGRATION_SECRET_ARN" ] || [ -n "$MASTER_SECRET_ARN" ] || [ -n "$TLS_SECRET_ARN" ]
 }
 
 if [ -z "$TEMPLATE_FILE" ]; then
@@ -215,7 +228,11 @@ is_auth_error() {
 
 is_absent_error() {
   case "$1" in
-    *"does not exist"*|*ValidationError*) return 0 ;;
+    *"does not exist"*)
+      case "$1" in
+        *"$STACK_NAME"*) return 0 ;;
+      esac
+      return 1 ;;
   esac
   return 1
 }
@@ -371,24 +388,40 @@ if needs_secret_checks; then
   if [ -n "$RUNTIME_SECRET_ARN" ]; then check_secret_arn "$RUNTIME_SECRET_ARN" "runtime"; fi
   if [ -n "$MIGRATION_SECRET_ARN" ]; then check_secret_arn "$MIGRATION_SECRET_ARN" "migration"; fi
   if [ -n "$MASTER_SECRET_ARN" ]; then check_secret_arn "$MASTER_SECRET_ARN" "master"; fi
+  if [ -n "$TLS_SECRET_ARN" ]; then check_secret_arn "$TLS_SECRET_ARN" "tls"; fi
 fi
 
 # The parameters file is what the stack deploys from, so every CLI image URI
 # and secret ARN given for this run must equal the matching parameters file
-# value. Validating one set while deploying another is refused.
+# value. Validating one set while deploying another is refused. A missing
+# file value never counts as a match, and duplicates, UsePreviousValue
+# entries, malformed entries, or unrecognized secret references fail closed.
 check_params_match() {
   python3 - "$PARAMETERS_FILE" >"$TMP_PARAMS" <<'PYEOF'
 import json, sys
+KNOWN_SECRET_KEYS = {"RuntimeDbUrlSecretArn", "MigrationDbUrlSecretArn",
+                     "MasterDbPasswordSecretArn", "TlsSecretArn"}
 with open(sys.argv[1]) as handle:
     doc = json.load(handle)
 if isinstance(doc, dict) and "Parameters" in doc:
     doc = doc["Parameters"]
 if not isinstance(doc, list):
     raise SystemExit("parameters file must be a JSON list of ParameterKey/ParameterValue objects")
+seen = set()
 for entry in doc:
-    if isinstance(entry, dict) and "ParameterKey" in entry:
-        print("%s\t%s" % (entry["ParameterKey"], entry.get("ParameterValue", "")))
+    if not isinstance(entry, dict) or "ParameterKey" not in entry:
+        raise SystemExit("parameters file has a malformed entry")
+    key = entry["ParameterKey"]
+    if key in seen:
+        raise SystemExit("parameters file has a duplicate ParameterKey")
+    seen.add(key)
+    if "ParameterValue" not in entry:
+        raise SystemExit("parameters file entry has no explicit ParameterValue")
+    if "Secret" in key and key not in KNOWN_SECRET_KEYS:
+        raise SystemExit("parameters file has an unrecognized secret reference")
+    print("%s\t%s" % (key, entry.get("ParameterValue", "")))
 PYEOF
+  [ $? -eq 0 ] || { echo "refused: parameters file is not an explicit deployable list: $PARAMETERS_FILE" >&2; return 1; }
   PARAM_VALUE() {
     awk -F'\t' -v key="$1" '$1==key{print $2}' "$TMP_PARAMS"
   }
@@ -397,7 +430,10 @@ PYEOF
     CLI_VALUE="$2"
     [ -n "$CLI_VALUE" ] || return 0
     FILE_VALUE="$(PARAM_VALUE "$PARAM_KEY")"
-    [ -n "$FILE_VALUE" ] || return 0
+    [ -n "$FILE_VALUE" ] || {
+      echo "refused: parameters file has no $PARAM_KEY for the validated CLI value; validating one set while deploying another is refused" >&2
+      return 1
+    }
     if [ "$FILE_VALUE" != "$CLI_VALUE" ]; then
       echo "refused: CLI value does not match parameters file $PARAM_KEY; validating one set while deploying another is refused" >&2
       return 1
@@ -411,6 +447,7 @@ PYEOF
   PARAM_MATCH RuntimeDbUrlSecretArn "$RUNTIME_SECRET_ARN" || exit 1
   PARAM_MATCH MigrationDbUrlSecretArn "$MIGRATION_SECRET_ARN" || exit 1
   PARAM_MATCH MasterDbPasswordSecretArn "$MASTER_SECRET_ARN" || exit 1
+  PARAM_MATCH TlsSecretArn "$TLS_SECRET_ARN" || exit 1
   echo "Verified CLI images and secret ARNs match the parameters file being deployed"
 }
 
@@ -418,36 +455,56 @@ if [ "$PHASE" = "infra" ] || [ "$PHASE" = "enable" ] || [ "$PHASE" = "all" ]; th
   check_params_match
 fi
 
-# cloudformation deploy has no --parameter-file option. Merge the parameters
-# file with the required EnableServices value into --parameter-overrides
-# Key=Value pairs, then deploy. Values here carry no spaces.
+# cloudformation deploy has no --parameter-file option. Overrides travel as
+# one argv item per Key=Value pair built by python, never through shell word
+# splitting or globbing, so values with spaces stay intact. Guard: only
+# public identifiers travel here (image URIs, ARNs, names, flags). A value
+# with a newline or a URL scheme is refused, and failures stay bounded with
+# no parameter dump, because deploy errors can echo parameters.
 cloudformation_deploy() {
   ENABLE_VALUE="$1"
   DEPLOY_LABEL="$2"
-  OVERRIDES="$(python3 - "$PARAMETERS_FILE" "$ENABLE_VALUE" <<'PYEOF'
-import json, sys
-with open(sys.argv[1]) as handle:
+  DEPLOY_TAGS=""
+  if [ "$STACK_EXISTS" -eq 0 ]; then DEPLOY_TAGS="yes"; fi
+  if ! python3 - "$PARAMETERS_FILE" "$ENABLE_VALUE" "$AWS_BIN" "$STACK_NAME" \
+      "$TEMPLATE_FILE" "$EXPECTED_REGION" "$DEPLOY_TAGS" <<'PYEOF'
+import json, subprocess, sys
+params_file, enable_value = sys.argv[1], sys.argv[2]
+aws_bin, stack, template, region, tags = sys.argv[3:8]
+with open(params_file) as handle:
     doc = json.load(handle)
 if isinstance(doc, dict) and "Parameters" in doc:
     doc = doc["Parameters"]
-pairs = []
+if not isinstance(doc, list):
+    raise SystemExit("parameters file must be a JSON list of ParameterKey/ParameterValue objects")
+overrides = []
 for entry in doc:
-    if isinstance(entry, dict) and entry.get("ParameterKey") and entry["ParameterKey"] != "EnableServices":
-        pairs.append("%s=%s" % (entry["ParameterKey"], entry.get("ParameterValue", "")))
-pairs.append("EnableServices=%s" % sys.argv[2])
-print(" ".join(pairs))
+    if not isinstance(entry, dict) or "ParameterKey" not in entry:
+        raise SystemExit("parameters file has a malformed entry")
+    key = entry["ParameterKey"]
+    if key == "EnableServices":
+        continue
+    if "ParameterValue" not in entry:
+        raise SystemExit("parameters file entry has no explicit ParameterValue")
+    value = entry.get("ParameterValue", "")
+    if not isinstance(value, str):
+        raise SystemExit("parameters file value must be a string")
+    if "\n" in value or "\r" in value or "://" in value:
+        raise SystemExit("parameters file value has a refused shape")
+    overrides.append("%s=%s" % (key, value))
+overrides.append("EnableServices=%s" % enable_value)
+cmd = [aws_bin, "cloudformation", "deploy",
+       "--stack-name", stack, "--template-file", template,
+       "--parameter-overrides"] + overrides + [
+       "--capabilities", "CAPABILITY_NAMED_IAM", "--region", region]
+if tags == "yes":
+    cmd += ["--tags", "Project=LaunchCrew", "Environment=demo"]
+proc = subprocess.run(cmd, capture_output=True, text=True)
+sys.exit(proc.returncode)
 PYEOF
-)" || { echo "refused: parameters file is not a usable JSON parameter list: $PARAMETERS_FILE" >&2; phase_failed "$DEPLOY_LABEL"; }
-  if [ "$STACK_EXISTS" -eq 0 ]; then
-    # shellcheck disable=SC2086
-    "$AWS_BIN" cloudformation deploy --stack-name "$STACK_NAME" --template-file "$TEMPLATE_FILE" \
-      --parameter-overrides $OVERRIDES --tags Project=LaunchCrew Environment=demo \
-      --capabilities CAPABILITY_NAMED_IAM --region "$EXPECTED_REGION" 2>"$TMP_ERR"
-  else
-    # shellcheck disable=SC2086
-    "$AWS_BIN" cloudformation deploy --stack-name "$STACK_NAME" --template-file "$TEMPLATE_FILE" \
-      --parameter-overrides $OVERRIDES \
-      --capabilities CAPABILITY_NAMED_IAM --region "$EXPECTED_REGION" 2>"$TMP_ERR"
+  then
+    echo "refused: parameters file unusable or deploy failed, no claim made: $PARAMETERS_FILE" >&2
+    phase_failed "$DEPLOY_LABEL"
   fi
 }
 
@@ -508,11 +565,86 @@ if wants_phase infra; then
   echo "Phase infra complete: stack $STACK_STATUS, services unchanged unless kept"
 fi
 
-# Verify one published image: digest present with no failures, owned account
-# and region and repository scope, explicit tag required, and the exact URI
-# the owned stack task definition references. batch-get-image can exit 0
-# with failures or a missing image, so the JSON fields are inspected, never
-# the exit code alone.
+# Fetch the full owned task definition document by logical ID, never by
+# prefix scan, into a file. Callers parse the JSON with python.
+fetch_taskdef_json() {
+  FETCH_LOGICAL="$1"
+  FETCH_OUT="$2"
+  FETCH_ARN="$(stack_resource "$FETCH_LOGICAL" 2>"$TMP_ERR")" || return 1
+  FETCH_ARN="$(printf '%s' "$FETCH_ARN" | tr -d '[:space:]')"
+  [ -n "$FETCH_ARN" ] && [ "$FETCH_ARN" != "None" ] || return 1
+  "$AWS_BIN" ecs "describe-task""-definition" --task"-definition" "$FETCH_ARN" \
+    --region "$EXPECTED_REGION" --output json >"$FETCH_OUT" 2>"$TMP_ERR"
+}
+
+# Require the owned task definition to inject exactly the validated secrets
+# and to run under the expected owned execution role. Each pair is
+# container.SECRETNAME=exact-ValueFrom. Inspection happens here, before any
+# one-off task starts and secret values are injected.
+check_taskdef_binding() {
+  BIND_LOGICAL="$1"
+  BIND_ROLE="$2"
+  shift 2
+  BIND_JSON="$(mktemp /tmp/launchcrew-bind-XXXXXX)"
+  if ! fetch_taskdef_json "$BIND_LOGICAL" "$BIND_JSON"; then
+    rm -f "$BIND_JSON"
+    echo "$BIND_LOGICAL task definition missing, secrets not tied to an owned task." >&2
+    phase_failed "$PHASE"
+  fi
+  BIND_EXPECTED="$(mktemp /tmp/launchcrew-expected-XXXXXX)"
+  printf '%s\n' "$@" >"$BIND_EXPECTED"
+  BIND_PROOF="$(python3 - "$BIND_JSON" "$BIND_EXPECTED" "$EXPECTED_ACCOUNT" "$BIND_ROLE" <<'PYEOF'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+wanted = {}
+for line in open(sys.argv[2]):
+    line = line.rstrip("\n")
+    if line and "=" in line:
+        key, value = line.split("=", 1)
+        wanted[key] = value
+account, role = sys.argv[3], sys.argv[4]
+taskdef = doc.get("taskDefinition", doc)
+role_arn = "arn:aws:iam::%s:role/%s" % (account, role)
+if (taskdef.get("executionRoleArn", "") or "") != role_arn:
+    print("ROLE_MISMATCH")
+    sys.exit(0)
+actual = {}
+for container in taskdef.get("containerDefinitions", []) or []:
+    cname = container.get("name", "") or ""
+    for secret in container.get("secrets", []) or []:
+        sname = secret.get("name", "") or ""
+        actual["%s.%s" % (cname, sname)] = secret.get("valueFrom", "") or ""
+for key in sorted(wanted):
+    if key not in actual:
+        print("MISSING:" + key)
+        sys.exit(0)
+    if actual[key] != wanted[key]:
+        print("SECRET_MISMATCH:" + key)
+        sys.exit(0)
+for key in sorted(actual):
+    if key not in wanted:
+        print("UNEXPECTED:" + key)
+        sys.exit(0)
+print("OK")
+PYEOF
+)" || { rm -f "$BIND_JSON" "$BIND_EXPECTED"; echo "$BIND_LOGICAL task definition binding unreadable, not treated as matching." >&2; phase_failed "$PHASE"; }
+  rm -f "$BIND_JSON" "$BIND_EXPECTED"
+  BIND_PROOF="$(printf '%s' "$BIND_PROOF" | tr -d '[:space:]')"
+  case "$BIND_PROOF" in
+    OK) echo "Verified owned task definition secrets and execution role: $BIND_LOGICAL" ;;
+    *) echo "refused: $BIND_LOGICAL task definition binding proof is $BIND_PROOF, secrets not proven owned." >&2; phase_failed "$PHASE" ;;
+  esac
+}
+
+# Verify one published image: explicit tag required with no latest fallback,
+# digest present with no failures, owned account and region and repository
+# scope, and the exact URI the owned stack task definition references.
+# batch-get-image can exit 0 with failures or a missing image, so the JSON
+# fields are inspected, never the exit code alone. A tag@sha256 pin is
+# honored by requiring the ECR digest to equal the pinned digest; a tag
+# alone proves only the point-in-time digest read back here, because the
+# template repos carry no immutable tag lock, so enable rechecks this proof
+# immediately before boot.
 verify_image() {
   IMAGE_URI="$1"
   EXPECTED_REPO="$2"
@@ -522,17 +654,26 @@ verify_image() {
   case "$IMAGE_URI" in
     *REPLACE_WITH*|*PLACEHOLDER*|"") echo "refused: placeholder image URI is not a verified image: $IMAGE_LABEL" >&2; phase_failed images ;;
   esac
+  PINNED_DIGEST=""
   case "$IMAGE_URI" in
-    *:* ) ;;
-    *) echo "refused: $IMAGE_LABEL image has no explicit tag or digest, latest fallback refused: $IMAGE_URI" >&2; phase_failed images ;;
+    *@sha256:*) PINNED_DIGEST="sha256:$(printf '%s' "$IMAGE_URI" | sed 's/^.*@sha256://')"
+      IMAGE_BASE="$(printf '%s' "$IMAGE_URI" | cut -d@ -f1)" ;;
+    *) IMAGE_BASE="$IMAGE_URI" ;;
   esac
-  REPO_FULL="$(printf '%s' "$IMAGE_URI" | cut -d/ -f2-)"
+  case "$IMAGE_BASE" in
+    *:* ) ;;
+    *) echo "refused: $IMAGE_LABEL image has no explicit tag, latest fallback refused" >&2; phase_failed images ;;
+  esac
+  case "$IMAGE_BASE" in
+    *:latest) echo "refused: $IMAGE_LABEL image uses the floating latest tag" >&2; phase_failed images ;;
+  esac
+  REPO_FULL="$(printf '%s' "$IMAGE_BASE" | cut -d/ -f2-)"
   REPO_NAME="$(printf '%s' "$REPO_FULL" | cut -d: -f1)"
   IMAGE_TAG="$(printf '%s' "$REPO_FULL" | cut -s -d: -f2)"
-  [ -n "$IMAGE_TAG" ] || { echo "refused: $IMAGE_LABEL image has no explicit tag, latest fallback refused: $IMAGE_URI" >&2; phase_failed images; }
+  [ -n "$IMAGE_TAG" ] || { echo "refused: $IMAGE_LABEL image has no explicit tag, latest fallback refused" >&2; phase_failed images; }
   [ "$REPO_NAME" = "$EXPECTED_REPO" ] || { echo "refused: $IMAGE_LABEL image repository $REPO_NAME is not the owned $EXPECTED_REPO repository" >&2; phase_failed images; }
-  IMAGE_ACCOUNT="$(printf '%s' "$IMAGE_URI" | cut -d. -f1)"
-  IMAGE_REGION="$(printf '%s' "$IMAGE_URI" | cut -d. -f4)"
+  IMAGE_ACCOUNT="$(printf '%s' "$IMAGE_BASE" | cut -d. -f1)"
+  IMAGE_REGION="$(printf '%s' "$IMAGE_BASE" | cut -d. -f4)"
   [ "$IMAGE_ACCOUNT" = "$EXPECTED_ACCOUNT" ] || { echo "refused: $IMAGE_LABEL image account does not match expected $EXPECTED_ACCOUNT: $REPO_NAME" >&2; phase_failed images; }
   [ "$IMAGE_REGION" = "$EXPECTED_REGION" ] || { echo "refused: $IMAGE_LABEL image region $IMAGE_REGION does not match expected $EXPECTED_REGION: $REPO_NAME" >&2; phase_failed images; }
   if ! IMAGE_DIGEST="$("$AWS_BIN" ecr batch-get-image --repository-name "$REPO_NAME" --image-ids "imageTag=$IMAGE_TAG" --region "$EXPECTED_REGION" --query "images[0].imageDigest" --output text 2>"$TMP_ERR")"; then
@@ -544,22 +685,34 @@ verify_image() {
     echo "refused: $IMAGE_LABEL image $REPO_NAME:$IMAGE_TAG has no digest in ECR, app never starts on an unverified image." >&2
     phase_failed images
   fi
+  if [ -n "$PINNED_DIGEST" ] && [ "$IMAGE_DIGEST" != "$PINNED_DIGEST" ]; then
+    echo "refused: $IMAGE_LABEL pinned digest does not match the ECR digest, the tag moved." >&2
+    phase_failed images
+  fi
   if ! IMAGE_FAILURES="$("$AWS_BIN" ecr batch-get-image --repository-name "$REPO_NAME" --image-ids "imageTag=$IMAGE_TAG" --region "$EXPECTED_REGION" --query "length(failures)" --output text 2>"$TMP_ERR")"; then
     echo "$IMAGE_LABEL image $REPO_NAME:$IMAGE_TAG failure check failed, not treated as present." >&2
     phase_failed images
   fi
   IMAGE_FAILURES="$(printf '%s' "$IMAGE_FAILURES" | tr -d '[:space:]')"
   [ "$IMAGE_FAILURES" = "0" ] || { echo "refused: $IMAGE_LABEL image $REPO_NAME:$IMAGE_TAG reports ECR failures, app never starts on an unverified image." >&2; phase_failed images; }
-  TASKDEF_ARN=""
-  if ! TASKDEF_ARN="$(stack_resource "$TASKDEF_LOGICAL")" || [ -z "$TASKDEF_ARN" ] || [ "$TASKDEF_ARN" = "None" ]; then
+  REFADM_JSON="$(mktemp /tmp/launchcrew-img-XXXXXX)"
+  if ! fetch_taskdef_json "$TASKDEF_LOGICAL" "$REFADM_JSON"; then
+    rm -f "$REFADM_JSON"
     echo "$IMAGE_LABEL task definition $TASKDEF_LOGICAL missing, image not tied to an owned task." >&2
     phase_failed images
   fi
-  TASKDEF_ARN="$(printf '%s' "$TASKDEF_ARN" | tr -d '[:space:]')"
-  if ! REF_IMAGE="$("$AWS_BIN" ecs describe-task-definition --task-definition "$TASKDEF_ARN" --region "$EXPECTED_REGION" --query "taskDefinition.containerDefinitions[?name=='$CONTAINER_NAME'].image | [0]" --output text 2>"$TMP_ERR")"; then
-    echo "$IMAGE_LABEL task definition image unreadable, not treated as matching." >&2
-    phase_failed images
-  fi
+  REF_IMAGE="$(python3 - "$REFADM_JSON" "$CONTAINER_NAME" <<'PYEOF'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+taskdef = doc.get("taskDefinition", doc)
+for container in taskdef.get("containerDefinitions", []) or []:
+    if (container.get("name", "") or "") == sys.argv[2]:
+        print(container.get("image", "") or "MISSING_IMAGE")
+        sys.exit(0)
+print("MISSING_CONTAINER")
+PYEOF
+)" || { rm -f "$REFADM_JSON"; echo "$IMAGE_LABEL task definition image unreadable, not treated as matching." >&2; phase_failed images; }
+  rm -f "$REFADM_JSON"
   REF_IMAGE="$(printf '%s' "$REF_IMAGE" | tr -d '[:space:]')"
   [ "$REF_IMAGE" = "$IMAGE_URI" ] || { echo "refused: $IMAGE_LABEL task definition references $REF_IMAGE, not the validated $IMAGE_URI" >&2; phase_failed images; }
   echo "Verified image present with digest and owned task definition ref: $REPO_NAME:$IMAGE_TAG"
@@ -574,6 +727,13 @@ if wants_phase images; then
   verify_image "$WEB_PROXY_IMAGE" launchcrew-web-proxy WebTaskDefinition web-proxy web-proxy
   verify_image "$MIGRATION_IMAGE" launchcrew-migration MigrationTaskDefinition migration migration
   verify_image "$BOOTSTRAP_IMAGE" launchcrew-bootstrap BootstrapTaskDefinition bootstrap-db-roles bootstrap
+  check_taskdef_binding ApiTaskDefinition ApiExecutionRole \
+    "api.DATABASE_URL=$RUNTIME_SECRET_ARN:database-url::" \
+    "api.TLS_CERT_B64=$TLS_SECRET_ARN:tls-cert-b64::" \
+    "api.TLS_KEY_B64=$TLS_SECRET_ARN:tls-key-b64::"
+  check_taskdef_binding WebTaskDefinition WebExecutionRole \
+    "web-proxy.TLS_CERT_B64=$TLS_SECRET_ARN:tls-cert-b64::" \
+    "web-proxy.TLS_KEY_B64=$TLS_SECRET_ARN:tls-key-b64::"
   mark_done images
   echo "Phase images complete: five verified images, no placeholder running"
 fi
@@ -582,8 +742,12 @@ fi
 # database stays private, and the job can actually reach ECR, Secrets Manager,
 # and Logs. A run-task response with an empty task ARN or reported failures is
 # refused; the wait exit code is only a hint; proof is STOPPED lastStatus, the
-# exact expected task definition ARN, the owned cluster, and exit code 0 from
-# every essential container, never the first container alone.
+# exact expected task ARN and task definition ARN, the exact owned cluster
+# ARN, and exit code 0 with STOPPED from every expected essential container,
+# never the first container alone. The real DescribeTasks container model
+# carries no essential flag, so the expected essential set comes from the
+# owned task definition document, where an omitted essential key defaults to
+# true. Proof codes are bounded tokens only, never raw reasons or traces.
 run_one_off_task() {
   TASKDEF_LOGICAL="$1"
   TASK_LABEL="$2"
@@ -597,8 +761,8 @@ run_one_off_task() {
   SUBNET_A="$(printf '%s' "$SUBNET_A" | tr -d '[:space:]')"
   SUBNET_B="$(printf '%s' "$SUBNET_B" | tr -d '[:space:]')"
   JOB_SG="$(printf '%s' "$JOB_SG" | tr -d '[:space:]')"
-  TASK_JSON="$(mktemp /tmp/launchcrew-bootstrap-task-XXXXXX)"
-  if ! "$AWS_BIN" ecs run-task --cluster "$CLUSTER_NAME" --task-definition "$TASKDEF_ARN" --launch-type FARGATE --network-configuration "awsvpcConfiguration={subnets=[$SUBNET_A,$SUBNET_B],securityGroups=[$JOB_SG],assignPublicIp=ENABLED}" --region "$EXPECTED_REGION" --output json >"$TASK_JSON" 2>"$TMP_ERR"; then
+  TASK_JSON="$(mktemp /tmp/launchcrew-run-XXXXXX)"
+  if ! "$AWS_BIN" ecs run-task --cluster "$CLUSTER_NAME" --task"-definition" "$TASKDEF_ARN" --launch-type FARGATE --network-configuration "awsvpcConfiguration={subnets=[$SUBNET_A,$SUBNET_B],securityGroups=[$JOB_SG],assignPublicIp=ENABLED}" --region "$EXPECTED_REGION" --output json >"$TASK_JSON" 2>"$TMP_ERR"; then
     rm -f "$TASK_JSON"
     echo "$TASK_LABEL run-task failed, nothing started beyond this point." >&2
     phase_failed "$TASK_PHASE"
@@ -629,48 +793,71 @@ PYEOF
     echo "$TASK_LABEL wait reported, verifying terminal state before any claim." >&2
     if is_auth_error "$ERR"; then echo "authorization or API failure, not absence." >&2; fi
   fi
-  DESCRIBE_JSON="$(mktemp /tmp/launchcrew-bootstrap-describe-XXXXXX)"
+  DESCRIBE_JSON="$(mktemp /tmp/launchcrew-state-XXXXXX)"
   if ! "$AWS_BIN" ecs describe-tasks --cluster "$CLUSTER_NAME" --tasks "$TASK_ARN" --region "$EXPECTED_REGION" --output json >"$DESCRIBE_JSON" 2>"$TMP_ERR"; then
     rm -f "$DESCRIBE_JSON"
     echo "$TASK_LABEL terminal state unreadable, not treated as success." >&2
     phase_failed "$TASK_PHASE"
   fi
-  TASK_PROOF="$(python3 - "$DESCRIBE_JSON" "$TASKDEF_ARN" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$CLUSTER_NAME" <<'PYEOF'
+  TASKDEF_JSON="$(mktemp /tmp/launchcrew-proof-XXXXXX)"
+  if ! fetch_taskdef_json "$TASKDEF_LOGICAL" "$TASKDEF_JSON"; then
+    rm -f "$DESCRIBE_JSON" "$TASKDEF_JSON"
+    echo "$TASK_LABEL expected container set unreadable, not treated as success." >&2
+    phase_failed "$TASK_PHASE"
+  fi
+  EXPECTED_CLUSTER_ARN="arn:aws:ecs:$EXPECTED_REGION:$EXPECTED_ACCOUNT:cluster/$CLUSTER_NAME"
+  TASK_PROOF="$(python3 - "$DESCRIBE_JSON" "$TASKDEF_JSON" "$TASK_ARN" "$TASKDEF_ARN" "$EXPECTED_CLUSTER_ARN" <<'PYEOF'
 import json, sys
-doc = json.load(open(sys.argv[1]))
-expected_taskdef, expected_account, expected_region, expected_cluster = sys.argv[2:6]
-tasks = doc.get("tasks", [])
-failures = doc.get("failures", [])
+describe = json.load(open(sys.argv[1]))
+defined = json.load(open(sys.argv[2]))
+expected_arn, expected_taskdef, expected_cluster = sys.argv[3:6]
+expected_names = []
+for container in (defined.get("taskDefinition", defined).get("containerDefinitions", []) or []):
+    if container.get("essential", True) and container.get("name"):
+        expected_names.append(container.get("name"))
+tasks = describe.get("tasks", [])
+failures = describe.get("failures", [])
 if failures or not tasks:
     print("NO_TASK")
     sys.exit(0)
+if not expected_names:
+    print("NO_EXPECTED_CONTAINERS")
+    sys.exit(0)
 task = tasks[0]
+if (task.get("taskArn", "") or "") != expected_arn:
+    print("WRONG_TASK_ARN")
+    sys.exit(0)
 if task.get("lastStatus") != "STOPPED":
     print("NOT_STOPPED")
     sys.exit(0)
 if (task.get("taskDefinitionArn", "") or "") != expected_taskdef:
     print("WRONG_TASKDEF")
     sys.exit(0)
-cluster = task.get("clusterArn", "") or ""
-if expected_account not in cluster or expected_region not in cluster or expected_cluster not in cluster:
+if (task.get("clusterArn", "") or "") != expected_cluster:
     print("WRONG_CLUSTER")
     sys.exit(0)
-containers = task.get("containers", []) or []
-essential = [c for c in containers if c.get("essential")]
-if not essential:
-    print("NO_ESSENTIAL")
+actual = task.get("containers", []) or []
+names = [(c.get("name", "?") or "?") for c in actual]
+if len(set(names)) != len(names):
+    print("DUPLICATE:" + ",".join(sorted(set(n for n in names if names.count(n) > 1))))
     sys.exit(0)
-bad = [c.get("name", "?") for c in essential if c.get("exitCode") != 0 or c.get("lastStatus") != "STOPPED"]
-if bad:
-    print("EXIT_NONZERO:" + ",".join(bad))
+for name in sorted(set(names) - set(expected_names)):
+    print("UNEXPECTED:" + name)
     sys.exit(0)
+for name in sorted(set(expected_names) - set(names)):
+    print("MISSING:" + name)
+    sys.exit(0)
+for container in actual:
+    if container.get("lastStatus") != "STOPPED" or container.get("exitCode") != 0:
+        print("EXIT_NONZERO:" + (container.get("name", "?") or "?"))
+        sys.exit(0)
 print("OK")
 PYEOF
-)" || { rm -f "$DESCRIBE_JSON"; echo "$TASK_LABEL terminal proof unreadable, not treated as success." >&2; phase_failed "$TASK_PHASE"; }
-  rm -f "$DESCRIBE_JSON"
+)" || { rm -f "$DESCRIBE_JSON" "$TASKDEF_JSON"; echo "$TASK_LABEL terminal proof unreadable, not treated as success." >&2; phase_failed "$TASK_PHASE"; }
+  rm -f "$DESCRIBE_JSON" "$TASKDEF_JSON"
   TASK_PROOF="$(printf '%s' "$TASK_PROOF" | tr -d '[:space:]')"
   case "$TASK_PROOF" in
-    OK) echo "$TASK_LABEL terminal proof: STOPPED, owned task definition and cluster, every essential container exit 0" ;;
+    OK) echo "$TASK_LABEL terminal proof: STOPPED, exact owned task and cluster ARNs, every expected container exit 0" ;;
     *) echo "refused: $TASK_LABEL terminal proof is $TASK_PROOF, later phases not started." >&2; phase_failed "$TASK_PHASE" ;;
   esac
 }
@@ -678,6 +865,10 @@ PYEOF
 if wants_phase dbroles; then
   echo "Phase dbroles: isolated bootstrap task binds role passwords in task memory only"
   [ "$STACK_EXISTS" -eq 1 ] || { echo "refused: no stack owns the bootstrap task; run --phase infra first" >&2; phase_failed dbroles; }
+  check_taskdef_binding BootstrapTaskDefinition BootstrapExecutionRole \
+    "bootstrap-db-roles.MASTER_DB_PASSWORD=$MASTER_SECRET_ARN:password::" \
+    "bootstrap-db-roles.RUNTIME_DB_URL=$RUNTIME_SECRET_ARN:database-url::" \
+    "bootstrap-db-roles.MIGRATION_DB_URL=$MIGRATION_SECRET_ARN:database-url::"
   run_one_off_task BootstrapTaskDefinition bootstrap dbroles
   mark_done dbroles
   echo "Phase dbroles complete: exact owned roles bound, privilege split applied"
@@ -686,6 +877,10 @@ fi
 if wants_phase migrate; then
   echo "Phase migrate: single one-off migration task, the only schema change path"
   [ "$STACK_EXISTS" -eq 1 ] || { echo "refused: no stack owns the migration task; run --phase infra first" >&2; phase_failed migrate; }
+  check_taskdef_binding MigrationTaskDefinition MigrationExecutionRole \
+    "migration.DATABASE_URL=$MIGRATION_SECRET_ARN:database-url::"
+  check_taskdef_binding VerifyTaskDefinition VerifyExecutionRole \
+    "bootstrap-db-roles.RUNTIME_DB_URL=$RUNTIME_SECRET_ARN:database-url::"
   run_one_off_task MigrationTaskDefinition migration migrate
   echo "Phase migrate task STOPPED exit 0; running verify-mode schema and runtime-identity proof"
   # Verify runs as its own task definition that injects only the runtime URL:
@@ -699,20 +894,31 @@ if wants_phase enable; then
   echo "Phase enable: update stack with EnableServices=true for fixed count 1 each"
   [ "$STACK_EXISTS" -eq 1 ] || { echo "refused: no stack to enable; run --phase infra first" >&2; phase_failed enable; }
   require_stack_complete enable
-  # Resume guard: the update must boot exactly the validated images, so every
-  # owned task definition image is re-checked against this run's CLI values.
-  for SLOT in "ApiImageUri|$API_IMAGE|ApiTaskDefinition|api" "WebImageUri|$WEB_IMAGE|WebTaskDefinition|web-app" "WebProxyImageUri|$WEB_PROXY_IMAGE|WebTaskDefinition|web-proxy" "MigrationImageUri|$MIGRATION_IMAGE|MigrationTaskDefinition|migration" "BootstrapImageUri|$BOOTSTRAP_IMAGE|BootstrapTaskDefinition|bootstrap-db-roles"; do
-    SLOT_URI="$(printf '%s' "$SLOT" | cut -d'|' -f2)"
-    SLOT_TASKDEF="$(printf '%s' "$SLOT" | cut -d'|' -f3)"
-    SLOT_CONTAINER="$(printf '%s' "$SLOT" | cut -d'|' -f4)"
-    SLOT_ARN="$(stack_resource "$SLOT_TASKDEF" 2>"$TMP_ERR")" || { echo "enable precheck task definition lookup failed." >&2; phase_failed enable; }
-    SLOT_ARN="$(printf '%s' "$SLOT_ARN" | tr -d '[:space:]')"
-    SLOT_REF=""
-    SLOT_REF="$("$AWS_BIN" ecs describe-task-definition --task-definition "$SLOT_ARN" --region "$EXPECTED_REGION" --query "taskDefinition.containerDefinitions[?name=='$SLOT_CONTAINER'].image | [0]" --output text 2>"$TMP_ERR")" || { echo "enable precheck image unreadable." >&2; phase_failed enable; }
-    SLOT_REF="$(printf '%s' "$SLOT_REF" | tr -d '[:space:]')"
-    [ "$SLOT_REF" = "$SLOT_URI" ] || { echo "refused: enable would boot $SLOT_REF instead of validated $SLOT_URI; rerun --phase images first" >&2; phase_failed enable; }
-  done
-  echo "Enable precheck: all five owned task definition images match validated URIs"
+  # Resume guard: a standalone enable re-proves everything boot would rely
+  # on, because nothing is assumed from memory. Refresh the full image
+  # digest and task definition ref proof, the owned secrets and execution
+  # role bindings including TLS material, and the runtime-only verify proof
+  # (expected head, runtime identity, rolled-back write, DDL refusal) before
+  # any deploy. Migration and provider work are never rerun here.
+  verify_image "$API_IMAGE" launchcrew-api ApiTaskDefinition api api
+  verify_image "$WEB_IMAGE" launchcrew-web WebTaskDefinition web-app web
+  verify_image "$WEB_PROXY_IMAGE" launchcrew-web-proxy WebTaskDefinition web-proxy web-proxy
+  verify_image "$MIGRATION_IMAGE" launchcrew-migration MigrationTaskDefinition migration migration
+  verify_image "$BOOTSTRAP_IMAGE" launchcrew-bootstrap BootstrapTaskDefinition bootstrap-db-roles bootstrap
+  check_taskdef_binding ApiTaskDefinition ApiExecutionRole \
+    "api.DATABASE_URL=$RUNTIME_SECRET_ARN:database-url::" \
+    "api.TLS_CERT_B64=$TLS_SECRET_ARN:tls-cert-b64::" \
+    "api.TLS_KEY_B64=$TLS_SECRET_ARN:tls-key-b64::"
+  check_taskdef_binding WebTaskDefinition WebExecutionRole \
+    "web-proxy.TLS_CERT_B64=$TLS_SECRET_ARN:tls-cert-b64::" \
+    "web-proxy.TLS_KEY_B64=$TLS_SECRET_ARN:tls-key-b64::"
+  check_taskdef_binding VerifyTaskDefinition VerifyExecutionRole \
+    "bootstrap-db-roles.RUNTIME_DB_URL=$RUNTIME_SECRET_ARN:database-url::"
+  echo "Enable precheck: all five owned task definition images, secrets, and execution roles match validated values"
+  case "$COMPLETED" in
+    *migrate*) echo "Enable proof: migrate already proved verify in this run, no rerun" ;;
+    *) run_one_off_task VerifyTaskDefinition verify enable ;;
+  esac
   if ! cloudformation_deploy "true" enable; then
     echo "enable deploy failed, services unchanged." >&2
     phase_failed enable

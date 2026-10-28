@@ -58,9 +58,17 @@ class FakeCursor:
 
     def fetchone(self):
         sql = self.state.statements[-1][0].strip().lower()
+        if "pg_auth_members" in sql:
+            return (1,) if self.state.role_memberships else None
+        if "pg_shdescription" in sql:
+            if self.state.role_comment is None:
+                return None
+            return (self.state.role_comment,)
         if "pg_roles" in sql:
             if self.state.roles_exist:
-                return ("launchcrew_role", self.state.roles_superuser, True)
+                return ("launchcrew_role", self.state.roles_superuser,
+                        self.state.roles_login, self.state.role_createrole,
+                        self.state.role_createdb, self.state.role_replication)
             return None
         if sql == "select 1":
             return (1,)
@@ -99,6 +107,12 @@ class FakeDriverState:
         self.statements = []
         self.roles_exist = False
         self.roles_superuser = False
+        self.roles_login = True
+        self.role_createrole = False
+        self.role_createdb = False
+        self.role_replication = False
+        self.role_comment = "launchcrew-managed"
+        self.role_memberships = False
         self.refuse_ddl = True
         self.ddl_sqlstate = "42501"
         self.schema_present = True
@@ -274,6 +288,53 @@ class BindJobTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertIn("role-safety", out)
 
+    def test_existing_role_without_marker_refused(self):
+        self.state.roles_exist = True
+        self.state.role_comment = None
+        code, out = self.run_main("--bind")
+        self.assertNotEqual(code, 0)
+        self.assertIn("role-safety", out)
+        self.assertIn("ownership marker", out)
+
+    def test_existing_role_with_wrong_marker_refused(self):
+        self.state.roles_exist = True
+        self.state.role_comment = "other-project"
+        code, out = self.run_main("--bind")
+        self.assertNotEqual(code, 0)
+        self.assertIn("role-safety", out)
+
+    def test_existing_role_with_memberships_refused(self):
+        self.state.roles_exist = True
+        self.state.role_memberships = True
+        code, out = self.run_main("--bind")
+        self.assertNotEqual(code, 0)
+        self.assertIn("role-safety", out)
+        self.assertIn("memberships", out)
+
+    def test_existing_role_with_createrole_refused(self):
+        self.state.roles_exist = True
+        self.state.role_createrole = True
+        code, out = self.run_main("--bind")
+        self.assertNotEqual(code, 0)
+        self.assertIn("role-safety", out)
+
+    def test_existing_marked_safe_role_is_rebound(self):
+        self.state.roles_exist = True
+        code, out = self.run_main("--bind")
+        self.assertEqual(code, 0, msg=out)
+        alters = [(sql, params) for sql, params in self.state.statements
+                  if sql.startswith("ALTER ROLE")]
+        self.assertEqual(len(alters), 2)
+
+    def test_created_roles_carry_ownership_marker(self):
+        code, out = self.run_main("--bind")
+        self.assertEqual(code, 0, msg=out)
+        comments = [sql for sql in self.sql_texts()
+                    if sql.startswith("COMMENT ON ROLE")]
+        self.assertEqual(len(comments), 2)
+        for sql in comments:
+            self.assertIn("launchcrew-managed", sql)
+
     def test_percent_encoded_password_decoded_for_binding(self):
         encoded = "postgresql://launchcrew_runtime:p%40ss%3Aw0rd@dbhost:5432/launchcrew?sslmode=verify-full"
         code, out = self.run_main("--bind", {"RUNTIME_DB_URL": encoded})
@@ -356,7 +417,7 @@ class VerifyJobTests(BindJobTests):
     def test_verify_never_commits(self):
         code, out = self.run_main("--verify")
         self.assertEqual(code, 0, msg=out)
-        self.assertEqual(self.state.commits, [])
+        self.assertEqual(self.state.commits, 0)
         self.assertGreater(self.state.rollbacks, 0)
 
     def test_verify_works_without_master_or_migration_env(self):
@@ -399,6 +460,17 @@ class StaticBoundaryTests(unittest.TestCase):
 
     def test_password_binding_uses_client_side_cursor(self):
         self.assertIn("ClientCursor", self.text)
+
+    def test_binding_comment_states_memory_only_literal(self):
+        self.assertNotIn("never interpolated into SQL text", self.text)
+        self.assertIn("in this process memory only", self.text)
+
+    def test_existing_role_takeover_guards_present(self):
+        self.assertIn("MANAGED_COMMENT", self.text)
+        self.assertIn("pg_shdescription", self.text)
+        self.assertIn("pg_auth_members", self.text)
+        self.assertIn("rolcreaterole", self.text)
+        self.assertIn("ownership marker", self.text)
 
     def test_verify_mode_never_commits(self):
         verify_start = self.text.index("def do_verify")

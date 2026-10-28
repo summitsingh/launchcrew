@@ -4,15 +4,20 @@
 Runs ONLY inside the private ECS bootstrap one-off task defined in
 deploy/aws/fargate.yaml (BootstrapTaskDefinition, image built from
 containers/bootstrap-db.Containerfile). ECS injects secret VALUES into this
-process memory via task-definition Secrets entries. Nothing here reads
+process memory via task definition Secrets entries. Nothing here reads
 operator files, process argument vectors, or shared state, and nothing here
-logs a password, connection URL, or raw database error text.
+logs a password, connection URL, or raw database error text. Stdout
+redaction only covers this process: server-side statement logging is outside
+this job, so operators keep it off for secret-bearing statements.
 
 Modes, selected by argv flag only (no secret ever appears in argv):
-  --bind    create exact owned roles if missing, bind each role password to
-            the matching injected secret URL password, then apply the
-            privilege split from deploy/aws/db-roles.sql (runtime DML-only,
-            migration DDL, default privileges for migration-created tables).
+  --bind    create exact owned roles if missing (stamped with an ownership
+            comment), bind each role password to the matching injected
+            secret URL password, then apply the privilege split from
+            deploy/aws/db-roles.sql (runtime DML-only, migration DDL,
+            default privileges for migration-created tables). Existing roles
+            are rebound only with the ownership stamp and no superuser,
+            create, replication, or membership takeover risk.
             Idempotent: safe to rerun; reports each completed phase.
   --verify  read-only proof with the runtime URL only: SELECT works, the
             alembic schema version equals the expected head revision, the
@@ -41,6 +46,7 @@ import urllib.parse
 IDENT = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 HOST = re.compile(r"^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$")
 DBNAME = re.compile(r"^[A-Za-z0-9_.-]{1,63}$")
+MANAGED_COMMENT = "launchcrew-managed"
 PHASES_BIND = ("password-binding", "runtime-grants", "migration-grants",
                "default-privileges")
 ROOTCERT_ENV = "DATABASE_SSL_ROOTCERT"
@@ -205,9 +211,46 @@ def _quote_ident(name):
 
 def _role_row(cur, name):
     cur.execute(
-        "SELECT rolname, rolsuper, rolcanlogin FROM pg_roles WHERE rolname = %s",
+        "SELECT rolname, rolsuper, rolcanlogin, rolcreaterole, rolcreatedb, "
+        "rolreplication FROM pg_roles WHERE rolname = %s",
         (name,))
     return cur.fetchone()
+
+
+def _role_comment(cur, name):
+    cur.execute(
+        "SELECT d.description FROM pg_shdescription d "
+        "JOIN pg_roles r ON r.oid = d.objoid WHERE r.rolname = %s",
+        (name,))
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
+def _role_has_memberships(cur, name):
+    cur.execute(
+        "SELECT 1 FROM pg_auth_members WHERE roleid = "
+        "(SELECT oid FROM pg_roles WHERE rolname = %s) OR member = "
+        "(SELECT oid FROM pg_roles WHERE rolname = %s) LIMIT 1",
+        (name, name))
+    return cur.fetchone() is not None
+
+
+def _managed_verdict(cur, name, row):
+    """Refuse existing roles this job does not own. Returns None when safe."""
+    if len(row) > 1 and row[1]:
+        return "existing superuser role refused: %s" % name
+    if len(row) > 5:
+        if row[3]:
+            return "existing role with CREATEROLE refused: %s" % name
+        if row[4]:
+            return "existing role with CREATEDB refused: %s" % name
+        if row[5]:
+            return "existing role with REPLICATION refused: %s" % name
+    if _role_comment(cur, name) != MANAGED_COMMENT:
+        return "existing role without ownership marker refused: %s" % name
+    if _role_has_memberships(cur, name):
+        return "existing role with memberships refused: %s" % name
+    return None
 
 
 def do_bind():
@@ -251,7 +294,10 @@ def do_bind():
         cur = conn.cursor()
         # DDL statements cannot take server-side bound parameters, so the
         # password binds below use a client-side binding cursor: the password
-        # travels only as a bound value, never interpolated into SQL text.
+        # is composed into a quoted literal in this process memory only,
+        # never in argv, files, or logs, and travels to the server inside
+        # the statement text over TLS. Server-side statement logging is
+        # outside this job, so it stays off for secret-bearing statements.
         bind_cur = psycopg.ClientCursor(conn)
         qi_runtime = _quote_ident(runtime_user)
         qi_migration = _quote_ident(migration_user)
@@ -261,15 +307,18 @@ def do_bind():
             for user, password in ((runtime_user, runtime["password"]),
                                    (migration_user, migration["password"])):
                 row = _role_row(cur, user)
-                if row is not None and len(row) > 1 and row[1]:
-                    return _fail("role-safety",
-                                 "existing superuser role refused: %s" % user)
                 if row is None:
                     cur.execute("CREATE ROLE %s WITH LOGIN"
                                 % _quote_ident(user))
-                elif len(row) > 2 and not row[2]:
-                    cur.execute("ALTER ROLE %s WITH LOGIN"
-                                % _quote_ident(user))
+                    cur.execute("COMMENT ON ROLE %s IS '%s'"
+                                % (_quote_ident(user), MANAGED_COMMENT))
+                else:
+                    verdict = _managed_verdict(cur, user, row)
+                    if verdict is not None:
+                        return _fail("role-safety", verdict)
+                    if len(row) > 2 and not row[2]:
+                        cur.execute("ALTER ROLE %s WITH LOGIN"
+                                    % _quote_ident(user))
                 bind_cur.execute("ALTER ROLE %s WITH PASSWORD %%s"
                                  % _quote_ident(user), (password,))
             done.append("password-binding")

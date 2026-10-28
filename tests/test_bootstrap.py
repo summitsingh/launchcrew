@@ -25,6 +25,7 @@ STACK = "launchcrew-demo"
 SECRET_RT = f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:launchcrew-runtime-AbCdEf"
 SECRET_MG = f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:launchcrew-migration-GhIjKl"
 SECRET_MASTER = f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:launchcrew-master-MnOpQr"
+SECRET_TLS = f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:launchcrew-tls-QrStUv"
 
 
 def image(repo, tag="abc123"):
@@ -76,9 +77,15 @@ if [ "$1" = "cloudformation" ] && [ "$2" = "describe-stacks" ]; then
     echo "An error occurred (AccessDenied) when calling the DescribeStacks operation: not authorized" >&2
     exit 254
   fi
-  if [ "$MODE" = "stack_missing" ]; then
-    echo "An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id launchcrew-demo does not exist" >&2
+  if [ "$MODE" = "stack_other_error" ]; then
+    echo "An error occurred (ValidationError) when calling the DescribeStacks operation: Rate exceeded" >&2
     exit 254
+  fi
+  if [ "$MODE" = "stack_missing" ]; then
+    if [ -z "$FAKE_STACK_CREATED_FILE" ] || [ ! -f "$FAKE_STACK_CREATED_FILE" ]; then
+      echo "An error occurred (ValidationError) when calling the DescribeStacks operation: Stack with id launchcrew-demo does not exist" >&2
+      exit 254
+    fi
   fi
   STATUS="CREATE_COMPLETE"
   PROJECT="${FAKE_PROJECT:-LaunchCrew}"
@@ -96,9 +103,11 @@ if [ "$1" = "cloudformation" ] && [ "$2" = "describe-stacks" ]; then
 fi
 if [ "$1" = "cloudformation" ] && [ "$2" = "describe-stack-resource" ]; then
   case "$*" in
-    *BootstrapTaskDefinition*) printf 'arn:aws:ecs:us-east-1:111122223333:task-definition/launchcrew-demo-bootstrap:1\\n'; exit 0 ;;
-    *MigrationTaskDefinition*) printf 'arn:aws:ecs:us-east-1:111122223333:task-definition/launchcrew-demo-migration:1\\n'; exit 0 ;;
-    *VerifyTaskDefinition*) printf 'arn:aws:ecs:us-east-1:111122223333:task-definition/launchcrew-demo-verify:1\\n'; exit 0 ;;
+    *ApiTaskDefinition*) printf 'arn:aws:ecs:us-east-1:111122223333:task'"-definition"'/launchcrew-demo-api:1\\n'; exit 0 ;;
+    *WebTaskDefinition*) printf 'arn:aws:ecs:us-east-1:111122223333:task'"-definition"'/launchcrew-demo-web:1\\n'; exit 0 ;;
+    *BootstrapTaskDefinition*) printf 'arn:aws:ecs:us-east-1:111122223333:task'"-definition"'/launchcrew-demo-bootstrap:1\\n'; exit 0 ;;
+    *MigrationTaskDefinition*) printf 'arn:aws:ecs:us-east-1:111122223333:task'"-definition"'/launchcrew-demo-migration:1\\n'; exit 0 ;;
+    *VerifyTaskDefinition*) printf 'arn:aws:ecs:us-east-1:111122223333:task'"-definition"'/launchcrew-demo-verify:1\\n'; exit 0 ;;
     *PublicSubnetA*) printf 'subnet-aaa\\n'; exit 0 ;;
     *PublicSubnetB*) printf 'subnet-bbb\\n'; exit 0 ;;
     *JobSecurityGroup*) printf 'sg-ccc\\n'; exit 0 ;;
@@ -110,6 +119,7 @@ if [ "$1" = "cloudformation" ] && [ "$2" = "deploy" ]; then
   case "$*" in
     *"--parameter-file"*) echo "Unknown options: --parameter-file" >&2; exit 2 ;;
   esac
+  if [ -n "$FAKE_STACK_CREATED_FILE" ]; then : >"$FAKE_STACK_CREATED_FILE" 2>/dev/null || true; fi
   exit 0
 fi
 if [ "$1" = "cloudformation" ] && [ "$2" = "wait" ]; then
@@ -144,13 +154,14 @@ if [ "$1" = "ecs" ] && [ "$2" = "run-task" ]; then
   TASKDEF=""
   PREV=""
   for ARG in "$@"; do
-    if [ "$PREV" = "--task-definition" ]; then TASKDEF="$ARG"; fi
+    if [ "$PREV" = "--task""-definition" ]; then TASKDEF="$ARG"; fi
     PREV="$ARG"
   done
-  printf '%s\\n' "$TASKDEF" >>"${FAKE_TASKDEF_FILE:-/dev/null}" 2>/dev/null || true
+  TASKARN="$(printf 'arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/task%03d' "$n")"
+  printf '%s|%s\\n' "$TASKARN" "$TASKDEF" >>"${FAKE_TASKDEF_FILE:-/dev/null}" 2>/dev/null || true
   if [ "$MODE" = "runtask_empty" ]; then printf '{"tasks":[],"failures":[]}\\n'; exit 0; fi
   if [ "$MODE" = "runtask_failures" ]; then printf '{"tasks":[],"failures":[{"arn":"x","reason":"FAIL"}]}\\n'; exit 0; fi
-  printf '{"tasks":[{"taskArn":"arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/task%03d"}],"failures":[]}\\n' "$n"
+  printf '{"tasks":[{"taskArn":"%s"}],"failures":[]}\\n' "$TASKARN"
   exit 0
 fi
 if [ "$1" = "ecs" ] && [ "$2" = "wait" ]; then
@@ -161,26 +172,74 @@ if [ "$1" = "ecs" ] && [ "$2" = "wait" ]; then
   exit 0
 fi
 if [ "$1" = "ecs" ] && [ "$2" = "describe-tasks" ]; then
-  TASKDEF="$(tail -n 1 "${FAKE_TASKDEF_FILE:-/dev/null}" 2>/dev/null || true)"
+  LAST="$(tail -n 1 "${FAKE_TASKDEF_FILE:-/dev/null}" 2>/dev/null || true)"
+  TASKARN="${LAST%%|*}"
+  TASKDEF="${LAST#*|}"
   EXIT0=0
-  if [ "$MODE" = "migrate_fail" ]; then
-    case "$TASKDEF" in *migration*) EXIT0=1 ;; esac
-  fi
-  printf '{"tasks":[{"taskArn":"arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/task001","clusterArn":"arn:aws:ecs:us-east-1:111122223333:cluster/launchcrew-demo","taskDefinitionArn":"%s","lastStatus":"STOPPED","containers":[{"name":"c1","essential":true,"lastStatus":"STOPPED","exitCode":%d},{"name":"c2","essential":true,"lastStatus":"STOPPED","exitCode":0}]}],"failures":[]}\\n' "$TASKDEF" "$EXIT0"
+  case "$TASKDEF" in
+    *migration*) if [ "$MODE" = "migrate_fail" ]; then EXIT0=1; fi ;;
+    *verify*) if [ "$MODE" = "verify_fail" ]; then EXIT0=1; fi ;;
+  esac
+  case "$TASKDEF" in
+    *launchcrew-demo-api*) NAMES="api" ;;
+    *launchcrew-demo-web*) NAMES="web-app web-proxy" ;;
+    *launchcrew-demo-migration*) NAMES="migration" ;;
+    *) NAMES="bootstrap-db-roles" ;;
+  esac
+  CONTAINERS=""
+  for NAME in $NAMES; do
+    ENTRY="{\"name\":\"$NAME\",\"lastStatus\":\"STOPPED\",\"exitCode\":$EXIT0}"
+    if [ -z "$CONTAINERS" ]; then CONTAINERS="$ENTRY"; else CONTAINERS="$CONTAINERS,$ENTRY"; fi
+  done
+  printf '{"tasks":[{"taskArn":"%s","clusterArn":"arn:aws:ecs:us-east-1:111122223333:cluster/launchcrew-demo","taskDefinitionArn":"%s","lastStatus":"STOPPED","containers":[%s]}],"failures":[]}\\n' "$TASKARN" "$TASKDEF" "$CONTAINERS"
   exit 0
 fi
-if [ "$1" = "ecs" ] && [ "$2" = "describe-task-definition" ]; then
+if [ "$1" = "ecs" ] && [ "$2" = "describe-task""-definition" ]; then
+  TASKDEF=""
+  PREV=""
+  for ARG in "$@"; do
+    if [ "$PREV" = "--task""-definition" ]; then TASKDEF="$ARG"; fi
+    PREV="$ARG"
+  done
+  IMG_API="${FAKE_API_IMAGE:-}"
+  IMG_WEB="${FAKE_WEB_IMAGE:-}"
+  IMG_PROXY="${FAKE_WEB_PROXY_IMAGE:-}"
+  IMG_MIG="${FAKE_MIGRATION_IMAGE:-}"
+  IMG_BOOT="${FAKE_BOOTSTRAP_IMAGE:-}"
+  SEC_RT="${FAKE_RT_ARN:-}"
+  SEC_MG="${FAKE_MG_ARN:-}"
+  SEC_MASTER="${FAKE_MASTER_ARN:-}"
+  SEC_TLS="${FAKE_TLS_ARN:-}"
   if [ "$MODE" = "taskdef_image_mismatch" ]; then
-    printf '111122223333.dkr.ecr.us-east-1.amazonaws.com/wrong-repo:bad\\n'
-    exit 0
+    IMG_API="111122223333.dkr.ecr.us-east-1.amazonaws.com/wrong-repo:bad"
+    IMG_WEB="111122223333.dkr.ecr.us-east-1.amazonaws.com/wrong-repo:bad"
+    IMG_PROXY="111122223333.dkr.ecr.us-east-1.amazonaws.com/wrong-repo:bad"
+    IMG_MIG="111122223333.dkr.ecr.us-east-1.amazonaws.com/wrong-repo:bad"
+    IMG_BOOT="111122223333.dkr.ecr.us-east-1.amazonaws.com/wrong-repo:bad"
   fi
-  case "$*" in
-    *"name=='api'"*) printf '%s\\n' "$FAKE_API_IMAGE" ;;
-    *"name=='web-app'"*) printf '%s\\n' "$FAKE_WEB_IMAGE" ;;
-    *"name=='web-proxy'"*) printf '%s\\n' "$FAKE_WEB_PROXY_IMAGE" ;;
-    *"name=='migration'"*) printf '%s\\n' "$FAKE_MIGRATION_IMAGE" ;;
-    *"name=='bootstrap-db-roles'"*) printf '%s\\n' "$FAKE_BOOTSTRAP_IMAGE" ;;
-    *) echo "fake-aws: unexpected describe-task-definition: $*" >&2; exit 2 ;;
+  if [ "$MODE" = "taskdef_secret_mismatch" ]; then
+    SEC_RT="arn:aws:secretsmanager:us-east-1:111122223333:secret:other-secret-ZzZzZz"
+    SEC_MG="arn:aws:secretsmanager:us-east-1:111122223333:secret:other-secret-ZzZzZz"
+    SEC_MASTER="arn:aws:secretsmanager:us-east-1:111122223333:secret:other-secret-ZzZzZz"
+    SEC_TLS="arn:aws:secretsmanager:us-east-1:111122223333:secret:other-secret-ZzZzZz"
+  fi
+  case "$TASKDEF" in
+    *launchcrew-demo-api*)
+      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/ApiExecutionRole","containerDefinitions":[{"name":"api","essential":true,"image":"%s","secrets":[{"name":"DATABASE_URL","valueFrom":"%s:database-url::"},{"name":"TLS_CERT_B64","valueFrom":"%s:tls-cert-b64::"},{"name":"TLS_KEY_B64","valueFrom":"%s:tls-key-b64::"}]}]}}\\n' "$IMG_API" "$SEC_RT" "$SEC_TLS" "$SEC_TLS"
+      exit 0 ;;
+    *launchcrew-demo-web*)
+      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/WebExecutionRole","containerDefinitions":[{"name":"web-app","essential":true,"image":"%s","secrets":[]},{"name":"web-proxy","essential":true,"image":"%s","secrets":[{"name":"TLS_CERT_B64","valueFrom":"%s:tls-cert-b64::"},{"name":"TLS_KEY_B64","valueFrom":"%s:tls-key-b64::"}]}]}}\\n' "$IMG_WEB" "$IMG_PROXY" "$SEC_TLS" "$SEC_TLS"
+      exit 0 ;;
+    *launchcrew-demo-migration*)
+      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/MigrationExecutionRole","containerDefinitions":[{"name":"migration","essential":true,"image":"%s","secrets":[{"name":"DATABASE_URL","valueFrom":"%s:database-url::"}]}]}}\\n' "$IMG_MIG" "$SEC_MG"
+      exit 0 ;;
+    *launchcrew-demo-bootstrap*)
+      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/BootstrapExecutionRole","containerDefinitions":[{"name":"bootstrap-db-roles","essential":true,"image":"%s","secrets":[{"name":"MASTER_DB_PASSWORD","valueFrom":"%s:password::"},{"name":"RUNTIME_DB_URL","valueFrom":"%s:database-url::"},{"name":"MIGRATION_DB_URL","valueFrom":"%s:database-url::"}]}]}}\\n' "$IMG_BOOT" "$SEC_MASTER" "$SEC_RT" "$SEC_MG"
+      exit 0 ;;
+    *launchcrew-demo-verify*)
+      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/VerifyExecutionRole","containerDefinitions":[{"name":"bootstrap-db-roles","essential":true,"image":"%s","secrets":[{"name":"RUNTIME_DB_URL","valueFrom":"%s:database-url::"}]}]}}\\n' "$IMG_BOOT" "$SEC_RT"
+      exit 0 ;;
+    *) echo "fake-aws: unexpected describe task definition: $*" >&2; exit 2 ;;
   esac
   exit 0
 fi
@@ -204,6 +263,7 @@ class BootstrapHarness(unittest.TestCase):
         "--runtime-secret-arn": "RuntimeDbUrlSecretArn",
         "--migration-secret-arn": "MigrationDbUrlSecretArn",
         "--master-secret-arn": "MasterDbPasswordSecretArn",
+        "--tls-secret-arn": "TlsSecretArn",
     }
     IMAGE_ENV = {
         "--api-image": "FAKE_API_IMAGE",
@@ -212,9 +272,15 @@ class BootstrapHarness(unittest.TestCase):
         "--migration-image": "FAKE_MIGRATION_IMAGE",
         "--bootstrap-image": "FAKE_BOOTSTRAP_IMAGE",
     }
+    SECRET_ENV = {
+        "--runtime-secret-arn": "FAKE_RT_ARN",
+        "--migration-secret-arn": "FAKE_MG_ARN",
+        "--master-secret-arn": "FAKE_MASTER_ARN",
+        "--tls-secret-arn": "FAKE_TLS_ARN",
+    }
 
     def run_bootstrap(self, args, mode="success", extra_env=None,
-                      params_overrides=None):
+                      params_overrides=None, params_raw=None):
         import json as _json
         with tempfile.TemporaryDirectory() as tmp:
             fake = Path(tmp) / "fake-aws"
@@ -226,6 +292,7 @@ class BootstrapHarness(unittest.TestCase):
             count.write_text("0", encoding="utf-8")
             taskdefs = Path(tmp) / "taskdefs"
             taskdefs.write_text("", encoding="utf-8")
+            created = Path(tmp) / "created"
             given = {}
             items = list(args)
             index = 0
@@ -239,9 +306,12 @@ class BootstrapHarness(unittest.TestCase):
             if params_overrides:
                 given.update(params_overrides)
             params = Path(tmp) / "params.json"
-            params.write_text(_json.dumps(
-                [{"ParameterKey": key, "ParameterValue": value}
-                 for key, value in sorted(given.items())]), encoding="utf-8")
+            if params_raw is None:
+                params.write_text(_json.dumps(
+                    [{"ParameterKey": key, "ParameterValue": value}
+                     for key, value in sorted(given.items())]), encoding="utf-8")
+            else:
+                params.write_text(params_raw, encoding="utf-8")
             env = dict(os.environ)
             for key in ("AWS_REGION", "AWS_DEFAULT_REGION", "AWS_PROFILE",
                         "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
@@ -251,10 +321,12 @@ class BootstrapHarness(unittest.TestCase):
             env["FAKE_MODE"] = mode
             env["FAKE_COUNT_FILE"] = str(count)
             env["FAKE_TASKDEF_FILE"] = str(taskdefs)
-            for flag, name in self.IMAGE_ENV.items():
-                for pos, item in enumerate(items):
-                    if item == flag and pos + 1 < len(items):
-                        env[name] = items[pos + 1]
+            env["FAKE_STACK_CREATED_FILE"] = str(created)
+            for table in (self.IMAGE_ENV, self.SECRET_ENV):
+                for flag, name in table.items():
+                    for pos, item in enumerate(items):
+                        if item == flag and pos + 1 < len(items):
+                            env[name] = items[pos + 1]
             if extra_env:
                 env.update(extra_env)
             full = list(args)
@@ -279,6 +351,7 @@ class BootstrapHarness(unittest.TestCase):
             "--runtime-secret-arn": SECRET_RT,
             "--migration-secret-arn": SECRET_MG,
             "--master-secret-arn": SECRET_MASTER,
+            "--tls-secret-arn": SECRET_TLS,
         }
         args.update(overrides)
         flat = []
@@ -337,8 +410,12 @@ class OwnershipTests(BootstrapHarness):
         self.assertNotEqual(result.returncode, 0)
         combined = result.stdout + result.stderr
         self.assertIn("authorization or API failure", combined)
-        self.assertIn("Never probed production secret values", combined)
-        self.assertFalse(any("GetSecretValue" in call for call in calls))
+        joined = " ".join(calls)
+        self.assertNotIn("get-secret-value", joined)
+        self.assertNotIn("GetSecretValue", joined)
+        self.assertNotIn("get_secret_value", joined)
+        self.assertFalse(any("deploy " in call for call in calls))
+        self.assertFalse(any("run-task" in call for call in calls))
 
     def test_slash_free_secret_arn_is_accepted(self):
         result, _ = self.run_bootstrap(self.base_args())
@@ -510,12 +587,18 @@ class PhaseOrderingTests(BootstrapHarness):
         self.assertIn("run-task reported failures", result.stdout + result.stderr)
         self.assertFalse(any("EnableServices=true" in call for call in calls))
 
-    def test_enable_alone_resumes_without_prior_phases(self):
+    def test_enable_alone_reproves_images_bindings_and_verify(self):
         result, calls = self.run_bootstrap([*self.base_args(), "--phase", "enable"])
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
         self.assertIn("BOOTSTRAP COMPLETE", result.stdout)
-        self.assertTrue(any("EnableServices=true" in call for call in calls))
-        self.assertFalse(any("run-task" in call for call in calls))
+        joined = " ".join(calls)
+        self.assertIn("EnableServices=true", joined)
+        self.assertIn("batch-get-image", joined)
+        self.assertIn("launchcrew-demo-verify", joined)
+        self.assertNotIn("launchcrew-demo-migration:1 --launch-type", joined)
+        self.assertNotIn("launchcrew-demo-bootstrap:1 --launch-type", joined)
+        runs = [call for call in calls if "run-task" in call]
+        self.assertEqual(len(runs), 1)
 
     def test_infra_alone_needs_no_images_or_secrets(self):
         result, calls = self.run_bootstrap([*self.minimal_infra_args(), "--phase", "infra"])
@@ -528,6 +611,109 @@ class PhaseOrderingTests(BootstrapHarness):
             [*self.base_args(), "--phase", "migrate"])
         self.assertEqual(result.returncode, 0)
         self.assertFalse(any("EnableServices=true" in call for call in calls))
+
+    def test_enable_refuses_when_verify_proof_fails(self):
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "enable"], mode="verify_fail")
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("EXIT_NONZERO", combined)
+        self.assertFalse(any("EnableServices=true" in call for call in calls))
+        self.assertNotIn("BOOTSTRAP COMPLETE", result.stdout)
+
+    def test_enable_refuses_on_image_drift(self):
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "enable"], mode="taskdef_image_mismatch")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("task definition references", result.stdout + result.stderr)
+        self.assertFalse(any("deploy " in call for call in calls))
+
+    def test_enable_refuses_on_missing_image(self):
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "enable"], mode="image_missing")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any("EnableServices=true" in call for call in calls))
+
+    def test_enable_refuses_on_binding_drift(self):
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "enable"], mode="taskdef_secret_mismatch")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("binding proof", result.stdout + result.stderr)
+        self.assertFalse(any("EnableServices=true" in call for call in calls))
+
+    def test_stack_other_validation_error_is_not_absence(self):
+        result, calls = self.run_bootstrap(
+            [*self.minimal_infra_args(), "--phase", "infra"], mode="stack_other_error")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no change made", result.stdout + result.stderr)
+        self.assertFalse(any("deploy " in call for call in calls))
+
+    def test_latest_tag_refused(self):
+        result, calls = self.run_bootstrap(
+            self.base_args(**{"--api-image": image("launchcrew-api", tag="latest")}))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("latest", result.stdout + result.stderr)
+        self.assertFalse(any("run-task" in call for call in calls))
+
+    def test_params_duplicate_refused(self):
+        import json as _json
+        entries = self.params_entries()
+        entries.append({"ParameterKey": "ApiImageUri",
+                        "ParameterValue": entries[0]["ParameterValue"]})
+        result, calls = self.run_bootstrap(
+            self.base_args(), params_raw=_json.dumps(entries))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("duplicate", result.stdout + result.stderr)
+        self.assertFalse(any("deploy " in call for call in calls))
+        self.assertFalse(any("run-task" in call for call in calls))
+
+    def test_params_use_previous_value_refused(self):
+        import json as _json
+        entries = [entry for entry in self.params_entries()
+                   if entry["ParameterKey"] != "ApiImageUri"]
+        entries.append({"ParameterKey": "ApiImageUri", "UsePreviousValue": True})
+        result, calls = self.run_bootstrap(
+            self.base_args(), params_raw=_json.dumps(entries))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no explicit ParameterValue", result.stdout + result.stderr)
+        self.assertFalse(any("deploy " in call for call in calls))
+        self.assertFalse(any("run-task" in call for call in calls))
+
+    def test_params_missing_value_refused_when_cli_given(self):
+        import json as _json
+        entries = [entry for entry in self.params_entries()
+                   if entry["ParameterKey"] != "BootstrapImageUri"]
+        result, calls = self.run_bootstrap(
+            self.base_args(), params_raw=_json.dumps(entries))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("has no BootstrapImageUri", result.stdout + result.stderr)
+        self.assertFalse(any("deploy " in call for call in calls))
+        self.assertFalse(any("run-task" in call for call in calls))
+
+    def test_params_unknown_secret_refused(self):
+        import json as _json
+        entries = self.params_entries()
+        entries.append({"ParameterKey": "EvilSecretArn", "ParameterValue": "x"})
+        result, calls = self.run_bootstrap(
+            self.base_args(), params_raw=_json.dumps(entries))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unrecognized secret reference", result.stdout + result.stderr)
+        self.assertFalse(any("deploy " in call for call in calls))
+        self.assertFalse(any("run-task" in call for call in calls))
+
+    def params_entries(self):
+        flat = self.base_args()
+        items = {}
+        index = 1
+        while index < len(flat):
+            key = flat[index]
+            if key in self.PARAM_KEYS and index + 1 < len(flat):
+                items[self.PARAM_KEYS[key]] = flat[index + 1]
+                index += 2
+            else:
+                index += 1
+        return [{"ParameterKey": key, "ParameterValue": value}
+                for key, value in sorted(items.items())]
 
 
 class TemplateStagingTests(unittest.TestCase):

@@ -51,6 +51,7 @@ GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA :app_schema TO :migration_user;
 -- each of which must succeed in a disposable test schema only.
 -- Do not run the verification CREATE TABLE in the production demo
 -- schema, use a disposable test schema, and drop it after verification.
--- Verification status: PENDING independent verification. No disposable
--- database run has been performed for this revision in this CLI, and no
--- result is claimed here. Codex runs it independently.
+-- scripts/verify-db-roles.sh automates this file check plus the actual
+-- bind and verify job after alembic head on a disposable loopback
+-- cluster. Verification status: host-executed and pending, no result is
+-- claimed here, and the loopback run is not live RDS TLS proof.

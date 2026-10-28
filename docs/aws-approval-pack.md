@@ -87,9 +87,9 @@ Secrets Manager, CloudWatch Logs, and T4g unlimited. Rates used:
 | Subtotal | 16.53 | 28.15 |
 
 One-off overlap, estimated not capped: bootstrap, migration, and verify
-one-off tasks each run minutes at 0.25 vCPU / 0.5 GB, about 0.00021 per
-task-minute at the rates above, so a clean run is a few cents. Failed tasks,
-pre-warming, and enable retries each add more task-minutes linearly; there
+one-off jobs each run minutes at 0.25 vCPU / 0.5 GB, about 0.00021 per
+task minute at the rates above, so a clean run is a few cents. Failed jobs,
+pre-warming, and enable retries each add more task minutes linearly; there
 is no code bound on retries, so no total under 0.10 is guaranteed. Image
 builds run on the existing Linux CI with podman-local.sh build covering all
 six images (db, api, migrate, web, web-proxy, bootstrap), no Fargate build
@@ -156,11 +156,13 @@ authorized stack apply.
 5. Staged bootstrap via deploy/aws/bootstrap.sh: infra at DesiredCount 0
    on a fresh stack (owned updates preserve the current true value so
    running services are not reset), verified images by digest and task
-   definition reference, bootstrap role binding STOPPED exit 0, migration
+   definition reference with owned secret and execution role bindings,
+   bootstrap role binding STOPPED exit 0, migration
    STOPPED exit 0 with verify-mode proof from the separate verify task
-   definition, then enable at fixed 1 each with desired and running counts
-   read back (configuration check; serving health needs ALB targets after
-   DNS, which this script never claims).
+   definition, then enable re-proving images, bindings, and the verify
+   proof from live state before updating to fixed 1 each with desired and
+   running counts read back (configuration check; serving health needs
+   ALB targets after DNS, which this script never claims).
 6. Live verification only after that tap: WEB 200, API 200 through the
    public base, HTTPS chain and container TLS hop, database verify-full,
    and keyless synthetic behavior with no paid inference reachable.
