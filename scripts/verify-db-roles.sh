@@ -677,15 +677,22 @@ print("42501 ok")
   OPTS_OUT="$(bind_job "$BIND_RT" 2>&1)"
   OPTS_CODE=$?
   set -e
-  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "REVOKE $BIND_RT FROM $BIND_ADMIN;" >/dev/null
   [ "$OPTS_CODE" -ne 0 ] || fail "bind accepted changed membership options"
   case "$OPTS_OUT" in *"memberships"*) ;; *) printf '%s' "$OPTS_OUT" | safe_emit >&2; fail "options refusal missed the marker" ;; esac
+  # Recovery must restore the exact native row. A bare REVOKE leaves zero
+  # rows and the limited admin then lacks ADMIN for ALTER PASSWORD, so the
+  # next bind would correctly fail at password-binding. Restore via the
+  # superuser fixture with native options only, no SET or INHERIT grant.
+  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "REVOKE $BIND_RT FROM $BIND_ADMIN; GRANT $BIND_RT TO $BIND_ADMIN WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;" >/dev/null
+  opts_restored="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT target.rolname || ',' || member.rolname || ',' || grantor.rolname || ',' || m.grantor::text || ',' || grantor.rolsuper::text || ',' || m.admin_option::text || ',' || m.inherit_option::text || ',' || m.set_option::text FROM pg_auth_members m JOIN pg_roles target ON target.oid = m.roleid JOIN pg_roles member ON member.oid = m.member JOIN pg_roles grantor ON grantor.oid = m.grantor WHERE m.roleid = (SELECT oid FROM pg_roles WHERE rolname = '$BIND_RT') OR m.member = (SELECT oid FROM pg_roles WHERE rolname = '$BIND_RT');" | tr -d '[:space:]')" || true
+  [ "$opts_restored" = "$BIND_RT,$BIND_ADMIN,$SUPERUSER,10,true,true,false,false" ] || fail "options restore is [$opts_restored], expected native row"
+  unset opts_restored
   set +e
   OPTS_FIX_OUT="$(bind_job "$BIND_RT" 2>&1)"
   OPTS_FIX_CODE=$?
   set -e
-  [ "$OPTS_FIX_CODE" -eq 0 ] || { printf '%s' "$OPTS_FIX_OUT" | safe_emit >&2; fail "rebind failed after options cleanup"; }
-  log "pass: changed options refused, zero-row recovery rebind ok"
+  [ "$OPTS_FIX_CODE" -eq 0 ] || { printf '%s' "$OPTS_FIX_OUT" | safe_emit >&2; fail "rebind failed after options restore"; }
+  log "pass: changed options refused, native row restored, recovery rebind ok"
 
   log "negative: foreign-owned object is refused and never transferred"
   "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "CREATE TABLE $APP_SCHEMA.foreign_owned_demo (id integer);" >/dev/null
@@ -739,26 +746,48 @@ print("42501 ok")
   [ "$VIEW_FIX_CODE" -eq 0 ] || { printf '%s' "$VIEW_FIX_OUT" | safe_emit >&2; fail "rebind failed after foreign view cleanup"; }
   log "pass: foreign-owned view refused with passwords and schema ACL unchanged, recovery rebind ok"
 
-  log "negative: foreign SUPERUSER grantor is refused, only OID 10 is native"
-  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "CREATE ROLE lc_evil_super SUPERUSER NOLOGIN;" >/dev/null
+  # Live foreign-superuser grantor setup is impossible under PG18. Ordinary
+  # superuser grants are recorded as the bootstrap superuser (OID 10), even
+  # with SET ROLE to another superuser, and GRANTED BY needs ADMIN unless
+  # bootstrap. See sql-grant docs and role-attributes native GRANT. The
+  # isolated unit test_foreign_superuser_grantor_is_refused proves the
+  # OID-only superuser tuple refusal. This live proof uses normal SQL with
+  # a foreign NONsuperuser grantor chain instead. The prerequisite ADMIN
+  # row may itself trigger the refusal, so this is a foreign grant chain
+  # rejection, not an OID-only superuser proof.
+  log "negative: foreign grant chain is refused, only OID 10 is native"
+  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "CREATE ROLE lc_foreign_grantor NOLOGIN;" >/dev/null
   "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "REVOKE $BIND_RT FROM $BIND_ADMIN;" >/dev/null
-  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "SET ROLE lc_evil_super; GRANT $BIND_RT TO $BIND_ADMIN; RESET ROLE;" >/dev/null
-  evil_grantor="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT m.grantor::text || ',' || grantor.rolsuper::text FROM pg_auth_members m JOIN pg_roles grantor ON grantor.oid = m.grantor WHERE m.roleid = (SELECT oid FROM pg_roles WHERE rolname = '$BIND_RT') AND m.member = (SELECT oid FROM pg_roles WHERE rolname = '$BIND_ADMIN');" | tr -d '[:space:]')" || true
-  case "$evil_grantor" in *,true) ;; *) fail "foreign grantor fixture did not stage a superuser grantor" ;; esac
-  case "$evil_grantor" in 10,*) fail "foreign grantor fixture unexpectedly used OID 10" ;; esac
+  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "GRANT $BIND_RT TO lc_foreign_grantor WITH ADMIN TRUE;" >/dev/null
+  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "SET ROLE lc_foreign_grantor; GRANT $BIND_RT TO $BIND_ADMIN WITH ADMIN TRUE, INHERIT FALSE, SET FALSE GRANTED BY lc_foreign_grantor; RESET ROLE;" >/dev/null
+  chain_main="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT grantor.rolname || ',' || m.grantor::text || ',' || grantor.rolsuper::text || ',' || m.admin_option::text || ',' || m.inherit_option::text || ',' || m.set_option::text FROM pg_auth_members m JOIN pg_roles grantor ON grantor.oid = m.grantor WHERE m.roleid = (SELECT oid FROM pg_roles WHERE rolname = '$BIND_RT') AND m.member = (SELECT oid FROM pg_roles WHERE rolname = '$BIND_ADMIN');" | tr -d '[:space:]')" || true
+  case "$chain_main" in lc_foreign_grantor,*) ;; *) fail "foreign chain fixture missed the foreign grantor: [$chain_main]" ;; esac
+  case "$chain_main" in *,false,true,false,false) ;; *) fail "foreign chain fixture has wrong options: [$chain_main]" ;; esac
+  case "$chain_main" in lc_foreign_grantor,10,*) fail "foreign chain fixture unexpectedly used OID 10" ;; esac
+  chain_pre="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT m.admin_option::text FROM pg_auth_members m WHERE m.roleid = (SELECT oid FROM pg_roles WHERE rolname = '$BIND_RT') AND m.member = (SELECT oid FROM pg_roles WHERE rolname = 'lc_foreign_grantor');" | tr -d '[:space:]')" || true
+  [ "$chain_pre" = "true" ] || fail "foreign chain prerequisite lacks ADMIN: [$chain_pre]"
+  chain_count="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT count(*) FROM pg_auth_members m WHERE m.roleid = (SELECT oid FROM pg_roles WHERE rolname = '$BIND_RT') OR m.member = (SELECT oid FROM pg_roles WHERE rolname = '$BIND_RT');" | tr -d '[:space:]')" || true
+  [ "$chain_count" = "2" ] || fail "foreign chain fixture has $chain_count rows, expected 2"
+  unset chain_pre chain_count
   set +e
   EVIL_OUT="$(bind_job "$BIND_RT" 2>&1)"
   EVIL_CODE=$?
   set -e
-  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "REVOKE $BIND_RT FROM $BIND_ADMIN; DROP ROLE lc_evil_super;" >/dev/null
-  [ "$EVIL_CODE" -ne 0 ] || fail "bind accepted a foreign SUPERUSER grantor"
-  case "$EVIL_OUT" in *"memberships"*) ;; *) printf '%s' "$EVIL_OUT" | safe_emit >&2; fail "foreign grantor refusal missed the marker" ;; esac
+  # Grantor-aware cleanup in valid dependency order: dependent first, then
+  # prerequisite, then drop, then restore the exact native row. No SET/INHERIT.
+  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "REVOKE $BIND_RT FROM $BIND_ADMIN; REVOKE $BIND_RT FROM lc_foreign_grantor; DROP ROLE lc_foreign_grantor; GRANT $BIND_RT TO $BIND_ADMIN WITH ADMIN TRUE, INHERIT FALSE, SET FALSE;" >/dev/null
+  unset chain_main
+  [ "$EVIL_CODE" -ne 0 ] || fail "bind accepted a foreign grant chain"
+  case "$EVIL_OUT" in *"memberships"*) ;; *) printf '%s' "$EVIL_OUT" | safe_emit >&2; fail "foreign chain refusal missed the marker" ;; esac
+  evil_restored="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT target.rolname || ',' || member.rolname || ',' || grantor.rolname || ',' || m.grantor::text || ',' || grantor.rolsuper::text || ',' || m.admin_option::text || ',' || m.inherit_option::text || ',' || m.set_option::text FROM pg_auth_members m JOIN pg_roles target ON target.oid = m.roleid JOIN pg_roles member ON member.oid = m.member JOIN pg_roles grantor ON grantor.oid = m.grantor WHERE m.roleid = (SELECT oid FROM pg_roles WHERE rolname = '$BIND_RT') OR m.member = (SELECT oid FROM pg_roles WHERE rolname = '$BIND_RT');" | tr -d '[:space:]')" || true
+  [ "$evil_restored" = "$BIND_RT,$BIND_ADMIN,$SUPERUSER,10,true,true,false,false" ] || fail "foreign chain restore is [$evil_restored], expected native row"
+  unset evil_restored
   set +e
   EVIL_FIX_OUT="$(bind_job "$BIND_RT" 2>&1)"
   EVIL_FIX_CODE=$?
   set -e
-  [ "$EVIL_FIX_CODE" -eq 0 ] || { printf '%s' "$EVIL_FIX_OUT" | safe_emit >&2; fail "rebind failed after foreign grantor cleanup"; }
-  log "pass: foreign SUPERUSER grantor refused, zero-row recovery rebind ok"
+  [ "$EVIL_FIX_CODE" -eq 0 ] || { printf '%s' "$EVIL_FIX_OUT" | safe_emit >&2; fail "rebind failed after foreign chain cleanup"; }
+  log "pass: foreign grant chain refused, native row restored, recovery rebind ok"
 
   log "negative: wrong head is refused by verify"
   "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "UPDATE alembic_version SET version_num='003';" >/dev/null
