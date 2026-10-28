@@ -33,7 +33,7 @@ def test_engine():
 def client(test_engine, monkeypatch):
     monkeypatch.setenv('AUTH_ENABLED', 'false')
     with test_engine.begin() as connection:
-        connection.execute(text('TRUNCATE agents, runs, memory, approvals, audit, auth_sessions RESTART IDENTITY CASCADE'))
+        connection.execute(text('TRUNCATE memory_items, campaign_days, campaigns, agents, runs, memory, approvals, audit, auth_sessions RESTART IDENTITY CASCADE'))
     with TestClient(app, base_url='https://testserver') as client:
         yield client
     app.dependency_overrides.clear()
