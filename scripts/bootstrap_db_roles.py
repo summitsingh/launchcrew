@@ -52,6 +52,7 @@ IDENT = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 HOST = re.compile(r"^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$")
 DBNAME = re.compile(r"^[A-Za-z0-9_.-]{1,63}$")
 MANAGED_COMMENT = "launchcrew-managed"
+NATIVE_BOOTSTRAP_OID = 10
 PHASES_BIND = ("password-binding", "schema-acls", "runtime-grants",
                "default-privileges")
 ROOTCERT_ENV = "DATABASE_SSL_ROOTCERT"
@@ -233,14 +234,16 @@ def _role_comment(cur, name):
 
 def _role_memberships(cur, name):
     # Every membership row touching the managed role in either direction,
-    # with grantor identity plus superuser flag plus all three options.
-    # Postgres 16 carries admin, inherit, and set options; the automatic
-    # creator row is ADMIN TRUE, INHERIT FALSE, SET FALSE with the
-    # native bootstrap superuser as grantor.
+    # with grantor name plus grantor OID plus superuser flag plus all
+    # three options. Postgres carries admin, inherit, and set options;
+    # the automatic creator row is ADMIN TRUE, INHERIT FALSE, SET FALSE
+    # with the native bootstrap superuser as grantor. The grantor is the
+    # bootstrap OID 10 (postgres in community, rdsadmin on RDS), never
+    # the creator and never a hardcoded name.
     cur.execute(
         "SELECT target.rolname, member.rolname, grantor.rolname, "
         "grantor.rolsuper, m.admin_option, m.inherit_option, "
-        "m.set_option FROM pg_auth_members m "
+        "m.set_option, m.grantor FROM pg_auth_members m "
         "JOIN pg_roles target ON target.oid = m.roleid "
         "JOIN pg_roles member ON member.oid = m.member "
         "JOIN pg_roles grantor ON grantor.oid = m.grantor "
@@ -272,15 +275,24 @@ def _managed_verdict(cur, name, row, master_user):
     if len(memberships) > 1:
         return ("existing role with memberships refused: %s "
                 "has %d membership rows" % (name, len(memberships)))
-    target, member, grantor, grantor_super, admin, inherit_opt, set_opt = (
-        memberships[0])
+    first = memberships[0]
+    if len(first) != 8:
+        return ("existing role with memberships refused: %s "
+                "has an unreadable grantor row" % name)
+    (target, member, grantor, grantor_super, admin, inherit_opt,
+     set_opt, grantor_oid) = first
     if target != name or member != master_user:
         return ("existing role with memberships refused: %s "
                 "is not the exact creator row" % name)
     if not admin or inherit_opt or set_opt:
         return ("existing role with memberships refused: %s "
                 "has changed membership options" % name)
-    if not grantor_super or grantor == master_user or grantor == name:
+    try:
+        grantor_id = int(grantor_oid)
+    except Exception:
+        grantor_id = None
+    if (grantor_id != NATIVE_BOOTSTRAP_OID or not grantor_super
+            or grantor == master_user or grantor == name):
         return ("existing role with memberships refused: %s "
                 "has a foreign grantor" % name)
     return None
@@ -295,17 +307,58 @@ def _connection_identity(cur):
 
 
 def _schema_object_owners(cur, schema):
-    # Regular tables, partitioned tables, and sequences in the isolated
-    # app schema with their owner names. Views and indexes are out of
-    # scope for the runtime grant split.
+    # Every relation kind affected by the runtime grant split in the
+    # isolated app schema with its owner name. GRANT ON ALL TABLES
+    # covers ordinary tables, partitioned tables, views, materialized
+    # views, and foreign tables; GRANT ON ALL SEQUENCES covers
+    # sequences. All must be migration owned before any grant.
     cur.execute(
         "SELECT c.relname, c.relkind, owner.rolname FROM pg_class c "
         "JOIN pg_namespace n ON n.oid = c.relnamespace "
         "JOIN pg_roles owner ON owner.oid = c.relowner "
-        "WHERE n.nspname = %s AND c.relkind IN ('r', 'p', 'S') "
+        "WHERE n.nspname = %s "
+        "AND c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S') "
         "ORDER BY c.relname",
         (schema,))
     return cur.fetchall()
+
+
+def _schema_owner(cur, schema):
+    cur.execute(
+        "SELECT owner.rolname FROM pg_namespace n "
+        "JOIN pg_roles owner ON owner.oid = n.nspowner "
+        "WHERE n.nspname = %s",
+        (schema,))
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
+def _database_owner(cur, dbname):
+    cur.execute(
+        "SELECT owner.rolname FROM pg_database d "
+        "JOIN pg_roles owner ON owner.oid = d.datdba "
+        "WHERE d.datname = %s",
+        (dbname,))
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
+def _schema_preflight(cur, schema, master_user, dbname):
+    # Returns None when the isolated schema is safe to mutate.
+    # Allowed: explicit master owned schema, or native
+    # pg_database_owner schema only when the actual current database
+    # owner is the master. Anything else is refused with no takeover.
+    owner = _schema_owner(cur, schema)
+    if not owner:
+        return "schema %s is missing" % schema
+    if owner == master_user:
+        return None
+    if owner == "pg_database_owner":
+        db_owner = _database_owner(cur, dbname)
+        if db_owner == master_user:
+            return None
+        return "schema %s is not owned by the master" % schema
+    return "schema %s is not owned by the master" % schema
 
 
 def do_bind():
@@ -331,6 +384,10 @@ def do_bind():
                             runtime_user, host, dbname)
     migration = _parse_db_url("MIGRATION_DB_URL", migration_url,
                               migration_user, host, dbname)
+    if runtime["port"] != port:
+        raise ValueError("RUNTIME_DB_URL port does not match DB_PORT")
+    if migration["port"] != port:
+        raise ValueError("MIGRATION_DB_URL port does not match DB_PORT")
     for secret in (master_password, runtime_url, migration_url,
                    runtime["password"], migration["password"]):
         _known_secrets.append(secret)
@@ -386,6 +443,26 @@ def do_bind():
         except Exception:
             conn.rollback()
             return _fail("role-safety", "catalog check failed")
+        try:
+            schema_verdict = _schema_preflight(cur, schema, master_user,
+                                               dbname)
+        except Exception:
+            conn.rollback()
+            return _fail("schema-safety", "catalog check failed")
+        if schema_verdict is not None:
+            conn.rollback()
+            return _fail("schema-safety", schema_verdict)
+        try:
+            master_inventory = _schema_object_owners(cur, schema)
+        except Exception:
+            conn.rollback()
+            return _fail("runtime-grants", "catalog check failed")
+        for relname, _relkind, owner in master_inventory:
+            if owner != migration_user:
+                conn.rollback()
+                return _fail("runtime-grants",
+                             "unexpected owner %s on %s" % (owner,
+                                                           relname))
         try:
             # Phase 1: exact owned roles exist, passwords bound in memory.
             # One transaction for create plus marker plus password, so a
@@ -453,24 +530,37 @@ def do_bind():
         return _fail("migration-connect",
                      "completed: %s" % ",".join(done))
     try:
-        mconn.autocommit = True
+        mconn.autocommit = False
         mcur = mconn.cursor()
         try:
             identity = _connection_identity(mcur)
         except Exception:
+            try:
+                mconn.rollback()
+            except Exception:
+                pass
             return _fail("migration-identity",
                          "completed: %s" % ",".join(done))
         if (identity["session_user"] != migration_user
                 or identity["current_user"] != migration_user):
+            try:
+                mconn.rollback()
+            except Exception:
+                pass
             return _fail("migration-identity",
                          "completed: %s" % ",".join(done))
-        # Phase 3: runtime DML-only object split on migration-owned
-        # objects. Inventory first; unexpected owners are refused and
-        # never transferred.
+        # Phase 3 plus Phase 4 in one migration transaction: recheck the
+        # inventory on this connection, then apply runtime ACLs plus
+        # default privileges atomically. Any failure rolls back, so a
+        # partial REVOKE without its GRANT never persists.
         try:
             for relname, _relkind, owner in _schema_object_owners(mcur,
                                                                  schema):
                 if owner != migration_user:
+                    try:
+                        mconn.rollback()
+                    except Exception:
+                        pass
                     return _fail("runtime-grants",
                                  "unexpected owner %s on %s" % (owner,
                                                                relname))
@@ -482,9 +572,11 @@ def do_bind():
                          "FROM %s" % (qi_schema, qi_runtime))
             mcur.execute("GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA %s "
                          "TO %s" % (qi_schema, qi_runtime))
-            done.append("runtime-grants")
-            _ok("runtime-grants")
         except Exception:
+            try:
+                mconn.rollback()
+            except Exception:
+                pass
             return _fail("runtime-grants",
                          "completed: %s" % ",".join(done))
         # Phase 4: later migration-created tables keep the runtime split.
@@ -497,11 +589,26 @@ def do_bind():
             mcur.execute("ALTER DEFAULT PRIVILEGES FOR ROLE %s IN SCHEMA %s "
                          "GRANT USAGE, SELECT ON SEQUENCES TO %s"
                          % (qi_migration, qi_schema, qi_runtime))
-            done.append("default-privileges")
-            _ok("default-privileges")
         except Exception:
+            try:
+                mconn.rollback()
+            except Exception:
+                pass
             return _fail("default-privileges",
                          "completed: %s" % ",".join(done))
+        try:
+            mconn.commit()
+        except Exception:
+            try:
+                mconn.rollback()
+            except Exception:
+                pass
+            return _fail("default-privileges",
+                         "completed: %s" % ",".join(done))
+        done.append("runtime-grants")
+        _ok("runtime-grants")
+        done.append("default-privileges")
+        _ok("default-privileges")
     finally:
         try:
             mconn.close()

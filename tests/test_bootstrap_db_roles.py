@@ -68,6 +68,14 @@ class FakeCursor:
             if self.state.role_comment is None:
                 return None
             return (self.state.role_comment,)
+        if "pg_namespace" in lowered and "nspowner" in lowered:
+            if self.state.schema_owner is None:
+                return None
+            return (self.state.schema_owner,)
+        if "pg_database" in lowered and "datdba" in lowered:
+            if self.state.database_owner is None:
+                return None
+            return (self.state.database_owner,)
         if "pg_roles" in lowered and "rolname" in lowered:
             queried = params[0] if params else None
             if queried in self.state.role_rows:
@@ -101,7 +109,7 @@ class FakeCursor:
                 return list(self.state.membership_map[queried])
             if self.state.role_memberships:
                 return [("foreign_group", queried, "someone_else",
-                         False, True, False, False)]
+                         False, True, False, False, 16384)]
             return []
         if "pg_class" in lowered:
             return list(self.state.inventory)
@@ -145,6 +153,8 @@ class FakeDriverState:
         self.role_rows = {}
         self.membership_map = {}
         self.inventory = []
+        self.schema_owner = "launchcrew_master"
+        self.database_owner = "launchcrew_master"
         self.spoof_identity = {}
         self.fail_on_password = False
         self.refuse_ddl = True
@@ -365,9 +375,9 @@ class BindJobTests(unittest.TestCase):
     def test_native_creator_membership_is_allowed(self):
         self.state.roles_exist = True
         native_runtime = [("launchcrew_runtime", "launchcrew_master",
-                           "postgres", True, True, False, False)]
+                           "postgres", True, True, False, False, 10)]
         native_migration = [("launchcrew_migration", "launchcrew_master",
-                             "postgres", True, True, False, False)]
+                             "postgres", True, True, False, False, 10)]
         self.state.membership_map = {
             "launchcrew_runtime": native_runtime,
             "launchcrew_migration": native_migration,
@@ -382,11 +392,11 @@ class BindJobTests(unittest.TestCase):
         self.state.roles_exist = True
         variants = [
             ("launchcrew_runtime", "launchcrew_master", "postgres",
-             True, False, False, False),
+             True, False, False, False, 10),
             ("launchcrew_runtime", "launchcrew_master", "postgres",
-             True, True, True, False),
+             True, True, True, False, 10),
             ("launchcrew_runtime", "launchcrew_master", "postgres",
-             True, True, False, True),
+             True, True, False, True, 10),
         ]
         for row in variants:
             self.state.membership_map = {"launchcrew_runtime": [row],
@@ -405,21 +415,28 @@ class BindJobTests(unittest.TestCase):
         self.state.roles_exist = True
         variants = [
             [("launchcrew_runtime", "launchcrew_master", "intruder",
-              False, True, False, False)],
+              False, True, False, False, 16384)],
             [("launchcrew_runtime", "launchcrew_master", "launchcrew_master",
-              False, True, False, False)],
+              False, True, False, False, 16385)],
             [("other_group", "launchcrew_runtime", "postgres",
-              True, True, False, False)],
+              True, True, False, False, 10)],
             [("launchcrew_runtime", "someone_else", "postgres",
-              True, True, False, False)],
+              True, True, False, False, 10)],
         ]
         for rows in variants:
             self.state.membership_map = {"launchcrew_runtime": rows,
                                          "launchcrew_migration": []}
             self.state.statements = []
+            self.state.commits = 0
             code, out = self.run_main("--bind")
             self.assertNotEqual(code, 0)
             self.assertIn("memberships", out)
+            mutating = [sql for sql in self.sql_texts()
+                        if sql.startswith(("CREATE ROLE", "ALTER ROLE",
+                                           "COMMENT ON ROLE", "GRANT",
+                                           "REVOKE"))]
+            self.assertEqual(mutating, [])
+            self.assertEqual(self.state.commits, 0)
 
     def test_second_bad_role_blocks_first_mutation(self):
         self.state.role_rows = {
@@ -466,12 +483,147 @@ class BindJobTests(unittest.TestCase):
         joined = "\n".join(self.sql_texts())
         self.assertNotIn("ON ALL TABLES", joined)
         self.assertNotIn("ON ALL SEQUENCES", joined)
+        mutating = [sql for sql in self.sql_texts()
+                    if sql.startswith(("CREATE ROLE", "ALTER ROLE",
+                                       "COMMENT ON ROLE", "GRANT",
+                                       "REVOKE"))]
+        self.assertEqual(mutating, [])
+        self.assertEqual(self.state.commits, 0)
 
     def test_migration_owned_objects_allow_grants(self):
         self.state.inventory = [("alembic_version", "r",
                                  "launchcrew_migration"),
                                 ("items_id_seq", "S",
                                  "launchcrew_migration")]
+        code, out = self.run_main("--bind")
+        self.assertEqual(code, 0, msg=out)
+
+    def test_migration_owned_views_allow_grants(self):
+        self.state.inventory = [
+            ("owned_view", "v", "launchcrew_migration"),
+            ("owned_matview", "m", "launchcrew_migration"),
+            ("owned_foreign", "f", "launchcrew_migration"),
+        ]
+        code, out = self.run_main("--bind")
+        self.assertEqual(code, 0, msg=out)
+
+    def test_foreign_owned_view_refused_before_mutation(self):
+        for kind in ("v", "m", "f"):
+            self.state.inventory = [("evil_rel", kind, "someone_else")]
+            self.state.statements = []
+            self.state.commits = 0
+            self.state.rollbacks = 0
+            code, out = self.run_main("--bind")
+            self.assertNotEqual(code, 0, msg=kind)
+            self.assertIn("unexpected owner", out)
+            mutating = [sql for sql in self.sql_texts()
+                        if sql.startswith(("CREATE ROLE", "ALTER ROLE",
+                                           "COMMENT ON ROLE", "GRANT",
+                                           "REVOKE"))]
+            self.assertEqual(mutating, [], msg=kind)
+            self.assertEqual(self.state.commits, 0, msg=kind)
+
+    def test_runtime_port_mismatch_refused_before_connect(self):
+        bad = ("postgresql://launchcrew_runtime:%s@dbhost:55432/launchcrew"
+               "?sslmode=verify-full" % RT_PW)
+        code, out = self.run_main("--bind", {"RUNTIME_DB_URL": bad})
+        self.assertNotEqual(code, 0)
+        self.assertIn("FAIL", out)
+        self.assertEqual(self.state.connect_count, 0)
+        mutating = [sql for sql in self.sql_texts()
+                    if sql.startswith(("CREATE ROLE", "ALTER ROLE",
+                                       "COMMENT ON ROLE", "GRANT",
+                                       "REVOKE"))]
+        self.assertEqual(mutating, [])
+        self.assertEqual(self.state.commits, 0)
+        self.assertNotIn(RT_PW, out)
+        self.assertNotIn("postgresql://", out)
+
+    def test_migration_port_mismatch_refused_before_connect(self):
+        bad = ("postgresql://launchcrew_migration:%s@dbhost:55432/launchcrew"
+               "?sslmode=verify-full" % MG_PW)
+        code, out = self.run_main("--bind", {"MIGRATION_DB_URL": bad})
+        self.assertNotEqual(code, 0)
+        self.assertIn("FAIL", out)
+        self.assertEqual(self.state.connect_count, 0)
+        mutating = [sql for sql in self.sql_texts()
+                    if sql.startswith(("CREATE ROLE", "ALTER ROLE",
+                                       "COMMENT ON ROLE", "GRANT",
+                                       "REVOKE"))]
+        self.assertEqual(mutating, [])
+        self.assertEqual(self.state.commits, 0)
+        self.assertNotIn(MG_PW, out)
+        self.assertNotIn("postgresql://", out)
+
+    def test_missing_schema_refused_before_writes(self):
+        self.state.schema_owner = None
+        code, out = self.run_main("--bind")
+        self.assertNotEqual(code, 0)
+        self.assertIn("schema-safety", out)
+        mutating = [sql for sql in self.sql_texts()
+                    if sql.startswith(("CREATE ROLE", "ALTER ROLE",
+                                       "COMMENT ON ROLE", "GRANT",
+                                       "REVOKE"))]
+        self.assertEqual(mutating, [])
+        self.assertEqual(self.state.commits, 0)
+
+    def test_unowned_schema_refused_before_writes(self):
+        self.state.schema_owner = "someone_else"
+        code, out = self.run_main("--bind")
+        self.assertNotEqual(code, 0)
+        self.assertIn("schema-safety", out)
+        mutating = [sql for sql in self.sql_texts()
+                    if sql.startswith(("CREATE ROLE", "ALTER ROLE",
+                                       "COMMENT ON ROLE", "GRANT",
+                                       "REVOKE"))]
+        self.assertEqual(mutating, [])
+        self.assertEqual(self.state.commits, 0)
+
+    def test_native_database_owner_schema_allowed_only_with_master_db(self):
+        self.state.schema_owner = "pg_database_owner"
+        self.state.database_owner = "launchcrew_master"
+        code, out = self.run_main("--bind")
+        self.assertEqual(code, 0, msg=out)
+        self.state.statements = []
+        self.state.commits = 0
+        self.state.schema_owner = "pg_database_owner"
+        self.state.database_owner = "someone_else"
+        code, out = self.run_main("--bind")
+        self.assertNotEqual(code, 0)
+        self.assertIn("schema-safety", out)
+        mutating = [sql for sql in self.sql_texts()
+                    if sql.startswith(("CREATE ROLE", "ALTER ROLE",
+                                       "COMMENT ON ROLE", "GRANT",
+                                       "REVOKE"))]
+        self.assertEqual(mutating, [])
+        self.assertEqual(self.state.commits, 0)
+
+    def test_foreign_superuser_grantor_is_refused(self):
+        self.state.roles_exist = True
+        evil = [("launchcrew_runtime", "launchcrew_master", "evil_super",
+                 True, True, False, False, 16384)]
+        self.state.membership_map = {"launchcrew_runtime": evil,
+                                     "launchcrew_migration": []}
+        code, out = self.run_main("--bind")
+        self.assertNotEqual(code, 0)
+        self.assertIn("memberships", out)
+        mutating = [sql for sql in self.sql_texts()
+                    if sql.startswith(("CREATE ROLE", "ALTER ROLE",
+                                       "COMMENT ON ROLE", "GRANT",
+                                       "REVOKE"))]
+        self.assertEqual(mutating, [])
+        self.assertEqual(self.state.commits, 0)
+
+    def test_rdsadmin_native_grantor_is_allowed(self):
+        self.state.roles_exist = True
+        native_runtime = [("launchcrew_runtime", "launchcrew_master",
+                           "rdsadmin", True, True, False, False, 10)]
+        native_migration = [("launchcrew_migration", "launchcrew_master",
+                             "rdsadmin", True, True, False, False, 10)]
+        self.state.membership_map = {
+            "launchcrew_runtime": native_runtime,
+            "launchcrew_migration": native_migration,
+        }
         code, out = self.run_main("--bind")
         self.assertEqual(code, 0, msg=out)
 
@@ -638,6 +790,14 @@ class StaticBoundaryTests(unittest.TestCase):
         self.assertIn("inherit_option", self.text)
         self.assertIn("set_option", self.text)
         self.assertIn("ownership marker", self.text)
+
+    def test_native_grantor_schema_and_port_guards_present(self):
+        self.assertIn("NATIVE_BOOTSTRAP_OID", self.text)
+        self.assertIn("m.grantor", self.text)
+        self.assertIn("pg_database_owner", self.text)
+        self.assertIn("schema-safety", self.text)
+        self.assertIn("port does not match DB_PORT", self.text)
+        self.assertIn("'v', 'm', 'f'", self.text)
 
     def test_verify_mode_never_commits(self):
         verify_start = self.text.index("def do_verify")
