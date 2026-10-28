@@ -108,6 +108,12 @@ Opt-in configuration uses AUTH_ENABLED=true, HTTPS PUBLIC_BASE_URL, and GOOGLE_C
 
 [shadcn/ui](https://github.com/shadcn-ui/ui) provides the Button composition pattern using Radix Slot and class-variance-authority; local styling is original. MIT copyright and permission notice are in web/SHADCN-LICENSE.txt. The design avoids decorative animation and component effects in the approval flow. Runtime dependencies include Next.js, React, Tailwind, TanStack Query, openapi-fetch, Radix Slot, class-variance-authority, clsx, tailwind-merge, and Lucide icons under their respective licenses. Test and code-generation packages retain their own licenses. They are third-party dependencies, not new LaunchCrew code.
 
+## V2 Item A, local first slice
+
+Memory CRUD and explicit learning from individually approved runs use the new Postgres memory_items table. The v1 memory table stays intact. Replay compares stored receipts, including differing ideas, without taking actions. Campaign Week creates seven pending Launch Packs in one transaction, each with its own approval and export gates. The review desk has Replay and Campaign views and uses three second TanStack Query polling.
+
+Alembic 002 adds memory_items, campaigns, and campaign_days. Apply migrations before starting this worktree's API. The generated OpenAPI and frontend client include the new routes. No connectors or scheduling were implemented. See [campaign export notes](docs/campaign-export-notes.md) and the Item A section of [verification](docs/verification.md) for offline API evidence and local check results. The broader V2 plan remains future work beyond this slice.
+
 ## Preserved CLI and future work
 
 ```bash
