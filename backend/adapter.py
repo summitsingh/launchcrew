@@ -3,6 +3,7 @@ import copy
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from launchcrew import agents, run, receipts
+from backend.sam import verify_configured_demo
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -26,7 +27,8 @@ def execute(run_id, idea, profile, seed):
         agents.save_agent(maker, directory)
         try:
             run.run_pipeline(idea, ROOT / 'facts/demo_facts.json', directory, run_id,
-                             seed_unverified_claim=seed, model_enabled=False,
+                             seed_unverified_claim=seed, model_enabled=True,
+                             visual_verifier=verify_configured_demo,
                              receipt_writer=lambda receipt, path: captured.append(receipt))
         except Exception:
             if not captured:

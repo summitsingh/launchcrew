@@ -29,9 +29,7 @@ def create_receipt(run_id, idea, scout, draft_v1, checker_v1, draft_v2, checker_
                         'submit_attempted': False, 'submit_completed': False},
             'approvals': [{'approved_by': 'demo_human', 'action': 'approved_for_export', 'timestamp': now}] if approve else [],
             'approval_state': 'approved_for_export' if approve else 'pending_approval',
-            # Nov 1 plug point: direct api.meta.ai input_image with file_id, never Muse CLI.
-            'visual_verification': {'checked': False, 'method': 'not_run',
-                                    'notes': 'SAM photo check is Nov 1 work, not in Oct 30-31 milestone'},
+            'visual_verification': {'checked': False, 'method': 'not_run'},
             'audit': {'event_log': event_log, 'duplicate_submit_prevented': True, 'stopped_reason': None},
             'model_usage': model_usage}
 
