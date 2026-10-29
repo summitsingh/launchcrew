@@ -286,3 +286,61 @@ def test_invalid_candidate_retains_returned_token_counts(monkeypatch):
         result = spark.call_spark_strict_json('s', 'u', {'claims': []})
     assert result['error_type'] == 'ValueError'
     assert result['usage'] == {'total_tokens': 9}
+
+
+def test_receipt_response_preserves_evidence_and_truth_labels():
+    import copy
+    from backend.app import Receipt
+    from launchcrew import human_review
+    receipt = execute()
+    assert receipt['checker_v2']['claim_results']
+    assert isinstance(receipt['checker_v2']['supported_count'], int)
+    assert receipt['maker_draft_v2']['draft_origin'] == 'deterministic_fallback'
+    assert receipt['maker_draft_v2']['model_written'] is False
+    validated = Receipt.model_validate(receipt).model_dump()
+    assert validated['checker_v2']['claim_results']
+    first = validated['checker_v2']['claim_results'][0]
+    assert 'verdict' in first and 'evidence' in first
+    assert validated['checker_v2']['supported_count'] == receipt['checker_v2']['supported_count']
+    assert validated['checker_v2']['unsupported_count'] == receipt['checker_v2']['unsupported_count']
+    assert validated['checker_v2']['conflicts_count'] == receipt['checker_v2']['conflicts_count']
+    assert validated['maker_draft_v2']['draft_origin'] == 'deterministic_fallback'
+    assert validated['maker_draft_v2']['model_written'] is False
+    assert validated['maker_draft_v2']['maker_schema'] == receipt['maker_draft_v2']['maker_schema']
+    assert validated['maker_draft_v2']['model_used'] == 'none'
+    assert validated['checker_v2']['blocked_count'] == 0
+    assert validated['maker_draft_v2']['post'] == receipt['maker_draft_v2']['post']
+    tainted = copy.deepcopy(receipt)
+    tainted['checker_v2']['raw_provider_payload'] = {'secret': 'x'}
+    tainted['checker_v2']['reasoning'] = 'private'
+    tainted['maker_draft_v2']['raw_provider_payload'] = 'secret'
+    cleaned = Receipt.model_validate(tainted).model_dump()
+    assert 'raw_provider_payload' not in cleaned['checker_v2']
+    assert 'reasoning' not in cleaned['checker_v2']
+    assert 'raw_provider_payload' not in cleaned['maker_draft_v2']
+    assert 'secret' not in json.dumps(cleaned)
+    assert 'private' not in json.dumps(cleaned['checker_v2'])
+    approved = human_review.approve_current(receipt, 'demo')
+    bound = Receipt.model_validate(approved).model_dump()
+    assert bound['approval_binding']['version'] == human_review.APPROVAL_BINDING_VERSION
+    assert len(bound['approval_binding']['digest']) == 64
+    assert bound['approvals'][-1]['binding_digest'] == bound['approval_binding']['digest']
+    assert bound['approvals'][-1]['binding_version'] == bound['approval_binding']['version']
+    assert bound['checker_v2']['claim_results']
+    assert bound['maker_draft_v2']['draft_origin'] == 'deterministic_fallback'
+    historical = copy.deepcopy(receipt)
+    historical['checker_v2'].pop('claim_results', None)
+    historical['checker_v2'].pop('supported_count', None)
+    historical['checker_v2'].pop('unsupported_count', None)
+    historical['checker_v2'].pop('conflicts_count', None)
+    historical['maker_draft_v2'].pop('draft_origin', None)
+    historical['maker_draft_v2'].pop('model_written', None)
+    historical['maker_draft_v2'].pop('maker_schema', None)
+    historical['maker_draft_v2'].pop('model_used', None)
+    historical['maker_draft_v2'].pop('line_evidence', None)
+    legacy = Receipt.model_validate(historical).model_dump()
+    assert legacy['checker_v2']['claim_results'] is None
+    assert legacy['checker_v2']['supported_count'] is None
+    assert legacy['maker_draft_v2']['draft_origin'] is None
+    assert legacy['maker_draft_v2']['model_written'] is None
+    assert legacy['checker_v2']['blocked_count'] == 0

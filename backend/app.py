@@ -83,17 +83,53 @@ class Empty(Strict):
     pass
 
 
+class ClaimResult(BaseModel):
+    model_config = ConfigDict(extra='ignore')
+    claim: str = ''
+    verified: bool = False
+    verdict: str = 'unsupported'
+    evidence: str | None = None
+    reason: str = ''
+    blocked: bool = True
+    source: str = ''
+
+
+class LineEvidence(BaseModel):
+    model_config = ConfigDict(extra='ignore')
+    channel: str = ''
+    line: str = ''
+    evidence: list[str] = Field(default_factory=list)
+    reasons: list[str] = Field(default_factory=list)
+
+
+class ApprovalBinding(BaseModel):
+    model_config = ConfigDict(extra='ignore')
+    version: str
+    digest: str
+
+
 class Check(BaseModel):
+    model_config = ConfigDict(extra='ignore')
     blocked_count: int
     verified_count: int
     blocked_claims: list[dict[str, str]]
     revision_instructions: list[str]
+    claim_results: list[ClaimResult] | None = None
+    supported_count: int | None = None
+    unsupported_count: int | None = None
+    conflicts_count: int | None = None
 
 
 class Draft(BaseModel):
+    model_config = ConfigDict(extra='ignore')
     post: str
     email: str
     claims: list[str]
+    draft_origin: str | None = None
+    model_written: bool | None = None
+    maker_schema: str | None = None
+    model_used: str | None = None
+    line_evidence: list[LineEvidence] | None = None
 
 
 class Approval(BaseModel):
@@ -102,6 +138,8 @@ class Approval(BaseModel):
     action: str
     timestamp: str
     revision: int | None = None
+    binding_version: str | None = None
+    binding_digest: str | None = None
 
 
 class HumanDraft(BaseModel):
@@ -264,6 +302,7 @@ class Receipt(BaseModel):
     approvals: list[Approval]
     revision: int = 0
     approved_revision: int | None = None
+    approval_binding: ApprovalBinding | None = None
     human_draft: HumanDraft | None = None
     human_check: Check | None = None
     revision_history: list[RevisionHistoryEntry] = []
