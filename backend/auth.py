@@ -1,7 +1,11 @@
 """Opt-in Authlib OAuth with opaque cookies and server-side Postgres sessions.
 
+Google-only priority: source wiring exposes only configured providers and
+requires Google configuration when enabled. Facebook code remains present but
+unpublished and inactive unless its credentials are explicitly configured.
 Only identity scopes. Provider tokens are never persisted or returned to clients.
-Live provider sign-in has not been verified.
+Live provider sign-in has not been verified. Status live_verified stays false
+until actual provider proof.
 """
 import hashlib
 import json
@@ -24,14 +28,32 @@ def enabled():
     return os.getenv('AUTH_ENABLED', 'false').lower() == 'true'
 
 
+def google_configured():
+    return bool(os.getenv('GOOGLE_CLIENT_ID') and os.getenv('GOOGLE_CLIENT_SECRET'))
+
+
+def facebook_configured():
+    return bool(os.getenv('FACEBOOK_CLIENT_ID') and os.getenv('FACEBOOK_CLIENT_SECRET'))
+
+
+def configured_providers():
+    providers = []
+    if google_configured():
+        providers.append('google')
+    if facebook_configured():
+        providers.append('facebook')
+    return providers
+
+
 def validate_config():
     if not enabled():
         return
     base = os.environ.get('PUBLIC_BASE_URL', '')
-    if urlsplit(base).scheme != 'https' or not urlsplit(base).netloc:
+    parsed = urlsplit(base)
+    if parsed.scheme != 'https' or not parsed.netloc or parsed.path not in ('', '/') or parsed.query or parsed.fragment:
         raise RuntimeError('Auth requires PUBLIC_BASE_URL with HTTPS')
-    if not any(os.getenv(p + '_CLIENT_ID') and os.getenv(p + '_CLIENT_SECRET') for p in ('GOOGLE', 'FACEBOOK')):
-        raise RuntimeError('Auth requires a configured provider')
+    if not google_configured():
+        raise RuntimeError('Auth requires Google provider configuration')
 
 
 def oauth_client(provider):
@@ -81,9 +103,9 @@ def actor(request: Request):
 
 
 @router.get('/status')
-def status(request: Request) -> dict[str, str | bool]:
+def status(request: Request) -> dict[str, str | bool | list[str]]:
     data = load_session(request) if enabled() else None
-    return {'enabled': enabled(), 'user': data.get('actor', '') if data else '', 'live_verified': False}
+    return {'enabled': enabled(), 'user': data.get('actor', '') if data else '', 'live_verified': False, 'providers': configured_providers() if enabled() else []}
 
 
 @router.get('/{provider}/login')

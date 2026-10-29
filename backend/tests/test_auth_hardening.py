@@ -103,7 +103,7 @@ def test_expired_session_refused_and_status_empty(client, monkeypatch):
         db.execute(text("UPDATE auth_sessions SET expires_at=now()-interval '1 second'"))
     assert client.get('/api/queue').status_code == 401
     assert client.get('/api/auth/status').json() == {
-        'enabled': True, 'user': '', 'live_verified': False}
+        'enabled': True, 'user': '', 'live_verified': False, 'providers': []}
     # The expired cookie does not become valid again on a later request.
     client.cookies.set(auth.COOKIE, opaque)
     assert client.get('/api/queue').status_code == 401
