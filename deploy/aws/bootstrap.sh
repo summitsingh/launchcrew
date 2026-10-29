@@ -4149,20 +4149,19 @@ PYEOF
   PREDECESSOR_TASK=""
   PREDECESSOR_OUTCOME="none"
   acquire_operation_lock
+  # Legacy unversioned predecessor allows a different family after
+  # replacement (Family omitted, so a new family may appear). It still
+  # requires exact recorded account, region, stack, cluster, phase, label,
+  # logical, StackId when present, recomputed digest when present, valid
+  # old ARN shape with account and region, live operation shape for the
+  # recorded logical, and live STOPPED exit 0 proof before any new RunTask.
+  # It never compares the old ARN or family to the current taskdef.
   if [ -f "$LEGACY_ACTIVE_FILE" ]; then
-    case "$TASKDEF_ARN" in
-      *":task""-definition/"*) ;;
-      *) echo "refused: $TASK_LABEL current taskdef family unreadable, no new launch. Inspect $LEGACY_ACTIVE_FILE." >&2; phase_failed "$TASK_PHASE" ;;
-    esac
-    LEGACY_WANT_FAMILY_TAIL="${TASKDEF_ARN##*/}"
-    LEGACY_WANT_FAMILY="${LEGACY_WANT_FAMILY_TAIL%%:*}"
-    LEGACY_WANT_FAMILY="$(printf '%s' "$LEGACY_WANT_FAMILY" | tr -d '[:space:]')"
-    [ -n "$LEGACY_WANT_FAMILY" ] || { echo "refused: $TASK_LABEL current taskdef family missing, no new launch. Inspect $LEGACY_ACTIVE_FILE." >&2; phase_failed "$TASK_PHASE"; }
-    LEGACY_PARSED="$(python3 - "$LEGACY_ACTIVE_FILE" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$STACK_NAME" "$CLUSTER_NAME" "$TASK_PHASE" "$TASK_LABEL" "$TASKDEF_LOGICAL" "$LEGACY_WANT_FAMILY" "${STACK_ID:-}" 2>/dev/null <<'PYEOF'
+    LEGACY_PARSED="$(python3 - "$LEGACY_ACTIVE_FILE" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$STACK_NAME" "$CLUSTER_NAME" "$TASK_PHASE" "$TASK_LABEL" "$TASKDEF_LOGICAL" "${STACK_ID:-}" 2>/dev/null <<'PYEOF'
 import hashlib, json, os, sys
 (path, want_account, want_region, want_stack, want_cluster,
- want_phase, want_label, want_logical, want_family,
- want_stack_id) = sys.argv[1:11]
+ want_phase, want_label, want_logical,
+ want_stack_id) = sys.argv[1:10]
 try:
     if os.path.islink(path):
         print("PROOF\tSYMLINK")
@@ -4246,10 +4245,12 @@ if not isinstance(taskdef_arn, str) or not taskdef_arn.startswith(
 try:
     tail = taskdef_arn.split(":task" "-definition/", 1)[1]
     rec_family = tail.split(":", 1)[0]
+    rec_revision = tail.split(":", 1)[1] if ":" in tail else ""
 except Exception:
     rec_family = ""
-if not rec_family or not want_family or rec_family != want_family:
-    print("PROOF\tTASKDEF_FAMILY_MISMATCH")
+    rec_revision = ""
+if not rec_family or not rec_revision:
+    print("PROOF\tTASKDEF_MALFORMED")
     sys.exit(0)
 if "config_digest" in doc:
     try:
@@ -4311,6 +4312,100 @@ PYEOF
     if ! "$AWS_BIN" ecs "describe-task""-definition" --task"-definition" "$LEGACY_TASKDEF" --region "$EXPECTED_REGION" --output json >"$LEGACY_TASKDEF_JSON" 2>"$TMP_ERR"; then
       rm -f "$LEGACY_DESC" "$LEGACY_TASKDEF_JSON"
       echo "refused: $TASK_LABEL legacy predecessor taskdef unreadable, no new launch. Inspect $LEGACY_ACTIVE_FILE." >&2
+      phase_failed "$TASK_PHASE"
+    fi
+    case "$TASKDEF_LOGICAL" in
+      SdkInitTaskDefinition)
+        LEGACY_EXPECT_EXEC="SdkInitExecutionRole"
+        LEGACY_EXPECT_TASK="SdkInitTaskRole"
+        LEGACY_EXPECT_CONTAINER="sdk-init"
+        LEGACY_EXPECT_COMMAND="--populate"
+        LEGACY_EXPECT_ENTRYPOINT="1"
+        ;;
+      SdkMaterialTaskDefinition)
+        LEGACY_EXPECT_EXEC="SdkMaterialExecutionRole"
+        LEGACY_EXPECT_TASK="SdkMaterialTaskRole"
+        LEGACY_EXPECT_CONTAINER="sdk-material"
+        LEGACY_EXPECT_COMMAND="--verify-material"
+        LEGACY_EXPECT_ENTRYPOINT="1"
+        ;;
+      MigrationTaskDefinition)
+        LEGACY_EXPECT_EXEC="MigrationExecutionRole"
+        LEGACY_EXPECT_TASK="MigrationTaskRole"
+        LEGACY_EXPECT_CONTAINER="migration"
+        LEGACY_EXPECT_COMMAND=""
+        LEGACY_EXPECT_ENTRYPOINT=""
+        ;;
+      BootstrapTaskDefinition)
+        LEGACY_EXPECT_EXEC="BootstrapExecutionRole"
+        LEGACY_EXPECT_TASK="BootstrapTaskRole"
+        LEGACY_EXPECT_CONTAINER="bootstrap-db-roles"
+        LEGACY_EXPECT_COMMAND=""
+        LEGACY_EXPECT_ENTRYPOINT=""
+        ;;
+      VerifyTaskDefinition)
+        LEGACY_EXPECT_EXEC="VerifyExecutionRole"
+        LEGACY_EXPECT_TASK="VerifyTaskRole"
+        LEGACY_EXPECT_CONTAINER="bootstrap-db-roles"
+        LEGACY_EXPECT_COMMAND="--verify"
+        LEGACY_EXPECT_ENTRYPOINT=""
+        ;;
+      *)
+        rm -f "$LEGACY_DESC" "$LEGACY_TASKDEF_JSON"
+        echo "refused: $TASK_LABEL legacy operation $TASKDEF_LOGICAL unknown, no new launch. Inspect $LEGACY_ACTIVE_FILE." >&2
+        phase_failed "$TASK_PHASE"
+        ;;
+    esac
+    if ! LEGACY_EXPECT_EXEC_ARN="$(resolve_role_arn "$LEGACY_EXPECT_EXEC")"; then
+      rm -f "$LEGACY_DESC" "$LEGACY_TASKDEF_JSON"
+      echo "refused: $TASK_LABEL legacy predecessor expected execution role unresolvable, no new launch. Inspect $LEGACY_ACTIVE_FILE." >&2
+      phase_failed "$TASK_PHASE"
+    fi
+    if ! LEGACY_EXPECT_TASK_ARN="$(resolve_role_arn "$LEGACY_EXPECT_TASK")"; then
+      rm -f "$LEGACY_DESC" "$LEGACY_TASKDEF_JSON"
+      echo "refused: $TASK_LABEL legacy predecessor expected task role unresolvable, no new launch. Inspect $LEGACY_ACTIVE_FILE." >&2
+      phase_failed "$TASK_PHASE"
+    fi
+    LEGACY_EXPECT_EXEC_ARN="$(printf '%s' "$LEGACY_EXPECT_EXEC_ARN" | tr -d '[:space:]')"
+    LEGACY_EXPECT_TASK_ARN="$(printf '%s' "$LEGACY_EXPECT_TASK_ARN" | tr -d '[:space:]')"
+    LEGACY_OPERATION="$(python3 - "$LEGACY_TASKDEF_JSON" "$LEGACY_EXPECT_CONTAINER" "$LEGACY_EXPECT_COMMAND" "$LEGACY_EXPECT_ENTRYPOINT" "$LEGACY_EXPECT_EXEC_ARN" "$LEGACY_EXPECT_TASK_ARN" 2>/dev/null <<'PYEOF'
+import json, sys
+(doc_file, want_container, want_command, want_entry, want_exec, want_task) = sys.argv[1:7]
+try:
+    doc = json.load(open(doc_file))
+except Exception:
+    sys.exit(1)
+taskdef = doc.get("taskDefinition", doc)
+if (taskdef.get("executionRoleArn", "") or "") != want_exec:
+    print("TASKDEF_OPERATION_MISMATCH:EXEC_ROLE")
+    sys.exit(0)
+if (taskdef.get("taskRoleArn", "") or "") != want_task:
+    print("TASKDEF_OPERATION_MISMATCH:TASK_ROLE")
+    sys.exit(0)
+containers = taskdef.get("containerDefinitions", []) or []
+target = None
+for container in containers:
+    if (container.get("name", "") or "") == want_container and container.get("essential", True):
+        target = container
+        break
+if target is None:
+    print("TASKDEF_OPERATION_MISMATCH:MISSING_CONTAINER")
+    sys.exit(0)
+if want_entry == "1":
+    if (target.get("entryPoint", None) or []) != ["/opt/venv/bin/python", "/app/scripts/populate_prereqs.py"]:
+        print("TASKDEF_OPERATION_MISMATCH:ENTRYPOINT")
+        sys.exit(0)
+if want_command:
+    if (target.get("command", None) or []) != [want_command]:
+        print("TASKDEF_OPERATION_MISMATCH:COMMAND")
+        sys.exit(0)
+print("OK")
+PYEOF
+)" || LEGACY_OPERATION="UNREADABLE"
+    LEGACY_OPERATION="$(printf '%s' "$LEGACY_OPERATION" | tr -d '[:space:]')"
+    if [ "$LEGACY_OPERATION" != "OK" ]; then
+      rm -f "$LEGACY_DESC" "$LEGACY_TASKDEF_JSON"
+      echo "refused: $TASK_LABEL legacy predecessor operation proof is $LEGACY_OPERATION, no new $RELEASE_GEN launch. Inspect $LEGACY_ACTIVE_FILE." >&2
       phase_failed "$TASK_PHASE"
     fi
     LEGACY_CHECK="$(python3 - "$LEGACY_DESC" "$LEGACY_TASKDEF_JSON" "$LEGACY_TASK" "$LEGACY_TASKDEF" "arn:aws:ecs:$EXPECTED_REGION:$EXPECTED_ACCOUNT:cluster/$CLUSTER_NAME" "$LEGACY_TOKEN" 2>/dev/null <<'PYEOF'

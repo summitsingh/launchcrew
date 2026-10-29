@@ -888,7 +888,7 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-task""-definition" ]; then
       printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/BootstrapExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/BootstrapTaskRole%s","containerDefinitions":[{"name":"bootstrap-db-roles","essential":true,"image":"%s","secrets":[{"name":"MASTER_DB_PASSWORD","valueFrom":"%s:password::"},{"name":"RUNTIME_DB_URL","valueFrom":"%s:database-url::"},{"name":"MIGRATION_DB_URL","valueFrom":"%s:database-url::"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_BOOT" "$SEC_MASTER" "$SEC_RT" "$SEC_MG"
       exit 0 ;;
     *launchcrew-demo-verify*)
-      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/VerifyExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/VerifyTaskRole%s","containerDefinitions":[{"name":"bootstrap-db-roles","essential":true,"image":"%s","secrets":[{"name":"RUNTIME_DB_URL","valueFrom":"%s:database-url::"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_BOOT" "$SEC_RT"
+      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/VerifyExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/VerifyTaskRole%s","containerDefinitions":[{"name":"bootstrap-db-roles","essential":true,"command":["--verify"],"image":"%s","secrets":[{"name":"RUNTIME_DB_URL","valueFrom":"%s:database-url::"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_BOOT" "$SEC_RT"
       exit 0 ;;
     *launchcrew-demo-sdkinit*)
       SDK_CERT="${FAKE_CERT_ARN:-}"
@@ -3124,7 +3124,7 @@ class LegacyJournalTests(BootstrapHarness):
                                    "head006-testabc-active.json")
             self.assertFalse(new_file.exists())
 
-    def test_legacy_wrong_family_refuses_without_new_launch(self):
+    def test_legacy_foreign_operation_refuses_without_new_launch(self):
         wrong_taskdef = ("arn:aws:ecs:us-east-1:111122223333:task"
                          "-definition/launchcrew-demo-migration:1")
         with tempfile.TemporaryDirectory() as shared_tmp:
@@ -3136,13 +3136,18 @@ class LegacyJournalTests(BootstrapHarness):
                 journals, outcome="complete",
                 taskdef_arn=wrong_taskdef)
             before = legacy.read_text(encoding="utf-8")
+            (shared / "taskdefs").write_text(
+                f"{self.LEGACY_TASK}|{wrong_taskdef}|{self.LEGACY_TOKEN}\n",
+                encoding="utf-8")
+            (shared / "count").write_text("10", encoding="utf-8")
+            (shared / "token").write_text("", encoding="utf-8")
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "material",
                  "--release-generation", "head006-testabc"],
                 shared_dir=shared_tmp)
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
-            self.assertIn("TASKDEF_FAMILY_MISMATCH", combined)
+            self.assertIn("TASKDEF_OPERATION_MISMATCH", combined)
             self.assertIn("no new launch", combined)
             self.assertFalse(any("run-task" in call for call in calls))
             self.assertTrue(legacy.exists())
@@ -3150,6 +3155,46 @@ class LegacyJournalTests(BootstrapHarness):
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
                                    "head006-testabc-active.json")
             self.assertFalse(new_file.exists())
+
+    def test_legacy_old_family_after_replacement_proceeds(self):
+        import json as _json
+        old_taskdef = ("arn:aws:ecs:us-east-1:111122223333:task"
+                       "-definition/launchcrew-demo-sdkmaterial-replaced:2")
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared = Path(shared_tmp)
+            journals = shared / "journals"
+            journals.mkdir(mode=0o700)
+            journals.chmod(0o700)
+            legacy = self.write_legacy(
+                journals, outcome="complete",
+                taskdef_arn=old_taskdef)
+            before = legacy.read_text(encoding="utf-8")
+            (shared / "taskdefs").write_text(
+                f"{self.LEGACY_TASK}|{old_taskdef}|{self.LEGACY_TOKEN}\n",
+                encoding="utf-8")
+            (shared / "count").write_text("10", encoding="utf-8")
+            (shared / "token").write_text("", encoding="utf-8")
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "material",
+                 "--release-generation", "head006-testabc"],
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            combined = result.stdout + result.stderr
+            self.assertIn("legacy predecessor reconciled", combined)
+            self.assertTrue(legacy.exists())
+            self.assertEqual(legacy.read_text(encoding="utf-8"), before)
+            self.assertEqual(oct(legacy.stat().st_mode & 0o777), "0o600")
+            new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
+                                   "head006-testabc-active.json")
+            self.assertTrue(new_file.exists())
+            new_doc = _json.loads(new_file.read_text(encoding="utf-8"))
+            self.assertEqual(new_doc.get("outcome"), "complete")
+            self.assertEqual(new_doc.get("predecessor_task_arn"), self.LEGACY_TASK)
+            runs = [call for call in calls if "run-task" in call]
+            self.assertEqual(len(runs), 1)
+            describes = [call for call in calls if "describe-tasks" in call]
+            self.assertGreaterEqual(len(describes), 2)
 
     def test_legacy_wrong_stack_id_refuses_without_new_launch(self):
         with tempfile.TemporaryDirectory() as shared_tmp:
