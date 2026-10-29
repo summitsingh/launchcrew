@@ -2,11 +2,12 @@
 
 Proof bounds are fixed in PROOF constants below: Standard muse-spark-1.3,
 exact https origin plus chat path, max_completion_tokens 2048, n 1,
-serialized body at most 32 KiB, no tools, no redirects, no retries. The
-production opener refuses redirects before any resend. The proof latch in
-this module is a durable nonresettable one-shot counter: attempts decrement
-durably before send, reuse after any attempt or crash is refused, and
-uncertainty latches with no automatic resend. Keys are never logged.
+reasoning_effort minimal, serialized body at most 32 KiB, no tools,
+no redirects, no retries. The production opener refuses redirects before
+any resend. The proof latch in this module is a durable nonresettable
+one-shot counter: attempts decrement durably before send, reuse after any
+attempt or crash is refused, and uncertainty latches with no automatic
+resend. Keys are never logged.
 """
 import json
 import os
@@ -22,6 +23,7 @@ PROOF_ORIGIN = 'https://api.meta.ai/v1'
 PROOF_CHAT_PATH = '/chat/completions'
 PROOF_MAX_COMPLETION_TOKENS = 2048
 PROOF_N = 1
+PROOF_REASONING_EFFORT = 'minimal'
 PROOF_MAX_BODY_BYTES = 32 * 1024
 PROOF_MAX_ATTEMPTS = 3
 
@@ -146,8 +148,9 @@ def validate_proof_request(request):
     """Validate a proof request for fixed model, origin, path, and bounds.
 
     Checks exact URL, serialized body at most 32 KiB, model muse-spark-1.3,
-    max_completion_tokens 2048, n 1, strict json_schema response format,
-    and no tools. Returns the parsed body dict. Raises ValueError.
+    max_completion_tokens 2048, n 1, reasoning_effort minimal, strict
+    json_schema response format, and no tools. Returns the parsed body
+    dict. Raises ValueError.
     """
     url = getattr(request, 'full_url', '') or ''
     if url != PROOF_ORIGIN + PROOF_CHAT_PATH:
@@ -167,6 +170,8 @@ def validate_proof_request(request):
         raise ValueError('proof output token bound missing')
     if body.get('n') != PROOF_N:
         raise ValueError('proof n bound missing')
+    if body.get('reasoning_effort') != PROOF_REASONING_EFFORT:
+        raise ValueError('proof reasoning effort mismatch')
     if 'tools' in body or 'tool_choice' in body:
         raise ValueError('proof tools refused')
     fmt = body.get('response_format', {})
@@ -273,7 +278,8 @@ def _call(system_prompt, user_prompt, schema_hint, model):
             {'role': 'user', 'content': user_prompt}],
             'response_format': {'type': 'json_schema', 'json_schema': {
                 'name': 'launchcrew_candidate', 'strict': True, 'schema': schema}},
-            'max_completion_tokens': PROOF_MAX_COMPLETION_TOKENS, 'n': PROOF_N}
+            'max_completion_tokens': PROOF_MAX_COMPLETION_TOKENS, 'n': PROOF_N,
+            'reasoning_effort': PROOF_REASONING_EFFORT}
         raw_body = json.dumps(payload).encode()
         if len(raw_body) > PROOF_MAX_BODY_BYTES:
             raise ValueError('request body bound exceeded')
@@ -281,10 +287,29 @@ def _call(system_prompt, user_prompt, schema_hint, model):
                           data=raw_body, headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key})
         with urlopen(request, timeout=30) as response:
             body = json.load(response)
-        usage = body.get('usage', {})
-        usage = {name: usage[name] for name in TOKEN_FIELDS
-                 if isinstance(usage, dict) and type(usage.get(name)) is int and usage[name] >= 0}
-        raw = json.loads(body['choices'][0]['message']['content'])
+        if not isinstance(body, dict):
+            raise ValueError('Invalid candidate schema')
+        raw_usage = body.get('usage', {})
+        usage = {name: raw_usage[name] for name in TOKEN_FIELDS
+                 if isinstance(raw_usage, dict) and type(raw_usage.get(name)) is int and raw_usage[name] >= 0}
+        choices = body.get('choices')
+        if not isinstance(choices, list) or not choices:
+            raise ValueError('Invalid candidate schema')
+        first = choices[0]
+        if not isinstance(first, dict):
+            raise ValueError('Invalid candidate schema')
+        if first.get('finish_reason') == 'length':
+            raise ValueError('Invalid candidate schema')
+        message = first.get('message')
+        if not isinstance(message, dict):
+            raise ValueError('Invalid candidate schema')
+        content = message.get('content')
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError('Invalid candidate schema')
+        try:
+            raw = json.loads(content)
+        except Exception:
+            raise ValueError('Invalid candidate schema')
         if (not isinstance(raw, dict) or set(raw) != set(schema_hint)
                 or any(not isinstance(value, list) or any(not isinstance(item, str) for item in value)
                        for value in raw.values())):

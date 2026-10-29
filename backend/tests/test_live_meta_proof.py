@@ -22,6 +22,7 @@ def test_synthetic_proof_constants_fixed():
     assert spark_module.PROOF_CHAT_PATH == '/chat/completions'
     assert spark_module.PROOF_MAX_COMPLETION_TOKENS == 2048
     assert spark_module.PROOF_N == 1
+    assert spark_module.PROOF_REASONING_EFFORT == 'minimal'
     assert spark_module.PROOF_MAX_BODY_BYTES == 32 * 1024
     assert spark_module.PROOF_MAX_ATTEMPTS == 3
 
@@ -34,6 +35,7 @@ def _proof_request(body):
 
 def _valid_body():
     return {'model': 'muse-spark-1.3', 'max_completion_tokens': 2048, 'n': 1,
+            'reasoning_effort': 'minimal',
             'messages': [{'role': 'user', 'content': 'hi'}],
             'response_format': {'type': 'json_schema',
                                 'json_schema': {'name': 't', 'strict': True,
@@ -84,6 +86,7 @@ def test_synthetic_spark_call_carries_output_token_and_n(monkeypatch):
     assert result['mode'] == 'spark'
     assert captured['body']['max_completion_tokens'] == 2048
     assert captured['body']['n'] == 1
+    assert captured['body']['reasoning_effort'] == 'minimal'
 
 
 def test_synthetic_spark_redirect_refused_before_resend():
@@ -599,3 +602,168 @@ def test_synthetic_sam_success_cleans_before_pass(monkeypatch, tmp_path, capsys)
     assert state['run_create_keyless'] is True
     assert state['final_seen'] is True
     assert state['flag_during_final'] == 'false'
+
+
+def test_synthetic_proof_request_rejects_non_minimal_reasoning():
+    parsed = spark_module.validate_proof_request(_proof_request(_valid_body()))
+    assert parsed['reasoning_effort'] == 'minimal'
+    missing = _valid_body()
+    del missing['reasoning_effort']
+    with pytest.raises(ValueError):
+        spark_module.validate_proof_request(_proof_request(missing))
+    for bad_effort in ('none', 'low', 'high', '', None, 0, False):
+        bad = _valid_body()
+        bad['reasoning_effort'] = bad_effort
+        with pytest.raises(ValueError):
+            spark_module.validate_proof_request(_proof_request(bad))
+
+
+def test_synthetic_spark_success_keeps_strict_schema_and_usage(monkeypatch):
+    monkeypatch.setenv('META_API_KEY', 'offline-fixture')
+    monkeypatch.delenv('META_API_BASE_URL', raising=False)
+    monkeypatch.delenv('META_MODEL', raising=False)
+    captured = {}
+
+    def test_synthetic_success(request, timeout):
+        captured['body'] = json.loads(request.data)
+        assert len(request.data) <= 32 * 1024
+        return io.BytesIO(json.dumps(
+            {'choices': [{'message': {'content': json.dumps({'claims': ['synthetic-ok']})},
+                          'finish_reason': 'stop'}],
+             'usage': {'prompt_tokens': 12, 'completion_tokens': 8, 'total_tokens': 20,
+                       'private_field': 'must-not-persist'}}).encode())
+
+    with patch('launchcrew.spark.urlopen', side_effect=test_synthetic_success) as transport:
+        result = spark_module.call_spark_strict_json('s', 'u', {'claims': []})
+    assert transport.call_count == 1
+    assert result['mode'] == 'spark'
+    assert result['raw_json'] == {'claims': ['synthetic-ok']}
+    assert result['usage'] == {'prompt_tokens': 12, 'completion_tokens': 8, 'total_tokens': 20}
+    assert result['request_provider'] == 'meta'
+    body = captured['body']
+    assert body['reasoning_effort'] == 'minimal'
+    assert body['max_completion_tokens'] == 2048 and body['n'] == 1
+    fmt = body['response_format']
+    assert fmt['type'] == 'json_schema' and fmt['json_schema']['strict'] is True
+    assert fmt['json_schema']['schema']['additionalProperties'] is False
+
+
+def test_synthetic_spark_null_content_length_is_fallback(monkeypatch):
+    monkeypatch.setenv('META_API_KEY', 'offline-fixture')
+    monkeypatch.delenv('META_API_BASE_URL', raising=False)
+    monkeypatch.delenv('META_MODEL', raising=False)
+
+    def test_synthetic_truncated(request, timeout):
+        return io.BytesIO(json.dumps(
+            {'choices': [{'message': {'content': None}, 'finish_reason': 'length'}],
+             'usage': {'prompt_tokens': 10, 'completion_tokens': 2048,
+                       'total_tokens': 2058}}).encode())
+
+    with patch('launchcrew.spark.urlopen', side_effect=test_synthetic_truncated) as transport:
+        result = spark_module.call_spark_strict_json('s', 'u', {'claims': []})
+    assert transport.call_count == 1
+    assert result['mode'] == 'deterministic_fallback'
+    assert result['attempted'] is True
+    assert result['error_type'] == 'ValueError'
+    assert result['usage'] == {'prompt_tokens': 10, 'completion_tokens': 2048,
+                               'total_tokens': 2058}
+    assert result['request_provider'] == 'meta'
+    assert 'raw_json' not in result
+    assert 'length' not in json.dumps(result)
+
+
+@pytest.mark.parametrize('content', [{'secret': 'x'}, ['x'], 123, True, None])
+def test_synthetic_spark_nonstring_content_is_fallback(monkeypatch, content):
+    monkeypatch.setenv('META_API_KEY', 'offline-fixture')
+    monkeypatch.delenv('META_API_BASE_URL', raising=False)
+    monkeypatch.delenv('META_MODEL', raising=False)
+
+    def test_synthetic_nonstring(request, timeout):
+        return io.BytesIO(json.dumps(
+            {'choices': [{'message': {'content': content}, 'finish_reason': 'stop'}],
+             'usage': {'prompt_tokens': 3, 'completion_tokens': 4,
+                       'total_tokens': 7}}).encode())
+
+    with patch('launchcrew.spark.urlopen', side_effect=test_synthetic_nonstring) as transport:
+        result = spark_module.call_spark_strict_json('s', 'u', {'claims': []})
+    assert transport.call_count == 1
+    assert result['mode'] == 'deterministic_fallback'
+    assert result['error_type'] == 'ValueError'
+    assert result['usage'] == {'prompt_tokens': 3, 'completion_tokens': 4, 'total_tokens': 7}
+    assert 'raw_json' not in result
+
+
+@pytest.mark.parametrize('choices', [
+    None, [], 'not-a-list', [None], ['x'], [{}],
+    [{'message': None}], [{'message': 'x'}], [{'message': {}}],
+    [{'message': {'content': ''}}], [{'message': {'content': '   '}}],
+    [{'message': {'content': 'not-json'}}],
+])
+def test_synthetic_spark_malformed_choice_is_fallback(monkeypatch, choices):
+    monkeypatch.setenv('META_API_KEY', 'offline-fixture')
+    monkeypatch.delenv('META_API_BASE_URL', raising=False)
+    monkeypatch.delenv('META_MODEL', raising=False)
+
+    def test_synthetic_malformed(request, timeout):
+        return io.BytesIO(json.dumps(
+            {'choices': choices,
+             'usage': {'prompt_tokens': 1, 'completion_tokens': 2,
+                       'total_tokens': 3}}).encode())
+
+    with patch('launchcrew.spark.urlopen', side_effect=test_synthetic_malformed) as transport:
+        result = spark_module.call_spark_strict_json('s', 'u', {'claims': []})
+    assert transport.call_count == 1
+    assert result['mode'] == 'deterministic_fallback'
+    assert result['error_type'] == 'ValueError'
+    assert result['usage'] == {'prompt_tokens': 1, 'completion_tokens': 2, 'total_tokens': 3}
+    assert 'raw_json' not in result
+
+
+def test_synthetic_spark_malformed_never_leaks_provider_text(monkeypatch):
+    monkeypatch.setenv('META_API_KEY', 'offline-fixture')
+    monkeypatch.delenv('META_API_BASE_URL', raising=False)
+    monkeypatch.delenv('META_MODEL', raising=False)
+    marker = 'SECRET-PROVIDER-TEXT-7f3a9c-unique'
+
+    def test_synthetic_leak(request, timeout):
+        return io.BytesIO(json.dumps(
+            {'choices': [{'message': {'content': marker + ' not json'},
+                          'finish_reason': 'stop'}],
+             'usage': {'prompt_tokens': 5, 'completion_tokens': 6, 'total_tokens': 11,
+                       'private_field': marker}}).encode())
+
+    with patch('launchcrew.spark.urlopen', side_effect=test_synthetic_leak):
+        result = spark_module.call_spark_strict_json('s', 'u', {'claims': []})
+    assert result['mode'] == 'deterministic_fallback'
+    assert result['usage'] == {'prompt_tokens': 5, 'completion_tokens': 6, 'total_tokens': 11}
+    assert marker not in json.dumps(result)
+    assert 'offline-fixture' not in json.dumps(result)
+
+    def test_synthetic_leak_schema(request, timeout):
+        return io.BytesIO(json.dumps(
+            {'choices': [{'message': {'content': json.dumps(
+                {'claims': [marker], 'extra': marker})}}],
+             'usage': {'total_tokens': 2}}).encode())
+
+    with patch('launchcrew.spark.urlopen', side_effect=test_synthetic_leak_schema):
+        result = spark_module.call_spark_strict_json('s', 'u', {'claims': []})
+    assert result['mode'] == 'deterministic_fallback'
+    assert marker not in json.dumps(result)
+
+
+def test_synthetic_spark_malformed_makes_single_http_call(monkeypatch):
+    monkeypatch.setenv('META_API_KEY', 'offline-fixture')
+    monkeypatch.delenv('META_API_BASE_URL', raising=False)
+    monkeypatch.delenv('META_MODEL', raising=False)
+    calls = []
+
+    def test_synthetic_counted(request, timeout):
+        calls.append(request.full_url)
+        return io.BytesIO(json.dumps(
+            {'choices': [{'message': {'content': None}, 'finish_reason': 'length'}],
+             'usage': {'total_tokens': 9}}).encode())
+
+    with patch('launchcrew.spark.urlopen', side_effect=test_synthetic_counted):
+        result = spark_module.call_spark_strict_json('s', 'u', {'claims': []})
+    assert result['mode'] == 'deterministic_fallback'
+    assert len(calls) == 1

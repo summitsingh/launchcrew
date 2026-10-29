@@ -11,8 +11,9 @@ CloudWatch, or ECS overrides.
 Spark proof is exactly one pipeline with three stages and at most three total
 HTTP attempts including failures, with durable decrement before send. Fixed
 Standard muse-spark-1.3, exact https origin plus chat path,
-max_completion_tokens 2048, n 1, serialized body at most 32 KiB, no Wonder,
-no tools, no redirects, no retries. Keys are never logged. Validation needs
+max_completion_tokens 2048, n 1, reasoning_effort minimal, serialized body
+at most 32 KiB, no Wonder, no tools, no redirects, no retries. Keys are
+never logged. Validation needs
 actual per call success plus numeric usage and provenance plus stored
 spark_calls 3, wonder 0, and empty errors. spark_mode alone means only at
 least one success, so all three are checked. Uncertainty latches durably with
@@ -92,6 +93,7 @@ def _config_report():
     lines.append('Proof output bound: max_completion_tokens %d, n %d, body at most %d bytes'
                  % (spark_module.PROOF_MAX_COMPLETION_TOKENS, spark_module.PROOF_N,
                     spark_module.PROOF_MAX_BODY_BYTES))
+    lines.append('Proof reasoning effort fixed: ' + spark_module.PROOF_REASONING_EFFORT)
     lines.append('Proof attempts max total: %d' % spark_module.PROOF_MAX_ATTEMPTS)
     lines.append('Spark planning ceiling %.6f USD, SAM planning %.2f USD, byte bound not tokenizer verified'
                  % (SPARK_PLANNING_USD, SAM_PLANNING_USD))
