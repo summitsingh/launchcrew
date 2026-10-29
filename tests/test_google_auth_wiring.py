@@ -31,6 +31,13 @@ class GoogleTemplateTests(unittest.TestCase):
         self.assertIn("!And [!Equals ['true', !Ref EnableGoogleAuth]", self.text)
         self.assertIn("!Not [!Equals ['', !Ref GoogleOAuthSecretArn]]", self.text)
 
+    def test_rule_refuses_enable_true_with_empty_arn(self):
+        self.assertIn("Rules:", self.text)
+        self.assertIn("GoogleAuthRequiresSecret:", self.text)
+        self.assertIn("RuleCondition: !Equals ['true', !Ref EnableGoogleAuth]", self.text)
+        self.assertIn("Assert: !Not [!Equals ['', !Ref GoogleOAuthSecretArn]]", self.text)
+        self.assertIn("empty refused before any mutation", self.text)
+
     def test_public_base_url_exact_https(self):
         self.assertIn("PUBLIC_BASE_URL, Value: 'https://launchcrew.summitsingh.com'", self.text)
         self.assertNotIn("http://launchcrew", self.text)

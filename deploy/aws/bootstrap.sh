@@ -122,6 +122,7 @@ RUNTIME_SECRET_ARN=""
 MIGRATION_SECRET_ARN=""
 MASTER_SECRET_ARN=""
 TLS_SECRET_ARN=""
+GOOGLE_SECRET_ARN=""
 FOUNDATION_STACK_NAME=""
 PREREQS_STACK_NAME=""
 FOUNDATION_TEMPLATE_FILE=""
@@ -193,6 +194,8 @@ while [ $# -gt 0 ]; do
     --master-secret-arn=*) MASTER_SECRET_ARN="${1#--master-secret-arn=}"; shift ;;
     --tls-secret-arn) TLS_SECRET_ARN="${2:-}"; shift 2 ;;
     --tls-secret-arn=*) TLS_SECRET_ARN="${1#--tls-secret-arn=}"; shift ;;
+    --google-secret-arn) GOOGLE_SECRET_ARN="${2:-}"; shift 2 ;;
+    --google-secret-arn=*) GOOGLE_SECRET_ARN="${1#--google-secret-arn=}"; shift ;;
     --foundation-stack-name) FOUNDATION_STACK_NAME="${2:-}"; shift 2 ;;
     --foundation-stack-name=*) FOUNDATION_STACK_NAME="${1#--foundation-stack-name=}"; shift ;;
     --prereqs-stack-name) PREREQS_STACK_NAME="${2:-}"; shift 2 ;;
@@ -264,6 +267,8 @@ phase_plan() {
   echo "  dbroles needs the bootstrap image and three secret ARNs plus foundation gate args;"
   echo "  migrate needs the migration and bootstrap images plus migration and runtime secret ARNs plus foundation gate args;"
   echo "  enable needs the five image URIs and all four secret ARNs to re-prove refs, bindings, and verify."
+  echo "  Google auth, when EnableGoogleAuth true in the parameters file: images, infra, and enable need"
+  echo "  --google-secret-arn with the exact owned Google secret for five secret API binding proof."
   echo "  all needs everything enable needs plus --foundation-stack-name, --prereqs-stack-name,"
   echo "  and --foundation-parameters-file for the readiness chain."
   echo "Each phase re-verifies its own preconditions from live state, so a single phase can resume"
@@ -377,7 +382,7 @@ needs_secret_checks() {
   case "$PHASE" in
     init|material|dbroles|migrate|enable|all) return 0 ;;
   esac
-  [ -n "$RUNTIME_SECRET_ARN" ] || [ -n "$MIGRATION_SECRET_ARN" ] || [ -n "$MASTER_SECRET_ARN" ] || [ -n "$TLS_SECRET_ARN" ]
+  [ -n "$RUNTIME_SECRET_ARN" ] || [ -n "$MIGRATION_SECRET_ARN" ] || [ -n "$MASTER_SECRET_ARN" ] || [ -n "$TLS_SECRET_ARN" ] || [ -n "$GOOGLE_SECRET_ARN" ]
 }
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -705,6 +710,7 @@ if needs_secret_checks; then
   if [ -n "$MIGRATION_SECRET_ARN" ]; then check_secret_arn "$MIGRATION_SECRET_ARN" "migration"; fi
   if [ -n "$MASTER_SECRET_ARN" ]; then check_secret_arn "$MASTER_SECRET_ARN" "master"; fi
   if [ -n "$TLS_SECRET_ARN" ]; then check_secret_arn "$TLS_SECRET_ARN" "tls"; fi
+  if [ -n "$GOOGLE_SECRET_ARN" ]; then check_secret_arn "$GOOGLE_SECRET_ARN" "google"; fi
 fi
 
 # The parameters file is what the stack deploys from, so every CLI image URI
@@ -771,12 +777,53 @@ PYEOF
   PARAM_MATCH MigrationDbUrlSecretArn "$MIGRATION_SECRET_ARN" || exit 1
   PARAM_MATCH MasterDbPasswordSecretArn "$MASTER_SECRET_ARN" || exit 1
   PARAM_MATCH TlsSecretArn "$TLS_SECRET_ARN" || exit 1
+  PARAM_MATCH GoogleOAuthSecretArn "$GOOGLE_SECRET_ARN" || exit 1
   echo "Verified CLI images and secret ARNs match the parameters file being deployed"
 }
 
 case "$PHASE" in
   infra|init|material|dbroles|migrate|enable|all) check_params_match ;;
 esac
+
+# Google-only auth gate, fail-closed before any mutation. Reads EnableGoogleAuth
+# plus GoogleOAuthSecretArn from the parameters file being deployed. True plus
+# empty, placeholder, malformed, unowned, or CLI mismatch refuses. True requires
+# an exact validated CLI Google ARN that equals the file value and passes exact
+# ARN shape plus account plus region plus returned ARN plus Project LaunchCrew
+# plus Environment demo metadata. False with a CLI Google ARN refuses, since a
+# validated secret must not be ignored. False without CLI keeps the keyless
+# three secret path. No secret value appears in argv, files, or logs.
+check_google_auth_gate() {
+  GATE_LABEL="${1:-all}"
+  GATE_ENABLE=""
+  GATE_FILE_GOOGLE=""
+  GATE_ENABLE="$(params_file_value EnableGoogleAuth 2>/dev/null || true)"
+  GATE_FILE_GOOGLE="$(params_file_value GoogleOAuthSecretArn 2>/dev/null || true)"
+  GATE_ENABLE="$(printf '%s' "$GATE_ENABLE" | tr -d '[:space:]')"
+  GATE_FILE_GOOGLE="$(printf '%s' "$GATE_FILE_GOOGLE" | tr -d '[:space:]')"
+  if [ -z "$GATE_ENABLE" ]; then GATE_ENABLE="false"; fi
+  case "$GATE_ENABLE" in
+    true|false) ;;
+    *) echo "refused: EnableGoogleAuth is $GATE_ENABLE, expected true or false, no change made" >&2; phase_failed "$GATE_LABEL" ;;
+  esac
+  if [ "$GATE_ENABLE" = "true" ]; then
+    case "$GATE_FILE_GOOGLE" in
+      ""|*REPLACE_WITH*|*PLACEHOLDER*)
+        echo "refused: EnableGoogleAuth true requires exact GoogleOAuthSecretArn, empty or placeholder refused before any mutation" >&2
+        phase_failed "$GATE_LABEL" ;;
+    esac
+    [ -n "$GOOGLE_SECRET_ARN" ] || { echo "refused: EnableGoogleAuth true requires exact --google-secret-arn, missing CLI value refused before any mutation" >&2; phase_failed "$GATE_LABEL"; }
+    [ "$GATE_FILE_GOOGLE" = "$GOOGLE_SECRET_ARN" ] || { echo "refused: parameters file GoogleOAuthSecretArn does not equal the validated CLI value, validating one set while deploying another is refused" >&2; phase_failed "$GATE_LABEL"; }
+    check_secret_arn "$GOOGLE_SECRET_ARN" "google"
+    echo "Verified Google auth gate: EnableGoogleAuth true plus exact owned Google secret $GOOGLE_SECRET_ARN"
+  else
+    if [ -n "$GOOGLE_SECRET_ARN" ]; then
+      echo "refused: --google-secret-arn requires EnableGoogleAuth true, keyless false must not ignore a validated secret" >&2
+      phase_failed "$GATE_LABEL"
+    fi
+    echo "Verified Google auth gate: EnableGoogleAuth false, keyless three secret path"
+  fi
+}
 
 # Cost allocation tag admission, read-only and fail-closed. It runs before
 # any phase that can cause spend (infra deploy, one-off tasks, enable
@@ -1758,6 +1805,10 @@ for entry in doc:
 sys.exit(1)
 PYEOF
 }
+
+case "$PHASE" in
+  infra|images|init|material|dbroles|migrate|enable|all) check_google_auth_gate "$PHASE" ;;
+esac
 
 # Read-only prereqs readiness for every paid app phase, never a deploy. It
 # verifies the owned prereqs stack tags and COMPLETE status, binds the exact
@@ -3099,6 +3150,32 @@ PYEOF
   echo "Verified image present with digest and owned task definition ref: $REPO_NAME:$IMAGE_TAG"
 }
 
+# API task definition binding with Google shape awareness. Reads EnableGoogleAuth
+# from the parameters file being deployed. True proves the five secret Google
+# shape with exact owned Google client ID plus secret refs. False proves the
+# keyless three secret shape. No secret value appears here, only ARNs plus key
+# names. Called in images plus enable before any boot.
+check_api_taskdef_binding() {
+  API_BIND_LABEL="${1:-images}"
+  API_BIND_ENABLE="$(params_file_value EnableGoogleAuth 2>/dev/null || true)"
+  API_BIND_ENABLE="$(printf '%s' "$API_BIND_ENABLE" | tr -d '[:space:]')"
+  if [ -z "$API_BIND_ENABLE" ]; then API_BIND_ENABLE="false"; fi
+  if [ "$API_BIND_ENABLE" = "true" ]; then
+    [ -n "$GOOGLE_SECRET_ARN" ] || { echo "refused: EnableGoogleAuth true requires exact --google-secret-arn for five secret API binding proof" >&2; phase_failed "$API_BIND_LABEL"; }
+    check_taskdef_binding ApiTaskDefinition ApiExecutionRole ApiTaskRole \
+      "api.DATABASE_URL=$RUNTIME_SECRET_ARN:database-url::" \
+      "api.TLS_CERT_B64=$TLS_SECRET_ARN:tls-cert-b64::" \
+      "api.TLS_KEY_B64=$TLS_SECRET_ARN:tls-key-b64::" \
+      "api.GOOGLE_CLIENT_ID=$GOOGLE_SECRET_ARN:google-client-id::" \
+      "api.GOOGLE_CLIENT_SECRET=$GOOGLE_SECRET_ARN:google-client-secret::"
+  else
+    check_taskdef_binding ApiTaskDefinition ApiExecutionRole ApiTaskRole \
+      "api.DATABASE_URL=$RUNTIME_SECRET_ARN:database-url::" \
+      "api.TLS_CERT_B64=$TLS_SECRET_ARN:tls-cert-b64::" \
+      "api.TLS_KEY_B64=$TLS_SECRET_ARN:tls-key-b64::"
+  fi
+}
+
 if wants_phase images; then
   echo "Phase images: verify all five published image URIs in owned ECR repositories"
   [ "$STACK_EXISTS" -eq 1 ] || { echo "refused: no stack to own task definitions; run --phase infra first" >&2; phase_failed images; }
@@ -3110,10 +3187,7 @@ if wants_phase images; then
   verify_image "$BOOTSTRAP_IMAGE" launchcrew-bootstrap BootstrapTaskDefinition bootstrap-db-roles bootstrap
   verify_image "$BOOTSTRAP_IMAGE" launchcrew-bootstrap SdkInitTaskDefinition sdk-init bootstrap-sdk-init
   verify_image "$BOOTSTRAP_IMAGE" launchcrew-bootstrap SdkMaterialTaskDefinition sdk-material bootstrap-sdk-material
-  check_taskdef_binding ApiTaskDefinition ApiExecutionRole ApiTaskRole \
-    "api.DATABASE_URL=$RUNTIME_SECRET_ARN:database-url::" \
-    "api.TLS_CERT_B64=$TLS_SECRET_ARN:tls-cert-b64::" \
-    "api.TLS_KEY_B64=$TLS_SECRET_ARN:tls-key-b64::"
+  check_api_taskdef_binding images
   check_taskdef_binding WebTaskDefinition WebExecutionRole WebTaskRole \
     "web-proxy.TLS_CERT_B64=$TLS_SECRET_ARN:tls-cert-b64::" \
     "web-proxy.TLS_KEY_B64=$TLS_SECRET_ARN:tls-key-b64::"
@@ -5229,10 +5303,7 @@ if wants_phase enable; then
   verify_image "$BOOTSTRAP_IMAGE" launchcrew-bootstrap BootstrapTaskDefinition bootstrap-db-roles bootstrap
   verify_image "$BOOTSTRAP_IMAGE" launchcrew-bootstrap SdkInitTaskDefinition sdk-init bootstrap-sdk-init
   verify_image "$BOOTSTRAP_IMAGE" launchcrew-bootstrap SdkMaterialTaskDefinition sdk-material bootstrap-sdk-material
-  check_taskdef_binding ApiTaskDefinition ApiExecutionRole ApiTaskRole \
-    "api.DATABASE_URL=$RUNTIME_SECRET_ARN:database-url::" \
-    "api.TLS_CERT_B64=$TLS_SECRET_ARN:tls-cert-b64::" \
-    "api.TLS_KEY_B64=$TLS_SECRET_ARN:tls-key-b64::"
+  check_api_taskdef_binding enable
   check_taskdef_binding WebTaskDefinition WebExecutionRole WebTaskRole \
     "web-proxy.TLS_CERT_B64=$TLS_SECRET_ARN:tls-cert-b64::" \
     "web-proxy.TLS_KEY_B64=$TLS_SECRET_ARN:tls-key-b64::"

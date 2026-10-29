@@ -31,6 +31,7 @@ SECRET_RT = f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:launchcrew-runtim
 SECRET_MG = f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:launchcrew-migration-GhIjKl"
 SECRET_MASTER = f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:launchcrew-master-MnOpQr"
 SECRET_TLS = f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:launchcrew-tls-QrStUv"
+SECRET_GOOGLE = f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:launchcrew-google-AbCdEf"
 TOPIC_ARN = f"arn:aws:sns:{REGION}:{ACCOUNT}:launchcrew-foundation-BudgetTopic-ABC123"
 SUB_ARN = f"{TOPIC_ARN}:12345678-90ab-cdef-1234-567890abcdef"
 CERT_ARN = f"arn:aws:acm:{REGION}:{ACCOUNT}:certificate/12345678-90ab-cdef-1234-567890abcde1"
@@ -67,12 +68,22 @@ if [ "$1" = "secretsmanager" ] && [ "$2" = "describe-secret" ]; then
         printf 'arn:aws:secretsmanager:us-east-1:111122223333:secret:other-secret-ZzZzZz\\n'
         exit 0
       fi
+      if [ "$MODE" = "google_arn_mismatch" ]; then
+        case "$SECRET_ID" in
+          *google*) printf 'arn:aws:secretsmanager:us-east-1:111122223333:secret:other-secret-ZzZzZz\\n'; exit 0 ;;
+        esac
+      fi
       printf '%s\\n' "$SECRET_ID"
       exit 0 ;;
   esac
   case "$*" in
     *"Key=='Project'"*)
       if [ "$MODE" = "secret_tag_mismatch" ]; then printf 'Other\\n'; exit 0; fi
+      if [ "$MODE" = "google_tag_mismatch" ]; then
+        case "$SECRET_ID" in
+          *google*) printf 'Other\\n'; exit 0 ;;
+        esac
+      fi
       printf '%s\\n' "${FAKE_PROJECT:-LaunchCrew}"
       exit 0 ;;
     *"Key=='Environment'"*)
@@ -852,6 +863,7 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-task""-definition" ]; then
   SEC_MG="${FAKE_MG_ARN:-}"
   SEC_MASTER="${FAKE_MASTER_ARN:-}"
   SEC_TLS="${FAKE_TLS_ARN:-}"
+  SEC_GOOGLE="${FAKE_GOOGLE_ARN:-}"
   if [ "$MODE" = "taskdef_image_mismatch" ]; then
     IMG_API="111122223333.dkr.ecr.us-east-1.amazonaws.com/wrong-repo:bad"
     IMG_WEB="111122223333.dkr.ecr.us-east-1.amazonaws.com/wrong-repo:bad"
@@ -876,7 +888,11 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-task""-definition" ]; then
   if [ "$MODE" = "role_mismatch" ]; then EXEC_SUFFIX="-wrong"; fi
   case "$TASKDEF" in
     *launchcrew-demo-api*)
-      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/ApiExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/ApiTaskRole%s","containerDefinitions":[{"name":"api","essential":true,"image":"%s","secrets":[{"name":"DATABASE_URL","valueFrom":"%s:database-url::"},{"name":"TLS_CERT_B64","valueFrom":"%s:tls-cert-b64::"},{"name":"TLS_KEY_B64","valueFrom":"%s:tls-key-b64::"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_API" "$SEC_RT" "$SEC_TLS" "$SEC_TLS"
+      if [ -n "$SEC_GOOGLE" ]; then
+        printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/ApiExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/ApiTaskRole%s","containerDefinitions":[{"name":"api","essential":true,"image":"%s","secrets":[{"name":"DATABASE_URL","valueFrom":"%s:database-url::"},{"name":"TLS_CERT_B64","valueFrom":"%s:tls-cert-b64::"},{"name":"TLS_KEY_B64","valueFrom":"%s:tls-key-b64::"},{"name":"GOOGLE_CLIENT_ID","valueFrom":"%s:google-client-id::"},{"name":"GOOGLE_CLIENT_SECRET","valueFrom":"%s:google-client-secret::"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_API" "$SEC_RT" "$SEC_TLS" "$SEC_TLS" "$SEC_GOOGLE" "$SEC_GOOGLE"
+      else
+        printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/ApiExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/ApiTaskRole%s","containerDefinitions":[{"name":"api","essential":true,"image":"%s","secrets":[{"name":"DATABASE_URL","valueFrom":"%s:database-url::"},{"name":"TLS_CERT_B64","valueFrom":"%s:tls-cert-b64::"},{"name":"TLS_KEY_B64","valueFrom":"%s:tls-key-b64::"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_API" "$SEC_RT" "$SEC_TLS" "$SEC_TLS"
+      fi
       exit 0 ;;
     *launchcrew-demo-web*)
       printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/WebExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/WebTaskRole%s","containerDefinitions":[{"name":"web-app","essential":true,"image":"%s","secrets":[]},{"name":"web-proxy","essential":true,"image":"%s","secrets":[{"name":"TLS_CERT_B64","valueFrom":"%s:tls-cert-b64::"},{"name":"TLS_KEY_B64","valueFrom":"%s:tls-key-b64::"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_WEB" "$IMG_PROXY" "$SEC_TLS" "$SEC_TLS"
@@ -1031,6 +1047,7 @@ class BootstrapHarness(unittest.TestCase):
         "--migration-secret-arn": "MigrationDbUrlSecretArn",
         "--master-secret-arn": "MasterDbPasswordSecretArn",
         "--tls-secret-arn": "TlsSecretArn",
+        "--google-secret-arn": "GoogleOAuthSecretArn",
     }
     IMAGE_ENV = {
         "--api-image": "FAKE_API_IMAGE",
@@ -1044,6 +1061,7 @@ class BootstrapHarness(unittest.TestCase):
         "--migration-secret-arn": "FAKE_MG_ARN",
         "--master-secret-arn": "FAKE_MASTER_ARN",
         "--tls-secret-arn": "FAKE_TLS_ARN",
+        "--google-secret-arn": "FAKE_GOOGLE_ARN",
     }
 
     def run_bootstrap(self, args, mode="success", extra_env=None,
@@ -3865,6 +3883,208 @@ class CrossGenerationJournalTests(BootstrapHarness):
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
                                    "head006-new1111-active.json")
             self.assertFalse(new_file.exists())
+
+
+class GoogleAuthGateTests(BootstrapHarness):
+    def test_keyless_three_secret_images_success(self):
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "images"],
+            params_overrides={"EnableGoogleAuth": "false"})
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        combined = result.stdout + result.stderr
+        self.assertIn("keyless three secret path", combined)
+        self.assertIn("ApiTaskDefinition", combined)
+
+    def test_google_five_secret_images_success(self):
+        args = self.base_args(**{"--google-secret-arn": SECRET_GOOGLE})
+        result, calls = self.run_bootstrap(
+            [*args, "--phase", "images"],
+            params_overrides={"EnableGoogleAuth": "true",
+                              "GoogleOAuthSecretArn": SECRET_GOOGLE})
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        combined = result.stdout + result.stderr
+        self.assertIn("EnableGoogleAuth true plus exact owned Google secret", combined)
+        self.assertTrue(any("describe-task-definition" in call or "describe-task" in call for call in calls))
+        self.assertNotIn("apps.googleusercontent.com", combined)
+
+    def test_google_true_empty_refused_before_mutation(self):
+        result, calls = self.run_bootstrap(
+            [*self.minimal_infra_args(), "--phase", "infra"],
+            extra_env={"FAKE_RT_ARN": SECRET_RT, "FAKE_MG_ARN": SECRET_MG,
+                       "FAKE_MASTER_ARN": SECRET_MASTER, "FAKE_TLS_ARN": SECRET_TLS},
+            params_overrides={"RuntimeDbUrlSecretArn": SECRET_RT,
+                              "MigrationDbUrlSecretArn": SECRET_MG,
+                              "MasterDbPasswordSecretArn": SECRET_MASTER,
+                              "TlsSecretArn": SECRET_TLS,
+                              "EnableGoogleAuth": "true"})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("EnableGoogleAuth true requires exact GoogleOAuthSecretArn", combined)
+        self.assertFalse(any("deploy " in call for call in calls))
+        self.assertFalse(any("create-change-set" in call for call in calls))
+        self.assertFalse(any("run-task" in call for call in calls))
+
+    def test_google_malformed_refused_before_mutation(self):
+        bad = "not-an-arn"
+        args = [*self.minimal_infra_args(), "--google-secret-arn", bad, "--phase", "infra"]
+        result, calls = self.run_bootstrap(
+            args,
+            extra_env={"FAKE_RT_ARN": SECRET_RT, "FAKE_MG_ARN": SECRET_MG,
+                       "FAKE_MASTER_ARN": SECRET_MASTER, "FAKE_TLS_ARN": SECRET_TLS},
+            params_overrides={"RuntimeDbUrlSecretArn": SECRET_RT,
+                              "MigrationDbUrlSecretArn": SECRET_MG,
+                              "MasterDbPasswordSecretArn": SECRET_MASTER,
+                              "TlsSecretArn": SECRET_TLS,
+                              "EnableGoogleAuth": "true",
+                              "GoogleOAuthSecretArn": bad})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("refused", combined)
+        self.assertFalse(any("deploy " in call for call in calls))
+        self.assertFalse(any("create-change-set" in call for call in calls))
+        self.assertFalse(any("run-task" in call for call in calls))
+
+    def test_google_unowned_account_refused_before_mutation(self):
+        foreign = f"arn:aws:secretsmanager:{REGION}:999988887777:secret:launchcrew-google-XxYyZz"
+        args = [*self.minimal_infra_args(), "--google-secret-arn", foreign, "--phase", "infra"]
+        result, calls = self.run_bootstrap(
+            args,
+            extra_env={"FAKE_RT_ARN": SECRET_RT, "FAKE_MG_ARN": SECRET_MG,
+                       "FAKE_MASTER_ARN": SECRET_MASTER, "FAKE_TLS_ARN": SECRET_TLS},
+            params_overrides={"RuntimeDbUrlSecretArn": SECRET_RT,
+                              "MigrationDbUrlSecretArn": SECRET_MG,
+                              "MasterDbPasswordSecretArn": SECRET_MASTER,
+                              "TlsSecretArn": SECRET_TLS,
+                              "EnableGoogleAuth": "true",
+                              "GoogleOAuthSecretArn": foreign})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("refused", combined)
+        self.assertFalse(any("deploy " in call for call in calls))
+        self.assertFalse(any("create-change-set" in call for call in calls))
+
+    def test_google_missing_cli_refused_before_mutation(self):
+        result, calls = self.run_bootstrap(
+            [*self.minimal_infra_args(), "--phase", "infra"],
+            extra_env={"FAKE_RT_ARN": SECRET_RT, "FAKE_MG_ARN": SECRET_MG,
+                       "FAKE_MASTER_ARN": SECRET_MASTER, "FAKE_TLS_ARN": SECRET_TLS},
+            params_overrides={"RuntimeDbUrlSecretArn": SECRET_RT,
+                              "MigrationDbUrlSecretArn": SECRET_MG,
+                              "MasterDbPasswordSecretArn": SECRET_MASTER,
+                              "TlsSecretArn": SECRET_TLS,
+                              "EnableGoogleAuth": "true",
+                              "GoogleOAuthSecretArn": SECRET_GOOGLE})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("missing CLI value refused before any mutation", combined)
+        self.assertFalse(any("deploy " in call for call in calls))
+        self.assertFalse(any("create-change-set" in call for call in calls))
+
+    def test_google_mismatched_cli_file_refused_before_mutation(self):
+        other = f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:launchcrew-google-OtHeR12"
+        args = [*self.minimal_infra_args(), "--google-secret-arn", SECRET_GOOGLE, "--phase", "infra"]
+        result, calls = self.run_bootstrap(
+            args,
+            extra_env={"FAKE_RT_ARN": SECRET_RT, "FAKE_MG_ARN": SECRET_MG,
+                       "FAKE_MASTER_ARN": SECRET_MASTER, "FAKE_TLS_ARN": SECRET_TLS},
+            params_overrides={"RuntimeDbUrlSecretArn": SECRET_RT,
+                              "MigrationDbUrlSecretArn": SECRET_MG,
+                              "MasterDbPasswordSecretArn": SECRET_MASTER,
+                              "TlsSecretArn": SECRET_TLS,
+                              "EnableGoogleAuth": "true",
+                              "GoogleOAuthSecretArn": other})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("does not equal the validated CLI value", combined)
+        self.assertFalse(any("deploy " in call for call in calls))
+        self.assertFalse(any("create-change-set" in call for call in calls))
+
+    def test_google_returned_arn_mismatch_refused_before_mutation(self):
+        args = [*self.minimal_infra_args(), "--google-secret-arn", SECRET_GOOGLE, "--phase", "infra"]
+        result, calls = self.run_bootstrap(
+            args, mode="google_arn_mismatch",
+            extra_env={"FAKE_RT_ARN": SECRET_RT, "FAKE_MG_ARN": SECRET_MG,
+                       "FAKE_MASTER_ARN": SECRET_MASTER, "FAKE_TLS_ARN": SECRET_TLS},
+            params_overrides={"RuntimeDbUrlSecretArn": SECRET_RT,
+                              "MigrationDbUrlSecretArn": SECRET_MG,
+                              "MasterDbPasswordSecretArn": SECRET_MASTER,
+                              "TlsSecretArn": SECRET_TLS,
+                              "EnableGoogleAuth": "true",
+                              "GoogleOAuthSecretArn": SECRET_GOOGLE})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("different ARN", combined)
+        self.assertFalse(any("deploy " in call for call in calls))
+        self.assertFalse(any("create-change-set" in call for call in calls))
+
+    def test_google_tag_mismatch_refused_before_mutation(self):
+        args = [*self.minimal_infra_args(), "--google-secret-arn", SECRET_GOOGLE, "--phase", "infra"]
+        result, calls = self.run_bootstrap(
+            args, mode="google_tag_mismatch",
+            extra_env={"FAKE_RT_ARN": SECRET_RT, "FAKE_MG_ARN": SECRET_MG,
+                       "FAKE_MASTER_ARN": SECRET_MASTER, "FAKE_TLS_ARN": SECRET_TLS},
+            params_overrides={"RuntimeDbUrlSecretArn": SECRET_RT,
+                              "MigrationDbUrlSecretArn": SECRET_MG,
+                              "MasterDbPasswordSecretArn": SECRET_MASTER,
+                              "TlsSecretArn": SECRET_TLS,
+                              "EnableGoogleAuth": "true",
+                              "GoogleOAuthSecretArn": SECRET_GOOGLE})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("Project tag", combined)
+        self.assertFalse(any("deploy " in call for call in calls))
+        self.assertFalse(any("create-change-set" in call for call in calls))
+
+    def test_google_cli_without_enable_refused(self):
+        args = [*self.minimal_infra_args(), "--google-secret-arn", SECRET_GOOGLE, "--phase", "infra"]
+        result, calls = self.run_bootstrap(
+            args,
+            extra_env={"FAKE_RT_ARN": SECRET_RT, "FAKE_MG_ARN": SECRET_MG,
+                       "FAKE_MASTER_ARN": SECRET_MASTER, "FAKE_TLS_ARN": SECRET_TLS},
+            params_overrides={"RuntimeDbUrlSecretArn": SECRET_RT,
+                              "MigrationDbUrlSecretArn": SECRET_MG,
+                              "MasterDbPasswordSecretArn": SECRET_MASTER,
+                              "TlsSecretArn": SECRET_TLS,
+                              "EnableGoogleAuth": "false"})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("requires EnableGoogleAuth true", combined)
+        self.assertFalse(any("deploy " in call for call in calls))
+
+    def test_google_taskdef_three_when_five_expected_refused(self):
+        args = self.base_args(**{"--google-secret-arn": SECRET_GOOGLE})
+        result, calls = self.run_bootstrap(
+            [*args, "--phase", "images"],
+            extra_env={"FAKE_GOOGLE_ARN": ""},
+            params_overrides={"EnableGoogleAuth": "true",
+                              "GoogleOAuthSecretArn": SECRET_GOOGLE})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("MISSING", combined)
+
+    def test_google_taskdef_wrong_arn_refused(self):
+        other = f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:launchcrew-google-WrOnG99"
+        args = self.base_args(**{"--google-secret-arn": SECRET_GOOGLE})
+        result, calls = self.run_bootstrap(
+            [*args, "--phase", "images"],
+            extra_env={"FAKE_GOOGLE_ARN": other},
+            params_overrides={"EnableGoogleAuth": "true",
+                              "GoogleOAuthSecretArn": SECRET_GOOGLE})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("SECRET_MISMATCH", combined)
+
+    def test_google_binding_refused_before_enable_deploy(self):
+        args = self.base_args(**{"--google-secret-arn": SECRET_GOOGLE})
+        result, calls = self.run_bootstrap(
+            [*args, "--phase", "enable"],
+            extra_env={"FAKE_GOOGLE_ARN": ""},
+            params_overrides={"EnableGoogleAuth": "true",
+                              "GoogleOAuthSecretArn": SECRET_GOOGLE})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("MISSING", combined)
+        self.assertFalse(any("deploy " in call and "EnableServices=true" in call for call in calls))
 
 
 if __name__ == "__main__":

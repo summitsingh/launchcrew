@@ -60,6 +60,12 @@ Parameters:
     Type: String
     Default: ''
     Description: Secrets Manager ARN for the Google OAuth client, JSON keys google-client-id and google-client-secret, placeholder only, no value in this file. Used only when EnableGoogleAuth is true. The API task receives GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET only then, via ECS task secrets. Empty default means no secret and auth stays disabled.
+Rules:
+  GoogleAuthRequiresSecret:
+    RuleCondition: !Equals ['true', !Ref EnableGoogleAuth]
+    Assertions:
+      - Assert: !Not [!Equals ['', !Ref GoogleOAuthSecretArn]]
+        AssertDescription: EnableGoogleAuth true requires exact GoogleOAuthSecretArn, empty refused before any mutation.
 Conditions:
   ServicesEnabled: !Equals ['true', !Ref EnableServices]
   GoogleAuthEnabled: !And [!Equals ['true', !Ref EnableGoogleAuth], !Not [!Equals ['', !Ref GoogleOAuthSecretArn]]]
