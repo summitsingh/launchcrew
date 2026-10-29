@@ -161,15 +161,50 @@ def connect():
     return engine().begin()
 
 
+DEMO_WORKSPACE = 'demo'
+
+
+def workspace_for_actor(actor):
+    if not actor or actor == 'demo_placeholder':
+        return DEMO_WORKSPACE
+    return str(actor)
+
+
+def ensure_workspace(db, workspace_id, owner=None):
+    db.execute(text('INSERT INTO workspaces(id, owner) VALUES (:id, :owner) ON CONFLICT DO NOTHING'),
+               {'id': workspace_id, 'owner': owner or workspace_id})
+
+
+def ensure_default_profiles(db, workspace_id):
+    import json
+    for profile in agents.list_agents(ROOT / 'agents'):
+        db.execute(text('INSERT INTO agents(workspace_id,name,profile) VALUES (:ws,:name,CAST(:profile AS jsonb)) ON CONFLICT DO NOTHING'),
+                   {'ws': workspace_id, 'name': profile['name'].lower(), 'profile': json.dumps(profile)})
+
+
+def ensure_workspace_seeded(db, actor):
+    workspace_id = workspace_for_actor(actor)
+    owner = 'demo' if workspace_id == DEMO_WORKSPACE else str(actor)
+    ensure_workspace(db, workspace_id, owner)
+    ensure_default_profiles(db, workspace_id)
+    return workspace_id
+
+
 def initialize():
     # No implicit DDL: alembic upgrade head must precede API startup.
     with connect() as db:
-        for profile in agents.list_agents(ROOT / 'agents'):
-            import json
-            db.execute(text('INSERT INTO agents(name,profile) VALUES (:name,CAST(:profile AS jsonb)) ON CONFLICT DO NOTHING'),
-                       {'name': profile['name'].lower(), 'profile': json.dumps(profile)})
+        ensure_workspace(db, DEMO_WORKSPACE, 'demo')
+        ensure_default_profiles(db, DEMO_WORKSPACE)
 
 
-def audit(db, run_id, action, actor='demo_placeholder'):
-    db.execute(text('INSERT INTO audit(run_id,action,actor) VALUES (:run_id,:action,:actor)'),
-               {'run_id': run_id, 'action': action, 'actor': actor})
+def audit(db, run_id, action, actor='demo_placeholder', workspace_id=None):
+    resolved = workspace_id or None
+    if resolved is None:
+        if run_id:
+            row = db.execute(text('SELECT workspace_id FROM runs WHERE id=:id'), {'id': run_id}).fetchone()
+            resolved = row[0] if row else workspace_for_actor(actor)
+        else:
+            resolved = workspace_for_actor(actor)
+    ensure_workspace(db, resolved, 'demo' if resolved == DEMO_WORKSPACE else str(actor))
+    db.execute(text('INSERT INTO audit(run_id,action,actor,workspace_id) VALUES (:run_id,:action,:actor,:ws)'),
+               {'run_id': run_id, 'action': action, 'actor': actor, 'ws': resolved})

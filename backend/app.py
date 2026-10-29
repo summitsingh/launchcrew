@@ -449,11 +449,12 @@ def model_capabilities(actor: str = Depends(auth.actor)):
 @app.get('/api/agents', response_model=list[Profile])
 def list_agents(actor: str = Depends(auth.actor)):
     with store.connect() as db:
-        return [r[0] for r in db.execute(text('SELECT profile FROM agents ORDER BY name'))]
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        return [r[0] for r in db.execute(text('SELECT profile FROM agents WHERE workspace_id=:ws ORDER BY name'), {'ws': workspace_id})]
 
 
-def get_profile(db, name):
-    row = db.execute(text('SELECT profile FROM agents WHERE name=:name'), {'name': name.lower()}).fetchone()
+def get_profile(db, name, workspace_id):
+    row = db.execute(text('SELECT profile FROM agents WHERE workspace_id=:ws AND name=:name'), {'ws': workspace_id, 'name': name.lower()}).fetchone()
     if not row:
         raise HTTPException(404, 'Agent not found')
     return row[0]
@@ -462,15 +463,17 @@ def get_profile(db, name):
 @app.get('/api/agents/{name}', response_model=Profile)
 def get_agent(name: str, actor: str = Depends(auth.actor)):
     with store.connect() as db:
-        return get_profile(db, name)
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        return get_profile(db, name, workspace_id)
 
 
 @app.post('/api/agents', response_model=Profile, status_code=201)
 def create_agent(profile: Profile, actor: str = Depends(auth.actor)):
     value = agents.validate(profile.model_dump())
     with store.connect() as db:
-        db.execute(text('INSERT INTO agents(name,profile) VALUES (:name,CAST(:profile AS jsonb))'), {'name': value['name'].lower(), 'profile': json.dumps(value)})
-        store.audit(db, None, 'agent_created', actor)
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        db.execute(text('INSERT INTO agents(workspace_id,name,profile) VALUES (:ws,:name,CAST(:profile AS jsonb))'), {'ws': workspace_id, 'name': value['name'].lower(), 'profile': json.dumps(value)})
+        store.audit(db, None, 'agent_created', actor, workspace_id)
     return value
 
 
@@ -478,18 +481,22 @@ def create_agent(profile: Profile, actor: str = Depends(auth.actor)):
 def edit_agent(name: str, profile: Profile, actor: str = Depends(auth.actor)):
     value = agents.validate(profile.model_dump())
     with store.connect() as db:
-        old = get_profile(db, name)
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        old = get_profile(db, name, workspace_id)
         if old['name'] != value['name']:
             raise ValueError('Clone to rename')
-        db.execute(text('UPDATE agents SET profile=CAST(:profile AS jsonb),updated_at=now() WHERE name=:name'), {'profile': json.dumps(value), 'name': name.lower()})
-        store.audit(db, None, 'agent_edited', actor)
+        result = db.execute(text('UPDATE agents SET profile=CAST(:profile AS jsonb),updated_at=now() WHERE workspace_id=:ws AND name=:name'), {'profile': json.dumps(value), 'ws': workspace_id, 'name': name.lower()})
+        if result.rowcount == 0:
+            raise HTTPException(404, 'Agent not found')
+        store.audit(db, None, 'agent_edited', actor, workspace_id)
     return value
 
 
 @app.post('/api/agents/{name}/clone', response_model=Profile, status_code=201)
 def clone_agent(name: str, body: Clone, actor: str = Depends(auth.actor)):
     with store.connect() as db:
-        profile = get_profile(db, name)
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        profile = get_profile(db, name, workspace_id)
     profile['name'] = body.name
     return create_agent(Profile(**profile), actor)
 
@@ -497,13 +504,14 @@ def clone_agent(name: str, body: Clone, actor: str = Depends(auth.actor)):
 @app.post('/api/agents/{name}/preview', response_model=Preview)
 def preview_agent(name: str, body: Idea, actor: str = Depends(auth.actor)):
     with store.connect() as db:
-        return adapter.preview(get_profile(db, name), body.idea)
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        return adapter.preview(get_profile(db, name, workspace_id), body.idea)
 
 
-def load_memory_selection(db, memory_ids):
+def load_memory_selection(db, memory_ids, workspace_id):
     items = []
     for item_id in (memory_ids or []):
-        items.append(memory_item(db, item_id))
+        items.append(memory_item(db, item_id, workspace_id))
     return items
 
 
@@ -514,12 +522,12 @@ def stage_names(body):
     return scout, maker, checker
 
 
-def load_stage_profiles(db, body):
-    legacy = get_profile(db, body.agent_name)
+def load_stage_profiles(db, body, workspace_id):
+    legacy = get_profile(db, body.agent_name, workspace_id)
     scout_name, maker_name, checker_name = stage_names(body)
-    scout = get_profile(db, scout_name)
-    maker = legacy if maker_name.lower() == body.agent_name.lower() else get_profile(db, maker_name)
-    checker = get_profile(db, checker_name)
+    scout = get_profile(db, scout_name, workspace_id)
+    maker = legacy if maker_name.lower() == body.agent_name.lower() else get_profile(db, maker_name, workspace_id)
+    checker = get_profile(db, checker_name, workspace_id)
     return legacy, scout, maker, checker
 
 
@@ -550,8 +558,9 @@ class RunStepsOut(BaseModel):
 def create_run(body: RunInput, actor: str = Depends(auth.actor)):
     from backend import model_admission
     with store.connect() as db:
-        legacy, scout, maker, checker = load_stage_profiles(db, body)
-        items = load_memory_selection(db, body.memory_ids)
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        legacy, scout, maker, checker = load_stage_profiles(db, body, workspace_id)
+        items = load_memory_selection(db, body.memory_ids, workspace_id)
         _, maker_name, _ = stage_names(body)
     run_id = 'run_' + uuid4().hex
     factory = model_admission.admission_factory_for_run(store.engine(), run_id)
@@ -561,7 +570,8 @@ def create_run(body: RunInput, actor: str = Depends(auth.actor)):
                               product_facts=body.product_facts.model_dump() if body.product_facts is not None else None,
                               model_admission_factory=factory)
     with store.connect() as db:
-        save_run(db, receipt, maker_name, actor)
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        save_run(db, receipt, maker_name, actor, workspace_id)
     return receipt
 
 
@@ -581,22 +591,23 @@ def create_run_async(body: RunInput, actor: str = Depends(auth.actor)):
     parse_product_facts(product_facts_raw)
     try:
         with store.connect() as db:
-            legacy, scout, maker, checker = load_stage_profiles(db, body)
-            items = load_memory_selection(db, body.memory_ids)
+            workspace_id = store.ensure_workspace_seeded(db, actor)
+            legacy, scout, maker, checker = load_stage_profiles(db, body, workspace_id)
+            items = load_memory_selection(db, body.memory_ids, workspace_id)
             scout_name, maker_name, checker_name = stage_names(body)
             run_id = 'run_' + uuid4().hex
             pending = receipt_mod.pending_receipt(run_id, body.idea,
                                                   {'scout': scout_name, 'maker': maker_name, 'checker': checker_name})
-            db.execute(text('INSERT INTO runs(id,receipt,agent_name,state) VALUES (:id,CAST(:receipt AS jsonb),:agent,:state)'),
-                       {'id': run_id, 'receipt': json.dumps(pending), 'agent': maker_name.lower(), 'state': pending['approval_state']})
+            db.execute(text('INSERT INTO runs(id,receipt,agent_name,state,workspace_id) VALUES (:id,CAST(:receipt AS jsonb),:agent,:state,:ws)'),
+                       {'id': run_id, 'receipt': json.dumps(pending), 'agent': maker_name.lower(), 'state': pending['approval_state'], 'ws': workspace_id})
             db.execute(text('INSERT INTO memory(run_id,facts) VALUES (:id,CAST(:facts AS jsonb))'),
                        {'id': run_id, 'facts': json.dumps([])})
-            store.audit(db, run_id, 'run_created', actor)
+            store.audit(db, run_id, 'run_created', actor, workspace_id)
             # The accepted step commits in this same transaction as the run
             # row: a run is never accepted without its journal row, and a
             # journal failure rolls the whole accept back before any worker
             # starts, so no worker ever runs on an unjournaled accept.
-            run_jobs.record_step_in(db, run_id, 'accepted', 'completed', 'LaunchCrew', {'idea_chars': len(body.idea)})
+            run_jobs.record_step_in(db, run_id, 'accepted', 'completed', 'LaunchCrew', {'idea_chars': len(body.idea)}, workspace_id=workspace_id)
     except HTTPException:
         raise
     except Exception:
@@ -608,29 +619,31 @@ def create_run_async(body: RunInput, actor: str = Depends(auth.actor)):
         raise HTTPException(503, 'Run acceptance unconfirmed; retry with a new request') from None
     started = run_jobs.start_async_run(run_id, body.idea, legacy, body.seed_unverified_claim, items,
                                        body.checker_profile, scout, maker, checker, maker_name, actor,
+                                       workspace_id=store.workspace_for_actor(actor),
                                        product_facts=product_facts_raw)
     if not started:
         raise HTTPException(409, 'Run worker already active for this run')
     return {'run_id': run_id, 'status': 'running', 'receipt': pending}
 
 
-def save_run(db, receipt, agent_name, actor):
+def save_run(db, receipt, agent_name, actor, workspace_id):
     run_id = receipt['run_id']
-    db.execute(text('INSERT INTO runs(id,receipt,agent_name,state) VALUES (:id,CAST(:receipt AS jsonb),:agent,:state)'),
-               {'id': run_id, 'receipt': json.dumps(receipt), 'agent': agent_name.lower(), 'state': receipt['approval_state']})
+    db.execute(text('INSERT INTO runs(id,receipt,agent_name,state,workspace_id) VALUES (:id,CAST(:receipt AS jsonb),:agent,:state,:ws)'),
+               {'id': run_id, 'receipt': json.dumps(receipt), 'agent': agent_name.lower(), 'state': receipt['approval_state'], 'ws': workspace_id})
     db.execute(text('INSERT INTO memory(run_id,facts) VALUES (:id,CAST(:facts AS jsonb))'),
                {'id': run_id, 'facts': json.dumps(receipt.get('scout', {}).get('facts_used', []))})
-    store.audit(db, run_id, 'run_created', actor)
+    store.audit(db, run_id, 'run_created', actor, workspace_id)
 
 
 @app.get('/api/queue', response_model=list[Receipt])
 def queue(actor: str = Depends(auth.actor)):
     with store.connect() as db:
-        return [r[0] for r in db.execute(text("SELECT receipt FROM runs ORDER BY (state='pending_approval') DESC, created_at, id"))]
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        return [r[0] for r in db.execute(text("SELECT receipt FROM runs WHERE workspace_id=:ws ORDER BY (state='pending_approval') DESC, created_at, id"), {'ws': workspace_id})]
 
 
-def get_receipt(db, run_id, lock=False):
-    row = db.execute(text('SELECT receipt FROM runs WHERE id=:id' + (' FOR UPDATE' if lock else '')), {'id': run_id}).fetchone()
+def get_receipt(db, run_id, workspace_id, lock=False):
+    row = db.execute(text('SELECT receipt FROM runs WHERE id=:id AND workspace_id=:ws' + (' FOR UPDATE' if lock else '')), {'id': run_id, 'ws': workspace_id}).fetchone()
     if not row:
         raise HTTPException(404, 'Run not found')
     return row[0]
@@ -640,7 +653,8 @@ def get_receipt(db, run_id, lock=False):
 @app.get('/api/runs/{run_id}/receipt', response_model=Receipt)
 def get_run(run_id: str, actor: str = Depends(auth.actor)):
     with store.connect() as db:
-        return get_receipt(db, run_id)
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        return get_receipt(db, run_id, workspace_id)
 
 
 def canonical_observed_at(value):
@@ -668,7 +682,8 @@ def get_run_steps(run_id: str, actor: str = Depends(auth.actor)):
     """
     from backend import run_jobs
     with store.connect() as db:
-        exists = db.execute(text('SELECT 1 FROM runs WHERE id=:id'), {'id': run_id}).fetchone()
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        exists = db.execute(text('SELECT 1 FROM runs WHERE id=:id AND workspace_id=:ws'), {'id': run_id, 'ws': workspace_id}).fetchone()
         if not exists:
             raise HTTPException(404, 'Run not found')
         rows = db.execute(text('SELECT seq,stage,state,observed_at,profile,evidence'
@@ -747,7 +762,8 @@ def _reject_when_running(receipt):
 def revise(run_id: str, body: ReviseIn, actor: str = Depends(auth.actor)):
     from launchcrew import human_review
     with store.connect() as db:
-        receipt = get_receipt(db, run_id, True)
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        receipt = get_receipt(db, run_id, workspace_id, True)
         _reject_when_running(receipt)
         try:
             revised = human_review.apply_revision(receipt, body.post.strip(), body.email.strip(), actor, body.base_revision)
@@ -761,7 +777,9 @@ def revise(run_id: str, body: ReviseIn, actor: str = Depends(auth.actor)):
             if 'stale' in message.lower():
                 raise HTTPException(409, message)
             raise HTTPException(422, message)
-        db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id'), {'receipt': json.dumps(revised), 'state': revised['approval_state'], 'id': run_id})
+        result = db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id AND workspace_id=:ws'), {'receipt': json.dumps(revised), 'state': revised['approval_state'], 'id': run_id, 'ws': workspace_id})
+        if result.rowcount == 0:
+            raise HTTPException(404, 'Run not found')
         # A saved revision resets approval, so the stale current-approval
         # projection must not remain: a leftover row would collide with the
         # fresh reapproval INSERT below (run_id PRIMARY KEY) and wrongly
@@ -769,7 +787,7 @@ def revise(run_id: str, body: ReviseIn, actor: str = Depends(auth.actor)):
         # actor/time/revision evidence stays immutable in the receipt
         # revision_history, the receipt audit event_log, and the audit table.
         db.execute(text('DELETE FROM approvals WHERE run_id=:id'), {'id': run_id})
-        store.audit(db, run_id, 'human_revised', actor)
+        store.audit(db, run_id, 'human_revised', actor, workspace_id)
     return revised
 
 
@@ -777,7 +795,8 @@ def revise(run_id: str, body: ReviseIn, actor: str = Depends(auth.actor)):
 def approve(run_id: str, body: ApproveIn, actor: str = Depends(auth.actor)):
     from launchcrew import human_review
     with store.connect() as db:
-        receipt = get_receipt(db, run_id, True)
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        receipt = get_receipt(db, run_id, workspace_id, True)
         _reject_when_running(receipt)
         expected = body.expected_revision
         if human_review.current_revision(receipt) > 0 and expected is None:
@@ -791,7 +810,9 @@ def approve(run_id: str, body: ApproveIn, actor: str = Depends(auth.actor)):
             if 'stale' in message.lower():
                 raise HTTPException(409, message)
             raise HTTPException(422, message)
-        db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id'), {'receipt': json.dumps(receipt), 'state': receipt['approval_state'], 'id': run_id})
+        result = db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id AND workspace_id=:ws'), {'receipt': json.dumps(receipt), 'state': receipt['approval_state'], 'id': run_id, 'ws': workspace_id})
+        if result.rowcount == 0:
+            raise HTTPException(404, 'Run not found')
         # The approvals table is a current-approval projection (one row per
         # run): the plain INSERT keeps the PRIMARY KEY guard against double
         # approval and concurrent approval races, with no ON CONFLICT bypass
@@ -799,7 +820,7 @@ def approve(run_id: str, body: ApproveIn, actor: str = Depends(auth.actor)):
         # checks above still run first). A revise clears this row, so fresh
         # reapproval after edits inserts cleanly in the same transaction.
         db.execute(text('INSERT INTO approvals(run_id,approved_by) VALUES (:id,:actor)'), {'id': run_id, 'actor': actor})
-        store.audit(db, run_id, 'approved_for_export', actor)
+        store.audit(db, run_id, 'approved_for_export', actor, workspace_id)
     return receipt
 
 
@@ -808,7 +829,8 @@ def export(run_id: str, body: ExportIn, response: Response, actor: str = Depends
     with store.connect() as db:
         from backend.photo_review import photo_block_reason
         from launchcrew import human_review
-        receipt = get_receipt(db, run_id, True)
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        receipt = get_receipt(db, run_id, workspace_id, True)
         _reject_when_running(receipt)
         expected = body.expected_revision
         if human_review.current_revision(receipt) > 0 and expected is None:
@@ -822,8 +844,10 @@ def export(run_id: str, body: ExportIn, response: Response, actor: str = Depends
             exported = human_review.record_export(receipt, actor)
         except ValueError as error:
             raise HTTPException(422, str(error))
-        db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id'), {'receipt': json.dumps(exported), 'state': exported['approval_state'], 'id': run_id})
-        store.audit(db, run_id, 'exported', actor)
+        result = db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id AND workspace_id=:ws'), {'receipt': json.dumps(exported), 'state': exported['approval_state'], 'id': run_id, 'ws': workspace_id})
+        if result.rowcount == 0:
+            raise HTTPException(404, 'Run not found')
+        store.audit(db, run_id, 'exported', actor, workspace_id)
     response.headers['Content-Disposition'] = 'attachment; filename="launchcrew-pack.json"'
     return exported
 
@@ -832,9 +856,10 @@ def export(run_id: str, body: ExportIn, response: Response, actor: str = Depends
 @app.post('/api/runs/{run_id}/photo-check', response_model=PhotoCheckResponse)
 def photo_check(run_id: str, body: PhotoCheckIn, actor: str = Depends(auth.actor)):
     with store.connect() as db:
-        _reject_when_running(get_receipt(db, run_id))
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        _reject_when_running(get_receipt(db, run_id, workspace_id))
     from backend import photo_admission, sam
-    from backend.photo_admission import AdmissionConflict, AdmissionRejected, AdmissionStale
+    from backend.photo_admission import AdmissionConflict, AdmissionNotFound, AdmissionRejected, AdmissionStale
     from backend.photo_input import PhotoInputError, parse_photo_data_uri
     from backend.photo_review import (PHOTO_EVENT_CHECKED,
                                       STATE_REQUESTED_UNCHECKED, apply_photo_event,
@@ -847,7 +872,8 @@ def photo_check(run_id: str, body: PhotoCheckIn, actor: str = Depends(auth.actor
         raise HTTPException(422, 'Photo input rejected: ' + error.reason)
     if not sam.photo_sam_operable():
         with store.connect() as db:
-            receipt = get_receipt(db, run_id, True)
+            workspace_id = store.ensure_workspace_seeded(db, actor)
+            receipt = get_receipt(db, run_id, workspace_id, True)
             ok, context_reason = human_review.valid_revision_context(receipt)
             if not ok:
                 raise HTTPException(422, context_reason)
@@ -864,10 +890,12 @@ def photo_check(run_id: str, body: PhotoCheckIn, actor: str = Depends(auth.actor
                 note=('SAM is not configured, so the photo bytes stayed on the LaunchCrew validation '
                       'server for this check and were not forwarded to any segmentation provider. '
                       'Text-model usage above is unchanged and covers text models only.'))
-            db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id'),
-                       {'receipt': json.dumps(revised), 'state': revised['approval_state'], 'id': run_id})
+            result = db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id AND workspace_id=:ws'),
+                       {'receipt': json.dumps(revised), 'state': revised['approval_state'], 'id': run_id, 'ws': workspace_id})
+            if result.rowcount == 0:
+                raise HTTPException(404, 'Run not found')
             db.execute(text('DELETE FROM approvals WHERE run_id=:id'), {'id': run_id})
-            store.audit(db, run_id, 'photo_check_requested', actor)
+            store.audit(db, run_id, 'photo_check_requested', actor, workspace_id)
         kept = photo_status_of(revised)
         check = PhotoCheckOut(method='not_run', label=None, reason=kept['reason'],
                               policy_version=PHOTO_POLICY_VERSION,
@@ -877,7 +905,10 @@ def photo_check(run_id: str, body: PhotoCheckIn, actor: str = Depends(auth.actor
         row, preview, receipt = photo_admission.run_photo_check(
             store.engine(), run_id, parsed['raw'], parsed['mime'],
             body.expected_revision, body.expected_revision, actor=actor,
+            workspace_id=store.workspace_for_actor(actor),
             frame=(parsed['width'], parsed['height']))
+    except AdmissionNotFound:
+        raise HTTPException(404, 'Run not found')
     except AdmissionRejected as error:
         raise HTTPException(422, str(error))
     except AdmissionStale as error:
@@ -899,7 +930,8 @@ def photo_remove(run_id: str, body: PhotoRemoveIn, actor: str = Depends(auth.act
                                       photo_status_of)
     from launchcrew import human_review
     with store.connect() as db:
-        receipt = get_receipt(db, run_id, True)
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        receipt = get_receipt(db, run_id, workspace_id, True)
         _reject_when_running(receipt)
         ok, context_reason = human_review.valid_revision_context(receipt)
         if not ok:
@@ -910,10 +942,12 @@ def photo_remove(run_id: str, body: PhotoRemoveIn, actor: str = Depends(auth.act
             raise HTTPException(422, 'No photo is attached to this revision')
         revised = apply_photo_event(receipt, event=PHOTO_EVENT_REMOVED, actor=actor,
                                     status=blank_photo_status())
-        db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id'),
-                   {'receipt': json.dumps(revised), 'state': revised['approval_state'], 'id': run_id})
+        result = db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id AND workspace_id=:ws'),
+                   {'receipt': json.dumps(revised), 'state': revised['approval_state'], 'id': run_id, 'ws': workspace_id})
+        if result.rowcount == 0:
+            raise HTTPException(404, 'Run not found')
         db.execute(text('DELETE FROM approvals WHERE run_id=:id'), {'id': run_id})
-        store.audit(db, run_id, 'photo_removed', actor)
+        store.audit(db, run_id, 'photo_removed', actor, workspace_id)
     return PhotoRemoveOut(revision=revised['revision'], photo_state='no_photo',
                           approval_state='pending_approval')
 
@@ -944,57 +978,66 @@ class LearnMemory(Strict):
     kind: Literal['approval_example', 'blocked_rule']
 
 
-def memory_item(db, item_id):
-    row = db.execute(text('SELECT * FROM memory_items WHERE id=:id'), {'id': item_id}).mappings().first()
+def memory_item(db, item_id, workspace_id):
+    row = db.execute(text('SELECT * FROM memory_items WHERE id=:id AND workspace_id=:ws'), {'id': item_id, 'ws': workspace_id}).mappings().first()
     if row is None:
         raise HTTPException(404, 'Memory item not found')
     return dict(row)
 
 
-def insert_memory(db, body, actor, action, source_run_id=None):
+def insert_memory(db, body, actor, action, workspace_id, source_run_id=None):
     item_id = 'mem_' + uuid4().hex
-    db.execute(text('INSERT INTO memory_items(id,kind,title,content,source_run_id) VALUES (:id,:kind,:title,CAST(:content AS jsonb),:source)'),
-               {'id': item_id, 'kind': body.kind, 'title': body.title, 'content': json.dumps(body.content), 'source': source_run_id})
-    store.audit(db, source_run_id, action, actor)
-    return memory_item(db, item_id)
+    db.execute(text('INSERT INTO memory_items(id,kind,title,content,source_run_id,workspace_id) VALUES (:id,:kind,:title,CAST(:content AS jsonb),:source,:ws)'),
+               {'id': item_id, 'kind': body.kind, 'title': body.title, 'content': json.dumps(body.content), 'source': source_run_id, 'ws': workspace_id})
+    store.audit(db, source_run_id, action, actor, workspace_id)
+    return memory_item(db, item_id, workspace_id)
 
 
 @app.get('/api/memory', response_model=list[MemoryItemOut])
 def list_memory(actor: str = Depends(auth.actor)):
     with store.connect() as db:
-        return db.execute(text('SELECT * FROM memory_items ORDER BY created_at,id')).mappings().all()
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        return db.execute(text('SELECT * FROM memory_items WHERE workspace_id=:ws ORDER BY created_at,id'), {'ws': workspace_id}).mappings().all()
 
 
 @app.post('/api/memory', response_model=MemoryItemOut, status_code=201)
 def create_memory(body: MemoryItemIn, actor: str = Depends(auth.actor)):
     with store.connect() as db:
-        return insert_memory(db, body, actor, 'memory_item_created')
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        return insert_memory(db, body, actor, 'memory_item_created', workspace_id)
 
 
 @app.get('/api/memory/{item_id}', response_model=MemoryItemOut)
 def get_memory(item_id: str, actor: str = Depends(auth.actor)):
     with store.connect() as db:
-        return memory_item(db, item_id)
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        return memory_item(db, item_id, workspace_id)
 
 
 @app.put('/api/memory/{item_id}', response_model=MemoryItemOut)
 def edit_memory(item_id: str, body: MemoryItemEdit, actor: str = Depends(auth.actor)):
     with store.connect() as db:
-        item = memory_item(db, item_id)
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        item = memory_item(db, item_id, workspace_id)
         if 'kind' in body.model_fields_set and body.kind != item['kind']:
             raise HTTPException(422, 'Memory kind is immutable')
-        db.execute(text('UPDATE memory_items SET title=:title,content=CAST(:content AS jsonb),updated_at=now() WHERE id=:id'),
-                   {'id': item_id, 'title': body.title, 'content': json.dumps(body.content)})
-        store.audit(db, None, 'memory_item_edited', actor)
-        return memory_item(db, item_id)
+        result = db.execute(text('UPDATE memory_items SET title=:title,content=CAST(:content AS jsonb),updated_at=now() WHERE id=:id AND workspace_id=:ws'),
+                   {'id': item_id, 'title': body.title, 'content': json.dumps(body.content), 'ws': workspace_id})
+        if result.rowcount == 0:
+            raise HTTPException(404, 'Memory item not found')
+        store.audit(db, None, 'memory_item_edited', actor, workspace_id)
+        return memory_item(db, item_id, workspace_id)
 
 
 @app.delete('/api/memory/{item_id}', status_code=204)
 def delete_memory(item_id: str, actor: str = Depends(auth.actor)):
     with store.connect() as db:
-        memory_item(db, item_id)
-        db.execute(text('DELETE FROM memory_items WHERE id=:id'), {'id': item_id})
-        store.audit(db, None, 'memory_item_deleted', actor)
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        memory_item(db, item_id, workspace_id)
+        result = db.execute(text('DELETE FROM memory_items WHERE id=:id AND workspace_id=:ws'), {'id': item_id, 'ws': workspace_id})
+        if result.rowcount == 0:
+            raise HTTPException(404, 'Memory item not found')
+        store.audit(db, None, 'memory_item_deleted', actor, workspace_id)
     return Response(status_code=204)
 
 
@@ -1002,7 +1045,8 @@ def delete_memory(item_id: str, actor: str = Depends(auth.actor)):
 def learn_memory(run_id: str, body: LearnMemory, actor: str = Depends(auth.actor)):
     with store.connect() as db:
         from launchcrew import human_review
-        receipt = get_receipt(db, run_id, True)
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        receipt = get_receipt(db, run_id, workspace_id, True)
         if receipt['approval_state'] != 'approved_for_export':
             raise HTTPException(409, 'Learning requires explicit run approval')
         if not human_review.exportable(receipt):
@@ -1011,7 +1055,7 @@ def learn_memory(run_id: str, body: LearnMemory, actor: str = Depends(auth.actor
         content = ({'idea': receipt['idea'], 'post': draft['post'], 'email': draft['email']}
                    if body.kind == 'approval_example' else {'blocked_claims': receipt['checker_v1']['blocked_claims']})
         item = MemoryItemIn(kind=body.kind, title=f'{body.kind}: {run_id}', content=content)
-        return insert_memory(db, item, actor, 'memory_item_learned', run_id)
+        return insert_memory(db, item, actor, 'memory_item_learned', workspace_id, run_id)
 
 
 class RunDiff(Strict):
@@ -1104,7 +1148,8 @@ def diff_receipts(a, b):
 @app.get('/api/runs/{run_a}/diff/{run_b}', response_model=RunDiff)
 def replay_diff(run_a: str, run_b: str, actor: str = Depends(auth.actor)):
     with store.connect() as db:
-        return diff_receipts(get_receipt(db, run_a), get_receipt(db, run_b))
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        return diff_receipts(get_receipt(db, run_a, workspace_id), get_receipt(db, run_b, workspace_id))
 
 
 CAMPAIGN_BRIEFS = [
@@ -1141,13 +1186,13 @@ class CampaignOut(Strict):
     days: list[CampaignDay]
 
 
-def campaign_detail(db, campaign_id):
-    row = db.execute(text('SELECT * FROM campaigns WHERE id=:id'), {'id': campaign_id}).mappings().first()
+def campaign_detail(db, campaign_id, workspace_id):
+    row = db.execute(text('SELECT * FROM campaigns WHERE id=:id AND workspace_id=:ws'), {'id': campaign_id, 'ws': workspace_id}).mappings().first()
     if row is None:
         raise HTTPException(404, 'Campaign not found')
     result = dict(row)
     result['days'] = []
-    for day, receipt in db.execute(text('SELECT d.day,r.receipt FROM campaign_days d JOIN runs r ON r.id=d.run_id WHERE d.campaign_id=:id ORDER BY d.day'), {'id': campaign_id}):
+    for day, receipt in db.execute(text('SELECT d.day,r.receipt FROM campaign_days d JOIN runs r ON r.id=d.run_id WHERE d.campaign_id=:id AND r.workspace_id=:ws ORDER BY d.day'), {'id': campaign_id, 'ws': workspace_id}):
         from launchcrew import human_review
         angle, brief, _claim = CAMPAIGN_BRIEF_BY_DAY.get(day, ('', '', ''))
         current = human_review.current_draft(receipt)
@@ -1170,11 +1215,12 @@ def create_campaign(body: RunInput, actor: str = Depends(auth.actor)):
     campaign_id = 'camp_' + uuid4().hex
     engine = store.engine()
     with store.connect() as db:
-        legacy, scout, maker, checker = load_stage_profiles(db, body)
-        items = load_memory_selection(db, body.memory_ids)
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        legacy, scout, maker, checker = load_stage_profiles(db, body, workspace_id)
+        items = load_memory_selection(db, body.memory_ids, workspace_id)
         _, maker_name, _ = stage_names(body)
-        db.execute(text('INSERT INTO campaigns(id,idea,agent_name) VALUES (:id,:idea,:agent)'),
-                   {'id': campaign_id, 'idea': body.idea, 'agent': maker_name})
+        db.execute(text('INSERT INTO campaigns(id,idea,agent_name,workspace_id) VALUES (:id,:idea,:agent,:ws)'),
+                   {'id': campaign_id, 'idea': body.idea, 'agent': maker_name, 'ws': workspace_id})
         for day in range(1, 8):
             angle, brief, brief_claim = CAMPAIGN_BRIEF_BY_DAY[day]
             run_id = 'run_' + uuid4().hex
@@ -1187,28 +1233,30 @@ def create_campaign(body: RunInput, actor: str = Depends(auth.actor)):
                                       scout_profile=scout, maker_profile=maker, checker_agent=checker,
                                       product_facts=product_facts_raw,
                                       model_admission_factory=factory)
-            save_run(db, receipt, maker_name, actor)
+            save_run(db, receipt, maker_name, actor, workspace_id)
             db.execute(text('INSERT INTO campaign_days(campaign_id,day,run_id) VALUES (:id,:day,:run)'),
                        {'id': campaign_id, 'day': day, 'run': run_id})
-        return campaign_detail(db, campaign_id)
+        return campaign_detail(db, campaign_id, workspace_id)
 
 
 @app.get('/api/campaigns', response_model=list[CampaignOut])
 def list_campaigns(actor: str = Depends(auth.actor)):
     with store.connect() as db:
-        ids = db.execute(text('SELECT id FROM campaigns ORDER BY created_at,id')).scalars().all()
-        return [campaign_detail(db, campaign_id) for campaign_id in ids]
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        ids = db.execute(text('SELECT id FROM campaigns WHERE workspace_id=:ws ORDER BY created_at,id'), {'ws': workspace_id}).scalars().all()
+        return [campaign_detail(db, campaign_id, workspace_id) for campaign_id in ids]
 
 
 @app.get('/api/campaigns/{campaign_id}', response_model=CampaignOut)
 def get_campaign(campaign_id: str, actor: str = Depends(auth.actor)):
     with store.connect() as db:
-        return campaign_detail(db, campaign_id)
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        return campaign_detail(db, campaign_id, workspace_id)
 
 
-def campaign_run(campaign_id, day):
+def campaign_run(campaign_id, day, workspace_id):
     with store.connect() as db:
-        run_id = db.execute(text('SELECT run_id FROM campaign_days WHERE campaign_id=:id AND day=:day'), {'id': campaign_id, 'day': day}).scalar()
+        run_id = db.execute(text('SELECT d.run_id FROM campaign_days d JOIN campaigns c ON c.id=d.campaign_id JOIN runs r ON r.id=d.run_id WHERE d.campaign_id=:id AND d.day=:day AND c.workspace_id=:ws AND r.workspace_id=:ws'), {'id': campaign_id, 'day': day, 'ws': workspace_id}).scalar()
         if run_id is None:
             raise HTTPException(404, 'Campaign day not found')
         return run_id
@@ -1216,9 +1264,11 @@ def campaign_run(campaign_id, day):
 
 @app.post('/api/campaigns/{campaign_id}/days/{day}/approve', response_model=Receipt)
 def approve_campaign_day(campaign_id: str, day: int, body: ApproveIn, actor: str = Depends(auth.actor)):
-    return approve(campaign_run(campaign_id, day), body, actor)
+    workspace_id = store.workspace_for_actor(actor)
+    return approve(campaign_run(campaign_id, day, workspace_id), body, actor)
 
 
 @app.post('/api/campaigns/{campaign_id}/days/{day}/export', response_model=Receipt)
 def export_campaign_day(campaign_id: str, day: int, body: ExportIn, response: Response, actor: str = Depends(auth.actor)):
-    return export(campaign_run(campaign_id, day), body, response, actor)
+    workspace_id = store.workspace_for_actor(actor)
+    return export(campaign_run(campaign_id, day, workspace_id), body, response, actor)

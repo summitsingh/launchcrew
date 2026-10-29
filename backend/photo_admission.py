@@ -77,6 +77,20 @@ class AdmissionConflict(ValueError):
         self.reason = reason
 
 
+class AdmissionNotFound(ValueError):
+    """The run or operation is not in this workspace; maps to 404."""
+
+    def __init__(self, reason: str = 'run not found'):
+        super().__init__('Photo run not found: ' + reason)
+        self.reason = reason
+
+
+def _resolved_workspace(actor, workspace_id):
+    if workspace_id is not None:
+        return str(workspace_id)
+    return store.workspace_for_actor(actor or 'demo_placeholder')
+
+
 def _approved_digests():
     raw = os.environ.get('LAUNCHCREW_PHOTO_APPROVED_DIGESTS', '')
     return {part.strip().lower() for part in raw.split(',') if part.strip()}
@@ -112,7 +126,7 @@ def _read_call(connection, run_id, revision):
         {'run': run_id, 'rev': revision}).mappings().first()
 
 
-def admit_photo_check(db, run_id, revision, photo_sha256, expected_revision, *, actor='') -> SamCallRow:
+def admit_photo_check(db, run_id, revision, photo_sha256, expected_revision, *, actor='', workspace_id=None) -> SamCallRow:
     """Admit one paid sequence, or replay the existing ledger row.
 
     Ledger replay runs before any staleness check: a duplicate arrival
@@ -122,6 +136,8 @@ def admit_photo_check(db, run_id, revision, photo_sha256, expected_revision, *, 
     inserted the ledger row gets ``is_owner`` true. A concurrent same-key
     arrival that waited on the run lock re-reads the committed row after
     acquiring the lock, so it replays pending instead of going stale.
+    Ownership is rechecked before any ledger replay or HTTP: a foreign
+    run raises not-found without revealing existence.
     """
     if isinstance(revision, bool) or not isinstance(revision, int):
         raise AdmissionRejected('revision must be an integer')
@@ -132,17 +148,22 @@ def admit_photo_check(db, run_id, revision, photo_sha256, expected_revision, *, 
     digest = (photo_sha256 or '').lower()
     if not digest:
         raise AdmissionRejected('photo digest is required')
+    resolved = _resolved_workspace(actor, workspace_id)
     try:
         with db.begin() as connection:
+            owner = connection.execute(
+                text('SELECT workspace_id FROM runs WHERE id=:id'), {'id': run_id}).fetchone()
+            if owner is None or owner[0] != resolved:
+                raise AdmissionNotFound()
             existing = _locked_call(connection, run_id, revision)
             if existing is not None:
                 if (existing['photo_sha256'] or '').lower() != digest:
                     raise AdmissionConflict('a different photo already holds this revision')
                 return _row_to_call(existing, is_owner=False)
             holder = connection.execute(
-                text('SELECT receipt FROM runs WHERE id=:id FOR UPDATE'), {'id': run_id}).fetchone()
+                text('SELECT receipt FROM runs WHERE id=:id AND workspace_id=:ws FOR UPDATE'), {'id': run_id, 'ws': resolved}).fetchone()
             if holder is None:
-                raise AdmissionRejected('run not found')
+                raise AdmissionNotFound()
             # A concurrent same-key arrival may have committed while this
             # transaction waited on the run lock. Re-read the ledger now
             # that the run row is held, before any staleness decision, so
@@ -177,11 +198,13 @@ def admit_photo_check(db, run_id, revision, photo_sha256, expected_revision, *, 
                         'policy_version': PHOTO_POLICY_VERSION,
                         'revision': current, 'actor': actor, 'checked_at': ''}
             revised = apply_photo_event(receipt, event=PHOTO_EVENT_CHECKED, actor=actor, status=inflight)
-            connection.execute(
-                text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id'),
-                {'receipt': json.dumps(revised), 'state': revised['approval_state'], 'id': run_id})
+            result = connection.execute(
+                text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id AND workspace_id=:ws'),
+                {'receipt': json.dumps(revised), 'state': revised['approval_state'], 'id': run_id, 'ws': resolved})
+            if result.rowcount == 0:
+                raise AdmissionNotFound()
             connection.execute(text('DELETE FROM approvals WHERE run_id=:id'), {'id': run_id})
-            store.audit(connection, run_id, 'photo_check_requested', actor or 'demo_placeholder')
+            store.audit(connection, run_id, 'photo_check_requested', actor or 'demo_placeholder', resolved)
             return {'id': call_id, 'run_id': run_id, 'revision': revision,
                     'status': 'admitted', 'label': None,
                     'reason': 'check_requested: segmentation in flight',
@@ -189,6 +212,10 @@ def admit_photo_check(db, run_id, revision, photo_sha256, expected_revision, *, 
     except IntegrityError:
         pass
     with db.begin() as connection:
+        owner = connection.execute(
+            text('SELECT workspace_id FROM runs WHERE id=:id'), {'id': run_id}).fetchone()
+        if owner is None or owner[0] != resolved:
+            raise AdmissionNotFound()
         existing = connection.execute(
             text('SELECT * FROM sam_calls WHERE run_id=:run AND revision=:rev'),
             {'run': run_id, 'rev': revision}).mappings().first()
@@ -200,7 +227,7 @@ def admit_photo_check(db, run_id, revision, photo_sha256, expected_revision, *, 
 
 
 def finalize_photo_check(db, call_id, verdict, expected_revision, *, actor='',
-                         uploads=0, segmentations=0, segmented=False) -> SamCallRow:
+                         uploads=0, segmentations=0, segmented=False, workspace_id=None) -> SamCallRow:
     """Finalize an admitted call exactly once; never resend transport.
 
     A verdict whose label is not a definitive geometry outcome lands
@@ -209,12 +236,15 @@ def finalize_photo_check(db, call_id, verdict, expected_revision, *, actor='',
     terminal state commits in its own transaction BEFORE the stale error
     raises, so the rollback of the failed finalization cannot resurrect
     ``admitted``. Lock order stays sam_calls-before-runs throughout.
+    Finalization never crosses owners: a foreign parent raises not-found
+    with no ledger or receipt side effects.
     """
     label = verdict.get('label') if isinstance(verdict, dict) else None
     reason = verdict.get('reason', '') if isinstance(verdict, dict) else ''
     actor = (verdict.get('actor') or actor) if isinstance(verdict, dict) else actor
     if isinstance(expected_revision, bool) or not isinstance(expected_revision, int):
         raise AdmissionRejected('expected_revision must be an integer')
+    resolved = _resolved_workspace(actor, workspace_id)
     definitive = label in ('detected', 'not_detected', 'possible_clipping')
     status = 'succeeded' if definitive else 'failed_terminal'
     if label not in ('detected', 'not_detected', 'possible_clipping', 'unknown'):
@@ -226,28 +256,39 @@ def finalize_photo_check(db, call_id, verdict, expected_revision, *, actor='',
             text('SELECT * FROM sam_calls WHERE id=:id FOR UPDATE'), {'id': call_id}).mappings().first()
         if row is None:
             raise AdmissionRejected('unknown photo operation')
+        owner = connection.execute(
+            text('SELECT workspace_id FROM runs WHERE id=:id'), {'id': row['run_id']}).fetchone()
+        if owner is not None and owner[0] != resolved:
+            raise AdmissionNotFound()
         if row['status'] != 'admitted':
+            if owner is None:
+                raise AdmissionRejected('run not found')
             return _row_to_call(row, is_owner=False)
         if expected_revision != row['revision']:
             stale_reason = 'the draft changed; reload the latest revision'
         else:
             holder = connection.execute(
-                text('SELECT receipt FROM runs WHERE id=:id FOR UPDATE'), {'id': row['run_id']}).fetchone()
+                text('SELECT receipt FROM runs WHERE id=:id AND workspace_id=:ws FOR UPDATE'), {'id': row['run_id'], 'ws': resolved}).fetchone()
             if holder is None:
-                missing_run = True
+                if owner is None:
+                    missing_run = True
+                else:
+                    raise AdmissionNotFound()
             elif human_review.current_revision(holder[0]) != row['revision'] + 1:
                 stale_reason = 'the draft changed before the photo verdict landed'
             else:
                 revised = attach_verdict(holder[0], label=label, reason=reason, actor=actor,
                                          uploads=uploads, segmentations=segmentations,
                                          segmented=segmented)
-                connection.execute(
-                    text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id'),
-                    {'receipt': json.dumps(revised), 'state': revised['approval_state'], 'id': row['run_id']})
+                result = connection.execute(
+                    text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id AND workspace_id=:ws'),
+                    {'receipt': json.dumps(revised), 'state': revised['approval_state'], 'id': row['run_id'], 'ws': resolved})
+                if result.rowcount == 0:
+                    raise AdmissionNotFound()
                 connection.execute(
                     text('UPDATE sam_calls SET status=:status,label=:label,reason=:reason,updated_at=now() WHERE id=:id'),
                     {'status': status, 'label': label, 'reason': reason, 'id': call_id})
-                store.audit(connection, row['run_id'], 'photo_checked', actor or 'demo_placeholder')
+                store.audit(connection, row['run_id'], 'photo_checked', actor or 'demo_placeholder', resolved)
                 updated = connection.execute(
                     text('SELECT * FROM sam_calls WHERE id=:id'), {'id': call_id}).mappings().first()
                 return _row_to_call(updated, is_owner=False)
@@ -279,7 +320,7 @@ def _transport_counts(error) -> tuple[int, int]:
 
 
 def run_photo_check(db, run_id, raw_bytes, mime, revision, expected_revision, *, actor='',
-                    frame=None):
+                    frame=None, workspace_id=None):
     """Admit, transport once, and finalize. Returns (row, preview, receipt).
 
     Transport runs only for the single owner admitted here, and only
@@ -287,11 +328,15 @@ def run_photo_check(db, run_id, raw_bytes, mime, revision, expected_revision, *,
     return the persisted row with no preview and zero HTTP. The preview
     crop hint is volatile and never persisted.
     """
+    resolved = _resolved_workspace(actor, workspace_id)
     digest = hashlib.sha256(raw_bytes).hexdigest()
-    row = admit_photo_check(db, run_id, revision, digest, expected_revision, actor=actor)
+    row = admit_photo_check(db, run_id, revision, digest, expected_revision, actor=actor, workspace_id=resolved)
     with db.begin() as connection:
-        receipt = connection.execute(
-            text('SELECT receipt FROM runs WHERE id=:id'), {'id': run_id}).fetchone()[0]
+        holder = connection.execute(
+            text('SELECT receipt FROM runs WHERE id=:id AND workspace_id=:ws'), {'id': run_id, 'ws': resolved}).fetchone()
+        if holder is None:
+            raise AdmissionNotFound()
+        receipt = holder[0]
     if not row.get('is_owner', False) or row['status'] != 'admitted':
         return row, None, receipt
     try:
@@ -303,10 +348,13 @@ def run_photo_check(db, run_id, raw_bytes, mime, revision, expected_revision, *,
                    'detail': str(error)[:120]}
         final = finalize_photo_check(db, row['id'], verdict, expected_revision, actor=actor,
                                      uploads=uploads, segmentations=segmentations,
-                                     segmented=False)
+                                     segmented=False, workspace_id=resolved)
         with db.begin() as connection:
-            receipt = connection.execute(
-                text('SELECT receipt FROM runs WHERE id=:id'), {'id': run_id}).fetchone()[0]
+            holder = connection.execute(
+                text('SELECT receipt FROM runs WHERE id=:id AND workspace_id=:ws'), {'id': run_id, 'ws': resolved}).fetchone()
+            if holder is None:
+                raise AdmissionNotFound()
+            receipt = holder[0]
         return final, None, receipt
     verdict = classify_photo_geometry(records, frame)
     verdict = dict(verdict)
@@ -319,10 +367,13 @@ def run_photo_check(db, run_id, raw_bytes, mime, revision, expected_revision, *,
         except ValueError:
             preview = None
     final = finalize_photo_check(db, row['id'], verdict, expected_revision, actor=actor,
-                                 uploads=1, segmentations=1, segmented=True)
+                                 uploads=1, segmentations=1, segmented=True, workspace_id=resolved)
     with db.begin() as connection:
-        receipt = connection.execute(
-            text('SELECT receipt FROM runs WHERE id=:id'), {'id': run_id}).fetchone()[0]
+        holder = connection.execute(
+            text('SELECT receipt FROM runs WHERE id=:id AND workspace_id=:ws'), {'id': run_id, 'ws': resolved}).fetchone()
+        if holder is None:
+            raise AdmissionNotFound()
+        receipt = holder[0]
     # The preview is a volatile hint computed before finalization. If a
     # remove or text revision landed between finalization and this re-read,
     # the hint would describe a superseded revision, so suppress it unless
