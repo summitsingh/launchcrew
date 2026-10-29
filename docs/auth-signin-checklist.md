@@ -34,7 +34,7 @@ No credential value goes in the repo, in chat, in shell argv, in logs, or in doc
 - [ ] Store the private client ID and secret in Secrets Manager as JSON keys google-client-id and google-client-secret. Record only the secret ARN, never the values.
 - [ ] Deploy with EnableGoogleAuth false and GoogleOAuthSecretArn empty for keyless default. AUTH_ENABLED stays false and no Google secret is injected.
 - [ ] For an approved live test only, after deployment HTTPS is verified: set EnableGoogleAuth true plus the exact private GoogleOAuthSecretArn. The API task then receives GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET via ECS task secrets, and AUTH_ENABLED becomes true. The IAM grant ApiGoogleAuthPolicy allows secretsmanager:GetSecretValue only on that exact ARN, with no wildcard. No KMS grant is added; if the secret uses a customer managed key, add a key-scoped kms:Decrypt grant separately, never a wildcard.
-- [ ] Set EnableGoogleAuth true only for a live sign-in test run approved by Summit, after deployment HTTPS is verified.
+- [ ] Set EnableGoogleAuth true only for a live sign-in test run with explicit operator approval, after deployment HTTPS is verified.
 
 Provider console reports one approved external test user. That count alone proves nothing about live sign-in from this source. Do not present it as production access or verified sign-in.
 
@@ -61,9 +61,9 @@ Provider console reports one approved external test user. That count alone prove
 - Enabled and signed in: approval_by is the signed-in Google user (google:subject). Approving a run must record that same value in three places: the receipt approvals entry, the approvals table row, and the audit row for approved_for_export. Covered by backend/tests/test_google_auth.py two-actor isolation.
 - Never record a provider token, email address, or full profile as approval_by. Only provider:subject is recorded.
 
-## 7. Test plan for live sign-in (requires Summit approval and deployment HTTPS, NOT in this task)
+## 7. Test plan for live sign-in (requires explicit operator approval and deployment HTTPS, NOT in this task)
 
-Do not run this plan until Summit approves it and deployment HTTPS is verified. This plan is live-proof, not source-only.
+Do not run this plan until explicit operator approval is recorded and deployment HTTPS is verified. This plan is live-proof, not source-only. Source-only coverage in this repo uses mocked auth status and synthetic subjects only, with no live provider call and no verified sign-in.
 
 - [ ] Confirm /api/health reports auth enabled_unverified and approval_by signed_in_user only after EnableGoogleAuth true plus the exact Google secret ARN is deployed.
 - [ ] Confirm /api/auth/status shows providers ['google'] and live_verified false before sign-in.
