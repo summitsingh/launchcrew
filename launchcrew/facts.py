@@ -58,6 +58,9 @@ def check_claim(claim, facts):
     # never from demo template fields, memory suggestions, briefs, idea text,
     # or founder notes that may share the facts object. Owner mode strips the
     # base object in run.py, and this check ignores every non-allowlist value.
+    # Explicit claims require exact confirmed sentences. Substring containment
+    # never supports: a composite containing one approved fragment plus extra
+    # content stays unsupported (blocked), even when the fragment matches.
     approved = _approved_claims(facts)
     value = normalize(claim) if isinstance(claim, str) else ''
     # Exact allowlist equality is supported without conflict screening: the
@@ -71,17 +74,6 @@ def check_claim(claim, facts):
         evidence, reason = conflict
         return {'claim': claim, 'verified': False, 'verdict': CONFLICTS,
                 'evidence': evidence, 'reason': reason}
-    # Match a full fact or an approved claim contained in the submitted claim.
-    blob = _approved_blob(facts)
-    evidence = next((c for c in approved
-                     if value and normalize(c) in value and normalize(c) in blob), None)
-    if evidence is None and value and value in blob:
-        evidence = next((c for c in approved if value in normalize(c)), None)
-    if 'best in texas' in (claim or '').lower():
-        evidence = None
-    if evidence is not None:
-        return {'claim': claim, 'verified': True, 'verdict': SUPPORTED,
-                'evidence': evidence, 'reason': 'Matched approved claim'}
     return {'claim': claim, 'verified': False, 'verdict': UNSUPPORTED,
             'evidence': None, 'reason': 'Claim not found in facts file'}
 
@@ -126,6 +118,78 @@ _WORD_RE = re.compile(r'[a-z0-9]+')
 
 def _word_tokens(text):
     return set(_WORD_RE.findall((text or '').lower()))
+
+
+# Conservative deterministic grammar for model-authored channel copy. A
+# draft-text sentence is supported only when it consists solely of exact
+# confirmed fact spans plus wrapper words plus punctuation and whitespace,
+# with at least one fact span. Wrapper words are narrowly nonfactual
+# (salutation, intro, CTA, neutral glue). Any other alphanumeric word,
+# including qualifiers, materials, product types, or extra claim fragments
+# outside confirmed spans, rejects the line. Values, superlatives, and
+# negations are checked separately and also reject.
+WRAPPER_WORDS = frozenset({
+    'hello', 'hi', 'hey', 'welcome', 'thanks', 'thank', 'you',
+    'meet', 'say',
+    'shop', 'now', 'learn', 'more', 'see', 'details', 'below', 'here',
+    'link', 'bio', 'tap', 'click',
+    'and', 'the', 'a', 'an',
+})
+
+NEGATION_WORDS = frozenset({
+    'not', 'no', 'never', 'none', 'without', 'cannot',
+    'neither', 'nor', 'nothing', 'nowhere', 'hardly', 'scarcely', 'barely',
+    'isnt', 'arent', 'wasnt', 'werent', 'hasnt', 'havent', 'hadnt',
+    'couldnt', 'shouldnt', 'wouldnt', 'mustnt', 'wont', 'dont', 'cant',
+})
+
+
+def _has_negation(text):
+    cleaned = (text or '').lower().replace("'", '').replace('’', '')
+    return bool(set(_WORD_RE.findall(cleaned)) & NEGATION_WORDS)
+
+
+def _find_fact_spans(text, approved):
+    if not isinstance(text, str) or not text or not approved:
+        return []
+    lower = text.lower()
+    ordered = sorted([c for c in approved if isinstance(c, str) and c.strip()],
+                     key=len, reverse=True)
+    used = [False] * len(lower)
+    spans = []
+    for fact in ordered:
+        needle = fact.lower()
+        if not needle.strip():
+            continue
+        start = 0
+        while start < len(lower):
+            idx = lower.find(needle, start)
+            if idx < 0:
+                break
+            end = idx + len(needle)
+            before_ok = idx == 0 or not lower[idx - 1].isalnum()
+            after_ok = end >= len(lower) or not lower[end].isalnum()
+            if before_ok and after_ok and not any(used[idx:end]):
+                for i in range(idx, end):
+                    used[i] = True
+                spans.append((idx, end, fact))
+            start = idx + 1
+    spans.sort(key=lambda item: item[0])
+    return spans
+
+
+def _grammar_wrapper_ok(text, spans):
+    if not spans:
+        return False, []
+    chars = list(text)
+    for begin, end, _ in spans:
+        for i in range(begin, end):
+            chars[i] = ' '
+    tokens = _WORD_RE.findall(''.join(chars).lower())
+    bad = [t for t in tokens if t not in WRAPPER_WORDS]
+    if bad:
+        return False, bad
+    return True, []
 
 
 def _values_by_type(text):
@@ -217,9 +281,10 @@ def check_sentence(sentence, facts):
     # memory, briefs, idea text, and founder notes never authorize.
     approved = _approved_claims(facts)
     text = sentence if isinstance(sentence, str) else ''
-    # Exact allowlist equality is the only supported sentence. It implies
-    # value and superlative checks already pass, since the blob is built
-    # from the same allowlist.
+    # Exact allowlist equality is supported. It implies value and
+    # superlative checks already pass, since the blob is built from the
+    # same allowlist. Grammar-supported wrapper lines are also supported
+    # below; everything else stays unsupported.
     exact = next((c for c in approved if text and normalize(text) == normalize(c)), None)
     if exact is not None and 'best in texas' not in text.lower():
         return {'claim': sentence, 'verified': True, 'verdict': SUPPORTED,
@@ -229,7 +294,6 @@ def check_sentence(sentence, facts):
         evidence, reason = conflict
         return {'claim': sentence, 'verified': False, 'verdict': CONFLICTS,
                 'evidence': evidence, 'reason': reason}
-    result = check_claim(sentence, facts)
     blob = _approved_blob_raw(facts)
     for match in VALUE_PATTERN.finditer(text):
         if not any(m.group().lower() == match.group().lower() and m.lastgroup == match.lastgroup
@@ -239,16 +303,25 @@ def check_sentence(sentence, facts):
     if 'best in texas' in text.lower():
         return {'claim': sentence, 'verified': False, 'verdict': UNSUPPORTED,
                 'evidence': None, 'reason': 'Claim not found in facts file'}
+    if _has_negation(text):
+        return {'claim': sentence, 'verified': False, 'verdict': UNSUPPORTED,
+                'evidence': None, 'reason': 'Unapproved negation'}
     if any(not re.search(r'\b' + re.escape(m.group()) + r'\b', blob, re.I)
            for m in SUPERLATIVES.finditer(text)):
         return {'claim': sentence, 'verified': False, 'verdict': UNSUPPORTED,
                 'evidence': None, 'reason': 'Unapproved superlative or absolute'}
-    # Full allowlist sentence equality blocks mixed claims and unrecognized paraphrases.
-    # Preserve price, percentage, and date punctuation before normalization.
-    return {'claim': sentence, 'verified': False, 'verdict': result.get('verdict', UNSUPPORTED)
-            if result.get('verdict') == CONFLICTS else UNSUPPORTED,
-            'evidence': result.get('evidence') if result.get('verdict') == CONFLICTS else None,
-            'reason': result.get('reason') if result.get('verdict') == CONFLICTS else 'Sentence not in approved claims'}
+    spans = _find_fact_spans(text, approved)
+    if spans:
+        ok, _ = _grammar_wrapper_ok(text, spans)
+        if ok:
+            matched = [fact for _, _, fact in spans]
+            return {'claim': sentence, 'verified': True, 'verdict': SUPPORTED,
+                    'evidence': matched[0], 'evidence_claims': list(matched),
+                    'reason': 'Matched approved fact span with wrapper only'}
+        return {'claim': sentence, 'verified': False, 'verdict': UNSUPPORTED,
+                'evidence': None, 'reason': 'Unsupported wording outside confirmed facts'}
+    return {'claim': sentence, 'verified': False, 'verdict': UNSUPPORTED,
+            'evidence': None, 'reason': 'Sentence not in approved claims'}
 
 
 def check_draft(draft_text, facts):
