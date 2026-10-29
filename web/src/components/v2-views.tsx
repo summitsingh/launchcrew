@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { api, unwrap } from '@/lib/api';
@@ -13,6 +13,22 @@ type ModelUsage = components['schemas']['ModelUsage'];
 type Diff = components['schemas']['RunDiff'];
 type Day = components['schemas']['CampaignDay'];
 const wallet = 'Vegan leather wallet, $49, for Austin commuters, launch on Instagram';
+
+/** Shared seed default: normal runs stay clean unless the reviewer opts in. */
+export const SEED_CLAIM_DEFAULT = false;
+export const SEED_CLAIM_LABEL = 'Include the unsupported claim demo';
+export const SEED_CLAIM_HINT = 'Opt-in demo only. Seeds the unsupported claim “best in Texas” so this receipt shows Checker block it and revise it out. Leave unchecked for a normal run.';
+
+/** Readable supported Checker policy labels with exact enforceable IDs. */
+export const SUPPORTED_CHECKER_POLICIES = [
+  { label: 'Superlatives', veto: 'superlatives', rule: 'Block superlatives', description: 'Block claims containing hype or superlative words from the strict word list.' },
+  { label: 'Price claims', veto: 'price_claims', rule: 'Block price claims', description: 'Block claims containing price values such as $49.' },
+];
+
+/** Readable policy summary that keeps every exact ID inspectable. */
+export function SupportedPoliciesHint({ legacy }: { legacy?: boolean }) {
+  return <p className="hint">Supported Checker policies{legacy ? ' (legacy strictness: strict adds the superlatives policy)' : ''}: {SUPPORTED_CHECKER_POLICIES.map(policy => <span key={policy.veto}>{policy.label} (<code title={policy.veto}>veto_scope {policy.veto}</code>, <code title={policy.rule}>rule {policy.rule}</code>)</span>).reduce<ReactNode[]>((parts, part, i) => (i === 0 ? [part] : [...parts, ' or ', part]), [])}, exact match. Other free-text rules are advisory only. Deterministic claim safety cannot be relaxed. See /api/checker-policies.</p>;
+}
 
 type MemoryItem = components['schemas']['MemoryItemOut'];
 const memoryKinds = ['brand_fact', 'profile', 'approval_example', 'blocked_rule'] as const;
@@ -114,6 +130,21 @@ export function DiffResult({ diff }: { diff: Diff }) {
   </div>;
 }
 
+/** Owner-confirmed facts integration point. The current generated schema has
+ *  demo facts only, so this renders nothing until the core branch provides a
+ *  confirmed_facts array on the receipt. Defensive read, no schema change. */
+export function ConfirmedFactsBlock({ receipt }: { receipt: Receipt }) {
+  const confirmed = (receipt as unknown as { confirmed_facts?: unknown }).confirmed_facts;
+  if (!Array.isArray(confirmed) || confirmed.length === 0) return null;
+  return <>
+    <h3>Owner-confirmed facts ({confirmed.length})</h3>
+    <ul className="scout-list">{confirmed.map((entry, i) => {
+      const fact = (entry ?? {}) as { claim?: unknown; evidence?: unknown };
+      return <li key={i} className="scout-fact"><div className="scout-row"><strong>{typeof fact.claim === 'string' && fact.claim ? fact.claim : 'Unlabeled confirmed fact'}</strong><span className="badge approved">Confirmed</span></div><p className="hint">Evidence: {typeof fact.evidence === 'string' && fact.evidence ? fact.evidence : 'none stored'}</p></li>;
+    })}</ul>
+  </>;
+}
+
 export function ScoutFactsSection({ receipt }: { receipt: Receipt }) {
   const scout = (receipt.scout ?? null) as ScoutSection | null;
   const scoutName = receipt.stage_bindings?.scout ?? 'Scout';
@@ -132,6 +163,7 @@ export function ScoutFactsSection({ receipt }: { receipt: Receipt }) {
     <h3>Sourced facts ({facts.length})</h3>
     {facts.length === 0 && <p className="hint">No stored facts on this receipt.</p>}
     <ul className="scout-list">{facts.map((fact, i) => <li key={i} className="scout-fact"><div className="scout-row"><strong>{fact.claim || 'Unlabeled fact'}</strong><span className={`badge ${fact.verified ? 'approved' : 'pending'}`}>{fact.verified ? 'Verified' : 'Unverified'}</span></div><p className="hint">Evidence: {fact.evidence || 'none stored'}{Array.isArray(fact.sources) && fact.sources.length > 0 ? ` · Sources: ${fact.sources.join(', ')}` : ' · No stored source: unverified model hypothesis, not external research.'}</p></li>)}</ul>
+    <ConfirmedFactsBlock receipt={receipt} />
     <h3>Risks for review ({risks.length})</h3>
     <p className="hint">Demo risks are hypotheses for your review, never approved product facts.</p>
     {risks.length === 0 && <p className="hint">No stored risks on this receipt.</p>}
@@ -145,33 +177,48 @@ export function ReplayView({ queue }: { queue: Receipt[] }) {
   const [a, setA] = useState('');
   const [b, setB] = useState('');
   const compare = useMutation({ mutationFn: () => unwrap(api.GET('/api/runs/{run_a}/diff/{run_b}', { params: { path: { run_a: a, run_b: b } } })) });
-  return <section aria-label="Replay"><section className="panel"><h2>Replay</h2><form onSubmit={e => { e.preventDefault(); compare.mutate(); }}><label htmlFor="replay-a">Run A id</label><input id="replay-a" value={a} onChange={e => setA(e.target.value)} required /><label htmlFor="replay-b">Run B id</label><input id="replay-b" value={b} onChange={e => setB(e.target.value)} required /><Button type="submit" disabled={!a || !b || compare.isPending}>Compare</Button></form><h3>Pick from queue</h3><p className="hint">Queue refreshes every 3 seconds.</p>{queue.map(run => <div key={run.run_id} className="queue-card"><p className="run-id">{run.run_id}</p><p>{run.idea}</p><div className="queue-actions"><Button variant="outline" onClick={() => setA(run.run_id)}>Use as A</Button><Button variant="outline" onClick={() => setB(run.run_id)}>Use as B</Button></div></div>)}</section>{compare.error && <p role="alert">{compare.error.message}</p>}{compare.data && <DiffResult diff={compare.data} />}</section>;
+  return <section aria-label="Replay"><section className="panel"><h2>Replay</h2><form onSubmit={e => { e.preventDefault(); compare.mutate(); }}><label htmlFor="replay-a">Run A id</label><input id="replay-a" value={a} onChange={e => setA(e.target.value)} required /><label htmlFor="replay-b">Run B id</label><input id="replay-b" value={b} onChange={e => setB(e.target.value)} required /><Button type="submit" disabled={!a || !b || compare.isPending}>Compare</Button></form><h3>Pick from queue</h3><p className="hint">Queue refreshes every 3 seconds.</p>{queue.map(run => <div key={run.run_id} className="queue-card"><p><RunRef id={run.run_id} /></p><p>{run.idea}</p><div className="queue-actions"><Button variant="outline" onClick={() => setA(run.run_id)}>Use as A</Button><Button variant="outline" onClick={() => setB(run.run_id)}>Use as B</Button></div></div>)}</section>{compare.error && <p role="alert">{compare.error.message}</p>}{compare.data && <DiffResult diff={compare.data} />}</section>;
 }
 
-export function CampaignDayCard({ day, busy, approve, download }: { day: Day; busy: boolean; approve: () => void; download: () => void }) {
-  return <article className="panel queue-card"><h3>Day {day.day}: {day.angle}</h3><p>{day.brief}</p><p className="run-id">{day.run_id}</p><p className="draft">{day.draft_v2_post ?? ''}</p><p>{day.approval_state} · Status: {day.status} · Final blocked count: {day.checker_v2_blocked_count ?? 'unavailable'}</p><div className="queue-actions">{canApproveDay(day) && <Button onClick={approve} disabled={busy}>Approve for export</Button>}{canExportDay(day) && <Button onClick={download} disabled={busy}>Export pack</Button>}</div></article>;
+export function CampaignDayCard({ day, busy, approve, download, markdown, copy }: { day: Day; busy: boolean; approve: () => void; download: () => void; markdown?: () => void; copy?: () => void }) {
+  return <article className="panel queue-card"><h3>Day {day.day}: {day.angle}</h3><p>{day.brief}</p><p><RunRef id={day.run_id} /></p><p className="draft">{day.draft_v2_post ?? ''}</p><p>{day.approval_state} · Status: {day.status} · Final blocked count: {day.checker_v2_blocked_count ?? 'unavailable'}</p><div className="queue-actions">{canApproveDay(day) && <Button onClick={approve} disabled={busy}>Approve for export</Button>}{canExportDay(day) && <><Button onClick={download} disabled={busy}>Export pack</Button>{markdown && <Button variant="outline" onClick={markdown} disabled={busy}>Export Markdown</Button>}{copy && <Button variant="outline" onClick={copy} disabled={busy}>Copy pack</Button>}</>}</div></article>;
 }
 
-export function CampaignView({ profiles }: { profiles: components['schemas']['Profile'][] }) {
+export function CampaignView({ profiles, profilesPending, profilesError }: { profiles: components['schemas']['Profile'][]; profilesPending?: boolean; profilesError?: string }) {
   const client = useQueryClient();
   const [idea, setIdea] = useState(wallet);
   const [agent, setAgent] = useState('Maker');
   const [scout, setScout] = useState('Scout');
   const [checkerAgent, setCheckerAgent] = useState('Checker');
   const [checkerProfile, setCheckerProfile] = useState('standard');
-  const [seed, setSeed] = useState(false);
+  const [seed, setSeed] = useState(SEED_CLAIM_DEFAULT);
   const [id, setId] = useState('');
   const [notice, setNotice] = useState('');
+  const agentsReady = !profilesPending && !profilesError && profiles.length > 0;
   const weeks = useQuery({ queryKey: ['campaigns'], queryFn: () => unwrap(api.GET('/api/campaigns')) });
   const campaign = useQuery({ queryKey: ['campaign', id], queryFn: () => unwrap(api.GET('/api/campaigns/{campaign_id}', { params: { path: { campaign_id: id } } })), enabled: !!id, refetchInterval: 3000 });
   const create = useMutation({ mutationFn: () => unwrap(api.POST('/api/campaigns', { body: { idea, agent_name: agent, scout_name: scout, maker_name: agent, checker_name: checkerAgent, seed_unverified_claim: seed, checker_profile: checkerProfile as 'standard' | 'strict', memory_ids: [] } })), onSuccess: week => { setId(week.id); client.invalidateQueries({ queryKey: ['campaigns'] }); client.invalidateQueries({ queryKey: ['queue'] }); } });
   const approve = useMutation({ mutationFn: (input: { day: number; revision: number }) => unwrap(api.POST('/api/campaigns/{campaign_id}/days/{day}/approve', { params: { path: { campaign_id: id, day: input.day } }, body: { expected_revision: input.revision } })), onSuccess: () => { client.invalidateQueries({ queryKey: ['campaign', id] }); client.invalidateQueries({ queryKey: ['queue'] }); } });
-  const download = useMutation({ mutationFn: (input: { day: number; revision: number }) => unwrap(api.POST('/api/campaigns/{campaign_id}/days/{day}/export', { params: { path: { campaign_id: id, day: input.day } }, body: { expected_revision: input.revision } })), onSuccess: run => {
-    const url = URL.createObjectURL(new Blob([JSON.stringify(run, null, 2)], { type: 'application/json' }));
-    const link = document.createElement('a'); link.href = url; link.download = `${run.run_id}.json`; link.click(); URL.revokeObjectURL(url); setNotice(`Export downloaded: ${run.run_id}`);
+  // Every export path below POSTs the day export first, so the server applies
+  // the same approval and revision checks as the JSON download. Markdown and
+  // copy only re-present that approved artifact; they add no client authority.
+  const dayExport = (input: { day: number; revision: number }) => unwrap(api.POST('/api/campaigns/{campaign_id}/days/{day}/export', { params: { path: { campaign_id: id, day: input.day } }, body: { expected_revision: input.revision } }));
+  const download = useMutation({ mutationFn: dayExport, onSuccess: run => {
+    downloadTextFile(safeExportFilename(run.run_id, new Date(), 'json'), JSON.stringify(run, null, 2), 'application/json'); setNotice(`Export downloaded: ${run.run_id}`);
   } });
-  const error = create.error || campaign.error || weeks.error || approve.error || download.error;
-  return <section aria-label="Campaign"><section className="panel"><h2>Campaign Week</h2><p>Nothing publishes automatically. Review and approve each day individually.</p><form onSubmit={e => { e.preventDefault(); create.mutate(); }}><label htmlFor="campaign-idea">Idea</label><textarea id="campaign-idea" required maxLength={2000} value={idea} onChange={e => setIdea(e.target.value)} /><label htmlFor="campaign-scout">Scout agent</label><select id="campaign-scout" value={scout} onChange={e => setScout(e.target.value)}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</select><label htmlFor="campaign-maker">Maker profile</label><select id="campaign-maker" value={agent} onChange={e => setAgent(e.target.value)}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</select><label htmlFor="campaign-checker-agent">Checker agent</label><select id="campaign-checker-agent" value={checkerAgent} onChange={e => setCheckerAgent(e.target.value)}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</select><p className="hint">Each agent runs its own stage. Original names and rules are kept in each day receipt.</p><label htmlFor="campaign-checker">Checker profile</label><select id="campaign-checker" value={checkerProfile} onChange={e => setCheckerProfile(e.target.value)}><option>standard</option><option>strict</option></select><p className="hint">Supported Checker policies: veto_scope superlatives or price_claims; decision_rules Block superlatives or Block price claims (exact match). Other rules are advisory only.</p><label className="checkbox"><input type="checkbox" checked={seed} onChange={e => setSeed(e.target.checked)} />Include unsupported claim demo</label><Button type="submit" disabled={create.isPending || !profiles.length}>{create.isPending ? 'Creating week...' : 'Create week'}</Button></form><label htmlFor="campaign-select">Open a campaign</label><select id="campaign-select" value={id} onChange={e => setId(e.target.value)}><option value="">Select a week</option>{weeks.data?.map(week => <option key={week.id} value={week.id}>{week.idea} ({week.id})</option>)}</select></section>{error && <p role="alert">{error.message}</p>}{notice && <p role="status">{notice}</p>}{campaign.isFetching && <p>Refreshing week...</p>}{campaign.data && <section><h2>{campaign.data.idea}</h2><p className="run-id">{campaign.data.id}</p>{campaign.data.days.map(day => <CampaignDayCard key={day.day} day={day} busy={approve.isPending || download.isPending} approve={() => approve.mutate({ day: day.day, revision: day.revision ?? 0 })} download={() => download.mutate({ day: day.day, revision: day.revision ?? 0 })} />)}</section>}</section>;
+  const markdown = useMutation({ mutationFn: dayExport, onSuccess: run => {
+    downloadTextFile(safeExportFilename(run.run_id, new Date(), 'md'), exportReceiptToMarkdown(run), 'text/markdown'); setNotice(`Markdown export downloaded: ${run.run_id}`);
+  } });
+  const copy = useMutation({
+    mutationFn: dayExport,
+    onSuccess: async run => {
+      const ok = await copyTextToClipboard(JSON.stringify(run, null, 2));
+      setNotice(ok ? `Approved pack copied: ${run.run_id}` : `Copy failed for ${run.run_id}. Download the pack instead.`);
+    },
+  });
+  const error = create.error || campaign.error || weeks.error || approve.error || download.error || markdown.error || copy.error;
+  const busyDay = approve.isPending || download.isPending || markdown.isPending || copy.isPending;
+  return <section aria-label="Campaign"><section className="panel"><h2>Campaign Week</h2><p>Nothing publishes automatically. Review and approve each day individually.</p><form onSubmit={e => { e.preventDefault(); create.mutate(); }}><label htmlFor="campaign-idea">Idea</label><textarea id="campaign-idea" required maxLength={2000} value={idea} onChange={e => setIdea(e.target.value)} />{profilesPending && <p role="status">Loading agents...</p>}{profilesError && <p role="alert">{profilesError}</p>}<label htmlFor="campaign-scout">Scout agent</label><select id="campaign-scout" value={scout} onChange={e => setScout(e.target.value)} disabled={!agentsReady}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</select><label htmlFor="campaign-maker">Maker agent</label><select id="campaign-maker" value={agent} onChange={e => setAgent(e.target.value)} disabled={!agentsReady}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</select><label htmlFor="campaign-checker-agent">Checker agent</label><select id="campaign-checker-agent" value={checkerAgent} onChange={e => setCheckerAgent(e.target.value)} disabled={!agentsReady}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</select><p className="hint">Each agent runs its own stage. Original names and rules are kept in each day receipt.</p><label htmlFor="campaign-checker">Checker profile</label><select id="campaign-checker" value={checkerProfile} onChange={e => setCheckerProfile(e.target.value)}><option>standard</option><option>strict</option></select><SupportedPoliciesHint /><label className="checkbox"><input type="checkbox" checked={seed} onChange={e => setSeed(e.target.checked)} />{SEED_CLAIM_LABEL}</label><p className="hint">Opt-in demo only. Seeds the unsupported claim “best in Texas” on every day so each receipt shows the block and revision. Leave unchecked for a normal week.</p><Button type="submit" disabled={create.isPending || !agentsReady}>{create.isPending ? 'Creating week...' : 'Create week'}</Button></form><label htmlFor="campaign-select">Open a campaign</label><select id="campaign-select" value={id} onChange={e => setId(e.target.value)}><option value="">Select a week</option>{weeks.data?.map(week => <option key={week.id} value={week.id}>{week.idea} ({week.id})</option>)}</select></section>{error && <p role="alert">{error.message}</p>}{notice && <p role="status">{notice}</p>}{campaign.isFetching && <p>Refreshing week...</p>}{campaign.data && <section><h2>{campaign.data.idea}</h2><p><RunRef id={campaign.data.id} /></p>{campaign.data.days.map(day => <CampaignDayCard key={day.day} day={day} busy={busyDay} approve={() => approve.mutate({ day: day.day, revision: day.revision ?? 0 })} download={() => download.mutate({ day: day.day, revision: day.revision ?? 0 })} markdown={() => markdown.mutate({ day: day.day, revision: day.revision ?? 0 })} copy={() => copy.mutate({ day: day.day, revision: day.revision ?? 0 })} />)}</section>}</section>;
 }
 
 export function currentDraftOf(receipt: Receipt) {
@@ -197,6 +244,103 @@ export function revisionStatusOf(receipt: Receipt) {
   if (revision > 0 && receipt.approval_state === 'pending_approval') return 'pending fresh approval';
   if (receipt.approval_state === 'approved_for_export' && revision > 0 && approved !== revision) return 'pending fresh approval';
   return receipt.approval_state === 'approved_for_export' ? 'approved' : 'pending approval';
+}
+
+/** Compact primary run reference. Full ID stays in the DOM and on hover. */
+export function RunRef({ id, className }: { id: string; className?: string }) {
+  return <span className={`run-id compact${className ? ` ${className}` : ''}`} title={id}>{id}</span>;
+}
+
+const PACK_STARTED_PREFIX = 'Pack started';
+
+/** Replace a stale Pack started notice once the terminal receipt arrives.
+ *  Terminal state comes only from receipt status, never from stage counts. */
+export function terminalNotice(current: string, runId: string, status: string | undefined): string {
+  if (!current.startsWith(PACK_STARTED_PREFIX)) return current;
+  if (status === 'completed') return `Pack ready for review: ${runId}.`;
+  if (status === 'failed') return `Pack stopped safely: ${runId}. See the failed run record.`;
+  return current;
+}
+
+/** Safe product and date download name. Only lowercase letters, digits, and dashes. */
+export function safeExportFilename(runId: string, now: Date, ext: 'json' | 'md'): string {
+  const day = Number.isNaN(now.getTime()) ? 'nodate' : now.toISOString().slice(0, 10).replaceAll('-', '');
+  const slug = runId.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'run-unknown';
+  return `launchcrew-pack-${day}-${slug}.${ext}`;
+}
+
+export function downloadTextFile(filename: string, text: string, mime: string) {
+  const url = URL.createObjectURL(new Blob([text], { type: mime }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+export async function copyTextToClipboard(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    try {
+      const area = document.createElement('textarea');
+      area.value = text;
+      area.setAttribute('readonly', '');
+      area.style.position = 'fixed';
+      area.style.opacity = '0';
+      document.body.appendChild(area);
+      area.select();
+      const ok = document.execCommand('copy');
+      area.remove();
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+}
+
+/** Markdown rendering of the server-approved export artifact (a Receipt from
+ *  the export endpoint). Every line comes from that artifact; nothing is
+ *  re-derived from client state and no approval is implied client-side. */
+export function exportReceiptToMarkdown(receipt: Receipt): string {
+  const exported = (receipt as unknown as { exported_draft?: { post?: unknown; email?: unknown } | null }).exported_draft;
+  const exportedRevision = (receipt as unknown as { exported_revision?: number | null }).exported_revision;
+  const current = currentDraftOf(receipt);
+  const post = typeof exported?.post === 'string' ? exported.post : current.post;
+  const email = typeof exported?.email === 'string' ? exported.email : current.email;
+  const check = currentCheckOf(receipt);
+  const approvals = receipt.approvals.map(entry => `- ${entry.approved_by}${entry.revision != null ? `, revision ${entry.revision}` : ''}, ${entry.timestamp}`);
+  const blocked = (check?.blocked_claims ?? []).map(entry => `- ${(entry as { claim?: string }).claim ?? 'unsupported text'}: ${(entry as { reason?: string }).reason ?? 'needs revision'}`);
+  const submitted = (receipt.summary as unknown as { submit_attempted?: unknown } | null)?.submit_attempted;
+  const lines = [
+    '# LaunchCrew launch pack',
+    '',
+    `- Idea: ${receipt.idea || 'Untitled pack'}`,
+    `- Run: ${receipt.run_id}`,
+    `- Revision: ${receipt.revision}${exportedRevision != null ? ` (exported revision ${exportedRevision})` : ''}`,
+    `- Approval state: ${receipt.approval_state}`,
+    ...approvals.map(line => `- Approval: ${line.slice(2)}`),
+    '',
+    '## Instagram draft',
+    '',
+    post || 'Unavailable',
+    '',
+    '## Email draft',
+    '',
+    email || 'Unavailable',
+    '',
+    '## Final check',
+    '',
+    `- Final blocked claims: ${check?.blocked_count ?? 'unavailable'}`,
+    ...blocked,
+    '',
+    '## Submission',
+    '',
+    submitted === false ? 'Not attempted.' : submitted === true ? 'Attempted.' : 'Unrecorded on this artifact.',
+    '',
+  ];
+  return lines.join('\n');
 }
 
 export function FailedRunNotice({ receipt }: { receipt: Receipt }) {
