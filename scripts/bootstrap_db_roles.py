@@ -30,12 +30,16 @@ Modes, selected by argv flag only (no secret ever appears in argv):
             takeover risk. The only permitted membership is the exact
             native Postgres 16 creator administration row. Idempotent:
             safe to rerun; reports each completed phase.
-  --verify  read-only proof with the runtime URL only: SELECT works, the
-            alembic schema version equals the expected head revision, the
-            connected identity equals the runtime role, a rolled-back write
-            proves DML without committing, and runtime CREATE/ALTER/DROP
-            each fail with SQLSTATE 42501. Never connects as master or
-            migration here, and never commits.
+  --verify  read-only proof with the runtime URL only at head 006: SELECT
+            works, the alembic schema version equals 006, the connected
+            identity equals the runtime role, a rolled-back write proves DML
+            without committing, runtime CREATE/ALTER/DROP each fail with
+            SQLSTATE 42501, the global model budget reads zero, runtime
+            direct model ledger and budget DML each fail with 42501, exact
+            reserve and finalize EXECUTE grants allow only the runtime role
+            with no PUBLIC and no default future EXECUTE. Never connects as
+            master or migration here, and never commits. No provider key is
+            read or injected here.
 
 TLS guard: LAUNCHCREW_DB_TLS_MODE must be verify-full and
 DATABASE_SSL_ROOTCERT must be an existing CA bundle file, otherwise the job
@@ -62,7 +66,7 @@ NATIVE_BOOTSTRAP_OID = 10
 PHASES_BIND = ("db-ensure", "password-binding", "schema-acls",
                "runtime-grants", "default-privileges")
 ROOTCERT_ENV = "DATABASE_SSL_ROOTCERT"
-EXPECTED_HEAD = "005"
+EXPECTED_HEAD = "006"
 MODEL_TABLES = ("model_budget", "model_calls")
 MODEL_RESERVE_FUNC = "model_reserve_call"
 MODEL_RESERVE_SIG = "(TEXT, TEXT, TEXT, TEXT, INTEGER, INTEGER, INTEGER)"
@@ -927,6 +931,183 @@ def do_verify():
                     return _fail(label, "not a permission refusal")
                 _ok(label)
         try:
+            cur.execute("SELECT remaining_micros FROM public.model_budget "
+                        "WHERE id = %s", ("global",))
+            budget = cur.fetchone()
+            if not budget or budget[0] != 0:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                return _fail("verify-model-budget-zero")
+            conn.rollback()
+            _ok("verify-model-budget-zero")
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return _fail("verify-model-budget-zero")
+        for stmt, params in (
+                ("INSERT INTO public.model_budget(id, remaining_micros) "
+                 "VALUES (%s, %s)", ("other", 1)),
+                ("UPDATE public.model_budget SET remaining_micros = %s "
+                 "WHERE id = %s", (1, "global")),
+                ("DELETE FROM public.model_budget WHERE id = %s",
+                 ("global",)),
+                ("INSERT INTO public.model_calls(id, run_id, stage, "
+                 "attempt_id, request_digest, model, status, "
+                 "reservation_micros) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                 ("mc_verify_probe", "verify_run", "Scout", "a1",
+                  "0" * 64, "muse-spark-1.3", "admitted", 4000000)),
+                ("UPDATE public.model_calls SET status = %s WHERE id = %s",
+                 ("succeeded", "mc_nope")),
+                ("DELETE FROM public.model_calls WHERE id = %s",
+                 ("mc_nope",))):
+            try:
+                cur.execute(stmt, params)
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                return _fail("verify-model-no-direct")
+            except Exception as exc:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                if not _refused_ddl(exc):
+                    return _fail("verify-model-no-direct",
+                                 "not a permission refusal")
+        _ok("verify-model-no-direct")
+        try:
+            cur.execute("SELECT oid FROM pg_roles WHERE rolname = %s",
+                        (runtime_user,))
+            oid_row = cur.fetchone()
+            if not oid_row:
+                conn.rollback()
+                return _fail("verify-model-functions")
+            rt_oid = oid_row[0]
+            cur.execute(
+                "SELECT p.proname, p.prosecdef, p.proconfig FROM pg_proc p "
+                "JOIN pg_namespace n ON n.oid = p.pronamespace "
+                "WHERE n.nspname = %s AND p.proname IN (%s, %s, %s) "
+                "ORDER BY p.proname",
+                ("public", "model_finalize_call", "model_no_direct",
+                 "model_reserve_call"))
+            func_rows = cur.fetchall()
+            if not isinstance(func_rows, list) or len(func_rows) != 3:
+                conn.rollback()
+                return _fail("verify-model-functions")
+            names = sorted(str(r[0]) for r in func_rows)
+            if names != ["model_finalize_call", "model_no_direct",
+                         "model_reserve_call"]:
+                conn.rollback()
+                return _fail("verify-model-functions")
+            for proname, secdef, proconfig in func_rows:
+                cfg = list(proconfig or [])
+                if proname == "model_no_direct":
+                    want_path = ["pg_catalog", "pg_temp"]
+                    if secdef:
+                        conn.rollback()
+                        return _fail("verify-model-functions")
+                elif proname in ("model_reserve_call",
+                                 "model_finalize_call"):
+                    want_path = ["public", "pg_temp"]
+                    if not secdef:
+                        conn.rollback()
+                        return _fail("verify-model-functions")
+                else:
+                    conn.rollback()
+                    return _fail("verify-model-functions")
+                got_paths = []
+                for value in cfg:
+                    text = str(value)
+                    if text.startswith("search_path="):
+                        raw = text.split("=", 1)[1]
+                        parts = [p.strip().strip('"').strip()
+                                 for p in raw.split(",")]
+                        got_paths.append(parts)
+                if len(got_paths) != 1 or got_paths[0] != want_path:
+                    conn.rollback()
+                    return _fail("verify-model-functions")
+                cur.execute(
+                    "SELECT e.grantee, e.privilege_type FROM pg_proc p "
+                    "JOIN pg_namespace n ON n.oid = p.pronamespace, "
+                    "LATERAL aclexplode(coalesce(p.proacl, "
+                    "acldefault(%s, p.proowner))) AS e "
+                    "WHERE n.nspname = %s AND p.proname = %s",
+                    ("f", "public", proname))
+                acls = cur.fetchall() or []
+                for grantee, priv in acls:
+                    try:
+                        g_int = int(grantee)
+                    except Exception:
+                        conn.rollback()
+                        return _fail("verify-model-functions")
+                    if g_int == 0 and str(priv).upper() == "EXECUTE":
+                        conn.rollback()
+                        return _fail("verify-model-functions")
+                has_runtime = False
+                for grantee, priv in acls:
+                    try:
+                        g_int = int(grantee)
+                        r_int = int(rt_oid)
+                    except Exception:
+                        conn.rollback()
+                        return _fail("verify-model-functions")
+                    if g_int == r_int and str(priv).upper() == "EXECUTE":
+                        has_runtime = True
+                if proname in ("model_reserve_call",
+                               "model_finalize_call"):
+                    if not has_runtime:
+                        conn.rollback()
+                        return _fail("verify-model-functions")
+                else:
+                    if has_runtime:
+                        conn.rollback()
+                        return _fail("verify-model-functions")
+            conn.rollback()
+            _ok("verify-model-functions")
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return _fail("verify-model-functions")
+        try:
+            cur.execute(
+                "SELECT e.grantee, e.privilege_type FROM pg_default_acl, "
+                "LATERAL aclexplode(defaclacl) AS e "
+                "WHERE defaclobjtype = %s", ("f",))
+            defaults = cur.fetchall() or []
+            cur.execute("SELECT oid FROM pg_roles WHERE rolname = %s",
+                        (runtime_user,))
+            oid_row2 = cur.fetchone()
+            if not oid_row2:
+                conn.rollback()
+                return _fail("verify-model-defaults")
+            rt_oid2 = oid_row2[0]
+            for grantee, priv in defaults:
+                try:
+                    g_int = int(grantee)
+                    r_int = int(rt_oid2)
+                except Exception:
+                    conn.rollback()
+                    return _fail("verify-model-defaults")
+                if str(priv).upper() == "EXECUTE" and (
+                        g_int == 0 or g_int == r_int):
+                    conn.rollback()
+                    return _fail("verify-model-defaults")
+            conn.rollback()
+            _ok("verify-model-defaults")
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return _fail("verify-model-defaults")
+        try:
             conn.rollback()
         except Exception:
             pass
@@ -936,7 +1117,7 @@ def do_verify():
         except Exception:
             pass
     print("bootstrap-db-roles: VERIFY COMPLETE runtime read-only, "
-          "schema present, DDL refused", flush=True)
+          "schema 006, DDL refused, model guards ok", flush=True)
     return 0
 
 

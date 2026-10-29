@@ -112,7 +112,7 @@ if [ "$1" = "cloudformation" ] && [ "$2" = "describe-stacks" ]; then
       exit 254
     fi
   fi
-  STATUS="CREATE_COMPLETE"
+  STATUS="${FAKE_STACK_STATUS:-CREATE_COMPLETE}"
   PROJECT="${FAKE_PROJECT:-LaunchCrew}"
   STACKID="arn:aws:cloudformation:us-east-1:111122223333:stack/launchcrew-demo/abc123"
   if [ "$MODE" = "tag_mismatch" ]; then PROJECT="Other"; fi
@@ -123,7 +123,37 @@ if [ "$1" = "cloudformation" ] && [ "$2" = "describe-stacks" ]; then
   case "$*" in
     *"StackStatus"*) printf '%s\\n' "$STATUS"; exit 0 ;;
   esac
-  printf '{"Stacks":[{"StackId":"%s","StackStatus":"%s","Tags":[{"Key":"Project","Value":"%s"},{"Key":"Environment","Value":"demo"}],"Parameters":[{"ParameterKey":"EnableServices","ParameterValue":"false"}]}]}\\n' "$STACKID" "$STATUS" "$PROJECT"
+  ENABLE_VALUE="${FAKE_ENABLE:-false}"
+  printf '{"Stacks":[{"StackId":"%s","StackStatus":"%s","Tags":[{"Key":"Project","Value":"%s"},{"Key":"Environment","Value":"demo"}],"Parameters":[{"ParameterKey":"AcmCertificateArn","ParameterValue":"%s"},{"ParameterKey":"ApiImageUri","ParameterValue":"%s"},{"ParameterKey":"EnableServices","ParameterValue":"%s"}]}]}\\n' "$STACKID" "$STATUS" "$PROJECT" "${FAKE_CERT_ARN:-arn:aws:acm:us-east-1:111122223333:certificate/12345678-90ab-cdef-1234-567890abcde1}" "${FAKE_API_IMAGE:-111122223333.dkr.ecr.us-east-1.amazonaws.com/launchcrew-api:abc123}" "$ENABLE_VALUE"
+  exit 0
+fi
+if [ "$1" = "cloudformation" ] && [ "$2" = "create-change-set" ]; then
+  case "$*" in
+    *"--use-previous-template"*) ;;
+    *) echo "fake-aws: quiesce must use --use-previous-template" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"ParameterKey=EnableServices,ParameterValue=false"*) ;;
+    *) echo "fake-aws: quiesce must set EnableServices=false" >&2; exit 2 ;;
+  esac
+  printf '{"Id":"arn:aws:cloudformation:us-east-1:111122223333:changeSet/quiesce-006/abc123","StackId":"arn:aws:cloudformation:us-east-1:111122223333:stack/launchcrew-demo/abc123"}\\n'
+  exit 0
+fi
+if [ "$1" = "cloudformation" ] && [ "$2" = "describe-change-set" ]; then
+  CHANGE_MODE="${FAKE_CHANGESET:-exact}"
+  STACKID="arn:aws:cloudformation:us-east-1:111122223333:stack/launchcrew-demo/abc123"
+  if [ "$CHANGE_MODE" = "malformed" ]; then printf 'not-json{{{\\n'; exit 0; fi
+  if [ "$CHANGE_MODE" = "empty" ]; then printf '{"ChangeSetName":"quiesce-006","StackName":"launchcrew-demo","StackId":"%s","Status":"CREATE_COMPLETE","ExecutionStatus":"AVAILABLE","Changes":[]}\\n' "$STACKID"; exit 0; fi
+  if [ "$CHANGE_MODE" = "foreign" ]; then printf '{"ChangeSetName":"quiesce-006","StackName":"launchcrew-demo","StackId":"%s","Status":"CREATE_COMPLETE","ExecutionStatus":"AVAILABLE","Changes":[{"Type":"Resource","ResourceChange":{"Action":"Modify","LogicalResourceId":"Database","PhysicalResourceId":"launchcrew-demo-db","ResourceType":"AWS::RDS::DBInstance","Replacement":"False","Scope":["Properties"]}}]}\\n' "$STACKID"; exit 0; fi
+  if [ "$CHANGE_MODE" = "replacement" ]; then printf '{"ChangeSetName":"quiesce-006","StackName":"launchcrew-demo","StackId":"%s","Status":"CREATE_COMPLETE","ExecutionStatus":"AVAILABLE","Changes":[{"Type":"Resource","ResourceChange":{"Action":"Modify","LogicalResourceId":"ApiService","PhysicalResourceId":"launchcrew-demo-ApiService-A1B2C3D4E5F6","ResourceType":"AWS::ECS::Service","Replacement":"True","Scope":["Properties"]}},{"Type":"Resource","ResourceChange":{"Action":"Modify","LogicalResourceId":"WebService","PhysicalResourceId":"launchcrew-demo-WebService-G7H8I9J0K1L2","ResourceType":"AWS::ECS::Service","Replacement":"False","Scope":["Properties"]}}]}\\n' "$STACKID"; exit 0; fi
+  if [ "$CHANGE_MODE" = "status_failed" ]; then printf '{"ChangeSetName":"quiesce-006","StackName":"launchcrew-demo","StackId":"%s","Status":"FAILED","StatusReason":"No updates are to be performed","ExecutionStatus":"UNAVAILABLE","Changes":[]}\\n' "$STACKID"; exit 0; fi
+  printf '{"ChangeSetName":"quiesce-006","StackName":"launchcrew-demo","StackId":"%s","Status":"CREATE_COMPLETE","ExecutionStatus":"AVAILABLE","Changes":[{"Type":"Resource","ResourceChange":{"Action":"Modify","LogicalResourceId":"ApiService","PhysicalResourceId":"launchcrew-demo-ApiService-A1B2C3D4E5F6","ResourceType":"AWS::ECS::Service","Replacement":"False","Scope":["Properties"]}},{"Type":"Resource","ResourceChange":{"Action":"Modify","LogicalResourceId":"WebService","PhysicalResourceId":"launchcrew-demo-WebService-G7H8I9J0K1L2","ResourceType":"AWS::ECS::Service","Replacement":"False","Scope":["Properties"]}}]}\\n' "$STACKID"
+  exit 0
+fi
+if [ "$1" = "cloudformation" ] && [ "$2" = "execute-change-set" ]; then
+  exit 0
+fi
+if [ "$1" = "cloudformation" ] && [ "$2" = "delete-change-set" ]; then
   exit 0
 fi
 if [ "$1" = "cloudformation" ] && [ "$2" = "describe-stack-resource" ]; then
@@ -637,6 +667,7 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-services" ]; then
   if [ "$SVC_MODE" = "desired2" ]; then SVC_DESIRED=2; SVC_RUNNING=0; fi
   if [ "$SVC_MODE" = "running" ]; then SVC_RUNNING=0; fi
   if [ "$SVC_MODE" = "pending" ]; then SVC_PENDING=1; fi
+  if [ "$SVC_MODE" = "stopped" ]; then SVC_DESIRED=0; SVC_RUNNING=0; SVC_PENDING=0; fi
   if [ "$SVC_MODE" = "failures" ]; then printf '{"services":[{"serviceArn":"%s","serviceName":"%s","clusterArn":"%s","status":"%s","desiredCount":%s,"runningCount":%s,"pendingCount":%s}],"failures":[{"arn":"%s","reason":"FAIL"}]}\\n' "$SVC_ARN" "$SVC_NAME" "$SVC_CLUSTER" "$SVC_STATUS" "$SVC_DESIRED" "$SVC_RUNNING" "$SVC_PENDING" "$SVC_ARN"; exit 0; fi
   printf '{"services":[{"serviceArn":"%s","serviceName":"%s","clusterArn":"%s","status":"%s","desiredCount":%s,"runningCount":%s,"pendingCount":%s}],"failures":[]}\\n' "$SVC_ARN" "$SVC_NAME" "$SVC_CLUSTER" "$SVC_STATUS" "$SVC_DESIRED" "$SVC_RUNNING" "$SVC_PENDING"
   exit 0
@@ -2121,6 +2152,133 @@ class ImageDigestShapeTests(BootstrapHarness):
                 capture_output=True, text=True, env=env, check=False)
             self.assertEqual(proc.returncode, 0, msg=proc.stderr)
             self.assertEqual(proc.stdout.strip(), "None")
+
+
+class QuiesceTests(BootstrapHarness):
+    STACK_ID = f"arn:aws:cloudformation:{REGION}:{ACCOUNT}:stack/{STACK}/abc123"
+
+    def quiesce_args(self, confirm=None):
+        args = self.base_args()
+        args += ["--phase", "quiesce"]
+        if confirm is None:
+            args += ["--quiesce-confirm", self.STACK_ID]
+        elif confirm != "":
+            args += ["--quiesce-confirm", confirm]
+        args += ["--release-generation", "head006-testabc"]
+        return args
+
+    def test_infra_refuses_when_services_true(self):
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "infra"],
+            extra_env={"FAKE_ENABLE": "true"})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("EnableServices=true", combined)
+        self.assertIn("quiesce", combined)
+        self.assertFalse(any("deploy " in call for call in calls))
+        self.assertFalse(any("run-task" in call for call in calls))
+
+    def test_all_refuses_when_services_true(self):
+        result, calls = self.run_bootstrap(
+            self.base_args(), extra_env={"FAKE_ENABLE": "true"})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("quiesce", combined)
+        self.assertFalse(any("EnableServices=true" in call for call in calls))
+
+    def test_quiesce_requires_explicit_confirm(self):
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "quiesce",
+             "--release-generation", "head006-testabc"])
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("quiesce-confirm", result.stdout + result.stderr)
+        self.assertEqual(calls, [])
+
+    def test_quiesce_success_with_real_change_set_shape(self):
+        result, calls = self.run_bootstrap(
+            self.quiesce_args(),
+            extra_env={"FAKE_ENABLE": "true",
+                       "FAKE_STACK_STATUS": "UPDATE_COMPLETE",
+                       "FAKE_SERVICE": "stopped",
+                       "FAKE_CHANGESET": "exact"})
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertIn("BOOTSTRAP COMPLETE", result.stdout)
+        joined = " ".join(calls)
+        self.assertIn("create-change-set", joined)
+        self.assertIn("--use-previous-template", joined)
+        self.assertIn("ParameterKey=EnableServices,ParameterValue=false", joined)
+        self.assertIn("describe-change-set", joined)
+        self.assertIn("execute-change-set", joined)
+        self.assertIn("describe-services", joined)
+        self.assertFalse(any("run-task" in call for call in calls))
+        self.assertFalse(any("deploy " in call for call in calls))
+        self.assertIn("UPDATE_COMPLETE", result.stdout)
+        self.assertIn("0/0/0", result.stdout + result.stderr)
+
+    def test_quiesce_refuses_foreign_resource_change(self):
+        result, calls = self.run_bootstrap(
+            self.quiesce_args(),
+            extra_env={"FAKE_ENABLE": "true",
+                       "FAKE_STACK_STATUS": "UPDATE_COMPLETE",
+                       "FAKE_SERVICE": "stopped",
+                       "FAKE_CHANGESET": "foreign"})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("FOREIGN_Database", combined)
+        self.assertTrue(any("delete-change-set" in call for call in calls))
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+
+    def test_quiesce_refuses_replacement_change(self):
+        result, calls = self.run_bootstrap(
+            self.quiesce_args(),
+            extra_env={"FAKE_ENABLE": "true",
+                       "FAKE_STACK_STATUS": "UPDATE_COMPLETE",
+                       "FAKE_SERVICE": "stopped",
+                       "FAKE_CHANGESET": "replacement"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("REPLACEMENT", result.stdout + result.stderr)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+
+    def test_quiesce_refuses_empty_change_set(self):
+        result, calls = self.run_bootstrap(
+            self.quiesce_args(),
+            extra_env={"FAKE_ENABLE": "true",
+                       "FAKE_STACK_STATUS": "UPDATE_COMPLETE",
+                       "FAKE_SERVICE": "stopped",
+                       "FAKE_CHANGESET": "empty"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("EMPTY", result.stdout + result.stderr)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+
+    def test_quiesce_refuses_wrong_confirm(self):
+        wrong = f"arn:aws:cloudformation:{REGION}:{ACCOUNT}:stack/{STACK}/wrong123"
+        result, calls = self.run_bootstrap(
+            self.quiesce_args(confirm=wrong),
+            extra_env={"FAKE_ENABLE": "true",
+                       "FAKE_STACK_STATUS": "UPDATE_COMPLETE",
+                       "FAKE_SERVICE": "stopped"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("StackId", result.stdout + result.stderr)
+        self.assertFalse(any("create-change-set" in call for call in calls))
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+
+    def test_quiesce_already_stopped_makes_no_change(self):
+        result, calls = self.run_bootstrap(
+            self.quiesce_args(),
+            extra_env={"FAKE_ENABLE": "false",
+                       "FAKE_STACK_STATUS": "UPDATE_COMPLETE",
+                       "FAKE_SERVICE": "stopped"})
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertIn("already stopped", result.stdout + result.stderr)
+        self.assertFalse(any("create-change-set" in call for call in calls))
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+
+    def test_release_generation_required_in_journal_code(self):
+        code = BOOTSTRAP.read_text(encoding="utf-8")
+        self.assertIn("RELEASE_GEN", code)
+        self.assertIn("LEGACY_ACTIVE_FILE", code)
+        self.assertIn("head006", code)
+        self.assertIn("legacy predecessor", code)
 
 
 if __name__ == "__main__":

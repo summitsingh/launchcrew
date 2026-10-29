@@ -45,6 +45,13 @@ class FakeCursor:
     def execute(self, sql, params=None):
         self.state.statements.append((sql, params))
         lowered = sql.strip().lower()
+        if "model_budget" in lowered or "model_calls" in lowered:
+            if lowered.startswith(("insert into", "update ", "delete from")):
+                if self.state.model_direct_allow:
+                    self.rowcount = 1
+                    return None
+                raise FakeError("permission denied for model relation",
+                                sqlstate=self.state.model_direct_sqlstate)
         if lowered.startswith("create database"):
             try:
                 saw = self.conn.autocommit if self.conn is not None else None
@@ -77,6 +84,10 @@ class FakeCursor:
     def fetchone(self):
         sql, params = self.state.statements[-1]
         lowered = sql.strip().lower()
+        if "model_budget" in lowered and "remaining_micros" in lowered:
+            if self.state.model_budget_missing:
+                return None
+            return (self.state.model_budget_remaining,)
         if "pg_auth_members" in lowered:
             return (1,) if self.state.role_memberships else None
         if "pg_shdescription" in lowered:
@@ -92,6 +103,14 @@ class FakeCursor:
                 return None
             return (self.state.database_owner,)
         if "pg_roles" in lowered and "rolname" in lowered:
+            if lowered.startswith("select oid"):
+                queried = params[0] if params else None
+                if queried == "launchcrew_runtime":
+                    return (self.state.runtime_oid,)
+                if queried in self.state.role_rows:
+                    row = self.state.role_rows[queried]
+                    return (row[0],) if row else None
+                return (self.state.runtime_oid,)
             queried = params[0] if params else None
             if queried in self.state.role_rows:
                 return self.state.role_rows[queried]
@@ -129,9 +148,16 @@ class FakeCursor:
                 return [("foreign_group", queried, "someone_else",
                          False, True, False, False, 16384)]
             return []
+        if "pg_default_acl" in lowered:
+            return list(self.state.model_default_acls)
         if "pg_class" in lowered:
             return list(self.state.inventory)
         if "pg_proc" in lowered:
+            if "prosecdef" in lowered:
+                return list(self.state.model_funcs)
+            if "aclexplode" in lowered:
+                func = params[-1] if params else None
+                return list(self.state.model_func_acls.get(func, []))
             return list(self.state.function_inventory)
         return []
 
@@ -182,8 +208,27 @@ class FakeDriverState:
         self.refuse_ddl = True
         self.ddl_sqlstate = "42501"
         self.schema_present = True
-        self.schema_version = "005"
+        self.schema_version = "006"
         self.current_identity = "launchcrew_runtime"
+        self.runtime_oid = 12345
+        self.model_budget_remaining = 0
+        self.model_budget_missing = False
+        self.model_direct_allow = False
+        self.model_direct_sqlstate = "42501"
+        self.model_funcs = [
+            ("model_finalize_call", True,
+             ["search_path=public, pg_temp"]),
+            ("model_no_direct", False,
+             ["search_path=pg_catalog, pg_temp"]),
+            ("model_reserve_call", True,
+             ["search_path=public, pg_temp"]),
+        ]
+        self.model_func_acls = {
+            "model_reserve_call": [(12345, "EXECUTE")],
+            "model_finalize_call": [(12345, "EXECUTE")],
+            "model_no_direct": [],
+        }
+        self.model_default_acls = []
         self.connect_count = 0
         self.connects = []
         self.fail_connect = False
@@ -1031,9 +1076,13 @@ class VerifyJobTests(BindJobTests):
                        "verify-runtime-no-create ok",
                        "verify-runtime-no-alter ok",
                        "verify-runtime-no-drop ok",
+                       "verify-model-budget-zero ok",
+                       "verify-model-no-direct ok",
+                       "verify-model-functions ok",
+                       "verify-model-defaults ok",
                        "VERIFY COMPLETE"):
             self.assertIn(marker, out)
-        self.assertIn("revision=005", out)
+        self.assertIn("revision=006", out)
 
     def test_verify_fails_when_runtime_can_write(self):
         self.state.refuse_ddl = False
@@ -1046,9 +1095,40 @@ class VerifyJobTests(BindJobTests):
         self.assertNotEqual(code, 0)
 
     def test_verify_refuses_wrong_head(self):
-        self.state.schema_version = "003"
+        self.state.schema_version = "004"
         code, _ = self.run_main("--verify")
         self.assertNotEqual(code, 0)
+
+    def test_verify_refuses_nonzero_model_budget(self):
+        self.state.model_budget_remaining = 4000000
+        code, out = self.run_main("--verify")
+        self.assertNotEqual(code, 0)
+        self.assertIn("verify-model-budget-zero", out)
+
+    def test_verify_refuses_direct_model_write(self):
+        self.state.model_direct_allow = True
+        code, out = self.run_main("--verify")
+        self.assertNotEqual(code, 0)
+        self.assertIn("verify-model-no-direct", out)
+
+    def test_verify_refuses_public_function_grant(self):
+        self.state.model_func_acls["model_reserve_call"] = [
+            (0, "EXECUTE"), (12345, "EXECUTE")]
+        code, out = self.run_main("--verify")
+        self.assertNotEqual(code, 0)
+        self.assertIn("verify-model-functions", out)
+
+    def test_verify_refuses_missing_runtime_function_grant(self):
+        self.state.model_func_acls["model_finalize_call"] = []
+        code, out = self.run_main("--verify")
+        self.assertNotEqual(code, 0)
+        self.assertIn("verify-model-functions", out)
+
+    def test_verify_refuses_future_default_grant(self):
+        self.state.model_default_acls = [(12345, "EXECUTE")]
+        code, out = self.run_main("--verify")
+        self.assertNotEqual(code, 0)
+        self.assertIn("verify-model-defaults", out)
 
     def test_verify_refuses_wrong_identity(self):
         self.state.current_identity = "postgres"
@@ -1412,10 +1492,10 @@ class VerifyFutureFunctionProofTests(unittest.TestCase):
 
     def test_verify_completion_requires_both_signals(self):
         self.assertIn('*"VERIFY COMPLETE"*', self.text)
-        self.assertIn('*"revision=005"*', self.text)
+        self.assertIn('*"revision=006"*', self.text)
         self.assertIn("missed VERIFY COMPLETE", self.text)
-        self.assertIn("missed revision=005", self.text)
-        self.assertNotIn('*"VERIFY COMPLETE"*|*"revision=005"*', self.text)
+        self.assertIn("missed revision=006", self.text)
+        self.assertNotIn('*"VERIFY COMPLETE"*|*"revision=006"*', self.text)
 
 
 if __name__ == "__main__":
