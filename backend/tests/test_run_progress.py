@@ -362,7 +362,7 @@ def test_terminal_persist_failure_leaves_stored_state_unconfirmed(client, monkey
     hooked = []
     threading.excepthook = hooked.append
 
-    def failing_finalize(run_id, receipt, maker_name, actor):
+    def failing_finalize(run_id, receipt, maker_name, actor, workspace_id=None):
         hook_calls.append(run_id)
         raise RuntimeError('Simulated terminal commit loss with receipt Richards')
 

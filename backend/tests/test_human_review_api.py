@@ -275,7 +275,11 @@ def test_forged_fields_are_rejected_and_actor_comes_from_server(client, monkeypa
     assert client.post(f'/api/runs/{run_id}/approve', json={'approved_by': 'forged_actor', 'expected_revision': 1}).status_code == 422
     assert client.post(f'/api/runs/{run_id}/approve', json={'expected_revision': 1, 'approval_state': 'approved_for_export'}).status_code == 422
     signed_in(client, monkeypatch, ACTOR)
-    approved = client.post(f'/api/runs/{run_id}/approve', json={'expected_revision': 1})
+    assert client.post(f'/api/runs/{run_id}/approve', json={'expected_revision': 1}).status_code == 404
+    owned = new_run(client)
+    owned_id = owned['run_id']
+    assert client.post(f'/api/runs/{owned_id}/revise', json=valid_edit(owned)).status_code == 200
+    approved = client.post(f'/api/runs/{owned_id}/approve', json={'expected_revision': 1})
     assert approved.status_code == 200
     assert approved.json()['approvals'][0]['approved_by'] == ACTOR
     assert approved.json()['approvals'][0]['revision'] == 1

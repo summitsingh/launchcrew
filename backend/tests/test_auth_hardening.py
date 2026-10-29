@@ -132,8 +132,10 @@ def test_failed_run_persists_and_cannot_approve_or_export(client):
 
 
 def test_signed_in_approval_records_actor_in_receipt_table_and_audit(client, monkeypatch):
-    run = new_run(client)
+    demo = new_run(client)
     signed_in(client, monkeypatch)
+    assert client.get(f"/api/runs/{demo['run_id']}").status_code == 404
+    run = new_run(client)
     approved = client.post(f"/api/runs/{run['run_id']}/approve", json={})
     assert approved.status_code == 200
     assert approved.json()['approvals'][0]['approved_by'] == ACTOR

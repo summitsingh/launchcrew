@@ -161,7 +161,7 @@ def test_auth_requires_https_and_configuration(monkeypatch):
 
 
 def test_auth_server_session_actor(client, monkeypatch):
-    r = new_run(client)
+    demo = new_run(client)
     monkeypatch.setenv('AUTH_ENABLED', 'true')
     assert client.get('/api/queue').status_code == 401
     response = Response()
@@ -171,7 +171,9 @@ def test_auth_server_session_actor(client, monkeypatch):
         assert flag in cookie
     opaque = cookie.split(';')[0].split('=', 1)[1]
     client.cookies.set(auth.COOKIE, opaque)
-    approved = client.post(f"/api/runs/{r['run_id']}/approve", json={})
+    assert client.get(f"/api/runs/{demo['run_id']}").status_code == 404
+    owned = new_run(client)
+    approved = client.post(f"/api/runs/{owned['run_id']}/approve", json={})
     assert approved.json()['approvals'][0]['approved_by'] == 'google:demo-test-subject'
     assert client.post('/api/auth/logout').status_code == 200
     assert client.get('/api/queue').status_code == 401
