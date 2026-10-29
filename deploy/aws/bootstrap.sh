@@ -716,7 +716,8 @@ check_params_match() {
   python3 - "$PARAMETERS_FILE" >"$TMP_PARAMS" <<'PYEOF'
 import json, sys
 KNOWN_SECRET_KEYS = {"RuntimeDbUrlSecretArn", "MigrationDbUrlSecretArn",
-                     "MasterDbPasswordSecretArn", "TlsSecretArn"}
+                     "MasterDbPasswordSecretArn", "TlsSecretArn",
+                     "GoogleOAuthSecretArn"}
 MOVED_BUDGET_KEYS = {"BudgetLimitUsd", "BudgetNotifyEmail"}
 try:
     with open(sys.argv[1]) as handle:

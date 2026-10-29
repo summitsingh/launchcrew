@@ -2254,8 +2254,10 @@ class TemplateStagingTests(unittest.TestCase):
                           "BootstrapImageUri", "RuntimeDbUrlSecretArn",
                           "MigrationDbUrlSecretArn", "TlsSecretArn",
                           "MasterDbPasswordSecretArn", "DatabaseUsername",
-                          "EnableServices"})
-        for key in ("BootstrapImageUri", "EnableServices"):
+                          "EnableServices", "EnableGoogleAuth",
+                          "GoogleOAuthSecretArn"})
+        for key in ("BootstrapImageUri", "EnableServices", "EnableGoogleAuth",
+                    "GoogleOAuthSecretArn"):
             self.assertIn(key, self.example)
         self.assertNotIn("BudgetLimitUsd", self.example)
         self.assertNotIn("BudgetNotifyEmail", self.example)

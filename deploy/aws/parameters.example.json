@@ -46,5 +46,13 @@
   {
     "ParameterKey": "EnableServices",
     "ParameterValue": "false"
+  },
+  {
+    "ParameterKey": "EnableGoogleAuth",
+    "ParameterValue": "false"
+  },
+  {
+    "ParameterKey": "GoogleOAuthSecretArn",
+    "ParameterValue": "REPLACE_WITH_GOOGLE_OAUTH_SECRET_ARN"
   }
 ]

@@ -51,8 +51,18 @@ Parameters:
   BootstrapImageUri:
     Type: String
     Description: ECR URI for the bootstrap database-role image, built from containers/bootstrap-db.Containerfile, used only by the isolated one-off bootstrap task. No default, no placeholder at apply time.
+  EnableGoogleAuth:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: Google-only auth gate. Default false keeps the API keyless with AUTH_ENABLED false and no Google secret. Set to true plus GoogleOAuthSecretArn only for explicit Google sign-in wiring. Source-only until live provider proof. No Meta credential and no Facebook injection in Google-only mode.
+  GoogleOAuthSecretArn:
+    Type: String
+    Default: ''
+    Description: Secrets Manager ARN for the Google OAuth client, JSON keys google-client-id and google-client-secret, placeholder only, no value in this file. Used only when EnableGoogleAuth is true. The API task receives GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET only then, via ECS task secrets. Empty default means no secret and auth stays disabled.
 Conditions:
   ServicesEnabled: !Equals ['true', !Ref EnableServices]
+  GoogleAuthEnabled: !And [!Equals ['true', !Ref EnableGoogleAuth], !Not [!Equals ['', !Ref GoogleOAuthSecretArn]]]
 Resources:
   Vpc:
     Type: AWS::EC2::VPC
@@ -578,6 +588,18 @@ Resources:
                   - acm:ListTagsForCertificate
                   - acm:GetCertificate
                 Resource: [!Ref AcmCertificateArn]
+  ApiGoogleAuthPolicy:
+    Type: AWS::IAM::Policy
+    Condition: GoogleAuthEnabled
+    Properties:
+      PolicyName: api-google-auth-secret-only
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: [secretsmanager:GetSecretValue]
+            Resource: [!Ref GoogleOAuthSecretArn]
+      Roles: [!Ref ApiExecutionRole]
   ApiTaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
@@ -599,11 +621,18 @@ Resources:
             - { Name: LAUNCHCREW_REQUIRE_CONTAINER_TLS, Value: '1' }
             - { Name: LAUNCHCREW_DB_TLS_MODE, Value: verify-full }
             - { Name: DATABASE_SSL_ROOTCERT, Value: /app/rds-ca-bundle.pem }
-            - { Name: AUTH_ENABLED, Value: 'false' }
-          Secrets:
-            - { Name: DATABASE_URL, ValueFrom: !Sub '${RuntimeDbUrlSecretArn}:database-url::' }
-            - { Name: TLS_CERT_B64, ValueFrom: !Sub '${TlsSecretArn}:tls-cert-b64::' }
-            - { Name: TLS_KEY_B64, ValueFrom: !Sub '${TlsSecretArn}:tls-key-b64::' }
+            - { Name: PUBLIC_BASE_URL, Value: 'https://launchcrew.summitsingh.com' }
+            - { Name: AUTH_ENABLED, Value: !If [GoogleAuthEnabled, 'true', 'false'] }
+          Secrets: !If
+            - GoogleAuthEnabled
+            - - { Name: DATABASE_URL, ValueFrom: !Sub '${RuntimeDbUrlSecretArn}:database-url::' }
+              - { Name: TLS_CERT_B64, ValueFrom: !Sub '${TlsSecretArn}:tls-cert-b64::' }
+              - { Name: TLS_KEY_B64, ValueFrom: !Sub '${TlsSecretArn}:tls-key-b64::' }
+              - { Name: GOOGLE_CLIENT_ID, ValueFrom: !Sub '${GoogleOAuthSecretArn}:google-client-id::' }
+              - { Name: GOOGLE_CLIENT_SECRET, ValueFrom: !Sub '${GoogleOAuthSecretArn}:google-client-secret::' }
+            - - { Name: DATABASE_URL, ValueFrom: !Sub '${RuntimeDbUrlSecretArn}:database-url::' }
+              - { Name: TLS_CERT_B64, ValueFrom: !Sub '${TlsSecretArn}:tls-cert-b64::' }
+              - { Name: TLS_KEY_B64, ValueFrom: !Sub '${TlsSecretArn}:tls-key-b64::' }
           LogConfiguration:
             LogDriver: awslogs
             Options:
