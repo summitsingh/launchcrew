@@ -628,7 +628,7 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-services" ]; then
   SVC_RUNNING=1
   SVC_PENDING=0
   if [ "$SVC_MODE" = "malformed" ]; then printf 'not-json{{{\\n'; exit 0; fi
-  if [ "$SVC_MODE" = "empty" ]; then printf '{"services":[],"failures":[{"arn":"%s","reason":"MISSING"}]}\\n' "$SVC_ARN"; exit 0; fi
+  if [ "$SVC_MODE" = "empty" ]; then printf '{"services":[],"failures":[]}\\n' "$SVC_ARN"; exit 0; fi
   if [ "$SVC_MODE" = "duplicate" ]; then printf '{"services":[{"serviceArn":"%s","serviceName":"%s","clusterArn":"%s","status":"ACTIVE","desiredCount":1,"runningCount":1,"pendingCount":0},{"serviceArn":"%s","serviceName":"%s","clusterArn":"%s","status":"ACTIVE","desiredCount":1,"runningCount":1,"pendingCount":0}],"failures":[]}\\n' "$SVC_ARN" "$SVC_NAME" "$SVC_CLUSTER" "$SVC_ARN" "$SVC_NAME" "$SVC_CLUSTER"; exit 0; fi
   if [ "$SVC_MODE" = "wrong" ]; then SVC_NAME="other-service"; SVC_ARN="arn:aws:ecs:us-east-1:111122223333:service/launchcrew-demo/other-service"; fi
   if [ "$SVC_MODE" = "wrong_cluster" ]; then SVC_CLUSTER="arn:aws:ecs:us-east-1:111122223333:cluster/other-cluster"; fi
