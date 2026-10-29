@@ -8,7 +8,17 @@ any resend. The proof latch in this module is a durable nonresettable
 one-shot counter: attempts decrement durably before send, reuse after any
 attempt or crash is refused, and uncertainty latches with no automatic
 resend. Keys are never logged.
+
+Spend guard: when META_API_KEY is present, _call requires an explicit
+per-call admission capability (no global state). The exact serialized
+body is validated against the fixed bounds, digested, and reserved in
+a durable ledger in a short committed transaction before urlopen. Only
+a committed is_owner true authorizes one send. Denial before HTTP
+returns attempted False and performs zero HTTP. Ambiguous sends
+finalize ambiguous_terminal with attempted True and are never resent.
+Keyless behavior is unchanged.
 """
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -261,32 +271,118 @@ def proof_urlopen(request, timeout=None, *, latch_path):
     return _ProofResponseWrapper(inner, latch_path)
 
 
-def _call(system_prompt, user_prompt, schema_hint, model):
+def _denied():
+    # Denial before HTTP: zero HTTP, must not count as an attempted call.
+    return {'mode': 'deterministic_fallback', 'model_used': 'none', 'attempted': False,
+            'attempted_model': 'none', 'request_provider': 'none'}
+
+
+def _usage_int(value):
+    if type(value) is int and 0 <= value <= 10_000_000:
+        return value
+    return None
+
+
+def _safe_finalize(admission, call_id, status, outcome, usage):
+    try:
+        prompt_tokens = _usage_int((usage or {}).get('prompt_tokens'))
+        completion_tokens = _usage_int((usage or {}).get('completion_tokens'))
+        total_tokens = _usage_int((usage or {}).get('total_tokens'))
+        admission.finalize(call_id, status=status, outcome=outcome,
+                           prompt_tokens=prompt_tokens,
+                           completion_tokens=completion_tokens,
+                           total_tokens=total_tokens)
+    except Exception:
+        pass
+
+
+def _call(system_prompt, user_prompt, schema_hint, model, *, admission=None):
     key = os.environ.get('META_API_KEY', '').strip()
     if not key:
         return {'mode': 'deterministic_fallback', 'model_used': 'none', 'attempted': False,
                 'attempted_model': 'none', 'request_provider': 'none'}
+    # Key present: strict spend guard, fail closed. Any denial before HTTP
+    # returns attempted False with zero HTTP.
+    if model != PROOF_MODEL:
+        return _denied()
+    if not isinstance(system_prompt, str) or not isinstance(user_prompt, str):
+        return _denied()
+    if not isinstance(schema_hint, dict) or not schema_hint:
+        return _denied()
+    base_raw = os.environ.get('META_API_BASE_URL', '')
+    if base_raw is None or (isinstance(base_raw, str) and not base_raw.strip()):
+        base_norm = PROOF_ORIGIN
+    elif isinstance(base_raw, str) and base_raw.strip().rstrip('/') == PROOF_ORIGIN:
+        base_norm = PROOF_ORIGIN
+    else:
+        return _denied()
+    url = base_norm + PROOF_CHAT_PATH
+    if url != PROOF_ORIGIN + PROOF_CHAT_PATH:
+        return _denied()
     provider = request_provider_from_base_url(os.environ.get('META_API_BASE_URL'))
-    usage = {}
+    if provider != 'meta':
+        return _denied()
     try:
         # All current candidates are objects whose required values are string arrays.
         schema = {'type': 'object', 'properties': {
             name: {'type': 'array', 'items': {'type': 'string'}} for name in schema_hint},
             'required': list(schema_hint), 'additionalProperties': False}
-        payload = {'model': model, 'messages': [
+        payload = {'model': PROOF_MODEL, 'messages': [
             {'role': 'system', 'content': system_prompt + '\nReturn only JSON matching the supplied schema.'},
             {'role': 'user', 'content': user_prompt}],
             'response_format': {'type': 'json_schema', 'json_schema': {
                 'name': 'launchcrew_candidate', 'strict': True, 'schema': schema}},
             'max_completion_tokens': PROOF_MAX_COMPLETION_TOKENS, 'n': PROOF_N,
             'reasoning_effort': PROOF_REASONING_EFFORT}
+        if 'tools' in payload or 'tool_choice' in payload:
+            return _denied()
         raw_body = json.dumps(payload).encode()
         if len(raw_body) > PROOF_MAX_BODY_BYTES:
-            raise ValueError('request body bound exceeded')
-        request = Request(os.environ.get('META_API_BASE_URL', 'https://api.meta.ai/v1').rstrip('/') + '/chat/completions',
-                          data=raw_body, headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key})
+            return _denied()
+        validate_proof_request(Request(url, data=raw_body,
+                                       headers={'Content-Type': 'application/json'}))
+    except Exception:
+        return _denied()
+    if admission is None:
+        return _denied()
+    try:
+        digest = hashlib.sha256(bytes(raw_body)).hexdigest()
+    except Exception:
+        return _denied()
+    try:
+        row = admission.reserve(request_digest=digest, model=PROOF_MODEL,
+                                max_completion_tokens=PROOF_MAX_COMPLETION_TOKENS,
+                                n=PROOF_N, request_bytes_len=len(raw_body))
+    except Exception:
+        return _denied()
+    try:
+        if not isinstance(row, dict) or row.get('is_owner') is not True:
+            return _denied()
+        if row.get('status') != 'admitted':
+            return _denied()
+        call_id = row.get('id')
+        if not isinstance(call_id, str) or not call_id.strip():
+            return _denied()
+    except Exception:
+        return _denied()
+    request = Request(url, data=raw_body,
+                      headers={'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key})
+    usage = {}
+    try:
         with urlopen(request, timeout=30) as response:
-            body = json.load(response)
+            try:
+                body = json.load(response)
+            except Exception as read_error:
+                name = type(read_error).__name__
+                if name in _PROOF_AMBIGUOUS_ERRORS:
+                    _safe_finalize(admission, call_id, 'ambiguous_terminal',
+                                   'ambiguous:read_failed', usage)
+                else:
+                    _safe_finalize(admission, call_id, 'failed_terminal',
+                                   'invalid_response', usage)
+                return {'mode': 'deterministic_fallback', 'model_used': 'none', 'attempted': True,
+                        'attempted_model': model, 'error_type': name, 'usage': dict(usage),
+                        'request_provider': provider}
         if not isinstance(body, dict):
             raise ValueError('Invalid candidate schema')
         raw_usage = body.get('usage', {})
@@ -310,6 +406,7 @@ def _call(system_prompt, user_prompt, schema_hint, model):
             raw = json.loads(content)
         except Exception:
             raise ValueError('Invalid candidate schema')
+
         def _string_arrays_only(payload):
             return all(isinstance(value, list)
                        and all(isinstance(item, str) for item in value)
@@ -328,17 +425,28 @@ def _call(system_prompt, user_prompt, schema_hint, model):
             raw = {'claims': list(raw['claims']), 'post_lines': [], 'email_lines': []}
         else:
             raise ValueError('Invalid candidate schema')
-        return {'mode': 'spark', 'model_used': model, 'attempted': True, 'attempted_model': model,
-                'raw_json': raw, 'usage': usage, 'request_provider': provider}
+        _safe_finalize(admission, call_id, 'succeeded', 'ok', usage)
+        return {'mode': 'spark', 'model_used': PROOF_MODEL, 'attempted': True,
+                'attempted_model': PROOF_MODEL,
+                'raw_json': raw, 'usage': dict(usage), 'request_provider': provider}
     except Exception as error:
         # Never include exception text, response bodies, or authorization headers.
+        name = type(error).__name__
+        if name in _PROOF_AMBIGUOUS_ERRORS:
+            _safe_finalize(admission, call_id, 'ambiguous_terminal',
+                           'ambiguous:send_failed', usage)
+        else:
+            _safe_finalize(admission, call_id, 'failed_terminal',
+                           'invalid_response' if name == 'ValueError' else 'transport_error',
+                           usage)
         return {'mode': 'deterministic_fallback', 'model_used': 'none', 'attempted': True,
-                'attempted_model': model, 'error_type': type(error).__name__, 'usage': usage,
+                'attempted_model': model, 'error_type': name, 'usage': dict(usage),
                 'request_provider': provider}
 
 
-def call_spark_strict_json(system_prompt, user_prompt, schema_hint):
-    return _call(system_prompt, user_prompt, schema_hint, os.environ.get('META_MODEL', 'muse-spark-1.3'))
+def call_spark_strict_json(system_prompt, user_prompt, schema_hint, *, admission=None):
+    return _call(system_prompt, user_prompt, schema_hint,
+                 os.environ.get('META_MODEL', 'muse-spark-1.3'), admission=admission)
 
 
 def _example_lines(agent):
@@ -357,7 +465,7 @@ def _example_lines(agent):
     return lines
 
 
-def spark_for_agent(agent, task_text, stage=None):
+def spark_for_agent(agent, task_text, stage=None, *, admission=None):
     prompt = '\n'.join([agent['name'], agent['role'], agent['personality'],
                         *agent['decision_rules'], agent['expertise']])
     examples = _example_lines(agent)
@@ -383,4 +491,4 @@ def spark_for_agent(agent, task_text, stage=None):
                   'email_lines': ['email sentence, copy approved claims exactly']}
     else:
         schema = {'claims': ['copy approved claims exactly']}
-    return call_spark_strict_json(prompt, task_text, schema)
+    return call_spark_strict_json(prompt, task_text, schema, admission=admission)

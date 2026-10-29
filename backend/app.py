@@ -548,15 +548,18 @@ class RunStepsOut(BaseModel):
 
 @app.post('/api/runs', response_model=Receipt, status_code=201)
 def create_run(body: RunInput, actor: str = Depends(auth.actor)):
+    from backend import model_admission
     with store.connect() as db:
         legacy, scout, maker, checker = load_stage_profiles(db, body)
         items = load_memory_selection(db, body.memory_ids)
         _, maker_name, _ = stage_names(body)
     run_id = 'run_' + uuid4().hex
+    factory = model_admission.admission_factory_for_run(store.engine(), run_id)
     receipt = adapter.execute(run_id, body.idea, legacy, body.seed_unverified_claim,
                               memory_items=items, checker_profile=body.checker_profile,
                               scout_profile=scout, maker_profile=maker, checker_agent=checker,
-                              product_facts=body.product_facts.model_dump() if body.product_facts is not None else None)
+                              product_facts=body.product_facts.model_dump() if body.product_facts is not None else None,
+                              model_admission_factory=factory)
     with store.connect() as db:
         save_run(db, receipt, maker_name, actor)
     return receipt
@@ -1161,9 +1164,11 @@ def campaign_detail(db, campaign_id):
 @app.post('/api/campaigns', response_model=CampaignOut, status_code=201)
 def create_campaign(body: RunInput, actor: str = Depends(auth.actor)):
     from launchcrew.facts import parse_product_facts
+    from backend import model_admission
     product_facts_raw = body.product_facts.model_dump() if body.product_facts is not None else None
     parse_product_facts(product_facts_raw)
     campaign_id = 'camp_' + uuid4().hex
+    engine = store.engine()
     with store.connect() as db:
         legacy, scout, maker, checker = load_stage_profiles(db, body)
         items = load_memory_selection(db, body.memory_ids)
@@ -1173,11 +1178,15 @@ def create_campaign(body: RunInput, actor: str = Depends(auth.actor)):
         for day in range(1, 8):
             angle, brief, brief_claim = CAMPAIGN_BRIEF_BY_DAY[day]
             run_id = 'run_' + uuid4().hex
+            # Separate short engine transactions per reserve/finalize,
+            # committed before HTTP, never the outer Campaign Connection.
+            factory = model_admission.admission_factory_for_run(engine, run_id)
             receipt = adapter.execute(run_id, body.idea, legacy, body.seed_unverified_claim,
                                       memory_items=items, checker_profile=body.checker_profile,
                                       brief=brief, campaign_day=day, extra_claims=[brief_claim],
                                       scout_profile=scout, maker_profile=maker, checker_agent=checker,
-                                      product_facts=product_facts_raw)
+                                      product_facts=product_facts_raw,
+                                      model_admission_factory=factory)
             save_run(db, receipt, maker_name, actor)
             db.execute(text('INSERT INTO campaign_days(campaign_id,day,run_id) VALUES (:id,:day,:run)'),
                        {'id': campaign_id, 'day': day, 'run': run_id})

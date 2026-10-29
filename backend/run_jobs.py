@@ -182,7 +182,7 @@ def _leave_unconfirmed(run_id, error):
 
 def _work(run_id, idea, legacy, seed, items, checker_profile, scout, maker, checker,
           maker_name, actor, stage_gate, product_facts=None):
-    from backend import adapter
+    from backend import adapter, model_admission
     last_started = {'stage': 'pipeline'}
     base_sink = _sink_for(run_id)
 
@@ -194,11 +194,13 @@ def _work(run_id, idea, legacy, seed, items, checker_profile, scout, maker, chec
     terminal = None
     pipeline_error = None
     try:
+        factory = model_admission.admission_factory_for_run(store.engine(), run_id)
         terminal = adapter.execute(run_id, idea, legacy, seed, memory_items=items,
                                    checker_profile=checker_profile, scout_profile=scout,
                                    maker_profile=maker, checker_agent=checker,
                                    progress_sink=sink, stage_gate=stage_gate,
-                                   product_facts=product_facts)
+                                   product_facts=product_facts,
+                                   model_admission_factory=factory)
     except Exception as error:
         pipeline_error = error
     try:

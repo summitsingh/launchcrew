@@ -255,3 +255,43 @@ def get_call_by_identity(db, run_id, stage, attempt_id) -> ModelCallRow | None:
     if row is None:
         return None
     return _row_to_call(row, is_owner=False)
+
+
+class EngineAdmission:
+    """Explicit per-call admission bound to one run/stage/attempt identity.
+
+    The db argument must be an Engine, so reserve and finalize each run in
+    their own short committed transaction before HTTP, never on a caller
+    active Connection (Campaign holds an outer transaction). No global
+    mutable state; the factory below binds run_id explicitly per run.
+    """
+
+    def __init__(self, db, *, run_id, stage, attempt_id='1'):
+        self._db = db
+        self._run_id = run_id
+        self._stage = stage
+        self._attempt_id = attempt_id
+
+    def reserve(self, *, request_digest, model, max_completion_tokens, n,
+                request_bytes_len) -> ModelCallRow:
+        return reserve_model_call(
+            self._db, run_id=self._run_id, stage=self._stage,
+            attempt_id=self._attempt_id, request_digest=request_digest,
+            model=model, max_completion_tokens=max_completion_tokens,
+            n=n, request_bytes_len=request_bytes_len)
+
+    def finalize(self, call_id, *, status, outcome=None, prompt_tokens=None,
+                 completion_tokens=None, total_tokens=None) -> ModelCallRow:
+        return finalize_model_call(
+            self._db, call_id, status=status, outcome=outcome,
+            prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+            total_tokens=total_tokens)
+
+
+def admission_factory_for_run(db, run_id):
+    """Return factory(stage, attempt_id='1') for one real run id."""
+
+    def factory(stage, attempt_id='1'):
+        return EngineAdmission(db, run_id=run_id, stage=stage, attempt_id=attempt_id)
+
+    return factory

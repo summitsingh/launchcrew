@@ -242,7 +242,32 @@ def run_spark_proof(*, latch_path):
             raise
         return _LiveProofResponse(inner)
 
-    def recording_call(system_prompt, user_prompt, schema_hint, model):
+    class _ProofFakeAdmission:
+        # Private proof uses the durable latch for its bound, not the DB
+        # ledger. The fake validates the same fixed bounds and authorizes
+        # one send per call; the latch still limits total HTTP to 3 with
+        # no resend on uncertainty. Production paths use real DB admission.
+        def __init__(self):
+            self._n = 0
+
+        def reserve(self, *, request_digest, model, max_completion_tokens, n,
+                    request_bytes_len):
+            if model != spark_module.PROOF_MODEL:
+                raise ValueError('model mismatch')
+            if max_completion_tokens != spark_module.PROOF_MAX_COMPLETION_TOKENS:
+                raise ValueError('bounds')
+            if n != spark_module.PROOF_N:
+                raise ValueError('bounds')
+            if request_bytes_len > spark_module.PROOF_MAX_BODY_BYTES:
+                raise ValueError('size')
+            self._n += 1
+            return {'id': 'proof_%d' % self._n, 'status': 'admitted', 'is_owner': True}
+
+        def finalize(self, call_id, *, status, outcome=None, prompt_tokens=None,
+                     completion_tokens=None, total_tokens=None):
+            return {'id': call_id, 'status': status, 'is_owner': False}
+
+    def recording_call(system_prompt, user_prompt, schema_hint, model, *, admission=None):
         if model != spark_module.PROOF_MODEL:
             result = {'mode': 'deterministic_fallback', 'model_used': 'none',
                       'attempted': True, 'attempted_model': model,
@@ -252,7 +277,8 @@ def run_spark_proof(*, latch_path):
             return result
         spark_module.urlopen = proof_open
         try:
-            result = real_call(system_prompt, user_prompt, schema_hint, model)
+            result = real_call(system_prompt, user_prompt, schema_hint, model,
+                               admission=_ProofFakeAdmission())
         finally:
             spark_module.urlopen = real_urlopen
         per_call.append(dict(result))

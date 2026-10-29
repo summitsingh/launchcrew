@@ -326,7 +326,7 @@ def _stage_snapshot(profile):
             'examples': _snapshot_examples(profile)}
 
 
-def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverified_claim=False, receipt_writer=save_receipt, model_enabled=True, visual_verifier=None, memory_claims=None, blocked_claims=None, checker_profile='standard', brief=None, campaign_day=None, scout_profile=None, maker_profile=None, checker_agent=None, progress=None, stage_gate=None, product_facts=None):
+def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverified_claim=False, receipt_writer=save_receipt, model_enabled=True, visual_verifier=None, memory_claims=None, blocked_claims=None, checker_profile='standard', brief=None, campaign_day=None, scout_profile=None, maker_profile=None, checker_agent=None, progress=None, stage_gate=None, product_facts=None, model_admission_factory=None):
     """Optional progress(event) is called at real stage boundaries only: each
     call corresponds to pipeline work that already happened (completed) or
     is about to happen (started). The event dict carries stage, state,
@@ -337,7 +337,10 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
     different observations (prepared vs stored) with distinct readings.
     Optional stage_gate(stage) is called before each stage's work; it
     exists for controlled timing tests and defaults to unused. Both stay
-    plain stdlib callables so the core gains no transport dependency."""
+    plain stdlib callables so the core gains no transport dependency.
+    Optional model_admission_factory(stage, attempt_id) returns an explicit
+    per-call admission bound to this run; missing means keyed sends fail
+    closed with zero HTTP."""
     model_enabled = model_enabled and bool(os.environ.get('META_API_KEY', '').strip())
     events = []
     attempts = []
@@ -423,14 +426,30 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
         reached('deterministic_checks', 'Scout', 'Checked facts file before optional synthesis', profiles['Scout']['name'],
                 {'facts': len(claims)})
         task = json.dumps({'idea': idea, 'approved_claims': claims, 'sources': facts['sources']})
+
+        def _admission_for(admission_stage):
+            if model_admission_factory is None:
+                return None
+            try:
+                try:
+                    return model_admission_factory(admission_stage, '1')
+                except TypeError:
+                    return model_admission_factory(admission_stage)
+            except Exception:
+                return None
+
         step = 'scout'
         gate('scout')
         note('scout', 'started', profiles['Scout']['name'])
-        wonder = wonder_synthesize_for_scout(task, None, profiles['Scout']) if model_enabled else None
+        wonder = wonder_synthesize_for_scout(
+            task, None, profiles['Scout'],
+            admission=_admission_for('Scout:Wonder')) if model_enabled else None
         if wonder is not None:
             attempts.append(('wonder', wonder))
         wonder_used = wonder is not None and wonder['mode'] == 'spark'
-        model = wonder if wonder_used else (spark_for_agent(profiles['Scout'], task, stage='Scout') if model_enabled else {
+        model = wonder if wonder_used else (spark_for_agent(
+            profiles['Scout'], task, stage='Scout',
+            admission=_admission_for('Scout:Spark')) if model_enabled else {
             'mode': 'deterministic_fallback', 'model_used': 'none', 'attempted': False})
         if not wonder_used:
             attempts.append(('spark', model))
@@ -438,7 +457,8 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
         def model_candidate(name, text):
             if not model_enabled:
                 return None
-            result = spark_for_agent(profiles[name], text, stage=name)
+            result = spark_for_agent(profiles[name], text, stage=name,
+                                     admission=_admission_for(name))
             attempts.append(('spark', result))
             return result if result['mode'] == 'spark' else None
 

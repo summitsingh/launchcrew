@@ -3,7 +3,7 @@ import os
 from .spark import _call
 
 
-def wonder_synthesize_for_scout(text, fallback_callable, scout_profile=None):
+def wonder_synthesize_for_scout(text, fallback_callable, scout_profile=None, *, admission=None):
     model = os.environ.get('META_WONDER_MODEL', '').strip()
     if not model:
         return None
@@ -17,6 +17,7 @@ def wonder_synthesize_for_scout(text, fallback_callable, scout_profile=None):
             system = system + '\nScout profile:\n' + extra
         except Exception:
             system = 'Scout synthesis only. Use supplied demo facts; mark other claims unverified.'
-    result = _call(system, text, {'facts_used': ['approved claim'], 'risks': ['demo risk']}, model)
+    result = _call(system, text, {'facts_used': ['approved claim'], 'risks': ['demo risk']}, model,
+                 admission=admission)
     # The caller owns fallback_callable invocation so attempts can be audited once.
     return result
