@@ -30,7 +30,7 @@ function detectedReceiptAt(revision: number): Receipt {
       label: 'detected',
       reason: 'clear_single',
       revision,
-      actor: 'alice@example.com',
+      actor: 'synthetic_actor_alpha',
       checked_at: '2026-01-01T00:00:00Z',
     },
   } as unknown as Receipt;
@@ -89,7 +89,7 @@ describe('incremental run progress', () => {
     expect(shouldApplyReceipt(2, 1)).toBe(false);
     expect(shouldApplyReceipt(2, 3)).toBe(true);
     const client = new QueryClient();
-    const actor = 'alice@example.com';
+    const actor = 'synthetic_actor_alpha';
     const key = ['run', 'run_demo', actor];
     // Deferred older GET arrives after the mutation was acknowledged: dropped.
     await applyAcknowledgedReceipt(client, 'run_demo', receiptAt(2), actor);
@@ -104,7 +104,7 @@ describe('incremental run progress', () => {
 
   it('a deferred GET resolving after the ack cannot regress the cached receipt', async () => {
     const client = new QueryClient();
-    const actor = 'alice@example.com';
+    const actor = 'synthetic_actor_alpha';
     const key = ['run', 'run_demo', actor];
     client.setQueryData(key, receiptAt(2));
     // The poll started before the mutation and resolves late with the
@@ -125,8 +125,8 @@ describe('incremental run progress', () => {
 
   it('advances only the acknowledging actor revision and caption without a server poll', async () => {
     const client = new QueryClient();
-    const actorA = 'alice@example.com';
-    const actorB = 'bob@example.com';
+    const actorA = 'synthetic_actor_alpha';
+    const actorB = 'synthetic_actor_beta';
     const keyA = ['run', 'run_demo', actorA];
     const keyB = ['run', 'run_demo', actorB];
     client.setQueryData(keyA, receiptAt(0));
