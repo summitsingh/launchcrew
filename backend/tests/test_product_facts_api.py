@@ -189,3 +189,74 @@ def test_campaign_threads_product_facts(client):
     assert section['mode'] == 'owner_input'
     assert section['confirmed_claims'] == ['Full-grain leather', '$129']
     assert 'Full-grain leather' in receipt['maker_draft_v2']['post']
+
+
+def test_owner_campaign_briefs_stay_suggestions(client):
+    from backend.app import CAMPAIGN_BRIEF_BY_DAY
+    response = client.post('/api/campaigns', json=owner_payload())
+    assert response.status_code == 201, response.text
+    week = response.json()
+    assert [day['day'] for day in week['days']] == list(range(1, 8))
+    assert len({day['run_id'] for day in week['days']}) == 7
+    assert len({day['angle'] for day in week['days']}) == 7
+    assert len({day['brief'] for day in week['days']}) == 7
+    for day in week['days']:
+        angle, brief, brief_claim = CAMPAIGN_BRIEF_BY_DAY[day['day']]
+        assert day['angle'] == angle
+        assert day['brief'] == brief
+        receipt = client.get('/api/runs/' + day['run_id']).json()
+        assert receipt['status'] == 'completed'
+        assert receipt['campaign_day'] == day['day']
+        assert receipt['campaign_brief'] == brief
+        assert 'Full-grain leather' in receipt['maker_draft_v2']['post']
+        assert '$129' in receipt['maker_draft_v2']['post']
+        assert brief_claim not in receipt['maker_draft_v2']['post']
+        assert brief_claim not in receipt['maker_draft_v2']['email']
+        section = receipt['product_facts']
+        assert section['mode'] == 'owner_input'
+        assert section['confirmed_claims'] == ['Full-grain leather', '$129']
+        assert section['allowlist'] == ['Full-grain leather', '$129']
+        assert brief_claim not in section['allowlist']
+        assert receipt['memory_claims'] == []
+        suggested = [s for s in section['suggested'] if s['value'] == brief_claim]
+        assert len(suggested) == 1
+        assert suggested[0]['source'] == 'campaign_brief'
+        for entry in receipt['scout']['facts_used']:
+            assert entry['verified'] is True
+            assert entry['sources'] == ['owner_confirmed_input']
+        assert receipt['checker_v2']['blocked_count'] == 0
+    day2 = client.get('/api/runs/' + week['days'][1]['run_id']).json()
+    assert '100% vegan PU leather' not in day2['maker_draft_v2']['post']
+    assert '$49' not in day2['maker_draft_v2']['post']
+    first = client.post(f"/api/campaigns/{week['id']}/days/1/approve", json={})
+    assert first.status_code == 200, first.text
+    rest = client.get('/api/campaigns/' + week['id']).json()['days'][1:]
+    assert all(d['approval_state'] == 'pending_approval' for d in rest)
+
+
+def test_owner_confirmed_campaign_claim_authorizes(client):
+    from backend.app import CAMPAIGN_BRIEF_BY_DAY
+    _, _, brief_claim = CAMPAIGN_BRIEF_BY_DAY[2]
+    payload = {'idea': IDEA, 'agent_name': 'Maker',
+               'product_facts': {'material': field('Full-grain leather', True),
+                                 'allowed_claims': [field(brief_claim, True, 'campaign_brief')]}}
+    response = client.post('/api/campaigns', json=payload)
+    assert response.status_code == 201, response.text
+    day2 = response.json()['days'][1]
+    receipt = client.get('/api/runs/' + day2['run_id']).json()
+    assert brief_claim in receipt['maker_draft_v2']['post']
+    assert brief_claim in receipt['product_facts']['confirmed_claims']
+    assert brief_claim in receipt['product_facts']['allowlist']
+
+
+def test_demo_campaign_briefs_still_authorize(client):
+    from backend.app import CAMPAIGN_BRIEF_BY_DAY
+    response = client.post('/api/campaigns', json={'idea': IDEA, 'agent_name': 'Maker'})
+    assert response.status_code == 201, response.text
+    week = response.json()
+    assert len({day['draft_v2_post'] for day in week['days']}) == 7
+    for day in week['days']:
+        _, _, brief_claim = CAMPAIGN_BRIEF_BY_DAY[day['day']]
+        receipt = client.get('/api/runs/' + day['run_id']).json()
+        assert receipt['product_facts']['mode'] == 'demo_template'
+        assert brief_claim in receipt['maker_draft_v2']['post']

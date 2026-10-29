@@ -27,7 +27,7 @@ def field(value, confirmed, source='owner'):
     return {'value': value, 'confirmed': confirmed, 'source': source}
 
 
-def offline_execute(run_id, product_facts, memory_items=None, seed=False):
+def offline_execute(run_id, product_facts, memory_items=None, seed=False, brief=None, campaign_day=None, extra_claims=None):
     profile = agents.load_agent('Maker', ROOT / 'agents')
     env = {'META_API_KEY': '', 'META_WONDER_MODEL': ''}
     with patch.dict(os.environ, env):
@@ -35,7 +35,9 @@ def offline_execute(run_id, product_facts, memory_items=None, seed=False):
              patch('launchcrew.run.wonder_synthesize_for_scout', side_effect=AssertionError('no transport keyless')):
             return adapter.execute(run_id, IDEA, profile, seed,
                                    memory_items=memory_items or [],
-                                   product_facts=product_facts)
+                                   product_facts=product_facts,
+                                   brief=brief, campaign_day=campaign_day,
+                                   extra_claims=extra_claims)
 
 
 class ParseTests(unittest.TestCase):
@@ -294,6 +296,56 @@ class PipelineTests(unittest.TestCase):
         self.assertIn('best in Texas', [c['claim'] for c in receipt['checker_v1']['blocked_claims']])
         self.assertEqual(receipt['checker_v2']['blocked_count'], 0)
         self.assertNotIn('best in Texas', receipt['maker_draft_v2']['post'])
+
+    def test_owner_campaign_brief_stays_suggestion(self):
+        brief = '100% vegan PU leather, made to last'
+        brief_claim = '100% vegan PU leather, $49'
+        receipt = offline_execute('run_owner_campaign', {
+            'material': field('Full-grain leather', True),
+            'price': field('$129', True),
+        }, brief=brief, campaign_day=2, extra_claims=[brief_claim])
+        self.assertEqual(receipt['status'], 'completed')
+        self.assertIn('Full-grain leather', receipt['maker_draft_v2']['post'])
+        self.assertIn('$129', receipt['maker_draft_v2']['post'])
+        self.assertNotIn('100% vegan PU leather', receipt['maker_draft_v2']['post'])
+        self.assertNotIn('$49', receipt['maker_draft_v2']['post'])
+        self.assertNotIn(brief_claim, receipt['maker_draft_v1']['post'])
+        self.assertNotIn(brief_claim, receipt['product_facts']['confirmed_claims'])
+        self.assertNotIn(brief_claim, receipt['product_facts']['allowlist'])
+        self.assertEqual(receipt['product_facts']['allowlist'],
+                         ['Full-grain leather', '$129'])
+        self.assertEqual(receipt['memory_claims'], [])
+        self.assertEqual(receipt['campaign_brief'], brief)
+        self.assertEqual(receipt['campaign_day'], 2)
+        suggested = [s for s in receipt['product_facts']['suggested']
+                     if s['value'] == brief_claim]
+        self.assertEqual(len(suggested), 1)
+        self.assertEqual(suggested[0]['source'], 'campaign_brief')
+        for entry in receipt['scout']['facts_used']:
+            self.assertTrue(entry['verified'])
+            self.assertEqual(entry['sources'], ['owner_confirmed_input'])
+        self.assertEqual(receipt['checker_v2']['blocked_count'], 0)
+
+    def test_owner_confirmed_campaign_claim_authorizes(self):
+        brief_claim = '100% vegan PU leather, $49'
+        receipt = offline_execute('run_owner_campaign_ok', {
+            'material': field('Full-grain leather', True),
+            'allowed_claims': [field(brief_claim, True, 'campaign_brief')],
+        }, brief='100% vegan PU leather, made to last',
+            campaign_day=2, extra_claims=[brief_claim])
+        self.assertIn(brief_claim, receipt['maker_draft_v2']['post'])
+        self.assertIn(brief_claim, receipt['product_facts']['confirmed_claims'])
+        self.assertIn(brief_claim, receipt['product_facts']['allowlist'])
+        self.assertEqual(receipt['checker_v2']['blocked_count'], 0)
+
+    def test_demo_campaign_brief_still_authorizes(self):
+        brief_claim = '100% vegan PU leather, $49'
+        receipt = offline_execute('run_demo_campaign', None,
+                                  brief='100% vegan PU leather, made to last',
+                                  campaign_day=2, extra_claims=[brief_claim])
+        self.assertEqual(receipt['product_facts']['mode'], 'demo_template')
+        self.assertIn(brief_claim, receipt['maker_draft_v2']['post'])
+        self.assertIn(brief_claim, receipt['product_facts']['allowlist'])
 
 
 if __name__ == '__main__':

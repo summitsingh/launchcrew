@@ -103,13 +103,17 @@ def execute(run_id, idea, profile, seed, memory_items=None, checker_profile='sta
     if parsed_product is None:
         applied_memory = list(claims)
         withheld_memory = []
+        withheld_briefs = []
     else:
-        # Owner mode: selected memory items are suggestions only until the
-        # owner explicitly confirms them in product_facts. Explicit extra
-        # pipeline claims (campaign briefs) still apply. Blocked-rule
-        # vetoes stay active in both modes.
-        applied_memory = list(extras)
-        withheld_memory = [c for c in memory_sourced if c not in extras]
+        # Owner mode: selected memory items and campaign briefs are
+        # suggestions only until the owner explicitly confirms them in
+        # product_facts. Only typed confirmed facts become evidence.
+        # Blocked-rule vetoes stay active in both modes.
+        applied_memory = []
+        confirmed_set = set(parsed_product['confirmed_claims'])
+        withheld_memory = [c for c in memory_sourced if c not in confirmed_set]
+        withheld_briefs = [c for c in extras
+                           if c not in confirmed_set and c not in withheld_memory]
     if profile_expertise and isinstance(profile_expertise, str) and profile_expertise.strip():
         expertise = profile_expertise
     effective_scout = copy.deepcopy(scout_profile) if scout_profile is not None else agents.load_agent('Scout', ROOT / 'agents')
@@ -152,12 +156,16 @@ def execute(run_id, idea, profile, seed, memory_items=None, checker_profile='sta
     receipt['memory_used'] = used
     receipt['checker_profile'] = checker_profile
     receipt['memory_claims'] = applied_memory
-    if withheld_memory and isinstance(receipt.get('product_facts'), dict):
+    if isinstance(receipt.get('product_facts'), dict):
         suggested = receipt['product_facts'].setdefault('suggested', [])
         for claim in withheld_memory:
             suggested.append({'field': 'memory', 'label': 'Memory suggestion',
                               'value': claim, 'source': 'memory',
                               'reason': 'Selected memory is a suggestion until explicitly confirmed in product_facts'})
+        for claim in withheld_briefs:
+            suggested.append({'field': 'campaign_brief', 'label': 'Campaign brief suggestion',
+                              'value': claim, 'source': 'campaign_brief',
+                              'reason': 'Campaign brief is planning context until explicitly confirmed in product_facts'})
     receipt['blocked_claims'] = blocked
     receipt['memory_blocked_rules'] = blocked_rules
     receipt['memory_examples'] = approval_examples

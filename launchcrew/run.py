@@ -212,15 +212,11 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
                     claims.append(claim)
         else:
             # Owner mode: the demo template never becomes owner evidence.
-            # Only explicitly confirmed owner claims plus explicit extra
-            # pipeline claims authorize drafts. Suggestions stay out.
+            # Only explicitly confirmed owner claims authorize drafts.
+            # Memory and brief inputs stay as suggestions or planning
+            # context handled by the caller. Suggestions stay out.
             claims = list(parsed_product['confirmed_claims'])
-            for claim in (memory_claims or []):
-                if isinstance(claim, str) and claim.strip() and claim not in claims:
-                    claims.append(claim)
             facts['sources'] = [OWNER_SOURCE_LABEL]
-            if brief is not None:
-                facts['sources'].append('campaign_brief')
         facts['approved_claims'] = list(claims)
         facts['memory_claims'] = list(memory_claims or [])
         product_allowlist = list(claims)
