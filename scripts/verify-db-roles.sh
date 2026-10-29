@@ -773,7 +773,8 @@ print("model ok")
   verify_job() {
     LAUNCHCREW_DB_TLS_MODE=verify-full DATABASE_SSL_ROOTCERT="$CERTDIR/server.crt" \
       DB_HOST=127.0.0.1 DB_PORT="$PORT" DB_NAME="$BIND_DB" \
-      RUNTIME_DB_URL="$RT_URL" RUNTIME_USER="$BIND_RT" APP_SCHEMA="$APP_SCHEMA" \
+      RUNTIME_DB_URL="$RT_URL" RUNTIME_USER="$BIND_RT" MIGRATION_USER="$BIND_MG" \
+      APP_SCHEMA="$APP_SCHEMA" \
       python3 "$REPO_ROOT/scripts/bootstrap_db_roles.py" --verify 2>&1
   }
 
@@ -788,6 +789,7 @@ print("model ok")
   case "$VERIFY_OUT" in *"verify-model-budget-zero ok"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed model budget proof" ;; esac
   case "$VERIFY_OUT" in *"verify-model-no-direct ok"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed model direct DML proof" ;; esac
   case "$VERIFY_OUT" in *"verify-model-functions ok"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed model function proof" ;; esac
+  case "$VERIFY_OUT" in *"verify-model-owners ok"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed model owner proof" ;; esac
   case "$VERIFY_OUT" in *"verify-model-defaults ok"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed model defaults proof" ;; esac
   case "$VERIFY_OUT" in *"$BIND_RT_PW"*|*"$RT_URL"*) fail "verify output leaked a synthetic secret" ;; esac
   log "pass: actual --verify proves 006, identity, rolled-back write, DDL refusal, model guards"

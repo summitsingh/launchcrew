@@ -151,7 +151,9 @@ class FakeCursor:
         if "pg_default_acl" in lowered:
             return list(self.state.model_default_acls)
         if "pg_class" in lowered:
-            return list(self.state.inventory)
+            if "relkind" in lowered:
+                return list(self.state.inventory)
+            return list(self.state.model_table_owners)
         if "pg_proc" in lowered:
             if "prosecdef" in lowered:
                 return list(self.state.model_funcs)
@@ -217,11 +219,15 @@ class FakeDriverState:
         self.model_direct_sqlstate = "42501"
         self.model_funcs = [
             ("model_finalize_call", True,
-             ["search_path=public, pg_temp"]),
+             ["search_path=public, pg_temp"], "launchcrew_migration"),
             ("model_no_direct", False,
-             ["search_path=pg_catalog, pg_temp"]),
+             ["search_path=pg_catalog, pg_temp"], "launchcrew_migration"),
             ("model_reserve_call", True,
-             ["search_path=public, pg_temp"]),
+             ["search_path=public, pg_temp"], "launchcrew_migration"),
+        ]
+        self.model_table_owners = [
+            ("model_budget", "launchcrew_migration"),
+            ("model_calls", "launchcrew_migration"),
         ]
         self.model_func_acls = {
             "model_reserve_call": [(12345, "EXECUTE")],
@@ -1079,6 +1085,7 @@ class VerifyJobTests(BindJobTests):
                        "verify-model-budget-zero ok",
                        "verify-model-no-direct ok",
                        "verify-model-functions ok",
+                       "verify-model-owners ok",
                        "verify-model-defaults ok",
                        "VERIFY COMPLETE"):
             self.assertIn(marker, out)
@@ -1129,6 +1136,48 @@ class VerifyJobTests(BindJobTests):
         code, out = self.run_main("--verify")
         self.assertNotEqual(code, 0)
         self.assertIn("verify-model-defaults", out)
+
+    def test_verify_refuses_wrong_function_owner(self):
+        self.state.model_funcs = [
+            (name, secdef, cfg, "launchcrew_runtime")
+            for name, secdef, cfg, _owner in self.state.model_funcs]
+        code, out = self.run_main("--verify")
+        self.assertNotEqual(code, 0)
+        self.assertIn("verify-model-functions", out)
+        self.assertNotIn("VERIFY COMPLETE", out)
+
+    def test_verify_refuses_wrong_table_owner(self):
+        self.state.model_table_owners = [
+            ("model_budget", "launchcrew_migration"),
+            ("model_calls", "launchcrew_runtime"),
+        ]
+        code, out = self.run_main("--verify")
+        self.assertNotEqual(code, 0)
+        self.assertIn("verify-model-owners", out)
+        self.assertNotIn("VERIFY COMPLETE", out)
+
+    def test_verify_refuses_missing_model_table(self):
+        self.state.model_table_owners = [
+            ("model_budget", "launchcrew_migration"),
+        ]
+        code, out = self.run_main("--verify")
+        self.assertNotEqual(code, 0)
+        self.assertIn("verify-model-owners", out)
+
+    def test_verify_requires_migration_user_env(self):
+        code, out = self.run_main("--verify", {"MIGRATION_USER": ""})
+        self.assertNotEqual(code, 0)
+        self.assertIn("FAIL", out)
+        self.assertEqual(self.state.connect_count, 0)
+
+    def test_verify_owner_proof_uses_nonsecret_metadata(self):
+        verify_start = SCRIPT.read_text(encoding="utf-8").index("def do_verify")
+        verify_body = SCRIPT.read_text(encoding="utf-8")[verify_start:]
+        self.assertIn("MIGRATION_USER", verify_body)
+        self.assertIn("proowner", verify_body)
+        self.assertIn("relowner", verify_body)
+        self.assertNotIn("MIGRATION_DB_URL", verify_body)
+        self.assertNotIn("MASTER_DB_PASSWORD", verify_body)
 
     def test_verify_refuses_wrong_identity(self):
         self.state.current_identity = "postgres"

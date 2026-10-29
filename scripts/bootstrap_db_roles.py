@@ -37,9 +37,12 @@ Modes, selected by argv flag only (no secret ever appears in argv):
             SQLSTATE 42501, the global model budget reads zero, runtime
             direct model ledger and budget DML each fail with 42501, exact
             reserve and finalize EXECUTE grants allow only the runtime role
-            with no PUBLIC and no default future EXECUTE. Never connects as
-            master or migration here, and never commits. No provider key is
-            read or injected here.
+            with no PUBLIC and no default future EXECUTE. The reserve,
+            finalize, and trigger functions plus both model tables must be
+            owned exactly by the expected migration role name carried in the
+            nonsecret MIGRATION_USER metadata, failing closed on wrong owner.
+            Never connects as master or migration here, and never commits.
+            No provider key is read or injected here.
 
 TLS guard: LAUNCHCREW_DB_TLS_MODE must be verify-full and
 DATABASE_SSL_ROOTCERT must be an existing CA bundle file, otherwise the job
@@ -838,6 +841,7 @@ def do_verify():
     _reject_ambient_pg_overrides()
     runtime_url = _env("RUNTIME_DB_URL")
     runtime_user = _check_ident("RUNTIME_USER", _env("RUNTIME_USER"))
+    migration_user = _check_ident("MIGRATION_USER", _env("MIGRATION_USER"))
     host = _check_host("DB_HOST", _env("DB_HOST"))
     dbname = _check_dbname("DB_NAME", _env("DB_NAME"))
     # Verify connects with the parsed effective destination only, never the
@@ -989,8 +993,10 @@ def do_verify():
                 return _fail("verify-model-functions")
             rt_oid = oid_row[0]
             cur.execute(
-                "SELECT p.proname, p.prosecdef, p.proconfig FROM pg_proc p "
+                "SELECT p.proname, p.prosecdef, p.proconfig, owner.rolname "
+                "FROM pg_proc p "
                 "JOIN pg_namespace n ON n.oid = p.pronamespace "
+                "JOIN pg_roles owner ON owner.oid = p.proowner "
                 "WHERE n.nspname = %s AND p.proname IN (%s, %s, %s) "
                 "ORDER BY p.proname",
                 ("public", "model_finalize_call", "model_no_direct",
@@ -1004,7 +1010,12 @@ def do_verify():
                          "model_reserve_call"]:
                 conn.rollback()
                 return _fail("verify-model-functions")
-            for proname, secdef, proconfig in func_rows:
+            for row in func_rows:
+                if (not isinstance(row, (list, tuple)) or len(row) != 4
+                        or str(row[3]) != migration_user):
+                    conn.rollback()
+                    return _fail("verify-model-functions")
+            for proname, secdef, proconfig, _owner in func_rows:
                 cfg = list(proconfig or [])
                 if proname == "model_no_direct":
                     want_path = ["pg_catalog", "pg_temp"]
@@ -1075,6 +1086,36 @@ def do_verify():
             except Exception:
                 pass
             return _fail("verify-model-functions")
+        try:
+            cur.execute(
+                "SELECT c.relname, owner.rolname FROM pg_class c "
+                "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                "JOIN pg_roles owner ON owner.oid = c.relowner "
+                "WHERE n.nspname = %s AND c.relname IN (%s, %s) "
+                "ORDER BY c.relname",
+                ("public", "model_budget", "model_calls"))
+            table_rows = cur.fetchall() or []
+            if not isinstance(table_rows, list):
+                conn.rollback()
+                return _fail("verify-model-owners")
+            owned = []
+            for row in table_rows:
+                if (not isinstance(row, (list, tuple)) or len(row) != 2):
+                    conn.rollback()
+                    return _fail("verify-model-owners")
+                owned.append((str(row[0]), str(row[1])))
+            if sorted(owned) != [("model_budget", migration_user),
+                                 ("model_calls", migration_user)]:
+                conn.rollback()
+                return _fail("verify-model-owners")
+            conn.rollback()
+            _ok("verify-model-owners")
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return _fail("verify-model-owners")
         try:
             cur.execute(
                 "SELECT e.grantee, e.privilege_type FROM pg_default_acl, "

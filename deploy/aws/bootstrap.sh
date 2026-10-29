@@ -6,21 +6,26 @@
 #                 fresh stack (owned updates refuse while EnableServices=true
 #                 so task definitions and images are never updated under
 #                 running services; run explicit phase quiesce first, and owned
-#                 updates review a bounded change set allowing only task
-#                 definition or service Modify with no replacement and no DB or
-#                 network change before deploy), so VPC, ECR repositories, RDS,
-#                 and task definitions exist with both ECS services at
-#                 DesiredCount 0 and no app running
+#                 updates prove both services live 0/0/0, review every page of
+#                 a bounded change set allowing only owned task definition
+#                 image or service taskdef Modify with replacement only on the
+#                 seven task definitions, then execute the same reviewed change
+#                 set ID and re-prove 0/0/0, never deleting a same-name pending
+#                 set), so VPC, ECR repositories, RDS, and task definitions
+#                 exist with both ECS services at DesiredCount 0 and no app running
 #   phase quiesce safe maintenance to stop the owned app before an update:
-#                 verify exact stack ownership, identity, and tags, review a
-#                 bounded change set built from the existing deployed template
-#                 and all existing parameter values except EnableServices=false
-#                 whose only intended service effect is ApiService and WebService
-#                 DesiredCount to 0, execute only on explicit operator confirm,
-#                 then require UPDATE_COMPLETE plus both services 0/0/0 with
-#                 unchanged old task definition and image identity. Fail closed
-#                 on drift, empty or ambiguous data, or any other resource change.
-#                 Never part of phase all; run explicitly before infra on a live stack.
+#                 verify exact stack ownership, identity, and tags, review every
+#                 page of a bounded change set built from the existing deployed
+#                 template and all existing parameter values except
+#                 EnableServices=false whose only accepted effect is ApiService
+#                 and WebService DesiredCount to 0 with no other property, tag,
+#                 or resource change, execute the same reviewed change set ID
+#                 only on explicit operator confirm, then require UPDATE_COMPLETE
+#                 plus both services 0/0/0 with unchanged old task definition
+#                 and image identity, preserved exact stack tags, and both owned
+#                 ALB target groups drained. Fail closed on drift, empty or
+#                 ambiguous data, or any other resource change. Never part of
+#                 phase all; run explicitly before infra on a live stack.
 #   phase images  verify each of the five published image URIs exists in its
 #                 owned ECR repository with an image digest and no failures,
 #                 and equals the image referenced by its owned stack task
@@ -44,7 +49,8 @@
 #                 the current release generation with live describe and no new
 #                 run-task call, then update the stack with EnableServices=true
 #                 for fixed count 1 each, then verify both owned physical
-#                 services report ACTIVE desired 1 running 1 pending 0.
+#                 services report ACTIVE desired 1 running 1 pending 0 with
+#                 task definitions and images unchanged by the enable deploy.
 #                 Standalone enable never populates, exports, binds, migrates,
 #                 or launches any one-off task.
 #   phase all     full readiness chain: owned foundation COMPLETE plus exact
@@ -133,7 +139,8 @@ TARGET_DB_HEAD="006"
 # overrides. Release generation defaults to head006 plus the source Git SHA
 # short hash when available; an explicit --release-generation still overrides
 # for tests. Old one-shot journals are never deleted, renamed, or overwritten;
-# a new generation uses a distinct path and must reconcile any prior token.
+# a new generation uses a distinct path and must enumerate and reconcile
+# every prior-generation record to STOPPED with all essential exits 0.
 
 usage() {
   echo "Usage: $0 [--confirm --stack-name NAME --expected-account ID --expected-region REGION ...] [--phase infra|images|init|material|dbroles|migrate|enable|all|foundation|prereqs|quiesce]"
@@ -221,12 +228,15 @@ phase_plan() {
   echo "     plus exact returned secret ARN and secret tags; fresh stacks create with tags"
   echo "  2. infra: deploy stack with EnableServices false; owned updates refuse while"
   echo "     EnableServices is true so images are never updated under running services;"
-  echo "     run explicit phase quiesce first, review a bounded taskdef-only diff with"
-  echo "     no replacement and no DB or network change, then require CREATE_COMPLETE or UPDATE_COMPLETE"
+  echo "     run explicit phase quiesce first, prove live 0/0/0, review every page of a"
+  echo "     bounded diff with taskdef-only replacement, execute the same reviewed ID,"
+  echo "     re-prove 0/0/0, then require CREATE_COMPLETE or UPDATE_COMPLETE"
   echo "  2a. quiesce: explicit safe maintenance only, never part of all; verify exact owned"
-  echo "     stack identity and tags, review a bounded change set from the existing template"
-  echo "     with only ApiService and WebService to DesiredCount 0, execute only on explicit"
-  echo "     --quiesce-confirm StackId, then require UPDATE_COMPLETE plus 0/0/0 with unchanged images"
+  echo "     stack identity and tags, review every page of a bounded change set from the"
+  echo "     existing template with only ApiService and WebService DesiredCount to 0,"
+  echo "     execute the same reviewed ID only on explicit --quiesce-confirm StackId,"
+  echo "     then require UPDATE_COMPLETE plus 0/0/0 with unchanged images, exact tags,"
+  echo "     and drained target groups"
   echo "  3. images: all five ECR image URIs verified by digest with no failures, each equal"
   echo "     to its owned stack task definition image, explicit tag required, no latest fallback;"
   echo "     task definitions must inject exactly the validated secrets under the owned roles"
@@ -244,7 +254,8 @@ phase_plan() {
   echo "     activated here), then re-prove images, bindings, plus prior material,"
   echo "     migration, and verify journals with live describe and no new run-task,"
   echo "     then update stack with EnableServices=true, verify owned services ACTIVE"
-  echo "     desired 1 running 1 pending 0 each (configuration check only; serving"
+  echo "     desired 1 running 1 pending 0 each with taskdefs and images unchanged"
+  echo "     by the enable deploy (configuration check only; serving"
   echo "     health is proven by ALB targets after DNS). Standalone"
   echo "     enable never populates, exports, binds, migrates, or launches tasks."
   echo "Per-phase inputs: infra needs stack, account, region, parameters file plus foundation gate args;"
@@ -859,8 +870,9 @@ esac
 # head, plus the exact owned StackId, task definition, and config digest at
 # launch time. Old one-shot journals are never deleted, renamed, or
 # overwritten; the new generation uses a distinct active path and must
-# reconcile any prior token to STOPPED with all essential exits 0 before any
-# new launch. An empty new path never proves absence.
+# enumerate and reconcile every prior-generation record to STOPPED with all
+# essential exits 0 before any new launch. An empty new path never proves
+# absence.
 resolve_release_generation() {
   if [ -n "$RELEASE_GEN" ]; then
     case "$RELEASE_GEN" in
@@ -2256,9 +2268,11 @@ if wants_phase infra; then
   TARGET_SERVICES="false"
   WAS_NEW="$STACK_EXISTS"
   if [ "$WAS_NEW" -eq 1 ]; then
+    echo "Infra: proving both owned services stopped before any task definition update."
+    verify_ecs_service_stopped ApiService api infra
+    verify_ecs_service_stopped WebService web infra
     INFRA_CHANGESET="infra-$TARGET_DB_HEAD"
-    "$AWS_BIN" cloudformation delete-change-set --stack-name "$STACK_NAME" --change-set-name "$INFRA_CHANGESET" --region "$EXPECTED_REGION" >/dev/null 2>&1 || true
-    echo "Infra: reviewing bounded update diff at services 0 before deploy."
+    echo "Infra: reviewing a bounded update diff at services 0, then executing the same reviewed change set."
     if ! python3 - "$PARAMETERS_FILE" "$AWS_BIN" "$STACK_NAME" "$INFRA_CHANGESET" "$TEMPLATE_FILE" "$EXPECTED_REGION" <<'PYEOF'
 import json, subprocess, sys
 params_file, aws_bin, stack, changeset, template, region = sys.argv[1:7]
@@ -2300,58 +2314,144 @@ proc = subprocess.run(cmd, capture_output=True, text=True)
 sys.exit(proc.returncode)
 PYEOF
     then
-      echo "refused: infra review change set create failed, no deploy made" >&2
+      echo "refused: infra change set create failed; an existing same-name change set is never deleted or replaced, inspect $INFRA_CHANGESET manually after review. No change made." >&2
       phase_failed infra
     fi
-    INFRA_DESC_JSON="$(mktemp /tmp/launchcrew-infra-desc-XXXXXX)"
-    if ! "$AWS_BIN" cloudformation describe-change-set --stack-name "$STACK_NAME" --change-set-name "$INFRA_CHANGESET" --region "$EXPECTED_REGION" --output json >"$INFRA_DESC_JSON" 2>"$TMP_ERR"; then
-      rm -f "$INFRA_DESC_JSON"
-      "$AWS_BIN" cloudformation delete-change-set --stack-name "$STACK_NAME" --change-set-name "$INFRA_CHANGESET" --region "$EXPECTED_REGION" >/dev/null 2>&1 || true
-      echo "refused: infra review change set unreadable, deleted with no deploy made" >&2
-      phase_failed infra
-    fi
-    INFRA_REVIEW="$(python3 - "$INFRA_DESC_JSON" "$STACK_NAME" "$STACK_ID" 2>/dev/null <<'PYEOF'
+    INFRA_PAGES_DIR="$(mktemp -d /tmp/launchcrew-infra-pages-XXXXXX)"
+    INFRA_NEXT=""
+    INFRA_PAGE_NUM=0
+    while [ "$INFRA_PAGE_NUM" -lt 3 ]; do
+      INFRA_PAGE_NUM=$((INFRA_PAGE_NUM + 1))
+      INFRA_PAGE_FILE="$INFRA_PAGES_DIR/page-$INFRA_PAGE_NUM.json"
+      INFRA_INPUT="$(mktemp /tmp/launchcrew-infra-in-XXXXXX)"
+      if ! python3 - "$INFRA_INPUT" "$STACK_NAME" "$INFRA_CHANGESET" "$INFRA_NEXT" 2>/dev/null <<'PYEOF'
 import json, sys
-path, want_stack, want_id = sys.argv[1:4]
+path, stack, changeset, token = sys.argv[1:5]
+doc = {"StackName": stack, "ChangeSetName": changeset}
+if token and token != "END" and token != "None":
+    doc["NextToken"] = token
+with open(path, "w", encoding="utf-8") as out:
+    json.dump(doc, out)
+PYEOF
+      then
+        rm -f "$INFRA_INPUT"
+        rm -rf "$INFRA_PAGES_DIR"
+        echo "refused: infra change set describe input failed, no change made. Pending change set $INFRA_CHANGESET preserved for inspection." >&2
+        phase_failed infra
+      fi
+      if ! "$AWS_BIN" cloudformation describe-change-set --cli-input-json "file://$INFRA_INPUT" --no-paginate --region "$EXPECTED_REGION" --output json >"$INFRA_PAGE_FILE" 2>"$TMP_ERR"; then
+        rm -f "$INFRA_INPUT"
+        rm -rf "$INFRA_PAGES_DIR"
+        echo "refused: infra change set $INFRA_CHANGESET unreadable, no change made. Pending change set preserved for inspection." >&2
+        phase_failed infra
+      fi
+      rm -f "$INFRA_INPUT"
+      INFRA_NEXT="$(python3 - "$INFRA_PAGE_FILE" 2>/dev/null <<'PYEOF'
+import json, sys
 try:
-    doc = json.load(open(path))
+    doc = json.load(open(sys.argv[1]))
 except Exception:
     print("MALFORMED")
     sys.exit(0)
 if not isinstance(doc, dict):
     print("MALFORMED")
     sys.exit(0)
-if (doc.get("StackName", "") or "") != want_stack:
+if "nextToken" in doc:
+    print("MALFORMED")
+    sys.exit(0)
+nxt = doc.get("NextToken", "")
+if nxt is None or nxt == "None":
+    nxt = ""
+if not isinstance(nxt, str):
+    print("MALFORMED")
+    sys.exit(0)
+print("END" if not nxt.strip() else nxt.strip())
+PYEOF
+)" || INFRA_NEXT="MALFORMED"
+      INFRA_NEXT="$(printf '%s' "$INFRA_NEXT" | tr -d '[:space:]')"
+      if [ "$INFRA_NEXT" = "MALFORMED" ]; then
+        rm -rf "$INFRA_PAGES_DIR"
+        echo "refused: infra change set page $INFRA_PAGE_NUM malformed, no change made. Pending change set $INFRA_CHANGESET preserved for inspection." >&2
+        phase_failed infra
+      fi
+      if [ -z "$INFRA_NEXT" ] || [ "$INFRA_NEXT" = "END" ] || [ "$INFRA_NEXT" = "None" ]; then
+        INFRA_NEXT=""
+        break
+      fi
+    done
+    if [ -n "$INFRA_NEXT" ]; then
+      rm -rf "$INFRA_PAGES_DIR"
+      echo "refused: infra change set has unreviewed pages after 3, no change made. Pending change set $INFRA_CHANGESET preserved for inspection." >&2
+      phase_failed infra
+    fi
+    INFRA_RAW="$(python3 - "$INFRA_PAGES_DIR" "$STACK_NAME" "$STACK_ID" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$INFRA_CHANGESET" "$PARAMETERS_FILE" 2>/dev/null <<'PYEOF'
+import glob, json, os, sys
+pages_dir, want_stack, want_id = sys.argv[1:4]
+want_account, want_region, want_name, params_file = sys.argv[4:8]
+pages = sorted(glob.glob(os.path.join(pages_dir, "page-*.json")))
+if not pages:
+    print("MALFORMED")
+    sys.exit(0)
+try:
+    first = json.load(open(pages[0]))
+except Exception:
+    print("MALFORMED")
+    sys.exit(0)
+if not isinstance(first, dict):
+    print("MALFORMED")
+    sys.exit(0)
+cs_id = first.get("ChangeSetId", "") or ""
+if not isinstance(cs_id, str) or not cs_id.startswith(
+        "arn:aws:cloudformation:%s:%s:changeSet/%s/" % (want_region, want_account, want_name)):
+    print("ID_MISMATCH")
+    sys.exit(0)
+if (first.get("ChangeSetName", "") or "") != want_name:
+    print("NAME_MISMATCH")
+    sys.exit(0)
+if (first.get("StackName", "") or "") != want_stack:
     print("STACK_MISMATCH")
     sys.exit(0)
-if want_id and (doc.get("StackId", "") or "") != want_id:
+if want_id and (first.get("StackId", "") or "") != want_id:
     print("STACKID_MISMATCH")
     sys.exit(0)
-status = doc.get("Status", "") or ""
-reason = doc.get("StatusReason", "") or ""
+status = first.get("Status", "") or ""
+reason = first.get("StatusReason", "") or ""
 if status == "FAILED" and ("didn't contain changes" in reason or "No updates" in reason):
     print("NO_CHANGES")
+    print("ID\t%s" % cs_id)
     sys.exit(0)
 if status != "CREATE_COMPLETE":
     print("STATUS_%s" % (status or "EMPTY"))
     sys.exit(0)
-if (doc.get("ExecutionStatus", "") or "") != "AVAILABLE":
-    print("EXEC_%s" % (doc.get("ExecutionStatus", "") or "EMPTY"))
+if (first.get("ExecutionStatus", "") or "") != "AVAILABLE":
+    print("EXEC_%s" % (first.get("ExecutionStatus", "") or "EMPTY"))
     sys.exit(0)
-changes = doc.get("Changes", None)
-if not isinstance(changes, list):
-    print("MALFORMED")
-    sys.exit(0)
+changes = []
+for page_file in pages:
+    try:
+        page = json.load(open(page_file))
+    except Exception:
+        print("MALFORMED")
+        sys.exit(0)
+    if not isinstance(page, dict):
+        print("MALFORMED")
+        sys.exit(0)
+    part = page.get("Changes", None)
+    if not isinstance(part, list):
+        print("MALFORMED")
+        sys.exit(0)
+    changes.extend(part)
+    if len(changes) > 10:
+        print("TOO_MANY_%d" % len(changes))
+        sys.exit(0)
 if len(changes) == 0:
     print("NO_CHANGES")
+    print("ID\t%s" % cs_id)
     sys.exit(0)
-if len(changes) > 10:
-    print("TOO_MANY_%s" % len(changes))
-    sys.exit(0)
-allowed = {"ApiTaskDefinition", "WebTaskDefinition", "MigrationTaskDefinition",
-           "BootstrapTaskDefinition", "VerifyTaskDefinition",
-           "SdkInitTaskDefinition", "SdkMaterialTaskDefinition",
-           "ApiService", "WebService"}
+TASKDEFS = {"ApiTaskDefinition", "WebTaskDefinition", "MigrationTaskDefinition",
+            "BootstrapTaskDefinition", "VerifyTaskDefinition",
+            "SdkInitTaskDefinition", "SdkMaterialTaskDefinition"}
+SERVICES = {"ApiService", "WebService"}
 seen = set()
 for entry in changes:
     if not isinstance(entry, dict):
@@ -2366,8 +2466,13 @@ for entry in changes:
         sys.exit(0)
     logical = rc.get("LogicalResourceId", "") or ""
     action = rc.get("Action", "") or ""
+    rtype = rc.get("ResourceType", "") or ""
     replacement = rc.get("Replacement", "False")
-    if logical not in allowed:
+    if logical in TASKDEFS:
+        want_type = "AWS::ECS::TaskDefinition"
+    elif logical in SERVICES:
+        want_type = "AWS::ECS::Service"
+    else:
         print("FOREIGN_%s" % (logical or "EMPTY"))
         sys.exit(0)
     if logical in seen:
@@ -2377,56 +2482,187 @@ for entry in changes:
     if action != "Modify":
         print("ACTION_%s_%s" % (logical, action or "EMPTY"))
         sys.exit(0)
-    if str(replacement) != "False":
-        print("REPLACEMENT_%s_%s" % (logical, str(replacement)))
+    if rtype != want_type:
+        print("TYPE_%s_%s" % (logical, rtype or "EMPTY"))
         sys.exit(0)
+    replacement = str(replacement)
+    if logical in TASKDEFS:
+        if replacement not in ("True", "False"):
+            print("REPLACEMENT_%s_%s" % (logical, replacement))
+            sys.exit(0)
+    else:
+        if replacement != "False":
+            print("REPLACEMENT_%s_%s" % (logical, replacement))
+            sys.exit(0)
     scope = rc.get("Scope", None)
     if scope is not None:
         if not isinstance(scope, list) or not scope:
             print("SCOPE_%s" % logical)
             sys.exit(0)
         for item in scope:
-            if item not in ("Properties", "Tags", "Metadata"):
+            if item != "Properties":
                 print("SCOPE_%s_%s" % (logical, str(item)))
                 sys.exit(0)
+    details = rc.get("Details", None)
+    if not isinstance(details, list) or not details:
+        print("DETAILS_%s_MISSING" % logical)
+        sys.exit(0)
+    if len(details) > 10:
+        print("DETAILS_%s_MANY" % logical)
+        sys.exit(0)
+    for detail in details:
+        if not isinstance(detail, dict):
+            print("DETAILS_%s_MALFORMED" % logical)
+            sys.exit(0)
+        target = detail.get("Target", None)
+        if not isinstance(target, dict):
+            print("DETAILS_%s_MALFORMED" % logical)
+            sys.exit(0)
+        attr = target.get("Attribute", "") or ""
+        name = target.get("Name", "") or ""
+        recre = target.get("RequiresRecreation", "") or ""
+        if attr != "Properties":
+            print("DETAIL_%s_ATTR_%s" % (logical, attr or "EMPTY"))
+            sys.exit(0)
+        if logical in TASKDEFS:
+            if name != "ContainerDefinitions":
+                print("DETAIL_%s_NAME_%s" % (logical, name or "EMPTY"))
+                sys.exit(0)
+            want_recre = "Always" if replacement == "True" else "Never"
+            if recre != want_recre:
+                print("DETAIL_%s_RECRE_%s" % (logical, recre or "EMPTY"))
+                sys.exit(0)
+        else:
+            if name != "TaskDefinition":
+                print("DETAIL_%s_NAME_%s" % (logical, name or "EMPTY"))
+                sys.exit(0)
+            if recre != "Never":
+                print("DETAIL_%s_RECRE_%s" % (logical, recre or "EMPTY"))
+                sys.exit(0)
+try:
+    with open(params_file) as handle:
+        doc = json.load(handle)
+except Exception:
+    print("PARAMS_FILE")
+    sys.exit(0)
+if isinstance(doc, dict) and "Parameters" in doc:
+    doc = doc["Parameters"]
+if not isinstance(doc, list):
+    print("PARAMS_FILE")
+    sys.exit(0)
+expected = {}
+for item in doc:
+    if not isinstance(item, dict) or "ParameterKey" not in item:
+        print("PARAMS_FILE")
+        sys.exit(0)
+    key = item["ParameterKey"]
+    if key == "EnableServices":
+        continue
+    if key in ("BudgetLimitUsd", "BudgetNotifyEmail"):
+        print("PARAMS_BUDGET_KEY")
+        sys.exit(0)
+    value = item.get("ParameterValue", None)
+    if not isinstance(value, str):
+        print("PARAMS_FILE")
+        sys.exit(0)
+    expected[key] = value
+expected["EnableServices"] = "false"
+if len(expected) > 20:
+    print("PARAMS_MANY")
+    sys.exit(0)
+got_params = first.get("Parameters", None)
+if not isinstance(got_params, list):
+    print("PARAMS_MISSING")
+    sys.exit(0)
+seen_params = set()
+for item in got_params:
+    if not isinstance(item, dict):
+        print("PARAMS_MALFORMED")
+        sys.exit(0)
+    key = item.get("ParameterKey", "") or ""
+    if not key or key in seen_params:
+        print("PARAMS_DUP_%s" % (key or "EMPTY"))
+        sys.exit(0)
+    seen_params.add(key)
+    if key not in expected:
+        print("PARAMS_FOREIGN_%s" % key)
+        sys.exit(0)
+    if item.get("UsePreviousValue", False):
+        print("PARAMS_PREVIOUS_%s" % key)
+        sys.exit(0)
+    if (item.get("ParameterValue", "") or "") != expected[key]:
+        print("PARAMS_VALUE_%s" % key)
+        sys.exit(0)
+if seen_params != set(expected):
+    print("PARAMS_INCOMPLETE")
+    sys.exit(0)
+tags = first.get("Tags", None)
+if not isinstance(tags, list):
+    print("TAGS_MISSING")
+    sys.exit(0)
+pairs = set()
+for item in tags:
+    if not isinstance(item, dict):
+        print("TAGS_MALFORMED")
+        sys.exit(0)
+    pairs.add(((item.get("Key", "") or ""), (item.get("Value", "") or "")))
+if pairs != {("Project", "LaunchCrew"), ("Environment", "demo")}:
+    print("TAGS_MISMATCH")
+    sys.exit(0)
+caps = first.get("Capabilities", None)
+if not isinstance(caps, list) or "CAPABILITY_NAMED_IAM" not in caps:
+    print("CAPABILITIES")
+    sys.exit(0)
 print("OK")
+print("ID\t%s" % cs_id)
 PYEOF
-)" || INFRA_REVIEW="UNREADABLE"
-    INFRA_REVIEW="$(printf '%s' "$INFRA_REVIEW" | tr -d '[:space:]')"
+)" || INFRA_RAW="UNREADABLE"
+    INFRA_REVIEW="$(printf '%s\n' "$INFRA_RAW" | head -n 1 | tr -d '[:space:]')"
     if [ "$INFRA_REVIEW" = "NO_CHANGES" ]; then
-      rm -f "$INFRA_DESC_JSON"
-      "$AWS_BIN" cloudformation delete-change-set --stack-name "$STACK_NAME" --change-set-name "$INFRA_CHANGESET" --region "$EXPECTED_REGION" >/dev/null 2>&1 || true
-      echo "Infra: review reports no updates, stack already current at services 0, proceeding to deploy as no-op."
+      INFRA_NOCHANGE_ID="$(printf '%s\n' "$INFRA_RAW" | awk -F'\t' '$1=="ID"{print $2}' | tr -d '[:space:]')"
+      rm -rf "$INFRA_PAGES_DIR"
+      if [ -n "$INFRA_NOCHANGE_ID" ] && "$AWS_BIN" cloudformation delete-change-set --stack-name "$STACK_NAME" --change-set-name "$INFRA_NOCHANGE_ID" --region "$EXPECTED_REGION" >/dev/null 2>&1; then
+        echo "Infra: review reports no updates, stack already current at services 0, self-created no-change set removed by reviewed ID, no execute made."
+      else
+        echo "Infra: review reports no updates, stack already current at services 0, no execute made. Remove $INFRA_CHANGESET manually after review if a rerun reports it exists."
+      fi
     elif [ "$INFRA_REVIEW" != "OK" ]; then
-      rm -f "$INFRA_DESC_JSON"
-      "$AWS_BIN" cloudformation delete-change-set --stack-name "$STACK_NAME" --change-set-name "$INFRA_CHANGESET" --region "$EXPECTED_REGION" >/dev/null 2>&1 || true
-      echo "refused: infra review proof is $INFRA_REVIEW, expected only task definition or service Modify with no replacement and no DB or network change. Review change set deleted with no deploy made." >&2
+      rm -rf "$INFRA_PAGES_DIR"
+      echo "refused: infra review proof is $INFRA_REVIEW, expected only owned task definition image or service taskdef Modify with taskdef-only replacement and no DB, network, cert, or secrets change. Pending change set $INFRA_CHANGESET preserved for inspection, no execute made, no delete made." >&2
       phase_failed infra
     else
-      rm -f "$INFRA_DESC_JSON"
-      "$AWS_BIN" cloudformation delete-change-set --stack-name "$STACK_NAME" --change-set-name "$INFRA_CHANGESET" --region "$EXPECTED_REGION" >/dev/null 2>&1 || true
-      echo "Infra: review passed, only task definitions or services Modify with no replacement, no DB or network or cert change."
+      INFRA_CHANGESET_ID="$(printf '%s\n' "$INFRA_RAW" | awk -F'\t' '$1=="ID"{print $2}')"
+      INFRA_CHANGESET_ID="$(printf '%s' "$INFRA_CHANGESET_ID" | tr -d '[:space:]')"
+      rm -rf "$INFRA_PAGES_DIR"
+      [ -n "$INFRA_CHANGESET_ID" ] || { echo "refused: infra reviewed change set ID missing, no execute made." >&2; phase_failed infra; }
+      echo "Infra: review passed, executing the same reviewed change set ID."
+      if ! "$AWS_BIN" cloudformation execute-change-set --stack-name "$STACK_NAME" --change-set-name "$INFRA_CHANGESET_ID" --region "$EXPECTED_REGION" >/dev/null 2>"$TMP_ERR"; then
+        echo "refused: infra execute failed, state unknown, verify stack status before any retry" >&2; phase_failed infra
+      fi
+      if ! "$AWS_BIN" cloudformation wait stack-update-complete --stack-name "$STACK_NAME" --region "$EXPECTED_REGION" 2>"$TMP_ERR"; then
+        ERR="$(cat "$TMP_ERR" 2>/dev/null || true)"
+        if is_auth_error "$ERR"; then
+          echo "infra wait authorization failure, state unknown, no later phase started." >&2
+          phase_failed infra
+        fi
+        echo "infra wait reported, verifying stack status before any claim." >&2
+      fi
+      require_stack_complete infra
     fi
-  fi
-  if ! cloudformation_deploy "$TARGET_SERVICES" infra; then
-    echo "infra deploy failed, no later phase started." >&2
-    phase_failed infra
+    echo "Infra: proving both owned services still stopped after the update."
+    verify_ecs_service_stopped ApiService api infra
+    verify_ecs_service_stopped WebService web infra
   fi
   if [ "$WAS_NEW" -eq 0 ]; then
+    if ! cloudformation_deploy "$TARGET_SERVICES" infra; then
+      echo "infra deploy failed, no later phase started." >&2
+      phase_failed infra
+    fi
     if ! "$AWS_BIN" cloudformation wait stack-create-complete --stack-name "$STACK_NAME" --region "$EXPECTED_REGION" 2>"$TMP_ERR"; then
       echo "infra create wait reported, verifying stack status before any claim." >&2
     fi
-  else
-    if ! "$AWS_BIN" cloudformation wait stack-update-complete --stack-name "$STACK_NAME" --region "$EXPECTED_REGION" 2>"$TMP_ERR"; then
-      ERR="$(cat "$TMP_ERR" 2>/dev/null || true)"
-      if is_auth_error "$ERR"; then
-        echo "infra wait authorization failure, state unknown, no later phase started." >&2
-        phase_failed infra
-      fi
-      echo "infra wait reported, verifying stack status before any claim." >&2
-    fi
+    require_stack_complete infra
   fi
-  require_stack_complete infra
   mark_done infra
   echo "Phase infra complete: stack $STACK_STATUS, services at 0 for safe update"
 fi
@@ -3409,6 +3645,260 @@ is_mutating_label() {
   esac
 }
 
+# Enumerate and validate every other owned journal record for this exact
+# stack, phase, and label, under the operation lock. A different source SHA
+# or an accepted --release-generation uses a new empty active path, which
+# never proves absence of prior work: each prior-generation active or
+# archived record must be owned, well-formed, complete, and terminally
+# re-proven STOPPED with every required essential container exit 0 before
+# any new release work. Same-generation archives from read-only rechecks
+# are field validated and must be complete; each was terminally proven at
+# archive time. Unknown, ambiguous, malformed, foreign, conflicting, or
+# over-bound records fail closed with no new launch and no automatic
+# resend. Every old record is preserved; nothing here deletes, renames, or
+# overwrites history. Requires the usual task globals plus ACTIVE_FILE and
+# LEGACY_ACTIVE_FILE set. Fails closed via phase_failed on any mismatch.
+reconcile_prior_generations() {
+  PRIOR_LIST="$(mktemp /tmp/launchcrew-prior-list-XXXXXX)"
+  PRIOR_ENUM="$(python3 - "$LAUNCH_JOURNAL_DIR" "$STACK_NAME" "$TASK_PHASE" "$TASK_LABEL" "$(basename "$ACTIVE_FILE")" "$(basename "$LEGACY_ACTIVE_FILE")" "$PRIOR_LIST" 2>/dev/null <<'PYEOF'
+import os, re, sys
+directory, stack, phase, label = sys.argv[1:5]
+active_base, legacy_base, out_path = sys.argv[5:8]
+prefix = "launchcrew-%s-%s-%s-" % (stack, phase, label)
+base = "launchcrew-" + re.escape(stack) + "-" + re.escape(phase) + "-" + re.escape(label)
+active_re = re.compile(r"^" + base + r"-([A-Za-z0-9_.-]+)-active\.json$")
+archive_re = re.compile(r"^" + base + r"-([A-Za-z0-9_.-]+)-complete-(lc-[A-Za-z0-9]{30})\.json$")
+try:
+    names = sorted(os.listdir(directory))
+except Exception:
+    print("PROOF\tLIST_FAILED")
+    sys.exit(0)
+found = []
+for name in names:
+    if not name.startswith(prefix) or not name.endswith(".json"):
+        continue
+    if name == active_base or name == legacy_base:
+        continue
+    if not active_re.match(name) and not archive_re.match(name):
+        print("PROOF\tUNKNOWN_FILE")
+        print("FILE\t%s" % name)
+        sys.exit(0)
+    found.append(name)
+    if len(found) > 32:
+        print("PROOF\tTOO_MANY")
+        sys.exit(0)
+try:
+    with open(out_path, "w", encoding="utf-8") as out:
+        for name in found:
+            out.write(name + "\n")
+except Exception:
+    print("PROOF\tLIST_FAILED")
+    sys.exit(0)
+print("PROOF\tOK")
+print("COUNT\t%d" % len(found))
+PYEOF
+)" || PRIOR_ENUM="PROOF\tLIST_FAILED"
+  PRIOR_ENUM_PROOF="$(printf '%s\n' "$PRIOR_ENUM" | awk -F'\t' '$1=="PROOF"{print $2}')"
+  PRIOR_ENUM_PROOF="$(printf '%s' "$PRIOR_ENUM_PROOF" | tr -d '[:space:]')"
+  if [ "$PRIOR_ENUM_PROOF" != "OK" ]; then
+    PRIOR_ENUM_FILE="$(printf '%s\n' "$PRIOR_ENUM" | awk -F'\t' '$1=="FILE"{print $2}')"
+    rm -f "$PRIOR_LIST"
+    echo "refused: $TASK_LABEL prior journal enumeration is $PRIOR_ENUM_PROOF ${PRIOR_ENUM_FILE:-}, preserved with no new launch and no overwrite. Inspect $LAUNCH_JOURNAL_DIR." >&2
+    phase_failed "$TASK_PHASE"
+  fi
+  PRIOR_ENUM_COUNT="$(printf '%s\n' "$PRIOR_ENUM" | awk -F'\t' '$1=="COUNT"{print $2}')"
+  PRIOR_ENUM_COUNT="$(printf '%s' "$PRIOR_ENUM_COUNT" | tr -d '[:space:]')"
+  if [ -z "$PRIOR_ENUM_COUNT" ] || [ "$PRIOR_ENUM_COUNT" = "0" ]; then
+    rm -f "$PRIOR_LIST"
+    return 0
+  fi
+  while IFS= read -r PRIOR_BASE || [ -n "$PRIOR_BASE" ]; do
+    [ -n "$PRIOR_BASE" ] || continue
+    PRIOR_PATH="$LAUNCH_JOURNAL_DIR/$PRIOR_BASE"
+    PRIOR_PARSED="$(python3 - "$PRIOR_PATH" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$STACK_NAME" "$CLUSTER_NAME" "$TASK_PHASE" "$TASK_LABEL" "$TASKDEF_LOGICAL" "$TARGET_DB_HEAD" "${STACK_ID:-}" 2>/dev/null <<'PYEOF'
+import json, os, sys
+(path, want_account, want_region, want_stack, want_cluster,
+ want_phase, want_label, want_logical, want_head,
+ want_stack_id) = sys.argv[1:12]
+try:
+    if os.path.islink(path):
+        print("PROOF\tSYMLINK")
+        sys.exit(0)
+    finfo = os.stat(path)
+    if (finfo.st_mode & 0o777) != 0o600:
+        print("PROOF\tMODE")
+        sys.exit(0)
+    if finfo.st_size <= 0 or finfo.st_size > 10240:
+        print("PROOF\tSIZE")
+        sys.exit(0)
+    with open(path, encoding="utf-8") as handle:
+        doc = json.load(handle)
+except Exception:
+    print("PROOF\tUNREADABLE")
+    sys.exit(0)
+if not isinstance(doc, dict):
+    print("PROOF\tMALFORMED")
+    sys.exit(0)
+allow = {"version", "stack", "phase", "label", "taskdef_logical", "taskdef_arn",
+         "cluster", "client_token", "config_digest", "region", "account",
+         "outcome", "task_arn", "updated_utc", "release_generation",
+         "source_sha", "target_head", "stack_id", "predecessor_task_arn",
+         "predecessor_outcome"}
+for key in doc:
+    if key not in allow:
+        print("PROOF\tFOREIGN_FIELD")
+        sys.exit(0)
+blob = json.dumps(doc).lower()
+for bad in ("password", ":secret:", "tls-cert-b64", "tls-key-b64",
+            "database-url", "BEGIN PRIVATE", "BEGIN CERTIFICATE"):
+    if bad in blob:
+        print("PROOF\tSECRET_FIELD")
+        sys.exit(0)
+checks = (("account", want_account), ("region", want_region),
+          ("stack", want_stack), ("cluster", want_cluster),
+          ("phase", want_phase), ("label", want_label),
+          ("taskdef_logical", want_logical))
+for field, want in checks:
+    if doc.get(field, "") != want:
+        print("PROOF\t%s_MISMATCH" % field.upper())
+        sys.exit(0)
+gen = doc.get("release_generation", "")
+if not isinstance(gen, str) or not gen:
+    print("PROOF\tGENERATION_MISSING")
+    sys.exit(0)
+for char in gen:
+    if char not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-":
+        print("PROOF\tGENERATION_MALFORMED")
+        sys.exit(0)
+if "head006" not in gen and "006" not in gen:
+    print("PROOF\tGENERATION_FOREIGN")
+    sys.exit(0)
+if doc.get("target_head", "") != want_head:
+    print("PROOF\tHEAD_MISMATCH")
+    sys.exit(0)
+if want_stack_id and doc.get("stack_id", "") != want_stack_id:
+    print("PROOF\tSTACKID_MISMATCH")
+    sys.exit(0)
+token = doc.get("client_token", "")
+if not isinstance(token, str) or len(token) != 33 or not token.startswith("lc-"):
+    print("PROOF\tTOKEN_MALFORMED")
+    sys.exit(0)
+outcome = doc.get("outcome", "")
+if outcome != "complete":
+    print("PROOF\tUNRESOLVED")
+    print("OUTCOME\t%s" % (outcome if isinstance(outcome, str) and outcome else "MISSING"))
+    sys.exit(0)
+task_arn = doc.get("task_arn", "")
+if not isinstance(task_arn, str) or not task_arn.startswith(
+        "arn:aws:ecs:%s:%s:task/%s/" % (want_region, want_account, want_cluster)):
+    print("PROOF\tTASKARN_FOREIGN")
+    sys.exit(0)
+taskdef_arn = doc.get("taskdef_arn", "")
+if not isinstance(taskdef_arn, str) or not taskdef_arn.startswith(
+        "arn:aws:ecs:%s:%s:task" "-definition/" % (want_region, want_account)):
+    print("PROOF\tTASKDEF_FOREIGN")
+    sys.exit(0)
+print("PROOF\tOK")
+print("TOKEN\t%s" % token)
+print("TASKARN\t%s" % task_arn)
+print("TASKDEF\t%s" % taskdef_arn)
+print("GEN\t%s" % gen)
+PYEOF
+)" || PRIOR_PARSED="PROOF\tUNREADABLE"
+    PRIOR_PROOF="$(printf '%s\n' "$PRIOR_PARSED" | awk -F'\t' '$1=="PROOF"{print $2}')"
+    PRIOR_PROOF="$(printf '%s' "$PRIOR_PROOF" | tr -d '[:space:]')"
+    PRIOR_OUTCOME="$(printf '%s\n' "$PRIOR_PARSED" | awk -F'\t' '$1=="OUTCOME"{print $2}' | tr -d '[:space:]')"
+    if [ "$PRIOR_PROOF" != "OK" ]; then
+      rm -f "$PRIOR_LIST"
+      echo "refused: $TASK_LABEL prior record $PRIOR_BASE is $PRIOR_PROOF ${PRIOR_OUTCOME:-}, preserved with no new launch and no overwrite. Inspect $PRIOR_PATH." >&2
+      phase_failed "$TASK_PHASE"
+    fi
+    PRIOR_TOKEN="$(printf '%s\n' "$PRIOR_PARSED" | awk -F'\t' '$1=="TOKEN"{print $2}' | tr -d '[:space:]')"
+    PRIOR_TASK="$(printf '%s\n' "$PRIOR_PARSED" | awk -F'\t' '$1=="TASKARN"{print $2}' | tr -d '[:space:]')"
+    PRIOR_TASKDEF="$(printf '%s\n' "$PRIOR_PARSED" | awk -F'\t' '$1=="TASKDEF"{print $2}' | tr -d '[:space:]')"
+    PRIOR_GEN="$(printf '%s\n' "$PRIOR_PARSED" | awk -F'\t' '$1=="GEN"{print $2}' | tr -d '[:space:]')"
+    if [ "$PRIOR_GEN" = "$RELEASE_GEN" ]; then
+      echo "$TASK_LABEL same-generation archive $PRIOR_BASE validated complete, preserved at $PRIOR_PATH."
+      continue
+    fi
+    PRIOR_DESC="$(mktemp /tmp/launchcrew-prior-desc-XXXXXX)"
+    if ! "$AWS_BIN" ecs describe-tasks --cluster "$CLUSTER_NAME" --tasks "$PRIOR_TASK" --region "$EXPECTED_REGION" --output json >"$PRIOR_DESC" 2>"$TMP_ERR"; then
+      rm -f "$PRIOR_DESC" "$PRIOR_LIST"
+      echo "refused: $TASK_LABEL prior $PRIOR_GEN predecessor terminal state unreadable, no new launch. Inspect $PRIOR_PATH." >&2
+      phase_failed "$TASK_PHASE"
+    fi
+    PRIOR_DEF_JSON="$(mktemp /tmp/launchcrew-prior-def-XXXXXX)"
+    if ! "$AWS_BIN" ecs "describe-task""-definition" --task"-definition" "$PRIOR_TASKDEF" --region "$EXPECTED_REGION" --output json >"$PRIOR_DEF_JSON" 2>"$TMP_ERR"; then
+      rm -f "$PRIOR_DESC" "$PRIOR_DEF_JSON" "$PRIOR_LIST"
+      echo "refused: $TASK_LABEL prior $PRIOR_GEN predecessor taskdef unreadable, no new launch. Inspect $PRIOR_PATH." >&2
+      phase_failed "$TASK_PHASE"
+    fi
+    PRIOR_CHECK="$(python3 - "$PRIOR_DESC" "$PRIOR_DEF_JSON" "$PRIOR_TASK" "$PRIOR_TASKDEF" "arn:aws:ecs:$EXPECTED_REGION:$EXPECTED_ACCOUNT:cluster/$CLUSTER_NAME" "$PRIOR_TOKEN" 2>/dev/null <<'PYEOF'
+import json, sys
+try:
+    describe = json.load(open(sys.argv[1]))
+    defined = json.load(open(sys.argv[2]))
+except Exception:
+    sys.exit(1)
+expected_arn, expected_taskdef, expected_cluster, expected_token = sys.argv[3:7]
+expected_names = []
+for container in (defined.get("taskDefinition", defined).get("containerDefinitions", []) or []):
+    if container.get("essential", True) and container.get("name"):
+        expected_names.append(container.get("name"))
+tasks = describe.get("tasks", [])
+failures = describe.get("failures", [])
+if failures or not tasks:
+    print("NO_TASK")
+    sys.exit(0)
+if not expected_names:
+    print("NO_EXPECTED_CONTAINERS")
+    sys.exit(0)
+task = tasks[0]
+if (task.get("taskArn", "") or "") != expected_arn:
+    print("WRONG_TASK_ARN")
+    sys.exit(0)
+if task.get("lastStatus") != "STOPPED":
+    print("NOT_STOPPED")
+    sys.exit(0)
+if (task.get("taskDefinitionArn", "") or "") != expected_taskdef:
+    print("WRONG_TASKDEF")
+    sys.exit(0)
+if (task.get("clusterArn", "") or "") != expected_cluster:
+    print("WRONG_CLUSTER")
+    sys.exit(0)
+if (task.get("startedBy", "") or "") != expected_token:
+    print("WRONG_TOKEN")
+    sys.exit(0)
+actual = task.get("containers", []) or []
+names = [(c.get("name", "?") or "?") for c in actual]
+if len(set(names)) != len(names):
+    print("DUPLICATE")
+    sys.exit(0)
+for name in sorted(set(names) - set(expected_names)):
+    print("UNEXPECTED:" + name)
+    sys.exit(0)
+for name in sorted(set(expected_names) - set(names)):
+    print("MISSING:" + name)
+    sys.exit(0)
+for container in actual:
+    if container.get("lastStatus") != "STOPPED" or container.get("exitCode") != 0:
+        print("EXIT_NONZERO:" + (container.get("name", "?") or "?"))
+        sys.exit(0)
+print("OK")
+PYEOF
+)" || PRIOR_CHECK="UNREADABLE"
+    rm -f "$PRIOR_DESC" "$PRIOR_DEF_JSON"
+    PRIOR_CHECK="$(printf '%s' "$PRIOR_CHECK" | tr -d '[:space:]')"
+    if [ "$PRIOR_CHECK" != "OK" ]; then
+      rm -f "$PRIOR_LIST"
+      echo "refused: $TASK_LABEL prior $PRIOR_GEN predecessor terminal proof is $PRIOR_CHECK, no new $RELEASE_GEN launch. Inspect $PRIOR_PATH." >&2
+      phase_failed "$TASK_PHASE"
+    fi
+    echo "$TASK_LABEL prior generation $PRIOR_GEN reconciled STOPPED exit 0, preserved at $PRIOR_PATH; new generation $RELEASE_GEN proceeds."
+  done <"$PRIOR_LIST"
+  rm -f "$PRIOR_LIST"
+}
+
 # Run one isolated one-off task and prove its terminal state. Jobs run in the
 # public subnets with a public IP under a group with no inbound rules: the
 # database stays private, and the job can actually reach ECR, Secrets Manager,
@@ -3436,7 +3926,10 @@ is_mutating_label() {
 # client-token and startedBy with no automatic resend. Ambiguous responses
 # use read-only recovery with empty remaining AMBIGUOUS. Terminal proof is
 # STOPPED with every expected essential container exit 0. No secret value in
-# argv, files, logs, or journal.
+# argv, files, logs, or journal. Under the same lock, every other owned
+# record for this stack, phase, and label across all prior generations is
+# enumerated and re-proven terminal before any new release work, so a new
+# empty active path never bypasses history.
 run_one_off_task() {
   TASKDEF_LOGICAL="$1"
   TASK_LABEL="$2"
@@ -3670,6 +4163,7 @@ PYEOF
     PREDECESSOR_OUTCOME="complete"
     echo "$TASK_LABEL legacy predecessor reconciled STOPPED exit 0, preserved at $LEGACY_ACTIVE_FILE; new generation $RELEASE_GEN proceeds."
   fi
+  reconcile_prior_generations
   if [ -f "$ACTIVE_FILE" ]; then
     PRIOR_PARSED="$(python3 - "$ACTIVE_FILE" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$STACK_NAME" "$CLUSTER_NAME" "$TASK_PHASE" "$TASK_LABEL" "$TASKDEF_LOGICAL" "$TASKDEF_ARN" "$CONFIG_DIGEST" "$RELEASE_GEN" "$TARGET_DB_HEAD" "${STACK_ID:-}" 2>/dev/null <<'PYEOF'
 import json, os, sys
@@ -3794,6 +4288,12 @@ PYEOF
         release_operation_lock
         return 0
       else
+        [ -n "$PRIOR_TASK" ] && [ "$PRIOR_TASK" != "None" ] || { echo "refused: $TASK_LABEL prior read-only success has no task ARN, cannot re-prove, no fresh recheck. Inspect $ACTIVE_FILE." >&2; phase_failed "$TASK_PHASE"; }
+        CLIENT_TOKEN="$PRIOR_TOKEN"
+        JOURNAL_FILE="$ACTIVE_FILE"
+        TASK_ARN="$PRIOR_TASK"
+        echo "$TASK_LABEL prior read-only complete, re-proving terminal state before archive with no resend."
+        prove_terminal_task
         ARCHIVE_FILE="$LAUNCH_JOURNAL_DIR/launchcrew-$STACK_NAME-$TASK_PHASE-$TASK_LABEL-$RELEASE_GEN-complete-$PRIOR_TOKEN.json"
         if [ -L "$ARCHIVE_FILE" ] || [ -e "$ARCHIVE_FILE" ]; then echo "refused: $TASK_LABEL read-only archive path exists, no fresh recheck. Inspect $ACTIVE_FILE." >&2; phase_failed "$TASK_PHASE"; fi
         if ! python3 - "$ACTIVE_FILE" "$ARCHIVE_FILE" 2>/dev/null <<'PYEOF'
@@ -4071,24 +4571,27 @@ PYEOF
   esac
 }
 
-# Fail-closed ECS service stopped proof for quiesce. Same owned identity
-# resolution as enable, but requires ACTIVE desired 0 running 0 pending 0.
-# Used only after the quiesce change set executes. Any mismatch refuses.
+# Fail-closed ECS service stopped proof for quiesce and infra. Same owned
+# identity resolution as enable, but requires ACTIVE desired 0 running 0
+# pending 0. Used after the quiesce change set executes and before plus
+# after any owned infra task definition update. Any mismatch refuses. The
+# optional third argument names the failing phase, default quiesce.
 verify_ecs_service_stopped() {
   STOP_LOGICAL="$1"
   STOP_SHORT="$2"
+  STOP_LABEL="${3:-quiesce}"
   STOP_PHYSICAL=""
   if ! STOP_PHYSICAL="$(stack_resource "$STOP_LOGICAL" 2>"$TMP_ERR")"; then
     echo "service $STOP_SHORT owned identifier unreadable, not claimed stopped." >&2
-    phase_failed quiesce
+    phase_failed "$STOP_LABEL"
   fi
   STOP_PHYSICAL="$(printf '%s' "$STOP_PHYSICAL" | tr -d '[:space:]')"
-  [ -n "$STOP_PHYSICAL" ] && [ "$STOP_PHYSICAL" != "None" ] || { echo "refused: service $STOP_SHORT owned identifier missing, not claimed stopped." >&2; phase_failed quiesce; }
+  [ -n "$STOP_PHYSICAL" ] && [ "$STOP_PHYSICAL" != "None" ] || { echo "refused: service $STOP_SHORT owned identifier missing, not claimed stopped." >&2; phase_failed "$STOP_LABEL"; }
   STOP_JSON="$(mktemp /tmp/launchcrew-svc-stop-XXXXXX)"
   if ! "$AWS_BIN" ecs describe-services --cluster "$CLUSTER_NAME" --services "$STOP_PHYSICAL" --region "$EXPECTED_REGION" --output json >"$STOP_JSON" 2>"$TMP_ERR"; then
     rm -f "$STOP_JSON"
     echo "service $STOP_SHORT counts unreadable, not claimed stopped." >&2
-    phase_failed quiesce
+    phase_failed "$STOP_LABEL"
   fi
   STOP_PROOF="$(python3 - "$STOP_JSON" "$STOP_PHYSICAL" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$CLUSTER_NAME" 2>/dev/null <<'PYEOF'
 import json, sys
@@ -4160,13 +4663,80 @@ if pending != 0:
     sys.exit(0)
 print("OK")
 PYEOF
-)" || { rm -f "$STOP_JSON"; echo "service $STOP_SHORT proof unreadable, not claimed stopped." >&2; phase_failed quiesce; }
+)" || { rm -f "$STOP_JSON"; echo "service $STOP_SHORT proof unreadable, not claimed stopped." >&2; phase_failed "$STOP_LABEL"; }
   rm -f "$STOP_JSON"
   STOP_PROOF="$(printf '%s' "$STOP_PROOF" | tr -d '[:space:]')"
   case "$STOP_PROOF" in
     OK)
       echo "Verified service $STOP_PHYSICAL desiredCount 0 runningCount 0 pendingCount 0 ACTIVE (stopped, not serving)" ;;
-    *) echo "refused: service $STOP_SHORT proof is $STOP_PROOF, expected ACTIVE fixed 0/0/0 on owned identity" >&2; phase_failed quiesce ;;
+    *) echo "refused: service $STOP_SHORT proof is $STOP_PROOF, expected ACTIVE fixed 0/0/0 on owned identity" >&2; phase_failed "$STOP_LABEL" ;;
+  esac
+}
+
+# Fail-closed ALB target group drain proof for quiesce. Resolves the exact
+# owned target group ARN via describe-stack-resource, requires the owned
+# account and region shape, then requires every reported target to be fully
+# drained: an empty target list or every TargetHealth State unused. Any
+# healthy, unhealthy, initial, draining, deregistration, unavailable, or
+# malformed entry refuses, because in-flight targets must finish before a
+# schema migration. Unknown or unreadable health fails closed.
+verify_target_group_drained() {
+  TG_LOGICAL="$1"
+  TG_SHORT="$2"
+  TG_ARN=""
+  if ! TG_ARN="$(stack_resource "$TG_LOGICAL" 2>"$TMP_ERR")"; then
+    echo "target group $TG_SHORT owned ARN unreadable, not claimed drained." >&2
+    phase_failed quiesce
+  fi
+  TG_ARN="$(printf '%s' "$TG_ARN" | tr -d '[:space:]')"
+  case "$TG_ARN" in
+    "arn:aws:elasticloadbalancing:$EXPECTED_REGION:$EXPECTED_ACCOUNT:targetgroup/"*) ;;
+    *) echo "refused: target group $TG_SHORT ARN is foreign or malformed, not claimed drained." >&2; phase_failed quiesce ;;
+  esac
+  TG_JSON="$(mktemp /tmp/launchcrew-tg-XXXXXX)"
+  if ! "$AWS_BIN" elbv2 describe-target-health --target-group-arn "$TG_ARN" --region "$EXPECTED_REGION" --output json >"$TG_JSON" 2>"$TMP_ERR"; then
+    rm -f "$TG_JSON"
+    echo "target group $TG_SHORT health unreadable, not claimed drained." >&2
+    phase_failed quiesce
+  fi
+  TG_PROOF="$(python3 - "$TG_JSON" 2>/dev/null <<'PYEOF'
+import json, sys
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    print("MALFORMED")
+    sys.exit(0)
+if not isinstance(doc, dict):
+    print("MALFORMED")
+    sys.exit(0)
+descs = doc.get("TargetHealthDescriptions", None)
+if not isinstance(descs, list):
+    print("MALFORMED")
+    sys.exit(0)
+if len(descs) > 100:
+    print("TOO_MANY")
+    sys.exit(0)
+for entry in descs:
+    if not isinstance(entry, dict):
+        print("MALFORMED")
+        sys.exit(0)
+    health = entry.get("TargetHealth", None)
+    if not isinstance(health, dict):
+        print("MALFORMED")
+        sys.exit(0)
+    state = health.get("State", "") or ""
+    if state != "unused":
+        print("IN_FLIGHT_%s" % (state or "EMPTY"))
+        sys.exit(0)
+print("OK")
+PYEOF
+)" || { rm -f "$TG_JSON"; echo "target group $TG_SHORT proof unreadable, not claimed drained." >&2; phase_failed quiesce; }
+  rm -f "$TG_JSON"
+  TG_PROOF="$(printf '%s' "$TG_PROOF" | tr -d '[:space:]')"
+  case "$TG_PROOF" in
+    OK)
+      echo "Verified target group $TG_ARN drained with no in-flight targets" ;;
+    *) echo "refused: target group $TG_SHORT health proof is $TG_PROOF, expected drained with no in-flight targets" >&2; phase_failed quiesce ;;
   esac
 }
 
@@ -4466,7 +5036,55 @@ if wants_phase enable; then
   reprove_prior_one_off_readonly MigrationTaskDefinition migration migrate
   reprove_prior_one_off_readonly VerifyTaskDefinition verify migrate
   echo "Enable proof: prior material, migration, and verify journals re-proved STOPPED exit 0 with no new run-task."
+  ENABLE_OLD_API_TASKDEF=""
+  ENABLE_OLD_WEB_TASKDEF=""
+  if ! ENABLE_OLD_API_TASKDEF="$(stack_resource ApiTaskDefinition 2>"$TMP_ERR")"; then
+    echo "refused: enable old ApiTaskDefinition unreadable, no change made" >&2; phase_failed enable
+  fi
+  if ! ENABLE_OLD_WEB_TASKDEF="$(stack_resource WebTaskDefinition 2>"$TMP_ERR")"; then
+    echo "refused: enable old WebTaskDefinition unreadable, no change made" >&2; phase_failed enable
+  fi
+  ENABLE_OLD_API_TASKDEF="$(printf '%s' "$ENABLE_OLD_API_TASKDEF" | tr -d '[:space:]')"
+  ENABLE_OLD_WEB_TASKDEF="$(printf '%s' "$ENABLE_OLD_WEB_TASKDEF" | tr -d '[:space:]')"
+  [ -n "$ENABLE_OLD_API_TASKDEF" ] && [ "$ENABLE_OLD_API_TASKDEF" != "None" ] || { echo "refused: enable old ApiTaskDefinition missing, no change made" >&2; phase_failed enable; }
+  [ -n "$ENABLE_OLD_WEB_TASKDEF" ] && [ "$ENABLE_OLD_WEB_TASKDEF" != "None" ] || { echo "refused: enable old WebTaskDefinition missing, no change made" >&2; phase_failed enable; }
+  ENABLE_OLD_API_JSON="$(mktemp /tmp/launchcrew-enable-old-api-XXXXXX)"
+  ENABLE_OLD_WEB_JSON="$(mktemp /tmp/launchcrew-enable-old-web-XXXXXX)"
+  if ! fetch_taskdef_json ApiTaskDefinition "$ENABLE_OLD_API_JSON"; then
+    rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON"
+    echo "refused: enable old ApiTaskDefinition document unreadable, no change made" >&2; phase_failed enable
+  fi
+  if ! fetch_taskdef_json WebTaskDefinition "$ENABLE_OLD_WEB_JSON"; then
+    rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON"
+    echo "refused: enable old WebTaskDefinition document unreadable, no change made" >&2; phase_failed enable
+  fi
+  ENABLE_OLD_IMAGES="$(python3 - "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON" 2>/dev/null <<'PYEOF'
+import json, sys
+try:
+    api = json.load(open(sys.argv[1]))
+    web = json.load(open(sys.argv[2]))
+except Exception:
+    sys.exit(1)
+def image_of(doc, name):
+    taskdef = doc.get("taskDefinition", doc)
+    for container in taskdef.get("containerDefinitions", []) or []:
+        if (container.get("name", "") or "") == name:
+            return container.get("image", "") or ""
+    return ""
+print("API\t%s" % image_of(api, "api"))
+print("WEB\t%s" % image_of(web, "web-app"))
+print("PROXY\t%s" % image_of(web, "web-proxy"))
+PYEOF
+)" || { rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON"; echo "refused: enable old taskdef images unreadable, no change made" >&2; phase_failed enable; }
+  ENABLE_OLD_API_IMAGE="$(printf '%s\n' "$ENABLE_OLD_IMAGES" | awk -F'\t' '$1=="API"{print $2}')"
+  ENABLE_OLD_WEB_IMAGE="$(printf '%s\n' "$ENABLE_OLD_IMAGES" | awk -F'\t' '$1=="WEB"{print $2}')"
+  ENABLE_OLD_PROXY_IMAGE="$(printf '%s\n' "$ENABLE_OLD_IMAGES" | awk -F'\t' '$1=="PROXY"{print $2}')"
+  [ -n "$ENABLE_OLD_API_IMAGE" ] || { rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON"; echo "refused: enable old api image missing, no change made" >&2; phase_failed enable; }
+  [ -n "$ENABLE_OLD_WEB_IMAGE" ] || { rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON"; echo "refused: enable old web image missing, no change made" >&2; phase_failed enable; }
+  [ -n "$ENABLE_OLD_PROXY_IMAGE" ] || { rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON"; echo "refused: enable old proxy image missing, no change made" >&2; phase_failed enable; }
+  echo "Enable identity pinned: ApiTaskDefinition and WebTaskDefinition plus three images must be unchanged by this deploy"
   if ! cloudformation_deploy "true" enable; then
+    rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON"
     echo "enable deploy failed, services unchanged." >&2
     phase_failed enable
   fi
@@ -4476,6 +5094,62 @@ if wants_phase enable; then
   require_stack_complete enable
   verify_ecs_service ApiService api
   verify_ecs_service WebService web
+  ENABLE_NEW_API_TASKDEF=""
+  ENABLE_NEW_WEB_TASKDEF=""
+  if ! ENABLE_NEW_API_TASKDEF="$(stack_resource ApiTaskDefinition 2>"$TMP_ERR")"; then
+    rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON"
+    echo "refused: enable new ApiTaskDefinition unreadable after deploy" >&2; phase_failed enable
+  fi
+  if ! ENABLE_NEW_WEB_TASKDEF="$(stack_resource WebTaskDefinition 2>"$TMP_ERR")"; then
+    rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON"
+    echo "refused: enable new WebTaskDefinition unreadable after deploy" >&2; phase_failed enable
+  fi
+  ENABLE_NEW_API_TASKDEF="$(printf '%s' "$ENABLE_NEW_API_TASKDEF" | tr -d '[:space:]')"
+  ENABLE_NEW_WEB_TASKDEF="$(printf '%s' "$ENABLE_NEW_WEB_TASKDEF" | tr -d '[:space:]')"
+  if [ "$ENABLE_NEW_API_TASKDEF" != "$ENABLE_OLD_API_TASKDEF" ]; then
+    rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON"
+    echo "refused: ApiTaskDefinition changed during enable, task definition and image updates under services are blocked. Run explicit quiesce plus infra first." >&2; phase_failed enable
+  fi
+  if [ "$ENABLE_NEW_WEB_TASKDEF" != "$ENABLE_OLD_WEB_TASKDEF" ]; then
+    rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON"
+    echo "refused: WebTaskDefinition changed during enable, task definition and image updates under services are blocked. Run explicit quiesce plus infra first." >&2; phase_failed enable
+  fi
+  ENABLE_NEW_API_JSON="$(mktemp /tmp/launchcrew-enable-new-api-XXXXXX)"
+  ENABLE_NEW_WEB_JSON="$(mktemp /tmp/launchcrew-enable-new-web-XXXXXX)"
+  if ! fetch_taskdef_json ApiTaskDefinition "$ENABLE_NEW_API_JSON"; then
+    rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON" "$ENABLE_NEW_API_JSON" "$ENABLE_NEW_WEB_JSON"
+    echo "refused: enable new ApiTaskDefinition document unreadable after deploy" >&2; phase_failed enable
+  fi
+  if ! fetch_taskdef_json WebTaskDefinition "$ENABLE_NEW_WEB_JSON"; then
+    rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON" "$ENABLE_NEW_API_JSON" "$ENABLE_NEW_WEB_JSON"
+    echo "refused: enable new WebTaskDefinition document unreadable after deploy" >&2; phase_failed enable
+  fi
+  ENABLE_NEW_IMAGES="$(python3 - "$ENABLE_NEW_API_JSON" "$ENABLE_NEW_WEB_JSON" 2>/dev/null <<'PYEOF'
+import json, sys
+try:
+    api = json.load(open(sys.argv[1]))
+    web = json.load(open(sys.argv[2]))
+except Exception:
+    sys.exit(1)
+def image_of(doc, name):
+    taskdef = doc.get("taskDefinition", doc)
+    for container in taskdef.get("containerDefinitions", []) or []:
+        if (container.get("name", "") or "") == name:
+            return container.get("image", "") or ""
+    return ""
+print("API\t%s" % image_of(api, "api"))
+print("WEB\t%s" % image_of(web, "web-app"))
+print("PROXY\t%s" % image_of(web, "web-proxy"))
+PYEOF
+)" || { rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON" "$ENABLE_NEW_API_JSON" "$ENABLE_NEW_WEB_JSON"; echo "refused: enable new taskdef images unreadable after deploy" >&2; phase_failed enable; }
+  ENABLE_NEW_API_IMAGE="$(printf '%s\n' "$ENABLE_NEW_IMAGES" | awk -F'\t' '$1=="API"{print $2}')"
+  ENABLE_NEW_WEB_IMAGE="$(printf '%s\n' "$ENABLE_NEW_IMAGES" | awk -F'\t' '$1=="WEB"{print $2}')"
+  ENABLE_NEW_PROXY_IMAGE="$(printf '%s\n' "$ENABLE_NEW_IMAGES" | awk -F'\t' '$1=="PROXY"{print $2}')"
+  rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON" "$ENABLE_NEW_API_JSON" "$ENABLE_NEW_WEB_JSON"
+  [ "$ENABLE_NEW_API_IMAGE" = "$ENABLE_OLD_API_IMAGE" ] || { echo "refused: api image changed during enable, task definition and image updates under services are blocked. Run explicit quiesce plus infra first." >&2; phase_failed enable; }
+  [ "$ENABLE_NEW_WEB_IMAGE" = "$ENABLE_OLD_WEB_IMAGE" ] || { echo "refused: web image changed during enable, task definition and image updates under services are blocked. Run explicit quiesce plus infra first." >&2; phase_failed enable; }
+  [ "$ENABLE_NEW_PROXY_IMAGE" = "$ENABLE_OLD_PROXY_IMAGE" ] || { echo "refused: proxy image changed during enable, task definition and image updates under services are blocked. Run explicit quiesce plus infra first." >&2; phase_failed enable; }
+  echo "Verified enable identity: task definitions and images unchanged by this deploy"
   mark_done enable
   echo "Phase enable complete: both services fixed count 1 each, no autoscaling"
 fi
@@ -4491,6 +5165,8 @@ if [ "$PHASE" = "quiesce" ]; then
     echo "Quiesce: stack already EnableServices=false, verifying stopped state with no change."
     verify_ecs_service_stopped ApiService api
     verify_ecs_service_stopped WebService web
+    verify_target_group_drained ApiTargetGroup api
+    verify_target_group_drained WebTargetGroup web
     mark_done quiesce
     echo "Phase quiesce complete: already stopped, no change made"
   else
@@ -4600,52 +5276,143 @@ PYEOF
         QUIESCE_PARAM_ARGS="$QUIESCE_PARAM_ARGS ParameterKey=$QUIESCE_KEY,UsePreviousValue=true"
       fi
     done <"$QUIESCE_ARGS_FILE"
+    QUIESCE_KEYS_CSV="$(sort -u "$QUIESCE_ARGS_FILE" 2>/dev/null | tr '\n' ',' || true)"
     rm -f "$QUIESCE_ARGS_FILE" "$QUIESCE_STACK_JSON"
     [ -n "$QUIESCE_PARAM_ARGS" ] || { rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON"; echo "refused: quiesce parameters empty, no change made" >&2; phase_failed quiesce; }
     echo "Quiesce change set uses the existing deployed template with all existing values except EnableServices=false"
     # shellcheck disable=SC2086
     if ! "$AWS_BIN" cloudformation create-change-set --stack-name "$STACK_NAME" --change-set-name "$QUIESCE_CHANGESET" --change-set-type UPDATE --use-previous-template --parameters $QUIESCE_PARAM_ARGS --capabilities CAPABILITY_NAMED_IAM --tags Key=Project,Value=LaunchCrew Key=Environment,Value=demo --region "$EXPECTED_REGION" --output json >"$TMP_JSON" 2>"$TMP_ERR"; then
       rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON"
-      echo "refused: quiesce change set create failed, no change made" >&2; phase_failed quiesce
+      echo "refused: quiesce change set create failed; an existing same-name change set is never deleted or replaced, inspect $QUIESCE_CHANGESET manually after review. No change made." >&2; phase_failed quiesce
     fi
-    QUIESCE_DESC_JSON="$(mktemp /tmp/launchcrew-quiesce-desc-XXXXXX)"
-    if ! "$AWS_BIN" cloudformation describe-change-set --stack-name "$STACK_NAME" --change-set-name "$QUIESCE_CHANGESET" --region "$EXPECTED_REGION" --output json >"$QUIESCE_DESC_JSON" 2>"$TMP_ERR"; then
-      rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON" "$QUIESCE_DESC_JSON"
-      "$AWS_BIN" cloudformation delete-change-set --stack-name "$STACK_NAME" --change-set-name "$QUIESCE_CHANGESET" --region "$EXPECTED_REGION" >/dev/null 2>&1 || true
-      echo "refused: quiesce change set unreadable, deleted with no change made" >&2; phase_failed quiesce
-    fi
-    QUIESCE_REVIEW="$(python3 - "$QUIESCE_DESC_JSON" "$STACK_NAME" "$STACK_ID" 2>/dev/null <<'PYEOF'
+    QUIESCE_PAGES_DIR="$(mktemp -d /tmp/launchcrew-quiesce-pages-XXXXXX)"
+    QUIESCE_NEXT=""
+    QUIESCE_PAGE_NUM=0
+    while [ "$QUIESCE_PAGE_NUM" -lt 3 ]; do
+      QUIESCE_PAGE_NUM=$((QUIESCE_PAGE_NUM + 1))
+      QUIESCE_PAGE_FILE="$QUIESCE_PAGES_DIR/page-$QUIESCE_PAGE_NUM.json"
+      QUIESCE_INPUT="$(mktemp /tmp/launchcrew-quiesce-in-XXXXXX)"
+      if ! python3 - "$QUIESCE_INPUT" "$STACK_NAME" "$QUIESCE_CHANGESET" "$QUIESCE_NEXT" 2>/dev/null <<'PYEOF'
 import json, sys
-path, want_stack, want_id = sys.argv[1:4]
+path, stack, changeset, token = sys.argv[1:5]
+doc = {"StackName": stack, "ChangeSetName": changeset}
+if token and token != "END" and token != "None":
+    doc["NextToken"] = token
+with open(path, "w", encoding="utf-8") as out:
+    json.dump(doc, out)
+PYEOF
+      then
+        rm -f "$QUIESCE_INPUT"
+        rm -rf "$QUIESCE_PAGES_DIR"
+        rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON"
+        echo "refused: quiesce change set describe input failed, no change made. Pending change set $QUIESCE_CHANGESET preserved for inspection." >&2
+        phase_failed quiesce
+      fi
+      if ! "$AWS_BIN" cloudformation describe-change-set --cli-input-json "file://$QUIESCE_INPUT" --no-paginate --region "$EXPECTED_REGION" --output json >"$QUIESCE_PAGE_FILE" 2>"$TMP_ERR"; then
+        rm -f "$QUIESCE_INPUT"
+        rm -rf "$QUIESCE_PAGES_DIR"
+        rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON"
+        echo "refused: quiesce change set $QUIESCE_CHANGESET unreadable, no change made. Pending change set preserved for inspection." >&2
+        phase_failed quiesce
+      fi
+      rm -f "$QUIESCE_INPUT"
+      QUIESCE_NEXT="$(python3 - "$QUIESCE_PAGE_FILE" 2>/dev/null <<'PYEOF'
+import json, sys
 try:
-    doc = json.load(open(path))
+    doc = json.load(open(sys.argv[1]))
 except Exception:
     print("MALFORMED")
     sys.exit(0)
 if not isinstance(doc, dict):
     print("MALFORMED")
     sys.exit(0)
-if (doc.get("StackName", "") or "") != want_stack:
-    print("STACK_MISMATCH")
-    sys.exit(0)
-if (doc.get("StackId", "") or "") != want_id:
-    print("STACKID_MISMATCH")
-    sys.exit(0)
-if (doc.get("Status", "") or "") != "CREATE_COMPLETE":
-    print("STATUS_%s" % (doc.get("Status", "") or "EMPTY"))
-    sys.exit(0)
-if (doc.get("ExecutionStatus", "") or "") != "AVAILABLE":
-    print("EXEC_%s" % (doc.get("ExecutionStatus", "") or "EMPTY"))
-    sys.exit(0)
-changes = doc.get("Changes", None)
-if not isinstance(changes, list):
+if "nextToken" in doc:
     print("MALFORMED")
     sys.exit(0)
+nxt = doc.get("NextToken", "")
+if nxt is None or nxt == "None":
+    nxt = ""
+if not isinstance(nxt, str):
+    print("MALFORMED")
+    sys.exit(0)
+print("END" if not nxt.strip() else nxt.strip())
+PYEOF
+)" || QUIESCE_NEXT="MALFORMED"
+      QUIESCE_NEXT="$(printf '%s' "$QUIESCE_NEXT" | tr -d '[:space:]')"
+      if [ "$QUIESCE_NEXT" = "MALFORMED" ]; then
+        rm -rf "$QUIESCE_PAGES_DIR"
+        rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON"
+        echo "refused: quiesce change set page $QUIESCE_PAGE_NUM malformed, no change made. Pending change set $QUIESCE_CHANGESET preserved for inspection." >&2
+        phase_failed quiesce
+      fi
+      if [ -z "$QUIESCE_NEXT" ] || [ "$QUIESCE_NEXT" = "END" ] || [ "$QUIESCE_NEXT" = "None" ]; then
+        QUIESCE_NEXT=""
+        break
+      fi
+    done
+    if [ -n "$QUIESCE_NEXT" ]; then
+      rm -rf "$QUIESCE_PAGES_DIR"
+      rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON"
+      echo "refused: quiesce change set has unreviewed pages after 3, no change made. Pending change set $QUIESCE_CHANGESET preserved for inspection." >&2
+      phase_failed quiesce
+    fi
+    QUIESCE_RAW="$(python3 - "$QUIESCE_PAGES_DIR" "$STACK_NAME" "$STACK_ID" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$QUIESCE_CHANGESET" "$QUIESCE_KEYS_CSV" 2>/dev/null <<'PYEOF'
+import glob, json, os, sys
+pages_dir, want_stack, want_id = sys.argv[1:4]
+want_account, want_region, want_name, want_keys_csv = sys.argv[4:8]
+want_keys = set(part for part in want_keys_csv.split(",") if part)
+pages = sorted(glob.glob(os.path.join(pages_dir, "page-*.json")))
+if not pages:
+    print("MALFORMED")
+    sys.exit(0)
+try:
+    first = json.load(open(pages[0]))
+except Exception:
+    print("MALFORMED")
+    sys.exit(0)
+if not isinstance(first, dict):
+    print("MALFORMED")
+    sys.exit(0)
+cs_id = first.get("ChangeSetId", "") or ""
+if not isinstance(cs_id, str) or not cs_id.startswith(
+        "arn:aws:cloudformation:%s:%s:changeSet/%s/" % (want_region, want_account, want_name)):
+    print("ID_MISMATCH")
+    sys.exit(0)
+if (first.get("ChangeSetName", "") or "") != want_name:
+    print("NAME_MISMATCH")
+    sys.exit(0)
+if (first.get("StackName", "") or "") != want_stack:
+    print("STACK_MISMATCH")
+    sys.exit(0)
+if (first.get("StackId", "") or "") != want_id:
+    print("STACKID_MISMATCH")
+    sys.exit(0)
+if (first.get("Status", "") or "") != "CREATE_COMPLETE":
+    print("STATUS_%s" % (first.get("Status", "") or "EMPTY"))
+    sys.exit(0)
+if (first.get("ExecutionStatus", "") or "") != "AVAILABLE":
+    print("EXEC_%s" % (first.get("ExecutionStatus", "") or "EMPTY"))
+    sys.exit(0)
+changes = []
+for page_file in pages:
+    try:
+        page = json.load(open(page_file))
+    except Exception:
+        print("MALFORMED")
+        sys.exit(0)
+    if not isinstance(page, dict):
+        print("MALFORMED")
+        sys.exit(0)
+    part = page.get("Changes", None)
+    if not isinstance(part, list):
+        print("MALFORMED")
+        sys.exit(0)
+    changes.extend(part)
+    if len(changes) > 4:
+        print("TOO_MANY_%d" % len(changes))
+        sys.exit(0)
 if len(changes) == 0:
     print("EMPTY")
-    sys.exit(0)
-if len(changes) > 4:
-    print("TOO_MANY_%s" % len(changes))
     sys.exit(0)
 seen = set()
 for entry in changes:
@@ -4685,25 +5452,110 @@ for entry in changes:
             print("SCOPE_%s" % logical)
             sys.exit(0)
         for item in scope:
-            if item not in ("Properties", "Tags", "Metadata"):
+            if item != "Properties":
                 print("SCOPE_%s_%s" % (logical, str(item)))
                 sys.exit(0)
+    details = rc.get("Details", None)
+    if not isinstance(details, list) or not details:
+        print("DETAILS_%s_MISSING" % logical)
+        sys.exit(0)
+    if len(details) > 10:
+        print("DETAILS_%s_MANY" % logical)
+        sys.exit(0)
+    for detail in details:
+        if not isinstance(detail, dict):
+            print("DETAILS_%s_MALFORMED" % logical)
+            sys.exit(0)
+        target = detail.get("Target", None)
+        if not isinstance(target, dict):
+            print("DETAILS_%s_MALFORMED" % logical)
+            sys.exit(0)
+        attr = target.get("Attribute", "") or ""
+        name = target.get("Name", "") or ""
+        recre = target.get("RequiresRecreation", "") or ""
+        if attr != "Properties":
+            print("DETAIL_%s_ATTR_%s" % (logical, attr or "EMPTY"))
+            sys.exit(0)
+        if name != "DesiredCount":
+            print("DETAIL_%s_NAME_%s" % (logical, name or "EMPTY"))
+            sys.exit(0)
+        if recre != "Never":
+            print("DETAIL_%s_RECRE_%s" % (logical, recre or "EMPTY"))
+            sys.exit(0)
 if seen != {"ApiService", "WebService"}:
     print("INCOMPLETE_%s" % ",".join(sorted(seen)))
     sys.exit(0)
+if not want_keys or "EnableServices" not in want_keys or len(want_keys) > 20:
+    print("PARAMS_STACK_KEYS")
+    sys.exit(0)
+got_params = first.get("Parameters", None)
+if not isinstance(got_params, list):
+    print("PARAMS_MISSING")
+    sys.exit(0)
+seen_params = set()
+for item in got_params:
+    if not isinstance(item, dict):
+        print("PARAMS_MALFORMED")
+        sys.exit(0)
+    key = item.get("ParameterKey", "") or ""
+    if not key or key in seen_params:
+        print("PARAMS_DUP_%s" % (key or "EMPTY"))
+        sys.exit(0)
+    seen_params.add(key)
+    if key not in want_keys:
+        print("PARAMS_FOREIGN_%s" % key)
+        sys.exit(0)
+    if key == "EnableServices":
+        if item.get("UsePreviousValue", False):
+            print("PARAMS_PREVIOUS_EnableServices")
+            sys.exit(0)
+        if (item.get("ParameterValue", "") or "") != "false":
+            print("PARAMS_VALUE_EnableServices")
+            sys.exit(0)
+    else:
+        if not item.get("UsePreviousValue", False):
+            print("PARAMS_PREVIOUS_%s" % key)
+            sys.exit(0)
+        if (item.get("ParameterValue", "") or "") != "":
+            print("PARAMS_VALUE_%s" % key)
+            sys.exit(0)
+if seen_params != want_keys:
+    print("PARAMS_INCOMPLETE")
+    sys.exit(0)
+tags = first.get("Tags", None)
+if not isinstance(tags, list):
+    print("TAGS_MISSING")
+    sys.exit(0)
+pairs = set()
+for item in tags:
+    if not isinstance(item, dict):
+        print("TAGS_MALFORMED")
+        sys.exit(0)
+    pairs.add(((item.get("Key", "") or ""), (item.get("Value", "") or "")))
+if pairs != {("Project", "LaunchCrew"), ("Environment", "demo")}:
+    print("TAGS_MISMATCH")
+    sys.exit(0)
+caps = first.get("Capabilities", None)
+if not isinstance(caps, list) or "CAPABILITY_NAMED_IAM" not in caps:
+    print("CAPABILITIES")
+    sys.exit(0)
 print("OK")
+print("ID\t%s" % cs_id)
 PYEOF
-)" || QUIESCE_REVIEW="UNREADABLE"
-    QUIESCE_REVIEW="$(printf '%s' "$QUIESCE_REVIEW" | tr -d '[:space:]')"
+)" || QUIESCE_RAW="UNREADABLE"
+    QUIESCE_REVIEW="$(printf '%s\n' "$QUIESCE_RAW" | head -n 1 | tr -d '[:space:]')"
     if [ "$QUIESCE_REVIEW" != "OK" ]; then
-      rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON" "$QUIESCE_DESC_JSON"
-      "$AWS_BIN" cloudformation delete-change-set --stack-name "$STACK_NAME" --change-set-name "$QUIESCE_CHANGESET" --region "$EXPECTED_REGION" >/dev/null 2>&1 || true
-      echo "refused: quiesce change set proof is $QUIESCE_REVIEW, expected only ApiService and WebService Modify with no replacement. Change set deleted with no change made." >&2
+      rm -rf "$QUIESCE_PAGES_DIR"
+      rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON"
+      echo "refused: quiesce change set proof is $QUIESCE_REVIEW, expected only ApiService and WebService DesiredCount to 0 with no replacement and no other property, tag, or resource change. Pending change set $QUIESCE_CHANGESET preserved for inspection, no execute made, no delete made." >&2
       phase_failed quiesce
     fi
-    rm -f "$QUIESCE_DESC_JSON"
-    echo "Quiesce change set reviewed: only ApiService and WebService Modify to DesiredCount 0, no replacement, no DB or network or cert or secrets change"
-    if ! "$AWS_BIN" cloudformation execute-change-set --stack-name "$STACK_NAME" --change-set-name "$QUIESCE_CHANGESET" --region "$EXPECTED_REGION" >/dev/null 2>"$TMP_ERR"; then
+    QUIESCE_CHANGESET_ID="$(printf '%s\n' "$QUIESCE_RAW" | awk -F'\t' '$1=="ID"{print $2}')"
+    QUIESCE_CHANGESET_ID="$(printf '%s' "$QUIESCE_CHANGESET_ID" | tr -d '[:space:]')"
+    rm -rf "$QUIESCE_PAGES_DIR"
+    [ -n "$QUIESCE_CHANGESET_ID" ] || { rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON"; echo "refused: quiesce reviewed change set ID missing, no execute made." >&2; phase_failed quiesce; }
+    echo "Quiesce change set reviewed: only ApiService and WebService DesiredCount to 0 with no replacement, same change set ID executes next."
+    if ! "$AWS_BIN" cloudformation execute-change-set --stack-name "$STACK_NAME" --change-set-name "$QUIESCE_CHANGESET_ID" --region "$EXPECTED_REGION" >/dev/null 2>"$TMP_ERR"; then
       rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON"
       echo "refused: quiesce execute failed, state unknown, verify stack status before any retry" >&2; phase_failed quiesce
     fi
@@ -4779,8 +5631,45 @@ PYEOF
     [ "$QUIESCE_NEW_WEB_IMAGE" = "$QUIESCE_OLD_WEB_IMAGE" ] || { echo "refused: web image changed during quiesce, expected unchanged old image" >&2; phase_failed quiesce; }
     [ "$QUIESCE_NEW_PROXY_IMAGE" = "$QUIESCE_OLD_PROXY_IMAGE" ] || { echo "refused: proxy image changed during quiesce, expected unchanged old image" >&2; phase_failed quiesce; }
     echo "Verified quiesce identity: old task definitions and images unchanged"
+    QUIESCE_TAGS_JSON="$(mktemp /tmp/launchcrew-quiesce-tags-XXXXXX)"
+    if ! "$AWS_BIN" cloudformation describe-stacks --stack-name "$STACK_NAME" --region "$EXPECTED_REGION" --output json >"$QUIESCE_TAGS_JSON" 2>"$TMP_ERR"; then
+      rm -f "$QUIESCE_TAGS_JSON"
+      echo "refused: quiesce stack tags unreadable after update" >&2; phase_failed quiesce
+    fi
+    QUIESCE_TAGS_PROOF="$(python3 - "$QUIESCE_TAGS_JSON" 2>/dev/null <<'PYEOF'
+import json, sys
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    print("MALFORMED")
+    sys.exit(0)
+stacks = doc.get("Stacks", None)
+if not isinstance(stacks, list) or len(stacks) != 1:
+    print("MALFORMED")
+    sys.exit(0)
+tags = stacks[0].get("Tags", None)
+if not isinstance(tags, list):
+    print("MALFORMED")
+    sys.exit(0)
+pairs = set()
+for item in tags:
+    if not isinstance(item, dict):
+        print("MALFORMED")
+        sys.exit(0)
+    pairs.add(((item.get("Key", "") or ""), (item.get("Value", "") or "")))
+print("OK" if pairs == {("Project", "LaunchCrew"), ("Environment", "demo")} else "TAGS_MISMATCH")
+PYEOF
+)" || { rm -f "$QUIESCE_TAGS_JSON"; echo "refused: quiesce stack tags unreadable after update" >&2; phase_failed quiesce; }
+    rm -f "$QUIESCE_TAGS_JSON"
+    QUIESCE_TAGS_PROOF="$(printf '%s' "$QUIESCE_TAGS_PROOF" | tr -d '[:space:]')"
+    if [ "$QUIESCE_TAGS_PROOF" != "OK" ]; then
+      echo "refused: quiesce stack tags proof is $QUIESCE_TAGS_PROOF, expected exact Project LaunchCrew plus Environment demo" >&2; phase_failed quiesce
+    fi
+    echo "Verified quiesce tags: exact Project LaunchCrew plus Environment demo preserved"
+    verify_target_group_drained ApiTargetGroup api
+    verify_target_group_drained WebTargetGroup web
     mark_done quiesce
-    echo "Phase quiesce complete: stack UPDATE_COMPLETE, both services 0/0/0, old images preserved. Foundation and prereqs untouched."
+    echo "Phase quiesce complete: stack UPDATE_COMPLETE, both services 0/0/0, old images preserved, target groups drained. Foundation and prereqs untouched."
   fi
 fi
 

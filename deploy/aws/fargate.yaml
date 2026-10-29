@@ -738,6 +738,7 @@ Resources:
             - { Name: DB_NAME, Value: launchcrew }
             - { Name: DB_HOST, Value: !GetAtt Database.Endpoint.Address }
             - { Name: RUNTIME_USER, Value: launchcrew_runtime }
+            - { Name: MIGRATION_USER, Value: launchcrew_migration }
           Secrets:
             - { Name: RUNTIME_DB_URL, ValueFrom: !Sub '${RuntimeDbUrlSecretArn}:database-url::' }
           LogConfiguration:

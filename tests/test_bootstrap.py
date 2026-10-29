@@ -136,37 +136,260 @@ if [ "$1" = "cloudformation" ] && [ "$2" = "create-change-set" ]; then
     *"ParameterKey=EnableServices,ParameterValue=false"*) ;;
     *) echo "fake-aws: change set must set EnableServices=false" >&2; exit 2 ;;
   esac
+  case "$*" in
+    *"--template-file"*)
+      if [ "${FAKE_INFRA_CREATE:-ok}" = "exists" ]; then
+        echo "An error occurred (AlreadyExistsException) when calling the CreateChangeSet operation: change set infra-006 exists" >&2
+        exit 254
+      fi ;;
+  esac
   printf '{"Id":"arn:aws:cloudformation:us-east-1:111122223333:changeSet/changeset/abc123","StackId":"arn:aws:cloudformation:us-east-1:111122223333:stack/launchcrew-demo/abc123"}\\n'
   exit 0
 fi
 if [ "$1" = "cloudformation" ] && [ "$2" = "describe-change-set" ]; then
-  CHANGESET_NAME=""
-  CHANGESET_PREV=""
-  for CHANGESET_ARG in "$@"; do
-    if [ "$CHANGESET_PREV" = "--change-set-name" ]; then CHANGESET_NAME="$CHANGESET_ARG"; fi
-    CHANGESET_PREV="$CHANGESET_ARG"
+  case "$*" in
+    *"--next-token"*) echo "fake-aws: unsupported --next-token rejected, use --cli-input-json NextToken" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"--starting-token"*|*"--max-items"*) echo "fake-aws: high level pagination args rejected with --no-paginate" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"--no-paginate"*) ;;
+    *) echo "fake-aws: unbounded autopagination rejected, --no-paginate required" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"--cli-input-json"*) ;;
+    *) echo "fake-aws: --cli-input-json required" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"--stack-name "*|*"--stack-name="*|*"--change-set-name "*|*"--change-set-name="*) echo "fake-aws: raw JSON required, flag filters refused" >&2; exit 2 ;;
+  esac
+  CS_INPUT_PATH=""
+  CS_INPUT_PREV=""
+  for CS_ARG in "$@"; do
+    if [ "$CS_INPUT_PREV" = "--cli-input-json" ]; then CS_INPUT_PATH="$CS_ARG"; fi
+    CS_INPUT_PREV="$CS_ARG"
   done
+  case "$CS_INPUT_PATH" in
+    file://*) CS_INPUT_PATH="${CS_INPUT_PATH#file://}" ;;
+    *) echo "fake-aws: --cli-input-json must be file:// path" >&2; exit 2 ;;
+  esac
+  echo "INPUT_JSON_CHANGESET $(cat "$CS_INPUT_PATH" 2>/dev/null || echo MALFORMED)" >>"$LOG" 2>/dev/null || true
+  CS_DECODED="$(python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); s=d.get("StackName",""); c=d.get("ChangeSetName",""); n=d.get("NextToken",""); nn=d.get("nextToken","__absent__"); bad="";
+if s!="launchcrew-demo": bad="BAD_STACK";
+elif not isinstance(c,str) or not c: bad="BAD_NAME";
+elif nn!="__absent__": bad="BAD_CASE";
+elif n is None: n="";
+elif not isinstance(n,str): bad="MALFORMED_INPUT";
+print(bad if bad else (c+"|"+n))' "$CS_INPUT_PATH" 2>/dev/null || echo MALFORMED_INPUT)"
+  case "$CS_DECODED" in
+    MALFORMED_INPUT|BAD_STACK|BAD_NAME|BAD_CASE) echo "fake-aws: invalid cli-input-json $CS_DECODED" >&2; exit 2 ;;
+  esac
+  CS_NAME="${CS_DECODED%%|*}"
+  CS_TOKEN="${CS_DECODED#*|}"
   STACKID="arn:aws:cloudformation:us-east-1:111122223333:stack/launchcrew-demo/abc123"
-  case "$CHANGESET_NAME" in
+  case "$CS_NAME" in
     *infra*)
-      INFRA_MODE="${FAKE_INFRA_CHANGESET:-exact}"
-      if [ "$INFRA_MODE" = "malformed" ]; then printf 'not-json{{{\\n'; exit 0; fi
-      if [ "$INFRA_MODE" = "empty" ]; then printf '{"ChangeSetName":"infra-006","StackName":"launchcrew-demo","StackId":"%s","Status":"FAILED","StatusReason":"The submitted information didn'"'"'t contain changes. Submit different information to create a change set.","ExecutionStatus":"UNAVAILABLE","Changes":[]}\\n' "$STACKID"; exit 0; fi
-      if [ "$INFRA_MODE" = "foreign" ]; then printf '{"ChangeSetName":"infra-006","StackName":"launchcrew-demo","StackId":"%s","Status":"CREATE_COMPLETE","ExecutionStatus":"AVAILABLE","Changes":[{"Type":"Resource","ResourceChange":{"Action":"Modify","LogicalResourceId":"Database","PhysicalResourceId":"launchcrew-demo-db","ResourceType":"AWS::RDS::DBInstance","Replacement":"False","Scope":["Properties"]}}]}\\n' "$STACKID"; exit 0; fi
-      if [ "$INFRA_MODE" = "replacement" ]; then printf '{"ChangeSetName":"infra-006","StackName":"launchcrew-demo","StackId":"%s","Status":"CREATE_COMPLETE","ExecutionStatus":"AVAILABLE","Changes":[{"Type":"Resource","ResourceChange":{"Action":"Modify","LogicalResourceId":"ApiTaskDefinition","PhysicalResourceId":"arn:aws:ecs:us-east-1:111122223333:task-definition/launchcrew-demo-api:1","ResourceType":"AWS::ECS::TaskDefinition","Replacement":"True","Scope":["Properties"]}}]}\\n' "$STACKID"; exit 0; fi
-      printf '{"ChangeSetName":"infra-006","StackName":"launchcrew-demo","StackId":"%s","Status":"CREATE_COMPLETE","ExecutionStatus":"AVAILABLE","Changes":[{"Type":"Resource","ResourceChange":{"Action":"Modify","LogicalResourceId":"ApiTaskDefinition","PhysicalResourceId":"arn:aws:ecs:us-east-1:111122223333:task-definition/launchcrew-demo-api:1","ResourceType":"AWS::ECS::TaskDefinition","Replacement":"False","Scope":["Properties"]}},{"Type":"Resource","ResourceChange":{"Action":"Modify","LogicalResourceId":"WebTaskDefinition","PhysicalResourceId":"arn:aws:ecs:us-east-1:111122223333:task-definition/launchcrew-demo-web:1","ResourceType":"AWS::ECS::TaskDefinition","Replacement":"False","Scope":["Properties"]}},{"Type":"Resource","ResourceChange":{"Action":"Modify","LogicalResourceId":"MigrationTaskDefinition","PhysicalResourceId":"arn:aws:ecs:us-east-1:111122223333:task-definition/launchcrew-demo-migration:1","ResourceType":"AWS::ECS::TaskDefinition","Replacement":"False","Scope":["Properties"]}},{"Type":"Resource","ResourceChange":{"Action":"Modify","LogicalResourceId":"BootstrapTaskDefinition","PhysicalResourceId":"arn:aws:ecs:us-east-1:111122223333:task-definition/launchcrew-demo-bootstrap:1","ResourceType":"AWS::ECS::TaskDefinition","Replacement":"False","Scope":["Properties"]}},{"Type":"Resource","ResourceChange":{"Action":"Modify","LogicalResourceId":"VerifyTaskDefinition","PhysicalResourceId":"arn:aws:ecs:us-east-1:111122223333:task-definition/launchcrew-demo-verify:1","ResourceType":"AWS::ECS::TaskDefinition","Replacement":"False","Scope":["Properties"]}},{"Type":"Resource","ResourceChange":{"Action":"Modify","LogicalResourceId":"SdkInitTaskDefinition","PhysicalResourceId":"arn:aws:ecs:us-east-1:111122223333:task-definition/launchcrew-demo-sdkinit:1","ResourceType":"AWS::ECS::TaskDefinition","Replacement":"False","Scope":["Properties"]}},{"Type":"Resource","ResourceChange":{"Action":"Modify","LogicalResourceId":"SdkMaterialTaskDefinition","PhysicalResourceId":"arn:aws:ecs:us-east-1:111122223333:task-definition/launchcrew-demo-sdkmaterial:1","ResourceType":"AWS::ECS::TaskDefinition","Replacement":"False","Scope":["Properties"]}}]}\\n' "$STACKID"
+      CS_MODE="${FAKE_INFRA_CHANGESET:-exact}"
+      python3 - "$CS_NAME" "$CS_TOKEN" "$STACKID" "${FAKE_PARAMS_FILE:-}" "$CS_MODE" <<'PYEOF'
+import json, sys
+name, token, stack_id, params_file, mode = sys.argv[1:6]
+TD = "tas" + "k-definition"
+CSID = "arn:aws:cloudformation:us-east-1:111122223333:changeSet/%s/aaaabbbbccccddddeeeeffff00001111" % name
+TAGS = [{"Key": "Project", "Value": "LaunchCrew"}, {"Key": "Environment", "Value": "demo"}]
+CAPS = ["CAPABILITY_NAMED_IAM"]
+API_SVC = "launchcrew-demo-ApiService-A1B2C3D4E5F6"
+WEB_SVC = "launchcrew-demo-WebService-G7H8I9J0K1L2"
+TASKDEFS = [("ApiTaskDefinition", "api"), ("WebTaskDefinition", "web"),
+            ("MigrationTaskDefinition", "migration"), ("BootstrapTaskDefinition", "bootstrap"),
+            ("VerifyTaskDefinition", "verify"), ("SdkInitTaskDefinition", "sdkinit"),
+            ("SdkMaterialTaskDefinition", "sdkmaterial")]
+def taskdef_change(logical, repo, replacement, detail_name, recre):
+    return {"Type": "Resource", "ResourceChange": {
+        "Action": "Modify", "LogicalResourceId": logical,
+        "PhysicalResourceId": "arn:aws:ecs:us-east-1:111122223333:%s/launchcrew-demo-%s:1" % (TD, repo),
+        "ResourceType": "AWS::ECS::TaskDefinition", "Replacement": replacement,
+        "Scope": ["Properties"],
+        "Details": [{"Target": {"Attribute": "Properties", "Name": detail_name,
+                                "RequiresRecreation": recre},
+                     "Evaluation": "Static", "ChangeSource": "DirectModification"}]}}
+def svc_change(logical, physical):
+    return {"Type": "Resource", "ResourceChange": {
+        "Action": "Modify", "LogicalResourceId": logical,
+        "PhysicalResourceId": physical, "ResourceType": "AWS::ECS::Service",
+        "Replacement": "False", "Scope": ["Properties"],
+        "Details": [{"Target": {"Attribute": "Properties", "Name": "TaskDefinition",
+                                "RequiresRecreation": "Never"},
+                     "Evaluation": "Static", "ChangeSource": "DirectModification"}]}}
+def base(changes, params, status="CREATE_COMPLETE", exec_status="AVAILABLE",
+         reason="", tags=None, token_out=""):
+    doc = {"ChangeSetName": name, "ChangeSetId": CSID, "StackName": "launchcrew-demo",
+           "StackId": stack_id, "Status": status, "ExecutionStatus": exec_status,
+           "Changes": changes, "Parameters": params, "Tags": tags if tags is not None else TAGS,
+           "Capabilities": CAPS}
+    if reason:
+        doc["StatusReason"] = reason
+    if token_out:
+        doc["NextToken"] = token_out
+    return doc
+def iparams():
+    with open(params_file) as handle:
+        doc = json.load(handle)
+    if isinstance(doc, dict) and "Parameters" in doc:
+        doc = doc["Parameters"]
+    out = []
+    for item in doc:
+        if item.get("ParameterKey") == "EnableServices":
+            continue
+        out.append({"ParameterKey": item["ParameterKey"],
+                    "ParameterValue": item["ParameterValue"], "UsePreviousValue": False})
+    out.append({"ParameterKey": "EnableServices", "ParameterValue": "false",
+                "UsePreviousValue": False})
+    return out
+FOREIGN_DB = {"Type": "Resource", "ResourceChange": {
+    "Action": "Modify", "LogicalResourceId": "Database",
+    "PhysicalResourceId": "launchcrew-demo-db", "ResourceType": "AWS::RDS::DBInstance",
+    "Replacement": "False", "Scope": ["Properties"]}}
+FULL = [taskdef_change(logical, repo, "True", "ContainerDefinitions", "Always")
+        for logical, repo in TASKDEFS]
+FULL += [svc_change("ApiService", API_SVC), svc_change("WebService", WEB_SVC)]
+if mode == "malformed":
+    print("not-json{{{")
+elif mode == "empty":
+    print(json.dumps(base([], [], status="FAILED", exec_status="UNAVAILABLE",
+                             reason="The submitted information didn't contain changes. Submit different information to create a change set.")))
+elif mode == "foreign":
+    print(json.dumps(base([FOREIGN_DB], iparams())))
+elif mode == "replacement":
+    bad = dict(svc_change("ApiService", API_SVC))
+    bad["ResourceChange"] = dict(bad["ResourceChange"], Replacement="True")
+    print(json.dumps(base([bad, svc_change("WebService", WEB_SVC)], iparams())))
+elif mode == "wrong_detail":
+    bad = [taskdef_change("ApiTaskDefinition", "api", "True", "ExecutionRoleArn", "Always")]
+    bad += [taskdef_change(logical, repo, "True", "ContainerDefinitions", "Always")
+            for logical, repo in TASKDEFS[1:]]
+    print(json.dumps(base(bad, iparams())))
+elif mode == "missing_details":
+    entry = taskdef_change("ApiTaskDefinition", "api", "True", "ContainerDefinitions", "Always")
+    del entry["ResourceChange"]["Details"]
+    rest = [taskdef_change(logical, repo, "True", "ContainerDefinitions", "Always")
+            for logical, repo in TASKDEFS[1:]]
+    print(json.dumps(base([entry] + rest, iparams())))
+elif mode == "params_mismatch":
+    params = iparams()
+    for item in params:
+        if item["ParameterKey"] == "EnableServices":
+            item["ParameterValue"] = "true"
+    print(json.dumps(base(FULL, params)))
+elif mode == "tags_mismatch":
+    print(json.dumps(base(FULL, iparams(), tags=[{"Key": "Project", "Value": "Other"}])))
+elif mode == "wrong_id":
+    doc = base(FULL, iparams())
+    doc["ChangeSetId"] = "arn:aws:cloudformation:us-east-1:999988887777:changeSet/infra-006/aaaabbbbccccddddeeeeffff00001111"
+    print(json.dumps(doc))
+elif mode == "paginated_ok":
+    if not token:
+        print(json.dumps(base(FULL[:5], iparams(), token_out="page2")))
+    else:
+        print(json.dumps(base(FULL[5:], iparams())))
+elif mode == "paginated_extra":
+    if not token:
+        print(json.dumps(base(FULL, iparams(), token_out="page2")))
+    else:
+        print(json.dumps(base([FOREIGN_DB], iparams())))
+elif mode == "truncated":
+    print(json.dumps(base(FULL[:1], iparams(), token_out="more")))
+else:
+    print(json.dumps(base(FULL, iparams())))
+PYEOF
       exit 0 ;;
   esac
-  CHANGE_MODE="${FAKE_CHANGESET:-exact}"
-  if [ "$CHANGE_MODE" = "malformed" ]; then printf 'not-json{{{\\n'; exit 0; fi
-  if [ "$CHANGE_MODE" = "empty" ]; then printf '{"ChangeSetName":"quiesce-006","StackName":"launchcrew-demo","StackId":"%s","Status":"CREATE_COMPLETE","ExecutionStatus":"AVAILABLE","Changes":[]}\\n' "$STACKID"; exit 0; fi
-  if [ "$CHANGE_MODE" = "foreign" ]; then printf '{"ChangeSetName":"quiesce-006","StackName":"launchcrew-demo","StackId":"%s","Status":"CREATE_COMPLETE","ExecutionStatus":"AVAILABLE","Changes":[{"Type":"Resource","ResourceChange":{"Action":"Modify","LogicalResourceId":"Database","PhysicalResourceId":"launchcrew-demo-db","ResourceType":"AWS::RDS::DBInstance","Replacement":"False","Scope":["Properties"]}}]}\\n' "$STACKID"; exit 0; fi
-  if [ "$CHANGE_MODE" = "replacement" ]; then printf '{"ChangeSetName":"quiesce-006","StackName":"launchcrew-demo","StackId":"%s","Status":"CREATE_COMPLETE","ExecutionStatus":"AVAILABLE","Changes":[{"Type":"Resource","ResourceChange":{"Action":"Modify","LogicalResourceId":"ApiService","PhysicalResourceId":"launchcrew-demo-ApiService-A1B2C3D4E5F6","ResourceType":"AWS::ECS::Service","Replacement":"True","Scope":["Properties"]}},{"Type":"Resource","ResourceChange":{"Action":"Modify","LogicalResourceId":"WebService","PhysicalResourceId":"launchcrew-demo-WebService-G7H8I9J0K1L2","ResourceType":"AWS::ECS::Service","Replacement":"False","Scope":["Properties"]}}]}\\n' "$STACKID"; exit 0; fi
-  if [ "$CHANGE_MODE" = "status_failed" ]; then printf '{"ChangeSetName":"quiesce-006","StackName":"launchcrew-demo","StackId":"%s","Status":"FAILED","StatusReason":"No updates are to be performed","ExecutionStatus":"UNAVAILABLE","Changes":[]}\\n' "$STACKID"; exit 0; fi
-  printf '{"ChangeSetName":"quiesce-006","StackName":"launchcrew-demo","StackId":"%s","Status":"CREATE_COMPLETE","ExecutionStatus":"AVAILABLE","Changes":[{"Type":"Resource","ResourceChange":{"Action":"Modify","LogicalResourceId":"ApiService","PhysicalResourceId":"launchcrew-demo-ApiService-A1B2C3D4E5F6","ResourceType":"AWS::ECS::Service","Replacement":"False","Scope":["Properties"]}},{"Type":"Resource","ResourceChange":{"Action":"Modify","LogicalResourceId":"WebService","PhysicalResourceId":"launchcrew-demo-WebService-G7H8I9J0K1L2","ResourceType":"AWS::ECS::Service","Replacement":"False","Scope":["Properties"]}}]}\\n' "$STACKID"
+  CS_MODE="${FAKE_CHANGESET:-exact}"
+  python3 - "$CS_NAME" "$CS_TOKEN" "$STACKID" "$CS_MODE" <<'PYEOF'
+import json, sys
+name, token, stack_id, mode = sys.argv[1:5]
+CSID = "arn:aws:cloudformation:us-east-1:111122223333:changeSet/%s/aaaabbbbccccddddeeeeffff00001111" % name
+TAGS = [{"Key": "Project", "Value": "LaunchCrew"}, {"Key": "Environment", "Value": "demo"}]
+CAPS = ["CAPABILITY_NAMED_IAM"]
+API_SVC = "launchcrew-demo-ApiService-A1B2C3D4E5F6"
+WEB_SVC = "launchcrew-demo-WebService-G7H8I9J0K1L2"
+def svc_change(logical, physical, detail_name="DesiredCount", replacement="False",
+               scope=None, attr="Properties", recre="Never"):
+    return {"Type": "Resource", "ResourceChange": {
+        "Action": "Modify", "LogicalResourceId": logical,
+        "PhysicalResourceId": physical, "ResourceType": "AWS::ECS::Service",
+        "Replacement": replacement, "Scope": scope or ["Properties"],
+        "Details": [{"Target": {"Attribute": attr, "Name": detail_name,
+                                "RequiresRecreation": recre},
+                     "Evaluation": "Static", "ChangeSource": "DirectModification"}]}}
+def base(changes, params, status="CREATE_COMPLETE", exec_status="AVAILABLE",
+         reason="", tags=None, token_out=""):
+    doc = {"ChangeSetName": name, "ChangeSetId": CSID, "StackName": "launchcrew-demo",
+           "StackId": stack_id, "Status": status, "ExecutionStatus": exec_status,
+           "Changes": changes, "Parameters": params, "Tags": tags if tags is not None else TAGS,
+           "Capabilities": CAPS}
+    if reason:
+        doc["StatusReason"] = reason
+    if token_out:
+        doc["NextToken"] = token_out
+    return doc
+QPARAMS = [{"ParameterKey": "AcmCertificateArn", "UsePreviousValue": True},
+           {"ParameterKey": "ApiImageUri", "UsePreviousValue": True},
+           {"ParameterKey": "EnableServices", "ParameterValue": "false",
+            "UsePreviousValue": False}]
+QEXACT = [svc_change("ApiService", API_SVC), svc_change("WebService", WEB_SVC)]
+FOREIGN_DB = {"Type": "Resource", "ResourceChange": {
+    "Action": "Modify", "LogicalResourceId": "Database",
+    "PhysicalResourceId": "launchcrew-demo-db", "ResourceType": "AWS::RDS::DBInstance",
+    "Replacement": "False", "Scope": ["Properties"]}}
+if mode == "malformed":
+    print("not-json{{{")
+elif mode == "empty":
+    print(json.dumps(base([], QPARAMS)))
+elif mode == "foreign":
+    print(json.dumps(base([FOREIGN_DB], QPARAMS)))
+elif mode == "replacement":
+    print(json.dumps(base([svc_change("ApiService", API_SVC, replacement="True"),
+                           svc_change("WebService", WEB_SVC)], QPARAMS)))
+elif mode == "status_failed":
+    print(json.dumps(base([], QPARAMS, status="FAILED", exec_status="UNAVAILABLE",
+                             reason="No updates are to be performed")))
+elif mode == "wrong_detail":
+    print(json.dumps(base([svc_change("ApiService", API_SVC, detail_name="TaskDefinition"),
+                           svc_change("WebService", WEB_SVC)], QPARAMS)))
+elif mode == "tags_scope":
+    print(json.dumps(base([svc_change("ApiService", API_SVC, scope=["Tags"]),
+                           svc_change("WebService", WEB_SVC)], QPARAMS)))
+elif mode == "params_mismatch":
+    bad_params = [{"ParameterKey": "AcmCertificateArn", "UsePreviousValue": True},
+                  {"ParameterKey": "ApiImageUri", "UsePreviousValue": True},
+                  {"ParameterKey": "EnableServices", "ParameterValue": "true",
+                   "UsePreviousValue": False}]
+    print(json.dumps(base(QEXACT, bad_params)))
+elif mode == "tags_mismatch":
+    print(json.dumps(base(QEXACT, QPARAMS, tags=[{"Key": "Project", "Value": "Other"}])))
+elif mode == "paginated_ok":
+    if not token:
+        print(json.dumps(base([svc_change("ApiService", API_SVC)], QPARAMS, token_out="page2")))
+    else:
+        print(json.dumps(base([svc_change("WebService", WEB_SVC)], QPARAMS)))
+elif mode == "paginated_extra":
+    if not token:
+        print(json.dumps(base(QEXACT, QPARAMS, token_out="page2")))
+    else:
+        print(json.dumps(base([FOREIGN_DB], QPARAMS)))
+elif mode == "truncated":
+    print(json.dumps(base([svc_change("ApiService", API_SVC)], QPARAMS, token_out="more")))
+else:
+    print(json.dumps(base(QEXACT, QPARAMS)))
+PYEOF
   exit 0
 fi
 if [ "$1" = "cloudformation" ] && [ "$2" = "execute-change-set" ]; then
+  case "$*" in
+    *"changeSet/"*) ;;
+    *) echo "fake-aws: execute must name the reviewed change set ID" >&2; exit 2 ;;
+  esac
   exit 0
 fi
 if [ "$1" = "cloudformation" ] && [ "$2" = "delete-change-set" ]; then
@@ -208,6 +431,8 @@ if [ "$1" = "cloudformation" ] && [ "$2" = "describe-stack-resource" ]; then
     Database) printf 'launchcrew-demo-db\\n'; exit 0 ;;
     ApiService) printf '%s\\n' "${FAKE_API_SERVICE:-launchcrew-demo-ApiService-A1B2C3D4E5F6}"; exit 0 ;;
     WebService) printf '%s\\n' "${FAKE_WEB_SERVICE:-launchcrew-demo-WebService-G7H8I9J0K1L2}"; exit 0 ;;
+    ApiTargetGroup) printf '%s\\n' "${FAKE_API_TG:-arn:aws:elasticloadbalancing:us-east-1:111122223333:targetgroup/api-abcdef0123456789/0123456789abcdef}"; exit 0 ;;
+    WebTargetGroup) printf '%s\\n' "${FAKE_WEB_TG:-arn:aws:elasticloadbalancing:us-east-1:111122223333:targetgroup/web-abcdef0123456789/0123456789abcdef}"; exit 0 ;;
     ApiExecutionRole|WebExecutionRole|MigrationExecutionRole|BootstrapExecutionRole|VerifyExecutionRole|SdkInitExecutionRole|SdkMaterialExecutionRole|ApiTaskRole|WebTaskRole|MigrationTaskRole|BootstrapTaskRole|VerifyTaskRole|SdkInitTaskRole|SdkMaterialTaskRole) printf '%s-physical\\n' "$RESOURCE_LOGICAL"; exit 0 ;;
   esac
   echo "fake-aws: unexpected resource lookup: $*" >&2
@@ -626,6 +851,13 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-task""-definition" ]; then
     IMG_MIG="111122223333.dkr.ecr.us-east-1.amazonaws.com/wrong-repo:bad"
     IMG_BOOT="111122223333.dkr.ecr.us-east-1.amazonaws.com/wrong-repo:bad"
   fi
+  if [ "$MODE" = "taskdef_flip" ] && grep -q "EnableServices=true" "$LOG" 2>/dev/null; then
+    IMG_API="111122223333.dkr.ecr.us-east-1.amazonaws.com/launchcrew-api:tampered"
+    IMG_WEB="111122223333.dkr.ecr.us-east-1.amazonaws.com/launchcrew-web:tampered"
+    IMG_PROXY="111122223333.dkr.ecr.us-east-1.amazonaws.com/launchcrew-web-proxy:tampered"
+    IMG_MIG="111122223333.dkr.ecr.us-east-1.amazonaws.com/launchcrew-migration:tampered"
+    IMG_BOOT="111122223333.dkr.ecr.us-east-1.amazonaws.com/launchcrew-bootstrap:tampered"
+  fi
   if [ "$MODE" = "taskdef_secret_mismatch" ]; then
     SEC_RT="arn:aws:secretsmanager:us-east-1:111122223333:secret:other-secret-ZzZzZz"
     SEC_MG="arn:aws:secretsmanager:us-east-1:111122223333:secret:other-secret-ZzZzZz"
@@ -673,8 +905,13 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-services" ]; then
   done
   OWNED_API="${FAKE_API_SERVICE:-launchcrew-demo-ApiService-A1B2C3D4E5F6}"
   OWNED_WEB="${FAKE_WEB_SERVICE:-launchcrew-demo-WebService-G7H8I9J0K1L2}"
-  SVC_MODE="${FAKE_SERVICE:-ok}"
-  if [ "$MODE" = "enable_wrong" ]; then SVC_MODE="desired2"; fi
+  SVC_MODE="${FAKE_SERVICE:-auto}"
+  if [ "$SVC_MODE" = "auto" ]; then
+    if grep -q "EnableServices=true" "$LOG" 2>/dev/null; then SVC_MODE="ok"; else SVC_MODE="stopped"; fi
+  fi
+  if [ "$MODE" = "enable_wrong" ]; then
+    if grep -q "EnableServices=true" "$LOG" 2>/dev/null; then SVC_MODE="desired2"; else SVC_MODE="stopped"; fi
+  fi
   case "$SVC_ARG" in
     "$OWNED_API"|"$OWNED_WEB") ;;
     *) printf '{"services":[],"failures":[{"arn":"arn:aws:ecs:us-east-1:111122223333:service/launchcrew-demo/%s","reason":"MISSING"}]}\\n' "$SVC_ARG"; exit 0 ;;
@@ -748,6 +985,26 @@ if [ "$1" = "ce" ] && [ "$2" = "list-cost-allocation-tags" ]; then
     unknown) printf '{"CostAllocationTags":[{"TagKey":"Project","Type":"UserDefined","Status":"Pending"}]}\\n'; exit 0 ;;
     *) echo "fake-aws: unknown FAKE_CE: $CE_MODE" >&2; exit 2 ;;
   esac
+fi
+if [ "$1" = "elbv2" ] && [ "$2" = "describe-target-health" ]; then
+  TG_MODE="${FAKE_TG_HEALTH:-drained}"
+  TG_ARN_ARG=""
+  TG_PREV=""
+  for TG_ARG in "$@"; do
+    if [ "$TG_PREV" = "--target-group-arn" ]; then TG_ARN_ARG="$TG_ARG"; fi
+    TG_PREV="$TG_ARG"
+  done
+  case "$TG_ARN_ARG" in
+    arn:aws:elasticloadbalancing:us-east-1:111122223333:targetgroup/*) ;;
+    *) echo "fake-aws: unexpected target group arn: $TG_ARN_ARG" >&2; exit 2 ;;
+  esac
+  if [ "$TG_MODE" = "malformed" ]; then printf 'not-json{{{\\n'; exit 0; fi
+  if [ "$TG_MODE" = "in_flight" ]; then printf '{"TargetHealthDescriptions":[{"Target":{"Id":"10.42.1.10","Port":8443},"HealthCheckPort":"8443","TargetHealth":{"State":"healthy"}}]}\\n'; exit 0; fi
+  if [ "$TG_MODE" = "draining" ]; then printf '{"TargetHealthDescriptions":[{"Target":{"Id":"10.42.1.10","Port":8443},"HealthCheckPort":"8443","TargetHealth":{"State":"draining","Reason":"Target.DeregistrationInProgress"}}]}\\n'; exit 0; fi
+  if [ "$TG_MODE" = "unknown" ]; then printf '{"TargetHealthDescriptions":[{"Target":{"Id":"10.42.1.10","Port":8443},"HealthCheckPort":"8443","TargetHealth":{"State":"weird"}}]}\\n'; exit 0; fi
+  if [ "$TG_MODE" = "unused" ]; then printf '{"TargetHealthDescriptions":[{"Target":{"Id":"10.42.1.10","Port":8443},"HealthCheckPort":"8443","TargetHealth":{"State":"unused","Reason":"Target.NotRegistered"}}]}\\n'; exit 0; fi
+  printf '{"TargetHealthDescriptions":[]}\\n'
+  exit 0
 fi
 echo "fake-aws: unexpected call: $*" >&2
 exit 2
@@ -860,6 +1117,7 @@ class BootstrapHarness(unittest.TestCase):
             env["FAKE_TASKDEF_FILE"] = str(taskdefs)
             env["FAKE_TOKEN_FILE"] = str(token_file)
             env["FAKE_STACK_CREATED_FILE"] = str(created)
+            env["FAKE_PARAMS_FILE"] = str(params)
             env["FAKE_CERT_ARN"] = CERT_ARN
             env["FAKE_DB_HOST"] = DB_HOST
             env["FAKE_TOPIC_ARN"] = TOPIC_ARN
@@ -1055,13 +1313,15 @@ class PhaseOrderingTests(BootstrapHarness):
         result, calls = self.run_bootstrap(self.base_args())
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
         self.assertIn("BOOTSTRAP COMPLETE", result.stdout)
-        deploy_false = next(i for i, call in enumerate(calls)
-                            if "deploy " in call and "EnableServices=false" in call)
+        infra_exec = next(i for i, call in enumerate(calls)
+                          if "execute-change-set" in call and "infra-006" in call)
         first_run = next(i for i, call in enumerate(calls) if "run-task" in call)
         deploy_true = next(i for i, call in enumerate(calls)
                            if "deploy " in call and "EnableServices=true" in call)
-        self.assertLess(deploy_false, first_run)
+        self.assertLess(infra_exec, first_run)
         self.assertLess(first_run, deploy_true)
+        self.assertFalse(any("deploy " in call and "EnableServices=false" in call
+                             for call in calls))
         run_tasks = [call for call in calls if "run-task" in call]
         self.assertEqual(len(run_tasks), 5)
         taskdef_order = []
@@ -1222,7 +1482,9 @@ class PhaseOrderingTests(BootstrapHarness):
                               "TlsSecretArn": SECRET_TLS})
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
         self.assertIn("Prereqs ready", result.stdout + result.stderr)
-        self.assertTrue(any("deploy " in call and "EnableServices=false" in call for call in calls))
+        self.assertTrue(any("execute-change-set" in call and "changeSet/infra-006/" in call
+                            for call in calls))
+        self.assertFalse(any("deploy " in call for call in calls))
         self.assertFalse(any("run-task" in call for call in calls))
 
     def test_single_phase_does_not_enable(self):
@@ -1277,6 +1539,17 @@ class PhaseOrderingTests(BootstrapHarness):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("binding proof", result.stdout + result.stderr)
         self.assertFalse(any("EnableServices=true" in call for call in calls))
+
+    def test_enable_refuses_when_own_deploy_moves_images(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            result, calls = self.run_enable_with_priors(
+                shared_tmp, enable_extra_env={"FAKE_MODE": "taskdef_flip"})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("changed during enable", combined)
+        self.assertTrue(any("EnableServices=true" in call for call in calls))
+        self.assertFalse(any("run-task" in call for call in calls))
+        self.assertNotIn("BOOTSTRAP COMPLETE", result.stdout)
 
     def test_stack_other_validation_error_is_not_absence(self):
         result, calls = self.run_bootstrap(
@@ -1441,6 +1714,7 @@ class EnableServiceProofTests(BootstrapHarness):
             fake.chmod(fake.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
             env = dict(os.environ)
             env["FAKE_MODE"] = "success"
+            env["FAKE_SERVICE"] = "ok"
             proc = subprocess.run(
                 [str(fake), "ecs", "describe-services",
                  "--cluster", "launchcrew-demo",
@@ -1507,7 +1781,7 @@ class CostTagAdmissionTests(BootstrapHarness):
         self.assertIn("--type UserDefined", ce_calls[0])
         self.assertIn(REGION, ce_calls[0])
         self.assertIn("status Active", result.stdout)
-        self.assertTrue(any("deploy " in call for call in calls))
+        self.assertTrue(any("execute-change-set" in call for call in calls))
 
     def test_inactive_ce_refuses_full_run_before_any_paid_call(self):
         result, calls = self.run_bootstrap(
@@ -2105,6 +2379,7 @@ class BudgetPaginationTests(BootstrapHarness):
         self.assertNotIn("--starting-token", code)
         self.assertIn("--no-paginate", code)
         self.assertIn("--cli-input-json", code)
+        self.assertIn("describe-change-set --cli-input-json", code)
         self.assertIn('"NextToken"', code)
         self.assertIn('"nextToken"', code)
         self.assertIn('"MaxResults"', code)
@@ -2113,11 +2388,16 @@ class BudgetPaginationTests(BootstrapHarness):
 
 class OptionalThresholdTypeTests(BootstrapHarness):
     def test_missing_threshold_type_allowed(self):
+        # Omitted ThresholdType means implicit percentage and passes the
+        # paid gates. Infra exercises the same notification check as enable
+        # but needs no prior one-off journals, so fail-closed enable priors
+        # stay out of this threshold compatibility proof.
         result, calls = self.run_bootstrap(
-            [*self.base_args(), "--phase", "enable"],
+            [*self.base_args(), "--phase", "infra"],
             extra_env={"FAKE_NOTIF": "missing_type"})
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
         self.assertIn("BOOTSTRAP COMPLETE", result.stdout)
+        self.assertFalse(any("run-task" in call for call in calls))
 
     def test_explicit_bad_threshold_types_refused(self):
         for mode in ("absolute", "absolute_short", "null_type", "unknown_type", "empty_type"):
@@ -2143,12 +2423,17 @@ class CloudformationTagsTests(BootstrapHarness):
                               "MasterDbPasswordSecretArn": SECRET_MASTER,
                               "TlsSecretArn": SECRET_TLS})
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
-        deploys = [call for call in calls if "deploy " in call]
-        self.assertTrue(deploys)
-        for call in deploys:
+        creates = [call for call in calls if "create-change-set" in call]
+        self.assertTrue(creates)
+        for call in creates:
             self.assertIn("--tags", call)
-            self.assertIn("Project=LaunchCrew", call)
-            self.assertIn("Environment=demo", call)
+            self.assertIn("Project", call)
+            self.assertIn("LaunchCrew", call)
+            self.assertIn("Environment", call)
+            self.assertIn("demo", call)
+        self.assertTrue(any("execute-change-set" in call and "changeSet/infra-006/" in call
+                            for call in calls))
+        self.assertFalse(any("deploy " in call for call in calls))
 
     def test_enable_update_passes_demo_tags(self):
         with tempfile.TemporaryDirectory() as shared_tmp:
@@ -2165,11 +2450,17 @@ class CloudformationTagsTests(BootstrapHarness):
         result, calls = self.run_bootstrap(self.base_args())
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
         deploys = [call for call in calls if "deploy " in call]
-        self.assertEqual(len(deploys), 2)
+        self.assertEqual(len(deploys), 1)
         for call in deploys:
             self.assertIn("--tags", call)
             self.assertIn("Project=LaunchCrew", call)
             self.assertIn("Environment=demo", call)
+        creates = [call for call in calls if "create-change-set" in call]
+        self.assertEqual(len(creates), 1)
+        for call in creates:
+            self.assertIn("--tags", call)
+            self.assertIn("LaunchCrew", call)
+            self.assertIn("demo", call)
 
 
 class ImageDigestShapeTests(BootstrapHarness):
@@ -2301,13 +2592,16 @@ class QuiesceTests(BootstrapHarness):
         self.assertIn("quiesce-confirm", result.stdout + result.stderr)
         self.assertEqual(calls, [])
 
+    def quiesce_env(self, changeset="exact", tg="drained"):
+        return {"FAKE_ENABLE": "true",
+                "FAKE_STACK_STATUS": "UPDATE_COMPLETE",
+                "FAKE_SERVICE": "stopped",
+                "FAKE_CHANGESET": changeset,
+                "FAKE_TG_HEALTH": tg}
+
     def test_quiesce_success_with_real_change_set_shape(self):
         result, calls = self.run_bootstrap(
-            self.quiesce_args(),
-            extra_env={"FAKE_ENABLE": "true",
-                       "FAKE_STACK_STATUS": "UPDATE_COMPLETE",
-                       "FAKE_SERVICE": "stopped",
-                       "FAKE_CHANGESET": "exact"})
+            self.quiesce_args(), extra_env=self.quiesce_env())
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
         self.assertIn("BOOTSTRAP COMPLETE", result.stdout)
         joined = " ".join(calls)
@@ -2315,24 +2609,35 @@ class QuiesceTests(BootstrapHarness):
         self.assertIn("--use-previous-template", joined)
         self.assertIn("ParameterKey=EnableServices,ParameterValue=false", joined)
         self.assertIn("describe-change-set", joined)
-        self.assertIn("execute-change-set", joined)
         self.assertIn("describe-services", joined)
+        self.assertIn("describe-target-health", joined)
+        executes = [call for call in calls if "execute-change-set" in call]
+        self.assertEqual(len(executes), 1)
+        self.assertIn("changeSet/quiesce-006/", executes[0])
+        describes = [call for call in calls if "describe-change-set" in call]
+        self.assertTrue(describes)
+        for call in describes:
+            self.assertIn("--no-paginate", call)
+            self.assertIn("--cli-input-json", call)
+            self.assertNotIn("--change-set-name", call)
+            self.assertNotIn("--stack-name", call)
         self.assertFalse(any("run-task" in call for call in calls))
         self.assertFalse(any("deploy " in call for call in calls))
+        self.assertFalse(any("delete-change-set" in call for call in calls))
         self.assertIn("UPDATE_COMPLETE", result.stdout)
         self.assertIn("0/0/0", result.stdout + result.stderr)
+        self.assertIn("drained", result.stdout + result.stderr)
+        self.assertIn("exact Project LaunchCrew plus Environment demo preserved",
+                      result.stdout + result.stderr)
 
     def test_quiesce_refuses_foreign_resource_change(self):
         result, calls = self.run_bootstrap(
-            self.quiesce_args(),
-            extra_env={"FAKE_ENABLE": "true",
-                       "FAKE_STACK_STATUS": "UPDATE_COMPLETE",
-                       "FAKE_SERVICE": "stopped",
-                       "FAKE_CHANGESET": "foreign"})
+            self.quiesce_args(), extra_env=self.quiesce_env("foreign"))
         self.assertNotEqual(result.returncode, 0)
         combined = result.stdout + result.stderr
         self.assertIn("FOREIGN_Database", combined)
-        self.assertTrue(any("delete-change-set" in call for call in calls))
+        self.assertIn("preserved for inspection", combined)
+        self.assertFalse(any("delete-change-set" in call for call in calls))
         self.assertFalse(any("execute-change-set" in call for call in calls))
 
     def test_quiesce_refuses_replacement_change(self):
@@ -2380,16 +2685,109 @@ class QuiesceTests(BootstrapHarness):
         self.assertFalse(any("create-change-set" in call for call in calls))
         self.assertFalse(any("execute-change-set" in call for call in calls))
 
+    def test_quiesce_refuses_non_desired_count_detail(self):
+        result, calls = self.run_bootstrap(
+            self.quiesce_args(), extra_env=self.quiesce_env("wrong_detail"))
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("DETAIL_ApiService_NAME_TaskDefinition", combined)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+        self.assertFalse(any("delete-change-set" in call for call in calls))
+
+    def test_quiesce_refuses_tags_scope_change(self):
+        result, calls = self.run_bootstrap(
+            self.quiesce_args(), extra_env=self.quiesce_env("tags_scope"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("SCOPE_ApiService_Tags", result.stdout + result.stderr)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+
+    def test_quiesce_refuses_parameter_mismatch(self):
+        result, calls = self.run_bootstrap(
+            self.quiesce_args(), extra_env=self.quiesce_env("params_mismatch"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("PARAMS_VALUE_EnableServices", result.stdout + result.stderr)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+
+    def test_quiesce_refuses_tag_mismatch(self):
+        result, calls = self.run_bootstrap(
+            self.quiesce_args(), extra_env=self.quiesce_env("tags_mismatch"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("TAGS_MISMATCH", result.stdout + result.stderr)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+
+    def test_quiesce_reviews_every_page_before_execute(self):
+        result, calls = self.run_bootstrap(
+            self.quiesce_args(), extra_env=self.quiesce_env("paginated_ok"))
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        describes = [call for call in calls if "describe-change-set" in call]
+        self.assertEqual(len(describes), 2)
+        decoded = [call for call in calls if "INPUT_JSON_CHANGESET" in call]
+        self.assertEqual(len(decoded), 2)
+        self.assertIn("page2", decoded[1])
+        executes = [call for call in calls if "execute-change-set" in call]
+        self.assertEqual(len(executes), 1)
+        self.assertIn("changeSet/quiesce-006/", executes[0])
+
+    def test_quiesce_refuses_extra_change_on_later_page(self):
+        result, calls = self.run_bootstrap(
+            self.quiesce_args(), extra_env=self.quiesce_env("paginated_extra"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("FOREIGN_Database", result.stdout + result.stderr)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+
+    def test_quiesce_refuses_truncated_pages(self):
+        result, calls = self.run_bootstrap(
+            self.quiesce_args(), extra_env=self.quiesce_env("truncated"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unreviewed pages", result.stdout + result.stderr)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+
+    def test_quiesce_refuses_in_flight_targets(self):
+        for tg_mode, token in (("in_flight", "IN_FLIGHT_healthy"),
+                               ("draining", "IN_FLIGHT_draining"),
+                               ("unknown", "IN_FLIGHT_weird")):
+            with self.subTest(tg_mode=tg_mode):
+                result, calls = self.run_bootstrap(
+                    self.quiesce_args(),
+                    extra_env=self.quiesce_env("exact", tg_mode))
+                self.assertNotEqual(result.returncode, 0, msg=tg_mode)
+                combined = result.stdout + result.stderr
+                self.assertIn(token, combined, msg=tg_mode)
+                self.assertIn("no in-flight targets", combined, msg=tg_mode)
+                self.assertTrue(any("execute-change-set" in call for call in calls),
+                                msg=tg_mode)
+                self.assertTrue(any("describe-target-health" in call
+                                    for call in calls), msg=tg_mode)
+                self.assertNotIn("BOOTSTRAP COMPLETE", result.stdout, msg=tg_mode)
+
+    def test_quiesce_accepts_unused_targets_as_drained(self):
+        result, calls = self.run_bootstrap(
+            self.quiesce_args(), extra_env=self.quiesce_env("exact", "unused"))
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertIn("drained", result.stdout + result.stderr)
+
+    def test_quiesce_refuses_foreign_target_group(self):
+        foreign = ("arn:aws:elasticloadbalancing:us-east-1:999988887777:"
+                   "targetgroup/api-abcdef0123456789/0123456789abcdef")
+        result, calls = self.run_bootstrap(
+            self.quiesce_args(),
+            extra_env={**self.quiesce_env(), "FAKE_API_TG": foreign})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("foreign or malformed", combined)
+        self.assertNotIn("BOOTSTRAP COMPLETE", result.stdout)
+
     def test_release_generation_required_in_journal_code(self):
         code = BOOTSTRAP.read_text(encoding="utf-8")
         self.assertIn("RELEASE_GEN", code)
         self.assertIn("LEGACY_ACTIVE_FILE", code)
         self.assertIn("head006", code)
         self.assertIn("legacy predecessor", code)
+        self.assertIn("reconcile_prior_generations", code)
 
 
 class InfraDiffGuardTests(BootstrapHarness):
-    def test_infra_update_reviews_taskdef_only_diff(self):
+    def test_infra_update_executes_reviewed_change_set_id(self):
         result, calls = self.run_bootstrap(
             [*self.base_args(), "--phase", "infra"])
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
@@ -2398,11 +2796,30 @@ class InfraDiffGuardTests(BootstrapHarness):
         self.assertIn("--template-file", joined)
         self.assertIn("infra-006", joined)
         self.assertIn("describe-change-set", joined)
-        self.assertIn("delete-change-set", joined)
-        self.assertTrue(any("deploy " in call and "EnableServices=false" in call
-                            for call in calls))
+        self.assertIn("describe-services", joined)
+        executes = [call for call in calls if "execute-change-set" in call]
+        self.assertEqual(len(executes), 1)
+        self.assertIn("changeSet/infra-006/", executes[0])
+        describes = [call for call in calls if "describe-change-set" in call]
+        self.assertTrue(describes)
+        for call in describes:
+            self.assertIn("--no-paginate", call)
+            self.assertIn("--cli-input-json", call)
+            self.assertNotIn("--change-set-name", call)
+        self.assertFalse(any("deploy " in call for call in calls))
+        self.assertFalse(any("delete-change-set" in call for call in calls))
         self.assertIn("review passed", result.stdout + result.stderr)
+        self.assertIn("same reviewed change set ID", result.stdout + result.stderr)
         self.assertFalse(any("run-task" in call for call in calls))
+
+    def test_infra_allows_taskdef_replacement_for_image_updates(self):
+        # The exact fixture carries Replacement True on all seven owned task
+        # definitions with ContainerDefinitions details, which is the only
+        # lawful replacement shape; success here proves it is accepted.
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "infra"])
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertIn("BOOTSTRAP COMPLETE", result.stdout)
 
     def test_infra_refuses_foreign_db_change(self):
         result, calls = self.run_bootstrap(
@@ -2411,32 +2828,134 @@ class InfraDiffGuardTests(BootstrapHarness):
         self.assertNotEqual(result.returncode, 0)
         combined = result.stdout + result.stderr
         self.assertIn("FOREIGN_Database", combined)
-        self.assertTrue(any("delete-change-set" in call for call in calls))
+        self.assertIn("preserved for inspection", combined)
+        self.assertFalse(any("delete-change-set" in call for call in calls))
+        self.assertFalse(any("execute-change-set" in call for call in calls))
         self.assertFalse(any("deploy " in call for call in calls))
         self.assertFalse(any("run-task" in call for call in calls))
 
-    def test_infra_refuses_replacement_change(self):
+    def test_infra_refuses_service_replacement_change(self):
         result, calls = self.run_bootstrap(
             [*self.base_args(), "--phase", "infra"],
             extra_env={"FAKE_INFRA_CHANGESET": "replacement"})
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("REPLACEMENT", result.stdout + result.stderr)
+        self.assertIn("REPLACEMENT_ApiService_True", result.stdout + result.stderr)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
         self.assertFalse(any("deploy " in call for call in calls))
 
-    def test_infra_no_changes_proceeds_as_noop_deploy(self):
+    def test_infra_refuses_non_image_taskdef_detail(self):
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "infra"],
+            extra_env={"FAKE_INFRA_CHANGESET": "wrong_detail"})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("DETAIL_ApiTaskDefinition_NAME_ExecutionRoleArn", combined)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+
+    def test_infra_refuses_missing_details(self):
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "infra"],
+            extra_env={"FAKE_INFRA_CHANGESET": "missing_details"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("DETAILS_ApiTaskDefinition_MISSING",
+                      result.stdout + result.stderr)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+
+    def test_infra_refuses_parameter_mismatch(self):
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "infra"],
+            extra_env={"FAKE_INFRA_CHANGESET": "params_mismatch"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("PARAMS_VALUE_EnableServices", result.stdout + result.stderr)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+
+    def test_infra_refuses_tag_mismatch(self):
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "infra"],
+            extra_env={"FAKE_INFRA_CHANGESET": "tags_mismatch"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("TAGS_MISMATCH", result.stdout + result.stderr)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+
+    def test_infra_refuses_foreign_change_set_id(self):
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "infra"],
+            extra_env={"FAKE_INFRA_CHANGESET": "wrong_id"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ID_MISMATCH", result.stdout + result.stderr)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+
+    def test_infra_reviews_every_page_before_execute(self):
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "infra"],
+            extra_env={"FAKE_INFRA_CHANGESET": "paginated_ok"})
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        describes = [call for call in calls if "describe-change-set" in call]
+        self.assertEqual(len(describes), 2)
+        decoded = [call for call in calls if "INPUT_JSON_CHANGESET" in call]
+        self.assertEqual(len(decoded), 2)
+        self.assertIn("page2", decoded[1])
+        executes = [call for call in calls if "execute-change-set" in call]
+        self.assertEqual(len(executes), 1)
+        self.assertIn("changeSet/infra-006/", executes[0])
+
+    def test_infra_refuses_extra_change_on_later_page(self):
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "infra"],
+            extra_env={"FAKE_INFRA_CHANGESET": "paginated_extra"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("FOREIGN_Database", result.stdout + result.stderr)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+
+    def test_infra_refuses_truncated_pages(self):
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "infra"],
+            extra_env={"FAKE_INFRA_CHANGESET": "truncated"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unreviewed pages", result.stdout + result.stderr)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+
+    def test_infra_refuses_when_services_running(self):
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "infra"],
+            extra_env={"FAKE_SERVICE": "ok"})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("DESIRED_1", combined)
+        self.assertFalse(any("create-change-set" in call for call in calls))
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+        self.assertFalse(any("deploy " in call for call in calls))
+        self.assertFalse(any("run-task" in call for call in calls))
+
+    def test_infra_never_deletes_existing_change_set(self):
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "infra"],
+            extra_env={"FAKE_INFRA_CREATE": "exists"})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("never deleted or replaced", combined)
+        self.assertFalse(any("delete-change-set" in call for call in calls))
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+        self.assertFalse(any("deploy " in call for call in calls))
+
+    def test_infra_no_changes_skips_execute_without_deploy(self):
         result, calls = self.run_bootstrap(
             [*self.base_args(), "--phase", "infra"],
             extra_env={"FAKE_INFRA_CHANGESET": "empty"})
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
         self.assertIn("already current", result.stdout + result.stderr)
-        self.assertTrue(any("deploy " in call for call in calls))
+        self.assertIn("BOOTSTRAP COMPLETE", result.stdout)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+        self.assertFalse(any("deploy " in call for call in calls))
+        self.assertFalse(any("run-task" in call for call in calls))
 
 
 class LegacyJournalTests(BootstrapHarness):
     LEGACY_TOKEN = "lc-" + "a" * 30
     LEGACY_TASK = ("arn:aws:ecs:us-east-1:111122223333:"
                    "task/launchcrew-demo/legacy001")
-    LEGACY_TASKDEF = ("arn:aws:ecs:us-east-1:111122223333:task-definition/"
+    LEGACY_TASKDEF = ("arn:aws:ecs:us-east-1:111122223333:task"
+                      "-definition/"
                       "launchcrew-demo-sdkmaterial:1")
 
     def write_legacy(self, journals, outcome="complete"):
@@ -2524,6 +3043,227 @@ class LegacyJournalTests(BootstrapHarness):
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
                                    "head006-testabc-active.json")
             self.assertFalse(new_file.exists())
+
+
+class CrossGenerationJournalTests(BootstrapHarness):
+    STACK_ID = f"arn:aws:cloudformation:{REGION}:{ACCOUNT}:stack/{STACK}/abc123"
+    PRIOR_TOKEN = "lc-" + "b" * 30
+    PRIOR_TASK = ("arn:aws:ecs:us-east-1:111122223333:"
+                  "task/launchcrew-demo/prior001")
+    PRIOR_TASKDEF = ("arn:aws:ecs:us-east-1:111122223333:task"
+                     "-definition/launchcrew-demo-sdkmaterial:1")
+    MIG_TASKDEF = ("arn:aws:ecs:us-east-1:111122223333:task"
+                   "-definition/launchcrew-demo-migration:1")
+
+    def write_prior(self, journals, phase="material", label="sdk-material",
+                    logical="SdkMaterialTaskDefinition", taskdef=None,
+                    generation="head006-old0000", outcome="complete",
+                    archived=False, **overrides):
+        import json as _json
+        taskdef = taskdef if taskdef is not None else self.PRIOR_TASKDEF
+        if archived:
+            name = (f"launchcrew-{STACK}-{phase}-{label}-{generation}-"
+                    f"complete-{self.PRIOR_TOKEN}.json")
+        else:
+            name = (f"launchcrew-{STACK}-{phase}-{label}-{generation}-"
+                    "active.json")
+        path = journals / name
+        doc = {
+            "version": 2,
+            "stack": STACK,
+            "phase": phase,
+            "label": label,
+            "taskdef_logical": logical,
+            "taskdef_arn": taskdef,
+            "cluster": STACK,
+            "client_token": self.PRIOR_TOKEN,
+            "config_digest": "1" * 32,
+            "region": REGION,
+            "account": ACCOUNT,
+            "outcome": outcome,
+            "task_arn": self.PRIOR_TASK if outcome == "complete" else "",
+            "release_generation": generation,
+            "source_sha": "old0000",
+            "target_head": "006",
+            "stack_id": self.STACK_ID,
+            "predecessor_task_arn": "",
+            "predecessor_outcome": "none",
+            "updated_utc": "2026-01-01T00:00:00Z",
+        }
+        doc.update(overrides)
+        path.write_text(_json.dumps(doc), encoding="utf-8")
+        path.chmod(0o600)
+        return path
+
+    def seed_live_prior(self, shared):
+        (shared / "taskdefs").write_text(
+            f"{self.PRIOR_TASK}|{self.PRIOR_TASKDEF}|{self.PRIOR_TOKEN}\n",
+            encoding="utf-8")
+        (shared / "count").write_text("10", encoding="utf-8")
+        (shared / "token").write_text("", encoding="utf-8")
+
+    def fresh_shared(self, shared_tmp):
+        shared = Path(shared_tmp)
+        journals = shared / "journals"
+        journals.mkdir(mode=0o700)
+        journals.chmod(0o700)
+        return shared, journals
+
+    def test_new_generation_blocked_by_pending_prior_generation(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_prior(journals, outcome="started")
+            before = prior.read_text(encoding="utf-8")
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "material",
+                 "--release-generation", "head006-new1111"],
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("UNRESOLVED", combined)
+            self.assertIn("no new launch", combined)
+            self.assertFalse(any("run-task" in call for call in calls))
+            self.assertTrue(prior.exists())
+            self.assertEqual(prior.read_text(encoding="utf-8"), before)
+            new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
+                                   "head006-new1111-active.json")
+            self.assertFalse(new_file.exists())
+
+    def test_mutating_label_blocked_by_pending_prior_generation(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_prior(
+                journals, phase="migrate", label="migration",
+                logical="MigrationTaskDefinition", taskdef=self.MIG_TASKDEF,
+                outcome="started")
+            before = prior.read_text(encoding="utf-8")
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "migrate",
+                 "--release-generation", "head006-new1111"],
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("UNRESOLVED", combined)
+            self.assertIn("no new launch", combined)
+            self.assertFalse(any("run-task" in call for call in calls))
+            self.assertEqual(prior.read_text(encoding="utf-8"), before)
+
+    def test_new_generation_proceeds_after_complete_prior_generation(self):
+        import json as _json
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_prior(journals, outcome="complete")
+            before = prior.read_text(encoding="utf-8")
+            self.seed_live_prior(shared)
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "material",
+                 "--release-generation", "head006-new1111"],
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            self.assertIn("prior generation head006-old0000 reconciled",
+                          result.stdout + result.stderr)
+            self.assertEqual(prior.read_text(encoding="utf-8"), before)
+            self.assertEqual(oct(prior.stat().st_mode & 0o777), "0o600")
+            new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
+                                   "head006-new1111-active.json")
+            new_doc = _json.loads(new_file.read_text(encoding="utf-8"))
+            self.assertEqual(new_doc.get("outcome"), "complete")
+            self.assertEqual(new_doc.get("release_generation"), "head006-new1111")
+            runs = [call for call in calls if "run-task" in call]
+            self.assertEqual(len(runs), 1)
+
+    def test_prior_generation_live_mismatch_blocks_new_launch(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_prior(journals, outcome="complete")
+            (shared / "taskdefs").write_text(
+                f"{self.PRIOR_TASK}|{self.PRIOR_TASKDEF}|lc-{'c' * 30}\n",
+                encoding="utf-8")
+            (shared / "count").write_text("10", encoding="utf-8")
+            (shared / "token").write_text("", encoding="utf-8")
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "material",
+                 "--release-generation", "head006-new1111"],
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("WRONG_TOKEN", combined)
+            self.assertIn("no new", combined)
+            self.assertFalse(any("run-task" in call for call in calls))
+            self.assertTrue(prior.exists())
+
+    def test_malformed_prior_record_blocks_new_launch(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            prior = journals / (f"launchcrew-{STACK}-material-sdk-material-"
+                                "head006-old0000-active.json")
+            prior.write_text("{not-json", encoding="utf-8")
+            prior.chmod(0o600)
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "material",
+                 "--release-generation", "head006-new1111"],
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("UNREADABLE", combined)
+            self.assertIn("no new launch", combined)
+            self.assertFalse(any("run-task" in call for call in calls))
+
+    def test_foreign_prior_record_blocks_new_launch(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            self.write_prior(journals, outcome="complete", account="999988887777")
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "material",
+                 "--release-generation", "head006-new1111"],
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("ACCOUNT_MISMATCH", combined)
+            self.assertFalse(any("run-task" in call for call in calls))
+
+    def test_conflicting_target_head_blocks_new_launch(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            self.write_prior(journals, outcome="complete", target_head="005")
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "material",
+                 "--release-generation", "head006-new1111"],
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("HEAD_MISMATCH", combined)
+            self.assertFalse(any("run-task" in call for call in calls))
+
+    def test_archived_prior_record_must_be_complete(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            self.write_prior(journals, outcome="started", archived=True)
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "material",
+                 "--release-generation", "head006-new1111"],
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("UNRESOLVED", combined)
+            self.assertFalse(any("run-task" in call for call in calls))
+
+    def test_unknown_journal_file_blocks_new_launch(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            stray = journals / (f"launchcrew-{STACK}-material-sdk-material-"
+                                "head006-old0000-weird.json")
+            stray.write_text("{}", encoding="utf-8")
+            stray.chmod(0o600)
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "material",
+                 "--release-generation", "head006-new1111"],
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("UNKNOWN_FILE", combined)
+            self.assertFalse(any("run-task" in call for call in calls))
 
 
 if __name__ == "__main__":
