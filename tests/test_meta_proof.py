@@ -49,7 +49,7 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-task-definition" ]; then
   LOGPREFIX="meta-proof"
   CNAME="meta-proof"
   if [ "$MODE" = "log_mismatch" ]; then LOGGROUP="/other/group"; fi
-  LOGCFG="{\"logDriver\": \"awslogs\", \"options\": {\"awslogs-group\": \"$LOGGROUP\", \"awslogs-stream-prefix\": \"$LOGPREFIX\", \"awslogs-region\": \"us-east-1\"}}"
+  LOGCFG=$(printf '{"logDriver": "awslogs", "options": {"awslogs-group": "%s", "awslogs-stream-prefix": "%s", "awslogs-region": "us-east-1"}}' "$LOGGROUP" "$LOGPREFIX")
   printf '{"taskDefinition": {"executionRoleArn": "%s", "taskRoleArn": "%s", "containerDefinitions": [{"name": "%s", "image": "%s", "command": %s, "secrets": %s, "logConfiguration": %s}]}}' "$EXEC" "$TASK" "$CNAME" "$IMAGE" "$CMD" "$SECRETS" "$LOGCFG"
   exit 0
 fi

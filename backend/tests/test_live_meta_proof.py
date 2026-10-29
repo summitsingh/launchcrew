@@ -349,3 +349,253 @@ def test_synthetic_proof_read_timeout_latches_no_followups(tmp_path):
         with pytest.raises(spark_module.ProofLatchError):
             spark_module.proof_urlopen(request, timeout=5, latch_path=latch)
         assert opens['count'] == 1
+
+
+def test_synthetic_sam_ambiguous_grant_cleans_flag_and_zero_no_pass(monkeypatch, tmp_path, capsys):
+    import hashlib
+    import os
+    from backend.live_meta_proof import run_sam_proof
+    photo = tmp_path / 'proof.jpg'
+    raw = b'\xff\xd8\xffsynthetic-test-bytes'
+    photo.write_bytes(raw)
+    digest = hashlib.sha256(raw).hexdigest()
+    monkeypatch.setenv('META_API_KEY', 'offline-fixture')
+    monkeypatch.setenv('LAUNCHCREW_PHOTO_SAM_ENABLED', 'true')
+    monkeypatch.setenv('LAUNCHCREW_PHOTO_APPROVED_DIGESTS', digest)
+    monkeypatch.setenv('LAUNCHCREW_PROOF_PHOTO_PATH', str(photo))
+    monkeypatch.delenv('META_API_BASE_URL', raising=False)
+    state = {'begins': 0, 'grant': 0, 'zero': 0, 'provider': 0}
+
+    class _FakeResult:
+        def scalar(self):
+            return 0
+
+        def mappings(self):
+            return self
+
+        def first(self):
+            return {'status': 'succeeded', 'label': 'synthetic', 'reason': ''}
+
+    class _FakeConn:
+        def __init__(self, index):
+            self.index = index
+
+        def execute(self, statement, params=None):
+            sql = getattr(statement, 'text', str(statement))
+            if 'remaining_images=1' in sql:
+                state['grant'] += 1
+                return _FakeResult()
+            if 'remaining_images=0' in sql:
+                state['zero'] += 1
+                return _FakeResult()
+            raise AssertionError('unexpected SQL in ambiguous test')
+
+    class _FakeBegin:
+        def __init__(self, index):
+            self.index = index
+
+        def __enter__(self):
+            return _FakeConn(self.index)
+
+        def __exit__(self, exc_type, exc, tb):
+            if self.index == 0:
+                raise RuntimeError('synthetic ambiguous grant ack failure')
+            return False
+
+    class _FakeEngine:
+        def begin(self):
+            idx = state['begins']
+            state['begins'] += 1
+            return _FakeBegin(idx)
+
+    def fake_upload(*args, **kwargs):
+        state['provider'] += 1
+        raise AssertionError('provider must not run when grant is ambiguous')
+
+    with patch('backend.store.engine', return_value=_FakeEngine()):
+        with patch('backend.sam.upload_and_segment', side_effect=fake_upload):
+            code = run_sam_proof(latch_path=tmp_path / 'sam-latch.json')
+    captured = capsys.readouterr()
+    text_out = captured.out + captured.err
+    assert code != 0
+    assert 'SAM PROOF PASS' not in text_out
+    assert os.environ.get('LAUNCHCREW_PHOTO_SAM_ENABLED') == 'false'
+    assert state['grant'] == 1
+    assert state['zero'] >= 1
+    assert state['provider'] == 0
+
+
+def test_synthetic_sam_early_digest_fail_cleans_flag_and_zero_no_pass(monkeypatch, tmp_path, capsys):
+    import os
+    from backend.live_meta_proof import run_sam_proof
+    photo = tmp_path / 'proof.jpg'
+    photo.write_bytes(b'\xff\xd8\xffsynthetic-test-bytes')
+    monkeypatch.setenv('META_API_KEY', 'offline-fixture')
+    monkeypatch.setenv('LAUNCHCREW_PHOTO_SAM_ENABLED', 'true')
+    monkeypatch.setenv('LAUNCHCREW_PHOTO_APPROVED_DIGESTS', '00' * 32)
+    monkeypatch.setenv('LAUNCHCREW_PROOF_PHOTO_PATH', str(photo))
+    monkeypatch.delenv('META_API_BASE_URL', raising=False)
+    state = {'grant': 0, 'zero': 0, 'provider': 0}
+
+    class _FakeResult:
+        def scalar(self):
+            return 0
+
+        def mappings(self):
+            return self
+
+        def first(self):
+            return {'status': 'succeeded', 'label': 'synthetic', 'reason': ''}
+
+    class _FakeConn:
+        def execute(self, statement, params=None):
+            sql = getattr(statement, 'text', str(statement))
+            if 'remaining_images=1' in sql:
+                state['grant'] += 1
+                return _FakeResult()
+            if 'remaining_images=0' in sql:
+                state['zero'] += 1
+                return _FakeResult()
+            raise AssertionError('unexpected SQL in early fail test')
+
+    class _FakeBegin:
+        def __enter__(self):
+            return _FakeConn()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeEngine:
+        def begin(self):
+            return _FakeBegin()
+
+    def fake_upload(*args, **kwargs):
+        state['provider'] += 1
+        raise AssertionError('provider must not run on early fail')
+
+    with patch('backend.store.engine', return_value=_FakeEngine()):
+        with patch('backend.sam.upload_and_segment', side_effect=fake_upload):
+            code = run_sam_proof(latch_path=tmp_path / 'sam-latch.json')
+    captured = capsys.readouterr()
+    text_out = captured.out + captured.err
+    assert code != 0
+    assert 'SAM PROOF PASS' not in text_out
+    assert os.environ.get('LAUNCHCREW_PHOTO_SAM_ENABLED') == 'false'
+    assert state['grant'] == 0
+    assert state['zero'] >= 1
+    assert state['provider'] == 0
+
+
+def test_synthetic_sam_success_cleans_before_pass(monkeypatch, tmp_path, capsys):
+    import hashlib
+    import os
+    from backend.live_meta_proof import run_sam_proof
+    photo = tmp_path / 'proof.jpg'
+    raw = b'\xff\xd8\xffsynthetic-test-bytes'
+    photo.write_bytes(raw)
+    digest = hashlib.sha256(raw).hexdigest()
+    monkeypatch.setenv('META_API_KEY', 'offline-fixture')
+    monkeypatch.setenv('LAUNCHCREW_PHOTO_SAM_ENABLED', 'true')
+    monkeypatch.setenv('LAUNCHCREW_PHOTO_APPROVED_DIGESTS', digest)
+    monkeypatch.setenv('LAUNCHCREW_PROOF_PHOTO_PATH', str(photo))
+    monkeypatch.delenv('META_API_BASE_URL', raising=False)
+    state = {'grant': 0, 'zero': 0, 'provider': 0, 'run_create_keyless': None,
+             'final_seen': False, 'flag_during_final': None}
+
+    class _FakeResult:
+        def __init__(self, scalar=None, row=None):
+            self._scalar = scalar
+            self._row = row
+
+        def scalar(self):
+            return self._scalar
+
+        def mappings(self):
+            return self
+
+        def first(self):
+            return self._row
+
+    class _FakeConn:
+        def execute(self, statement, params=None):
+            sql = getattr(statement, 'text', str(statement))
+            if 'remaining_images=1' in sql:
+                state['grant'] += 1
+                return _FakeResult()
+            if 'remaining_images=0' in sql:
+                state['zero'] += 1
+                return _FakeResult()
+            if 'SELECT remaining_images' in sql:
+                if state['zero'] >= 1:
+                    state['final_seen'] = True
+                    state['flag_during_final'] = os.environ.get('LAUNCHCREW_PHOTO_SAM_ENABLED')
+                return _FakeResult(scalar=0)
+            if 'SELECT status' in sql and 'sam_calls' in sql:
+                if state['zero'] >= 1:
+                    state['final_seen'] = True
+                    state['flag_during_final'] = os.environ.get('LAUNCHCREW_PHOTO_SAM_ENABLED')
+                return _FakeResult(row={'status': 'succeeded', 'label': 'synthetic-test-label', 'reason': ''})
+            raise AssertionError('unexpected SQL in success test')
+
+    class _FakeBegin:
+        def __enter__(self):
+            return _FakeConn()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeEngine:
+        def begin(self):
+            return _FakeBegin()
+
+    def fake_original(raw_arg, mime_arg, concept='product', timeout_s=30.0):
+        state['provider'] += 1
+        assert hashlib.sha256(raw_arg).hexdigest() == digest
+        assert concept == 'jacket'
+        return [{'synthetic': True}]
+
+    class _FakeResp:
+        def __init__(self, code, payload):
+            self.status_code = code
+            self._payload = payload
+
+        def json(self):
+            return dict(self._payload)
+
+    class _FakeTestClient:
+        def __init__(self, app_arg):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, path, json=None):
+            if path == '/api/runs':
+                key = os.environ.get('META_API_KEY', '').strip()
+                state['run_create_keyless'] = (not key)
+                return _FakeResp(201, {'run_id': 'synthetic-run-id'})
+            if path.endswith('/photo-check'):
+                from backend import sam as _sam
+                raw_here = photo.read_bytes()
+                _sam.upload_and_segment(raw_here, 'image/jpeg', concept='product')
+                return _FakeResp(200, {'receipt': {'photo_status': {'state': 'checked'}}})
+            raise AssertionError('unexpected POST path')
+
+    with patch('backend.store.engine', return_value=_FakeEngine()):
+        with patch('backend.sam.upload_and_segment', side_effect=fake_original):
+            with patch('fastapi.testclient.TestClient', _FakeTestClient):
+                code = run_sam_proof(latch_path=tmp_path / 'sam-latch.json')
+    captured = capsys.readouterr()
+    text_out = captured.out + captured.err
+    assert code == 0
+    assert 'SAM PROOF PASS' in text_out
+    assert os.environ.get('LAUNCHCREW_PHOTO_SAM_ENABLED') == 'false'
+    assert state['grant'] == 1
+    assert state['zero'] >= 1
+    assert state['provider'] == 1
+    assert state['run_create_keyless'] is True
+    assert state['final_seen'] is True
+    assert state['flag_during_final'] == 'false'

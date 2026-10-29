@@ -414,115 +414,126 @@ def run_sam_proof(*, latch_path):
     from backend import sam as sam_module
     from backend import store as store_module
     from backend.app import app
-    ok, reason = _check_sam_env()
-    if not ok:
-        print('SAM proof refused: ' + reason)
-        return 1
-    if not _reserve_sam_latch(latch_path):
-        print('SAM proof latch refused: reuse refused')
-        return 1
-    photo_path = os.environ.get('LAUNCHCREW_PROOF_PHOTO_PATH', '').strip()
-    try:
-        raw_bytes = Path(photo_path).read_bytes()
-    except Exception:
-        print('SAM proof photo read failed')
-        return 1
-    digest = hashlib.sha256(raw_bytes).hexdigest().lower()
-    if digest not in _approved_digest_set():
-        print('SAM proof approved identity mismatch')
-        return 1
-    print('SAM proof approved identity validated')
-    if raw_bytes.startswith(b'\x89PNG\r\n\x1a\n'):
-        mime = 'image/png'
-        kind = 'png'
-    elif raw_bytes.startswith(b'\xff\xd8\xff'):
-        mime = 'image/jpeg'
-        kind = 'jpeg'
-    else:
-        print('SAM proof photo is not PNG or JPEG')
-        return 1
-    data_uri = 'data:image/%s;base64,' % kind + base64.b64encode(raw_bytes).decode('ascii')
-    try:
-        with store_module.engine().begin() as connection:
-            connection.execute(text("UPDATE sam_budget SET remaining_images=1 WHERE id='global'"))
-    except Exception as error:
-        print('SAM proof budget grant failed: ' + type(error).__name__)
+    if os.environ.get('LAUNCHCREW_PHOTO_SAM_ENABLED', '').strip().lower() != 'true':
+        ok, reason = _check_sam_env()
+        print('SAM proof refused: ' + (reason if not ok else 'SAM not enabled'))
         return 1
     original_upload = sam_module.upload_and_segment
-    sam_counts = {'uploads': 0, 'segmentations': 0}
-
-    def proof_upload(raw, mime_arg, concept='product', timeout_s=30.0):
-        check = hashlib.sha256(raw).hexdigest().lower()
-        if check not in _approved_digest_set():
-            raise sam_module.SamTransportError('digest mismatch')
-        try:
-            records = original_upload(raw, mime_arg, concept='jacket', timeout_s=timeout_s)
-        except sam_module.SamTransportError as error:
-            try:
-                sam_counts['uploads'] = int(getattr(error, 'uploads', 0) or 0)
-            except (TypeError, ValueError):
-                sam_counts['uploads'] = 0
-            try:
-                sam_counts['segmentations'] = int(getattr(error, 'segmentations', 0) or 0)
-            except (TypeError, ValueError):
-                sam_counts['segmentations'] = 0
-            raise
-        sam_counts['uploads'] = 1
-        sam_counts['segmentations'] = 1
-        return records
-
-    sam_module.upload_and_segment = proof_upload
     saved_key = os.environ.get('META_API_KEY', '')
     cleanup_status = {'budget_zero_failed': False}
+    sam_counts = {'uploads': 0, 'segmentations': 0}
     candidate = None
     try:
-        with TestClient(app) as client:
-            os.environ.pop('META_API_KEY', None)
-            try:
-                created = client.post('/api/runs', json={
-                    'idea': _SYNTHETIC_IDEA, 'agent_name': 'Maker'})
-            finally:
-                if saved_key:
-                    os.environ['META_API_KEY'] = saved_key
-            if created.status_code != 201:
-                print('SAM proof run create failed: HTTP ' + str(created.status_code))
-                return 1
-            run_id = created.json().get('run_id', '')
-            response = client.post('/api/runs/%s/photo-check' % run_id, json={
-                'image_data_uri': data_uri, 'expected_revision': 0})
-            if response.status_code not in (200, 422, 409):
-                print('SAM proof photo check HTTP ' + str(response.status_code))
-                return 1
-            body = response.json() if response.status_code == 200 else {}
-            receipt = body.get('receipt', {}) if isinstance(body, dict) else {}
+        ok, reason = _check_sam_env()
+        if not ok:
+            print('SAM proof refused: ' + reason)
+            return 1
+        if not _reserve_sam_latch(latch_path):
+            print('SAM proof latch refused: reuse refused')
+            return 1
+        photo_path = os.environ.get('LAUNCHCREW_PROOF_PHOTO_PATH', '').strip()
+        try:
+            raw_bytes = Path(photo_path).read_bytes()
+        except Exception:
+            print('SAM proof photo read failed')
+            return 1
+        digest = hashlib.sha256(raw_bytes).hexdigest().lower()
+        if digest not in _approved_digest_set():
+            print('SAM proof approved identity mismatch')
+            return 1
+        print('SAM proof approved identity validated')
+        if raw_bytes.startswith(b'\x89PNG\r\n\x1a\n'):
+            mime = 'image/png'
+            kind = 'png'
+        elif raw_bytes.startswith(b'\xff\xd8\xff'):
+            mime = 'image/jpeg'
+            kind = 'jpeg'
+        else:
+            print('SAM proof photo is not PNG or JPEG')
+            return 1
+        data_uri = 'data:image/%s;base64,' % kind + base64.b64encode(raw_bytes).decode('ascii')
+        try:
             with store_module.engine().begin() as connection:
-                budget = connection.execute(
-                    text("SELECT remaining_images FROM sam_budget WHERE id='global'")).scalar()
-                row = connection.execute(
-                    text('SELECT status, label, reason FROM sam_calls WHERE run_id=:id AND revision=0'),
-                    {'id': run_id}).mappings().first()
-            if response.status_code != 200:
-                print('SAM proof photo check refused: HTTP ' + str(response.status_code))
-                return 1
-            if budget != 0:
-                print('SAM proof budget not spent')
-                return 1
-            if row is None or row['status'] not in ('succeeded', 'failed_terminal'):
-                print('SAM proof ledger not terminal')
-                return 1
-            if row['status'] != 'succeeded':
-                print('SAM proof ended terminal without success')
-                return 1
-            if sam_counts['uploads'] != 1 or sam_counts['segmentations'] != 1:
-                print('SAM proof attempt counts invalid')
-                return 1
-            photo_status = receipt.get('photo_status', {}) if isinstance(receipt, dict) else {}
-            if photo_status.get('state') not in ('checked',):
-                print('SAM proof receipt photo state invalid')
-                return 1
-            candidate = {'run_id': run_id, 'label': row['label'],
-                         'uploads': sam_counts['uploads'],
-                         'segmentations': sam_counts['segmentations']}
+                connection.execute(text("UPDATE sam_budget SET remaining_images=1 WHERE id='global'"))
+        except Exception as error:
+            print('SAM proof budget grant failed: ' + type(error).__name__)
+            return 1
+
+        def proof_upload(raw, mime_arg, concept='product', timeout_s=30.0):
+            check = hashlib.sha256(raw).hexdigest().lower()
+            if check not in _approved_digest_set():
+                raise sam_module.SamTransportError('digest mismatch')
+            try:
+                records = original_upload(raw, mime_arg, concept='jacket', timeout_s=timeout_s)
+            except sam_module.SamTransportError as error:
+                try:
+                    sam_counts['uploads'] = int(getattr(error, 'uploads', 0) or 0)
+                except (TypeError, ValueError):
+                    sam_counts['uploads'] = 0
+                try:
+                    sam_counts['segmentations'] = int(getattr(error, 'segmentations', 0) or 0)
+                except (TypeError, ValueError):
+                    sam_counts['segmentations'] = 0
+                raise
+            sam_counts['uploads'] = 1
+            sam_counts['segmentations'] = 1
+            return records
+
+        sam_module.upload_and_segment = proof_upload
+        try:
+            with TestClient(app) as client:
+                os.environ.pop('META_API_KEY', None)
+                try:
+                    created = client.post('/api/runs', json={
+                        'idea': _SYNTHETIC_IDEA, 'agent_name': 'Maker'})
+                finally:
+                    if saved_key:
+                        os.environ['META_API_KEY'] = saved_key
+                if created.status_code != 201:
+                    print('SAM proof run create failed: HTTP ' + str(created.status_code))
+                    return 1
+                run_id = created.json().get('run_id', '')
+                response = client.post('/api/runs/%s/photo-check' % run_id, json={
+                    'image_data_uri': data_uri, 'expected_revision': 0})
+                if response.status_code not in (200, 422, 409):
+                    print('SAM proof photo check HTTP ' + str(response.status_code))
+                    return 1
+                body = response.json() if response.status_code == 200 else {}
+                receipt = body.get('receipt', {}) if isinstance(body, dict) else {}
+                with store_module.engine().begin() as connection:
+                    budget = connection.execute(
+                        text("SELECT remaining_images FROM sam_budget WHERE id='global'")).scalar()
+                    row = connection.execute(
+                        text('SELECT status, label, reason FROM sam_calls WHERE run_id=:id AND revision=0'),
+                        {'id': run_id}).mappings().first()
+                if response.status_code != 200:
+                    print('SAM proof photo check refused: HTTP ' + str(response.status_code))
+                    return 1
+                if budget != 0:
+                    print('SAM proof budget not spent')
+                    return 1
+                if row is None or row['status'] not in ('succeeded', 'failed_terminal'):
+                    print('SAM proof ledger not terminal')
+                    return 1
+                if row['status'] != 'succeeded':
+                    print('SAM proof ended terminal without success')
+                    return 1
+                if sam_counts['uploads'] != 1 or sam_counts['segmentations'] != 1:
+                    print('SAM proof attempt counts invalid')
+                    return 1
+                photo_status = receipt.get('photo_status', {}) if isinstance(receipt, dict) else {}
+                if photo_status.get('state') not in ('checked',):
+                    print('SAM proof receipt photo state invalid')
+                    return 1
+                candidate = {'run_id': run_id, 'label': row['label'],
+                             'uploads': sam_counts['uploads'],
+                             'segmentations': sam_counts['segmentations']}
+        except sam_module.SamTransportError as error:
+            print('SAM proof transport failed: ' + type(error).__name__)
+            return 1
+        except Exception as error:
+            print('SAM proof failed: ' + type(error).__name__)
+            return 1
     except sam_module.SamTransportError as error:
         print('SAM proof transport failed: ' + type(error).__name__)
         return 1
@@ -530,7 +541,10 @@ def run_sam_proof(*, latch_path):
         print('SAM proof failed: ' + type(error).__name__)
         return 1
     finally:
-        sam_module.upload_and_segment = original_upload
+        try:
+            sam_module.upload_and_segment = original_upload
+        except Exception:
+            pass
         os.environ['LAUNCHCREW_PHOTO_SAM_ENABLED'] = 'false'
         try:
             with store_module.engine().begin() as connection:
