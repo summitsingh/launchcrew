@@ -6,6 +6,10 @@ mkdirSync(local, { recursive: true });
 async function noOverflow(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 }
+async function showAdvanced(page: Page) {
+  const toggle = page.getByRole('button', { name: 'Advanced', exact: true });
+  if ((await toggle.getAttribute('aria-expanded')) === 'false') await toggle.click();
+}
 for (const width of [375, 768, 1024, 1440]) {
   test.describe(`${width}px`, () => {
     const suffix = `${width}_${Date.now()}`;
@@ -14,6 +18,7 @@ for (const width of [375, 768, 1024, 1440]) {
     test('agent builder', async ({ page }) => {
       await noOverflow(page);
       await page.screenshot({ path: `${local}/idea-${width}.png`, fullPage: true });
+      await showAdvanced(page);
       await page.getByRole('button', { name: 'Agent builder', exact: false }).click();
       await page.getByRole('button', { name: 'New agent', exact: true }).click();
       await page.getByLabel('Name', { exact: true }).fill(agentName);
@@ -33,7 +38,8 @@ for (const width of [375, 768, 1024, 1440]) {
     });
     test('approval queue and wallet demo', async ({ page }) => {
       const { agentName: savedAgent } = JSON.parse(readFileSync(`${local}/agent-${width}.json`, 'utf8'));
-      await page.getByLabel('Maker profile', { exact: true }).selectOption(savedAgent);
+      await page.getByLabel('Maker agent', { exact: true }).selectOption(savedAgent);
+      await page.getByLabel('Include the unsupported claim demo').check();
       await page.getByRole('button', { name: 'Create draft', exact: true }).click();
       await expect(page.getByRole('heading', { name: 'Unsupported claims stopped.' })).toBeVisible();
       await expect(page.getByText('best in Texas', { exact: true })).toBeVisible();

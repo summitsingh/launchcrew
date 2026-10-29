@@ -15,7 +15,7 @@ test('async run shows live stage receipts before the final review', async ({ pag
   await page.setViewportSize({ width: 1024, height: 1000 });
   await page.goto('/');
   await page.getByRole('button', { name: 'Launch brief', exact: false }).click();
-  await page.getByLabel('Maker profile', { exact: true }).selectOption('Maker');
+  await page.getByLabel('Maker agent', { exact: true }).selectOption('Maker');
   await page.getByRole('button', { name: 'Create draft', exact: true }).click();
 
   // The pending view opens immediately, before the pipeline finishes.

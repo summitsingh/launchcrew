@@ -20,7 +20,7 @@ describe('per-stage role selections', () => {
     for (const id of ['id="run-scout"', 'id="run-agent"', 'id="run-checker-agent"', 'id="run-checker"']) {
       expect(source).toContain(id);
     }
-    for (const label of ['Scout agent', 'Maker profile', 'Checker agent', 'Checker profile']) {
+    for (const label of ['Scout agent', 'Maker agent', 'Checker agent', 'Checker profile']) {
       expect(source).toContain(label);
     }
     expect(source).toContain('scout_name');
@@ -38,7 +38,7 @@ describe('per-stage role selections', () => {
 
   it('renders campaign stage selectors without a live backend', () => {
     const html = campaignHtml();
-    for (const label of ['Scout agent', 'Maker profile', 'Checker agent', 'Checker profile', 'Create week', 'Nothing publishes automatically.']) {
+    for (const label of ['Scout agent', 'Maker agent', 'Checker agent', 'Checker profile', 'Create week', 'Nothing publishes automatically.']) {
       expect(html).toContain(label);
     }
     expect(html).toContain('id="campaign-scout"');
@@ -74,7 +74,7 @@ describe('per-stage role selections', () => {
 
   it('shows enforced versus advisory-only preview state in the agent builder', () => {
     const source = readFileSync('src/app/page.tsx', 'utf8');
-    for (const text of ['Enforced policies:', 'Advisory-only entries:', 'Checker enforcement:']) {
+    for (const text of ['Enforced policies:', 'Advisory-only entries:', 'Supported Checker policies']) {
       expect(source).toContain(text);
     }
   });

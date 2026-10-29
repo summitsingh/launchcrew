@@ -88,7 +88,7 @@ function syntheticDetected(baseReceipt: Record<string, unknown>, sentRevision: n
 
 async function createCleanRun(page: Page) {
   await page.goto('/');
-  await page.getByLabel('Maker profile', { exact: true }).selectOption('Maker');
+  await page.getByLabel('Maker agent', { exact: true }).selectOption('Maker');
   await page.getByLabel('Include the unsupported claim demo').uncheck();
   await page.getByRole('button', { name: 'Create draft', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Ready for your review.' })).toBeVisible();

@@ -22,7 +22,7 @@ test('human revision editing and failed run review', async ({ page, request }) =
   await expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
   // Clean run without the unsupported-claim demo.
-  await page.getByLabel('Maker profile', { exact: true }).selectOption('Maker');
+  await page.getByLabel('Maker agent', { exact: true }).selectOption('Maker');
   await page.getByLabel('Include the unsupported claim demo').uncheck();
   await page.getByRole('button', { name: 'Create draft', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Ready for your review.' })).toBeVisible();
@@ -197,7 +197,7 @@ test('keyless photo check leaves pack unapproved and unexported', async ({ page,
   await expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
   // Clean run without the unsupported-claim demo.
-  await page.getByLabel('Maker profile', { exact: true }).selectOption('Maker');
+  await page.getByLabel('Maker agent', { exact: true }).selectOption('Maker');
   await page.getByLabel('Include the unsupported claim demo').uncheck();
   await page.getByRole('button', { name: 'Create draft', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Ready for your review.' })).toBeVisible();

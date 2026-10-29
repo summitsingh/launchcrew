@@ -17,10 +17,16 @@ const scoutName = `EagleScout${suffix}`;
 const checkerName = `PriceGuard${suffix}`;
 const wallet = 'Vegan leather wallet, $49, for Austin commuters, launch on Instagram';
 
+async function showAdvanced(page: import('@playwright/test').Page) {
+  const toggle = page.getByRole('button', { name: 'Advanced', exact: true });
+  if ((await toggle.getAttribute('aria-expanded')) === 'false') await toggle.click();
+}
+
 async function createAgent(
   page: import('@playwright/test').Page,
   fields: { name: string; role: string; personality: string; expertise: string; rules: string; veto: string },
 ) {
+  await showAdvanced(page);
   await page.getByRole('button', { name: 'Agent builder', exact: false }).click();
   await page.getByRole('button', { name: 'New agent', exact: true }).click();
   await page.getByLabel('Name', { exact: true }).fill(fields.name);
@@ -68,7 +74,7 @@ test('custom Scout and Checker selection changes verdict and receipt identity', 
   async function runWithChecker(checker: string) {
     await page.getByRole('button', { name: 'Launch brief', exact: false }).click();
     await page.getByLabel('Scout agent').selectOption(scoutName);
-    await page.getByLabel('Maker profile', { exact: true }).selectOption('Maker');
+    await page.getByLabel('Maker agent', { exact: true }).selectOption('Maker');
     await page.getByLabel('Checker agent').selectOption(checker);
     await page.getByLabel('Checker profile').selectOption('standard');
     await page.getByLabel('Memory ids, comma separated, optional').fill('');
@@ -141,6 +147,7 @@ test('custom Scout and Checker selection changes verdict and receipt identity', 
   await page.screenshot({ path: `${local}/05-guarded.png`, fullPage: true });
 
   // Replay proves the stage binding difference, not only the verdict.
+  await showAdvanced(page);
   await page.getByRole('button', { name: 'Replay', exact: false }).click();
   await page.getByLabel('Run A id').fill(runDefault);
   await page.getByLabel('Run B id').fill(runGuarded);

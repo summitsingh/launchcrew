@@ -125,3 +125,17 @@ pre { max-width: 100%; overflow: auto; background: #f3f5ef; padding: 18px; font-
    viewports. Display size is bounded by CSS only; the underlying crop buffer
    keeps the exact server crop dims and the source file is never altered. */
 .photo-preview-img, canvas.photo-crop-canvas { max-width: 100%; height: auto; display: block; }
+/* Review path hint under the workspace label. */
+.path-hint { margin: 0 10px 14px; }
+/* Advanced toggle matches nav buttons. The Show/Hide cue is visual only;
+   the accessible name stays Advanced with aria-expanded for state. */
+.advanced-toggle { background: transparent; border: 1px dashed #b9c6be; border-radius: 6px; text-align: left; padding: 10px; display: flex; gap: 12px; align-items: center; justify-content: space-between; font-size: 12px; font-weight: 700; color: #43594f; margin-top: 14px; width: 100%; }
+.advanced-toggle:hover { background: #e2e8df; }
+.advanced-toggle span { font-size: 10px; font-weight: 600; color: var(--muted); }
+#advanced-nav nav { margin-top: 8px; }
+/* Compact run references truncate visually only. The full ID stays in the
+   DOM and on hover, so copy and inspect flows keep working. */
+.run-id.compact { display: inline-block; max-width: 260px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+/* Exact policy IDs inside readable hints. */
+.hint code { font: 11px/1.6 monospace; background: #e9efe4; border: 1px solid #d3dccf; border-radius: 4px; padding: 0 5px; white-space: nowrap; }
+@media (max-width: 850px) { .path-hint { display: none; } .advanced-toggle { width: auto; margin-top: 12px; min-height: 42px; } #advanced-nav nav { flex-direction: row; flex-wrap: wrap; } }
