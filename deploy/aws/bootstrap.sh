@@ -3757,8 +3757,9 @@ is_mutating_label() {
 # any new release work. Versioned predecessors must name an allowed head
 # (004, 005, or current) explicitly via headXXX or a delimited token, match
 # the filename generation exactly, and carry a recomputed config digest.
-# Same-generation archives from read-only rechecks are field validated and
-# must be complete; each was terminally proven at archive time. Unknown,
+# Same-generation archives from read-only rechecks are field validated,
+# must be complete, and are live re-proven exactly like prior generations:
+# archive-time proof never substitutes for current ECS terminal proof. Unknown,
 # ambiguous, malformed, foreign, conflicting, or over-bound records fail
 # closed with no new launch and no automatic resend. Every old record is
 # preserved; nothing here deletes, renames, or overwrites history. Requires
@@ -3969,10 +3970,6 @@ PYEOF
     PRIOR_TASK="$(printf '%s\n' "$PRIOR_PARSED" | awk -F'\t' '$1=="TASKARN"{print $2}' | tr -d '[:space:]')"
     PRIOR_TASKDEF="$(printf '%s\n' "$PRIOR_PARSED" | awk -F'\t' '$1=="TASKDEF"{print $2}' | tr -d '[:space:]')"
     PRIOR_GEN="$(printf '%s\n' "$PRIOR_PARSED" | awk -F'\t' '$1=="GEN"{print $2}' | tr -d '[:space:]')"
-    if [ "$PRIOR_GEN" = "$RELEASE_GEN" ]; then
-      echo "$TASK_LABEL same-generation archive $PRIOR_BASE validated complete, preserved at $PRIOR_PATH."
-      continue
-    fi
     PRIOR_DESC="$(mktemp /tmp/launchcrew-prior-desc-XXXXXX)"
     if ! "$AWS_BIN" ecs describe-tasks --cluster "$CLUSTER_NAME" --tasks "$PRIOR_TASK" --region "$EXPECTED_REGION" --output json >"$PRIOR_DESC" 2>"$TMP_ERR"; then
       rm -f "$PRIOR_DESC" "$PRIOR_LIST"
@@ -4046,7 +4043,11 @@ PYEOF
       echo "refused: $TASK_LABEL prior $PRIOR_GEN predecessor terminal proof is $PRIOR_CHECK, no new $RELEASE_GEN launch. Inspect $PRIOR_PATH." >&2
       phase_failed "$TASK_PHASE"
     fi
-    echo "$TASK_LABEL prior generation $PRIOR_GEN reconciled STOPPED exit 0, preserved at $PRIOR_PATH; new generation $RELEASE_GEN proceeds."
+    if [ "$PRIOR_GEN" = "$RELEASE_GEN" ]; then
+      echo "$TASK_LABEL same-generation archive $PRIOR_BASE reconciled STOPPED exit 0, preserved at $PRIOR_PATH; new launch proceeds."
+    else
+      echo "$TASK_LABEL prior generation $PRIOR_GEN reconciled STOPPED exit 0, preserved at $PRIOR_PATH; new generation $RELEASE_GEN proceeds."
+    fi
   done <"$PRIOR_LIST"
   rm -f "$PRIOR_LIST"
 }
@@ -4149,9 +4150,19 @@ PYEOF
   PREDECESSOR_OUTCOME="none"
   acquire_operation_lock
   if [ -f "$LEGACY_ACTIVE_FILE" ]; then
-    LEGACY_PARSED="$(python3 - "$LEGACY_ACTIVE_FILE" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$STACK_NAME" "$CLUSTER_NAME" "$TASK_PHASE" "$TASK_LABEL" 2>/dev/null <<'PYEOF'
-import json, os, sys
-path, want_account, want_region, want_stack, want_cluster, want_phase, want_label = sys.argv[1:8]
+    case "$TASKDEF_ARN" in
+      *":task-definition/"*) ;;
+      *) echo "refused: $TASK_LABEL current taskdef family unreadable, no new launch. Inspect $LEGACY_ACTIVE_FILE." >&2; phase_failed "$TASK_PHASE" ;;
+    esac
+    LEGACY_WANT_FAMILY_TAIL="${TASKDEF_ARN##*/}"
+    LEGACY_WANT_FAMILY="${LEGACY_WANT_FAMILY_TAIL%%:*}"
+    LEGACY_WANT_FAMILY="$(printf '%s' "$LEGACY_WANT_FAMILY" | tr -d '[:space:]')"
+    [ -n "$LEGACY_WANT_FAMILY" ] || { echo "refused: $TASK_LABEL current taskdef family missing, no new launch. Inspect $LEGACY_ACTIVE_FILE." >&2; phase_failed "$TASK_PHASE"; }
+    LEGACY_PARSED="$(python3 - "$LEGACY_ACTIVE_FILE" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$STACK_NAME" "$CLUSTER_NAME" "$TASK_PHASE" "$TASK_LABEL" "$TASKDEF_LOGICAL" "$LEGACY_WANT_FAMILY" "${STACK_ID:-}" 2>/dev/null <<'PYEOF'
+import hashlib, json, os, sys
+(path, want_account, want_region, want_stack, want_cluster,
+ want_phase, want_label, want_logical, want_family,
+ want_stack_id) = sys.argv[1:11]
 try:
     if os.path.islink(path):
         print("PROOF\tSYMLINK")
@@ -4204,6 +4215,17 @@ if doc.get("phase", "") != want_phase:
 if doc.get("label", "") != want_label:
     print("PROOF\tLABEL_MISMATCH")
     sys.exit(0)
+if doc.get("taskdef_logical", "") != want_logical:
+    print("PROOF\tTASKDEF_LOGICAL_MISMATCH")
+    sys.exit(0)
+if want_stack_id and "stack_id" in doc:
+    rec_stack = doc.get("stack_id", "")
+    if not isinstance(rec_stack, str):
+        print("PROOF\tSTACKID_MISMATCH")
+        sys.exit(0)
+    if rec_stack != "" and rec_stack != want_stack_id:
+        print("PROOF\tSTACKID_MISMATCH")
+        sys.exit(0)
 token = doc.get("client_token", "")
 if not isinstance(token, str) or len(token) != 33 or not token.startswith("lc-"):
     print("PROOF\tTOKEN_MALFORMED")
@@ -4216,11 +4238,51 @@ if not isinstance(outcome, str) or not outcome:
 if not isinstance(task_arn, str):
     print("PROOF\tMALFORMED")
     sys.exit(0)
+taskdef_arn = doc.get("taskdef_arn", "") or ""
+if not isinstance(taskdef_arn, str) or not taskdef_arn.startswith(
+        "arn:aws:ecs:%s:%s:task-definition/" % (want_region, want_account)):
+    print("PROOF\tTASKDEF_FOREIGN")
+    sys.exit(0)
+try:
+    tail = taskdef_arn.split(":task-definition/", 1)[1]
+    rec_family = tail.split(":", 1)[0]
+except Exception:
+    rec_family = ""
+if not rec_family or not want_family or rec_family != want_family:
+    print("PROOF\tTASKDEF_FAMILY_MISMATCH")
+    sys.exit(0)
+if "config_digest" in doc:
+    try:
+        rec_digest = doc.get("config_digest", "")
+        raw = "|".join([
+            doc.get("account", ""), doc.get("region", ""),
+            doc.get("stack", ""), doc.get("cluster", ""),
+            doc.get("phase", ""), doc.get("label", ""),
+            doc.get("taskdef_logical", ""), doc.get("taskdef_arn", ""),
+        ])
+        expect_digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+        if not isinstance(rec_digest, str) or rec_digest != expect_digest:
+            print("PROOF\tCONFIG_MISMATCH")
+            sys.exit(0)
+    except Exception:
+        print("PROOF\tCONFIG_MISMATCH")
+        sys.exit(0)
+if outcome != "complete":
+    print("PROOF\tOK")
+    print("OUTCOME\t%s" % outcome)
+    print("TOKEN\t%s" % token)
+    print("TASKARN\t%s" % task_arn)
+    print("TASKDEF\t%s" % taskdef_arn)
+    sys.exit(0)
+if not task_arn.startswith(
+        "arn:aws:ecs:%s:%s:task/%s/" % (want_region, want_account, want_cluster)):
+    print("PROOF\tTASKARN_FOREIGN")
+    sys.exit(0)
 print("PROOF\tOK")
 print("OUTCOME\t%s" % outcome)
 print("TOKEN\t%s" % token)
 print("TASKARN\t%s" % task_arn)
-print("TASKDEF\t%s" % (doc.get("taskdef_arn", "") or ""))
+print("TASKDEF\t%s" % taskdef_arn)
 PYEOF
 )" || LEGACY_PARSED="PROOF\tUNREADABLE"
     LEGACY_PROOF="$(printf '%s\n' "$LEGACY_PARSED" | awk -F'\t' '$1=="PROOF"{print $2}')"

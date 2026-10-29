@@ -783,6 +783,10 @@ if [ "$1" = "ecs" ] && [ "$2" = "wait" ]; then
   exit 0
 fi
 if [ "$1" = "ecs" ] && [ "$2" = "describe-tasks" ]; then
+  DESCRIBE_MODE="${FAKE_DESCRIBE_TASKS:-ok}"
+  if [ "$DESCRIBE_MODE" = "empty" ]; then printf '{"tasks":[],"failures":[]}\\n'; exit 0; fi
+  if [ "$DESCRIBE_MODE" = "failures" ]; then printf '{"tasks":[],"failures":[{"arn":"arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/missing","reason":"MISSING"}]}\\n'; exit 0; fi
+  if [ "$DESCRIBE_MODE" = "error" ]; then echo "An error occurred (ThrottlingException) when calling the DescribeTasks operation: Rate exceeded" >&2; exit 254; fi
   REQUESTED=""
   REQUESTED_PREV=""
   for REQUESTED_ARG in "$@"; do
@@ -804,6 +808,10 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-tasks" ]; then
     *migration*) if [ "$MODE" = "migrate_fail" ]; then EXIT0=1; fi ;;
     *verify*) if [ "$MODE" = "verify_fail" ]; then EXIT0=1; fi ;;
   esac
+  TASK_STATUS="STOPPED"
+  CONTAINER_STATUS="STOPPED"
+  if [ "$DESCRIBE_MODE" = "running" ]; then TASK_STATUS="RUNNING"; CONTAINER_STATUS="RUNNING"; fi
+  if [ "$DESCRIBE_MODE" = "exit_nonzero" ]; then EXIT0=1; fi
   case "$TASKDEF" in
     *launchcrew-demo-api*) NAMES="api" ;;
     *launchcrew-demo-web*) NAMES="web-app web-proxy" ;;
@@ -814,7 +822,7 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-tasks" ]; then
   esac
   CONTAINERS=""
   for NAME in $NAMES; do
-    ENTRY="$(printf '{"name":"%s","lastStatus":"STOPPED","exitCode":%s}' "$NAME" "$EXIT0")"
+    ENTRY="$(printf '{"name":"%s","lastStatus":"%s","exitCode":%s}' "$NAME" "$CONTAINER_STATUS" "$EXIT0")"
     if [ -z "$CONTAINERS" ]; then CONTAINERS="$ENTRY"; else CONTAINERS="$CONTAINERS,$ENTRY"; fi
   done
   STARTED_BY="$LINE_TOKEN"
@@ -822,9 +830,9 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-tasks" ]; then
     STARTED_BY="$(cat "$FAKE_TOKEN_FILE" 2>/dev/null || true)"
   fi
   if [ -n "$STARTED_BY" ]; then
-    printf '{"tasks":[{"taskArn":"%s","clusterArn":"arn:aws:ecs:us-east-1:111122223333:cluster/launchcrew-demo","taskDefinitionArn":"%s","lastStatus":"STOPPED","startedBy":"%s","containers":[%s]}],"failures":[]}\\n' "$TASKARN" "$TASKDEF" "$STARTED_BY" "$CONTAINERS"
+    printf '{"tasks":[{"taskArn":"%s","clusterArn":"arn:aws:ecs:us-east-1:111122223333:cluster/launchcrew-demo","taskDefinitionArn":"%s","lastStatus":"%s","startedBy":"%s","containers":[%s]}],"failures":[]}\\n' "$TASKARN" "$TASKDEF" "$TASK_STATUS" "$STARTED_BY" "$CONTAINERS"
   else
-    printf '{"tasks":[{"taskArn":"%s","clusterArn":"arn:aws:ecs:us-east-1:111122223333:cluster/launchcrew-demo","taskDefinitionArn":"%s","lastStatus":"STOPPED","containers":[%s]}],"failures":[]}\\n' "$TASKARN" "$TASKDEF" "$CONTAINERS"
+    printf '{"tasks":[{"taskArn":"%s","clusterArn":"arn:aws:ecs:us-east-1:111122223333:cluster/launchcrew-demo","taskDefinitionArn":"%s","lastStatus":"%s","containers":[%s]}],"failures":[]}\\n' "$TASKARN" "$TASKDEF" "$TASK_STATUS" "$CONTAINERS"
   fi
   exit 0
 fi
@@ -2968,7 +2976,8 @@ class LegacyJournalTests(BootstrapHarness):
                       "-definition/"
                       "launchcrew-demo-sdkmaterial:1")
 
-    def write_legacy(self, journals, outcome="complete"):
+    def write_legacy(self, journals, outcome="complete", **overrides):
+        import hashlib as _hashlib
         import json as _json
         legacy = journals / f"launchcrew-{STACK}-material-sdk-material-active.json"
         doc = {
@@ -2980,13 +2989,23 @@ class LegacyJournalTests(BootstrapHarness):
             "taskdef_arn": self.LEGACY_TASKDEF,
             "cluster": STACK,
             "client_token": self.LEGACY_TOKEN,
-            "config_digest": "0" * 32,
+            "config_digest": "1" * 32,
             "region": REGION,
             "account": ACCOUNT,
             "outcome": outcome,
             "task_arn": self.LEGACY_TASK if outcome == "complete" else "",
             "updated_utc": "2026-01-01T00:00:00Z",
         }
+        doc.update(overrides)
+        if "config_digest" not in overrides:
+            raw = "|".join([
+                doc.get("account", ""), doc.get("region", ""),
+                doc.get("stack", ""), doc.get("cluster", ""),
+                doc.get("phase", ""), doc.get("label", ""),
+                doc.get("taskdef_logical", ""), doc.get("taskdef_arn", ""),
+            ])
+            doc["config_digest"] = _hashlib.sha256(
+                raw.encode("utf-8")).hexdigest()[:32]
         legacy.write_text(_json.dumps(doc), encoding="utf-8")
         legacy.chmod(0o600)
         return legacy
@@ -3048,6 +3067,200 @@ class LegacyJournalTests(BootstrapHarness):
             self.assertIn("legacy generation is started", combined)
             self.assertIn("no new launch", combined)
             self.assertFalse(any("run-task" in call for call in calls))
+            self.assertTrue(legacy.exists())
+            self.assertEqual(legacy.read_text(encoding="utf-8"), before)
+            new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
+                                   "head006-testabc-active.json")
+            self.assertFalse(new_file.exists())
+
+    def test_legacy_wrong_logical_refuses_without_new_launch(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared = Path(shared_tmp)
+            journals = shared / "journals"
+            journals.mkdir(mode=0o700)
+            journals.chmod(0o700)
+            legacy = self.write_legacy(
+                journals, outcome="complete",
+                taskdef_logical="MigrationTaskDefinition")
+            before = legacy.read_text(encoding="utf-8")
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "material",
+                 "--release-generation", "head006-testabc"],
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("TASKDEF_LOGICAL_MISMATCH", combined)
+            self.assertIn("no new launch", combined)
+            self.assertFalse(any("run-task" in call for call in calls))
+            self.assertTrue(legacy.exists())
+            self.assertEqual(legacy.read_text(encoding="utf-8"), before)
+            self.assertEqual(oct(legacy.stat().st_mode & 0o777), "0o600")
+            new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
+                                   "head006-testabc-active.json")
+            self.assertFalse(new_file.exists())
+
+    def test_legacy_forged_digest_refuses_without_new_launch(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared = Path(shared_tmp)
+            journals = shared / "journals"
+            journals.mkdir(mode=0o700)
+            journals.chmod(0o700)
+            legacy = self.write_legacy(
+                journals, outcome="complete",
+                config_digest="0" * 32)
+            before = legacy.read_text(encoding="utf-8")
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "material",
+                 "--release-generation", "head006-testabc"],
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("CONFIG_MISMATCH", combined)
+            self.assertIn("no new launch", combined)
+            self.assertFalse(any("run-task" in call for call in calls))
+            self.assertTrue(legacy.exists())
+            self.assertEqual(legacy.read_text(encoding="utf-8"), before)
+            new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
+                                   "head006-testabc-active.json")
+            self.assertFalse(new_file.exists())
+
+    def test_legacy_wrong_family_refuses_without_new_launch(self):
+        wrong_taskdef = ("arn:aws:ecs:us-east-1:111122223333:task"
+                         "-definition/launchcrew-demo-migration:1")
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared = Path(shared_tmp)
+            journals = shared / "journals"
+            journals.mkdir(mode=0o700)
+            journals.chmod(0o700)
+            legacy = self.write_legacy(
+                journals, outcome="complete",
+                taskdef_arn=wrong_taskdef)
+            before = legacy.read_text(encoding="utf-8")
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "material",
+                 "--release-generation", "head006-testabc"],
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("TASKDEF_FAMILY_MISMATCH", combined)
+            self.assertIn("no new launch", combined)
+            self.assertFalse(any("run-task" in call for call in calls))
+            self.assertTrue(legacy.exists())
+            self.assertEqual(legacy.read_text(encoding="utf-8"), before)
+            new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
+                                   "head006-testabc-active.json")
+            self.assertFalse(new_file.exists())
+
+    def test_legacy_wrong_stack_id_refuses_without_new_launch(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared = Path(shared_tmp)
+            journals = shared / "journals"
+            journals.mkdir(mode=0o700)
+            journals.chmod(0o700)
+            legacy = self.write_legacy(
+                journals, outcome="complete",
+                stack_id=("arn:aws:cloudformation:us-east-1:111122223333:"
+                          "stack/launchcrew-demo/wrong123"))
+            before = legacy.read_text(encoding="utf-8")
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "material",
+                 "--release-generation", "head006-testabc"],
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("STACKID_MISMATCH", combined)
+            self.assertIn("no new launch", combined)
+            self.assertFalse(any("run-task" in call for call in calls))
+            self.assertTrue(legacy.exists())
+            self.assertEqual(legacy.read_text(encoding="utf-8"), before)
+            new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
+                                   "head006-testabc-active.json")
+            self.assertFalse(new_file.exists())
+
+    def test_legacy_ecs_empty_refuses_without_new_launch(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared = Path(shared_tmp)
+            journals = shared / "journals"
+            journals.mkdir(mode=0o700)
+            journals.chmod(0o700)
+            legacy = self.write_legacy(journals, outcome="complete")
+            before = legacy.read_text(encoding="utf-8")
+            (shared / "taskdefs").write_text(
+                f"{self.LEGACY_TASK}|{self.LEGACY_TASKDEF}|{self.LEGACY_TOKEN}\n",
+                encoding="utf-8")
+            (shared / "count").write_text("10", encoding="utf-8")
+            (shared / "token").write_text("", encoding="utf-8")
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "material",
+                 "--release-generation", "head006-testabc"],
+                extra_env={"FAKE_DESCRIBE_TASKS": "empty"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("NO_TASK", combined)
+            self.assertIn("no new", combined)
+            self.assertFalse(any("run-task" in call for call in calls))
+            self.assertTrue(any("describe-tasks" in call for call in calls))
+            self.assertTrue(legacy.exists())
+            self.assertEqual(legacy.read_text(encoding="utf-8"), before)
+            new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
+                                   "head006-testabc-active.json")
+            self.assertFalse(new_file.exists())
+
+    def test_legacy_ecs_failures_refuses_without_new_launch(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared = Path(shared_tmp)
+            journals = shared / "journals"
+            journals.mkdir(mode=0o700)
+            journals.chmod(0o700)
+            legacy = self.write_legacy(journals, outcome="complete")
+            before = legacy.read_text(encoding="utf-8")
+            (shared / "taskdefs").write_text(
+                f"{self.LEGACY_TASK}|{self.LEGACY_TASKDEF}|{self.LEGACY_TOKEN}\n",
+                encoding="utf-8")
+            (shared / "count").write_text("10", encoding="utf-8")
+            (shared / "token").write_text("", encoding="utf-8")
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "material",
+                 "--release-generation", "head006-testabc"],
+                extra_env={"FAKE_DESCRIBE_TASKS": "failures"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("NO_TASK", combined)
+            self.assertIn("no new", combined)
+            self.assertFalse(any("run-task" in call for call in calls))
+            self.assertTrue(any("describe-tasks" in call for call in calls))
+            self.assertTrue(legacy.exists())
+            self.assertEqual(legacy.read_text(encoding="utf-8"), before)
+            new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
+                                   "head006-testabc-active.json")
+            self.assertFalse(new_file.exists())
+
+    def test_legacy_ecs_nonzero_exit_refuses_without_new_launch(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared = Path(shared_tmp)
+            journals = shared / "journals"
+            journals.mkdir(mode=0o700)
+            journals.chmod(0o700)
+            legacy = self.write_legacy(journals, outcome="complete")
+            before = legacy.read_text(encoding="utf-8")
+            (shared / "taskdefs").write_text(
+                f"{self.LEGACY_TASK}|{self.LEGACY_TASKDEF}|{self.LEGACY_TOKEN}\n",
+                encoding="utf-8")
+            (shared / "count").write_text("10", encoding="utf-8")
+            (shared / "token").write_text("", encoding="utf-8")
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "material",
+                 "--release-generation", "head006-testabc"],
+                extra_env={"FAKE_DESCRIBE_TASKS": "exit_nonzero"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("EXIT_NONZERO", combined)
+            self.assertIn("no new", combined)
+            self.assertFalse(any("run-task" in call for call in calls))
+            self.assertTrue(any("describe-tasks" in call for call in calls))
             self.assertTrue(legacy.exists())
             self.assertEqual(legacy.read_text(encoding="utf-8"), before)
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
@@ -3471,6 +3684,136 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.assertIn("GENERATION_AMBIGUOUS", combined)
             self.assertIn("no new launch", combined)
             self.assertFalse(any("run-task" in call for call in calls))
+            self.assertEqual(prior.read_text(encoding="utf-8"), before)
+            new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
+                                   "head006-new1111-active.json")
+            self.assertFalse(new_file.exists())
+
+    def test_same_generation_archive_proceeds_when_live_proven(self):
+        import json as _json
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_prior(
+                journals, generation="head006-new1111",
+                outcome="complete", archived=True)
+            before = prior.read_text(encoding="utf-8")
+            self.seed_live_prior(shared)
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "material",
+                 "--release-generation", "head006-new1111"],
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            combined = result.stdout + result.stderr
+            self.assertIn("same-generation archive", combined)
+            self.assertIn("reconciled STOPPED exit 0", combined)
+            self.assertEqual(prior.read_text(encoding="utf-8"), before)
+            self.assertEqual(oct(prior.stat().st_mode & 0o777), "0o600")
+            new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
+                                   "head006-new1111-active.json")
+            new_doc = _json.loads(new_file.read_text(encoding="utf-8"))
+            self.assertEqual(new_doc.get("outcome"), "complete")
+            self.assertEqual(new_doc.get("release_generation"), "head006-new1111")
+            runs = [call for call in calls if "run-task" in call]
+            self.assertEqual(len(runs), 1)
+            describes = [call for call in calls if "describe-tasks" in call]
+            self.assertGreaterEqual(len(describes), 2)
+
+    def test_same_generation_archive_ecs_empty_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_prior(
+                journals, generation="head006-new1111",
+                outcome="complete", archived=True)
+            before = prior.read_text(encoding="utf-8")
+            self.seed_live_prior(shared)
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "material",
+                 "--release-generation", "head006-new1111"],
+                extra_env={"FAKE_DESCRIBE_TASKS": "empty"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("NO_TASK", combined)
+            self.assertIn("no new", combined)
+            self.assertFalse(any("run-task" in call for call in calls))
+            self.assertTrue(any("describe-tasks" in call for call in calls))
+            self.assertTrue(prior.exists())
+            self.assertEqual(prior.read_text(encoding="utf-8"), before)
+            new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
+                                   "head006-new1111-active.json")
+            self.assertFalse(new_file.exists())
+
+    def test_same_generation_archive_ecs_failures_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_prior(
+                journals, generation="head006-new1111",
+                outcome="complete", archived=True)
+            before = prior.read_text(encoding="utf-8")
+            self.seed_live_prior(shared)
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "material",
+                 "--release-generation", "head006-new1111"],
+                extra_env={"FAKE_DESCRIBE_TASKS": "failures"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("NO_TASK", combined)
+            self.assertIn("no new", combined)
+            self.assertFalse(any("run-task" in call for call in calls))
+            self.assertTrue(any("describe-tasks" in call for call in calls))
+            self.assertTrue(prior.exists())
+            self.assertEqual(prior.read_text(encoding="utf-8"), before)
+            new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
+                                   "head006-new1111-active.json")
+            self.assertFalse(new_file.exists())
+
+    def test_same_generation_archive_ecs_wrong_status_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_prior(
+                journals, generation="head006-new1111",
+                outcome="complete", archived=True)
+            before = prior.read_text(encoding="utf-8")
+            self.seed_live_prior(shared)
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "material",
+                 "--release-generation", "head006-new1111"],
+                extra_env={"FAKE_DESCRIBE_TASKS": "running"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("NOT_STOPPED", combined)
+            self.assertIn("no new", combined)
+            self.assertFalse(any("run-task" in call for call in calls))
+            self.assertTrue(any("describe-tasks" in call for call in calls))
+            self.assertTrue(prior.exists())
+            self.assertEqual(prior.read_text(encoding="utf-8"), before)
+            new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
+                                   "head006-new1111-active.json")
+            self.assertFalse(new_file.exists())
+
+    def test_same_generation_archive_ecs_nonzero_exit_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_prior(
+                journals, generation="head006-new1111",
+                outcome="complete", archived=True)
+            before = prior.read_text(encoding="utf-8")
+            self.seed_live_prior(shared)
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "material",
+                 "--release-generation", "head006-new1111"],
+                extra_env={"FAKE_DESCRIBE_TASKS": "exit_nonzero"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("EXIT_NONZERO", combined)
+            self.assertIn("no new", combined)
+            self.assertFalse(any("run-task" in call for call in calls))
+            self.assertTrue(any("describe-tasks" in call for call in calls))
+            self.assertTrue(prior.exists())
             self.assertEqual(prior.read_text(encoding="utf-8"), before)
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
                                    "head006-new1111-active.json")
