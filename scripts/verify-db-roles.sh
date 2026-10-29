@@ -107,6 +107,16 @@ static_checks() {
   grep -q -E 'ALTER[[:space:]]+DEFAULT[[:space:]]+PRIVILEGES[[:space:]]+FOR[[:space:]]+ROLE[[:space:]]+:migration_user.*GRANT[[:space:]]+USAGE,[[:space:]]*SELECT[[:space:]]+ON[[:space:]]+SEQUENCES' "$SQL_FILE" || { echo "static: missing default sequence grant" >&2; rm -f "$tmp_grants"; return 1; }
   log "static: default privileges pass"
 
+  # Model function defaults: global PUBLIC revoke, then per-schema runtime grant.
+  grep -q -E 'ALTER[[:space:]]+DEFAULT[[:space:]]+PRIVILEGES[[:space:]]+FOR[[:space:]]+ROLE[[:space:]]+:migration_user[[:space:]]+REVOKE[[:space:]]+EXECUTE[[:space:]]+ON[[:space:]]+FUNCTIONS[[:space:]]+FROM[[:space:]]+PUBLIC' "$SQL_FILE" || { echo "static: missing global function PUBLIC revoke" >&2; rm -f "$tmp_grants"; return 1; }
+  if grep -E 'ALTER[[:space:]]+DEFAULT[[:space:]]+PRIVILEGES[[:space:]]+FOR[[:space:]]+ROLE[[:space:]]+:migration_user[[:space:]]+REVOKE[[:space:]]+EXECUTE' "$SQL_FILE" | grep -q 'IN[[:space:]]\+SCHEMA'; then
+    echo "static: per-schema PUBLIC function revoke cannot cancel global defaults" >&2
+    rm -f "$tmp_grants"
+    return 1
+  fi
+  grep -q -E 'ALTER[[:space:]]+DEFAULT[[:space:]]+PRIVILEGES[[:space:]]+FOR[[:space:]]+ROLE[[:space:]]+:migration_user[[:space:]]+IN[[:space:]]+SCHEMA[[:space:]]+:app_schema[[:space:]]+GRANT[[:space:]]+EXECUTE[[:space:]]+ON[[:space:]]+FUNCTIONS[[:space:]]+TO[[:space:]]+:runtime_user' "$SQL_FILE" || { echo "static: missing per-schema function runtime grant" >&2; rm -f "$tmp_grants"; return 1; }
+  log "static: model function defaults pass"
+
   # No password assignment in non-comment SQL.
   if grep -i -E 'PASSWORD[[:space:]]*(=|USING|VALUES)' "$tmp_grants" >/dev/null; then
     echo "static: SQL must not assign a password" >&2
@@ -340,7 +350,7 @@ bind_verify_live() {
   python3 -c "import psycopg" 2>/dev/null || fail "python3 psycopg is required for stage 2, no database driver means no invented pass"
   python3 -c "import alembic, sqlalchemy" 2>/dev/null || fail "python3 alembic and sqlalchemy are required for stage 2, no migration run without them means no invented pass"
   (cd "$REPO_ROOT" && python3 -c "import backend.store" 2>/dev/null) || fail "backend.store must import for the alembic run in stage 2"
-  head_expected="$(grep -E "^revision = " "$REPO_ROOT/backend/migrations/versions/004_run_steps.py" | cut -d"'" -f2)" || true
+  head_expected="$(grep -E "^revision = " "$REPO_ROOT/backend/migrations/versions/005_model_budget.py" | cut -d"'" -f2)" || true
   head_script="$(grep -E "^EXPECTED_HEAD = " "$REPO_ROOT/scripts/bootstrap_db_roles.py" | cut -d'"' -f2)" || true
   [ -n "$head_expected" ] || fail "migration head unreadable, no invented pass"
   [ "$head_expected" = "$head_script" ] || fail "EXPECTED_HEAD $head_script does not match migration head $head_expected"
@@ -511,6 +521,191 @@ sys.stdout.write(text[:2000])
     PGPASSWORD="$as_pw" "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$as_user sslmode=verify-full sslrootcert=$CERTDIR/server.crt" -v ON_ERROR_STOP=1 -tAc "$as_sql"
   }
 
+  model_checks() {
+    m_label="$1"
+    m_prefix="$2"
+    log "model 005 $m_label: tables owned, functions secdef pinned, no PUBLIC"
+    for m_tbl in model_budget model_calls; do
+      m_own="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT pg_get_userbyid(c.relowner) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = '$APP_SCHEMA' AND c.relname = '$m_tbl';" | tr -d '[:space:]')" || true
+      [ "$m_own" = "$BIND_MG" ] || fail "model $m_tbl owner is $m_own, expected $BIND_MG ($m_label)"
+    done
+    set +e
+    MODEL_OUT="$(BIND_PORT="$PORT" BIND_DB="$BIND_DB" BIND_RT="$BIND_RT" BIND_MG="$BIND_MG" APP_SCHEMA="$APP_SCHEMA" RT_URL="$RT_URL" MG_URL="$MG_URL" CERT_FILE="$CERTDIR/server.crt" M_PREFIX="$m_prefix" python3 -c '
+import hashlib
+import os
+import psycopg
+port = int(os.environ["BIND_PORT"])
+db = os.environ["BIND_DB"]
+rt_name = os.environ["BIND_RT"]
+mg_name = os.environ["BIND_MG"]
+schema = os.environ["APP_SCHEMA"]
+prefix = os.environ["M_PREFIX"]
+rt_url = os.environ["RT_URL"]
+mg_url = os.environ["MG_URL"]
+cert = os.environ["CERT_FILE"]
+admin = psycopg.connect(host="127.0.0.1", port=port, dbname=db, user="postgres", autocommit=True)
+cur = admin.cursor()
+cur.execute("SELECT p.proname, pg_get_userbyid(p.proowner), p.prosecdef, p.proconfig, p.proacl, p.proargnames FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = %s AND p.proname LIKE %s ORDER BY p.proname", (schema, "model_%"))
+rows = cur.fetchall()
+names = sorted(r[0] for r in rows)
+if names != ["model_finalize_call", "model_no_direct", "model_reserve_call"]:
+    raise SystemExit("unexpected model functions")
+for proname, owner, secdef, proconfig, proacl, argnames in rows:
+    if owner != mg_name:
+        raise SystemExit("function owner mismatch")
+    cfg = list(proconfig or [])
+    if not any(str(v).startswith("search_path=") and str(v).rstrip().endswith("pg_temp") for v in cfg):
+        raise SystemExit("search_path not pinned with pg_temp last")
+    acl = " ".join(str(v) for v in (proacl or []))
+    if "=X" in acl or "=x" in acl:
+        raise SystemExit("PUBLIC execute present")
+    args = " ".join(str(v) for v in (argnames or [])).lower()
+    if "amount" in args or "micros" in args or "debit" in args or "refill" in args or "grant" in args:
+        raise SystemExit("function accepts a debit amount")
+    if proname in ("model_reserve_call", "model_finalize_call"):
+        if not secdef:
+            raise SystemExit("reserve and finalize must be SECURITY DEFINER")
+        if ("%s=X" % rt_name) not in acl and ("%s=x" % rt_name) not in acl:
+            raise SystemExit("runtime EXECUTE missing")
+    else:
+        if secdef:
+            raise SystemExit("trigger guard must not be SECURITY DEFINER")
+        if rt_name in acl:
+            raise SystemExit("trigger guard must not grant runtime")
+cur.execute("SELECT COUNT(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = %s AND (p.proname LIKE %s OR p.proname LIKE %s)", (schema, "%grant%", "%refill%"))
+if cur.fetchone()[0] != 0:
+    raise SystemExit("refill function present")
+cur.execute("SELECT c.relname, c.relacl FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = %s AND c.relname IN (%s, %s)", (schema, "model_budget", "model_calls"))
+found = {}
+for relname, relacl in cur.fetchall():
+    acl = " ".join(str(v) for v in (relacl or []))
+    if "=r" in acl or "=a" in acl or "=w" in acl or "=d" in acl:
+        raise SystemExit("PUBLIC table access present")
+    rt_entries = [v for v in (relacl or []) if str(v).startswith(rt_name + "=")]
+    if not rt_entries:
+        raise SystemExit("runtime SELECT missing")
+    joined = " ".join(str(v) for v in rt_entries)
+    if "r" not in joined.split("=")[1].split("/")[0]:
+        raise SystemExit("runtime SELECT missing")
+    privs = joined.split("=")[1].split("/")[0]
+    for bad in ("a", "w", "d", "D", "x", "t"):
+        if bad in privs:
+            raise SystemExit("runtime write present")
+    found[relname] = True
+if set(found) != {"model_budget", "model_calls"}:
+    raise SystemExit("model tables missing")
+admin.close()
+rt = psycopg.connect(rt_url, sslrootcert=cert, autocommit=True)
+mg = psycopg.connect(mg_url, sslrootcert=cert, autocommit=True)
+rc = rt.cursor()
+mc = mg.cursor()
+def expect_42501(fn):
+    try:
+        fn()
+    except Exception as exc:
+        if getattr(exc, "sqlstate", None) != "42501":
+            raise SystemExit("expected 42501")
+    else:
+        raise SystemExit("direct write unexpectedly succeeded")
+expect_42501(lambda: rc.execute("INSERT INTO public.model_budget(id, remaining_micros) VALUES (%s, %s)", ("other", 1)))
+expect_42501(lambda: rc.execute("UPDATE public.model_budget SET remaining_micros = %s WHERE id = %s", (1, "global")))
+expect_42501(lambda: rc.execute("DELETE FROM public.model_budget WHERE id = %s", ("global",)))
+zero64 = "0" * 64
+expect_42501(lambda: rc.execute("INSERT INTO public.model_calls(id, run_id, stage, attempt_id, request_digest, model, status, reservation_micros) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)", ("mc_probe_" + prefix, prefix + "_r", "Scout", "a1", zero64, "muse-spark-1.3", "admitted", 4000000)))
+expect_42501(lambda: rc.execute("UPDATE public.model_calls SET status = %s WHERE id = %s", ("succeeded", "mc_nope")))
+expect_42501(lambda: rc.execute("DELETE FROM public.model_calls WHERE id = %s", ("mc_nope",)))
+rc.execute("SELECT remaining_micros FROM public.model_budget WHERE id = %s", ("global",))
+rc.fetchone()
+rc.execute("SELECT COUNT(*) FROM public.model_calls")
+rc.fetchone()
+mc.execute("UPDATE public.model_budget SET remaining_micros = %s WHERE id = %s", (0, "global"))
+rc.execute("SELECT remaining_micros FROM public.model_budget WHERE id = %s", ("global",))
+if rc.fetchone()[0] != 0:
+    raise SystemExit("zero default not preserved")
+def digest(tag):
+    return hashlib.sha256(tag.encode()).hexdigest()
+try:
+    rc.execute("SELECT * FROM public.model_reserve_call(%s, %s, %s, %s, %s, %s, %s)", (prefix + "_run0", "Scout", "a0", digest(prefix + "req0"), 2048, 1, 1024))
+    rc.fetchone()
+except Exception as exc:
+    if getattr(exc, "sqlstate", None) == "42501":
+        raise SystemExit("reserve function not executable")
+    if getattr(exc, "sqlstate", None) != "P0001":
+        raise SystemExit("exhausted reserve must fail closed")
+else:
+    raise SystemExit("exhausted reserve unexpectedly succeeded")
+mc.execute("UPDATE public.model_budget SET remaining_micros = %s WHERE id = %s", (4000000, "global"))
+rc.execute("SELECT * FROM public.model_reserve_call(%s, %s, %s, %s, %s, %s, %s)", (prefix + "_run1", "Scout", "a1", digest(prefix + "req1"), 2048, 1, 1024))
+row1 = rc.fetchone()
+if row1 is None or row1[12] is not True:
+    raise SystemExit("first reserve must own")
+call1 = row1[0]
+if row1[5] != "muse-spark-1.3" or row1[11] != 4000000 or row1[6] != "admitted":
+    raise SystemExit("fixed reservation mismatch")
+rc.execute("SELECT remaining_micros FROM public.model_budget WHERE id = %s", ("global",))
+if rc.fetchone()[0] != 0:
+    raise SystemExit("budget not debited")
+try:
+    rc.execute("SELECT * FROM public.model_reserve_call(%s, %s, %s, %s, %s, %s, %s)", (prefix + "_run2", "Scout", "a1", digest(prefix + "req2"), 2048, 1, 1024))
+    rc.fetchone()
+except Exception as exc:
+    if getattr(exc, "sqlstate", None) == "42501":
+        raise SystemExit("reserve function not executable")
+    if getattr(exc, "sqlstate", None) != "P0001":
+        raise SystemExit("one-slot second must fail closed")
+else:
+    raise SystemExit("one-slot second unexpectedly succeeded")
+rc.execute("SELECT * FROM public.model_reserve_call(%s, %s, %s, %s, %s, %s, %s)", (prefix + "_run1", "Scout", "a1", digest(prefix + "req1"), 2048, 1, 1024))
+row_dup = rc.fetchone()
+if row_dup is None or row_dup[0] != call1 or row_dup[12] is not False:
+    raise SystemExit("duplicate must replay without resend")
+if row_dup[6] != "admitted":
+    raise SystemExit("restart must stay admitted")
+try:
+    rc.execute("SELECT * FROM public.model_reserve_call(%s, %s, %s, %s, %s, %s, %s)", (prefix + "_run1", "Scout", "a1", digest(prefix + "other"), 2048, 1, 1024))
+    rc.fetchone()
+except Exception as exc:
+    if getattr(exc, "sqlstate", None) == "42501":
+        raise SystemExit("reserve function not executable")
+    if getattr(exc, "sqlstate", None) != "23505":
+        raise SystemExit("digest mismatch must conflict")
+else:
+    raise SystemExit("digest mismatch unexpectedly succeeded")
+rc.execute("SELECT * FROM public.model_finalize_call(%s, %s, %s, %s, %s, %s)", (call1, "ambiguous_terminal", "ambiguous:read_failed", None, None, None))
+frow = rc.fetchone()
+if frow is None or frow[6] != "ambiguous_terminal" or frow[12] is not False:
+    raise SystemExit("ambiguous finalize failed")
+rc.execute("SELECT remaining_micros FROM public.model_budget WHERE id = %s", ("global",))
+if rc.fetchone()[0] != 0:
+    raise SystemExit("ambiguous must not refund")
+rc.execute("SELECT * FROM public.model_reserve_call(%s, %s, %s, %s, %s, %s, %s)", (prefix + "_run1", "Scout", "a1", digest(prefix + "req1"), 2048, 1, 1024))
+row_amb = rc.fetchone()
+if row_amb is None or row_amb[6] != "ambiguous_terminal" or row_amb[12] is not False:
+    raise SystemExit("ambiguous must not resend")
+mc.execute("UPDATE public.model_budget SET remaining_micros = %s WHERE id = %s", (4000000, "global"))
+rc.execute("SELECT * FROM public.model_reserve_call(%s, %s, %s, %s, %s, %s, %s)", (prefix + "_run2", "Scout", "a1", digest(prefix + "req2"), 2048, 1, 1024))
+row2 = rc.fetchone()
+if row2 is None or row2[12] is not True:
+    raise SystemExit("second slot must own after grant")
+fname = "test_future_" + prefix
+mc.execute("CREATE OR REPLACE FUNCTION public.%s() RETURNS INTEGER LANGUAGE sql SECURITY DEFINER SET search_path = public, pg_temp AS %s SELECT 1 %s" % (fname, "$$", "$$"))
+mc.execute("SELECT proacl FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = %s AND p.proname = %s", ("public", fname))
+facl = " ".join(str(v) for v in (mc.fetchone()[0] or []))
+if ("=X" in facl) or (rt_name not in facl):
+    mc.execute("DROP FUNCTION public.%s()" % fname)
+    raise SystemExit("future function scope wrong")
+mc.execute("DROP FUNCTION public.%s()" % fname)
+rt.close()
+mg.close()
+print("model ok")
+' 2>&1)"
+    MODEL_CODE=$?
+    set -e
+    [ "$MODEL_CODE" -eq 0 ] || { printf '%s' "$MODEL_OUT" | safe_emit >&2; fail "model 005 $m_label proof failed"; }
+    unset MODEL_OUT MODEL_CODE
+    log "pass: model 005 $m_label direct fails 42501, functions allowed, no resend, scope ok"
+  }
+
   log "password auth with the bound password works, a wrong one fails"
   set +e
   bind_as "$BIND_RT" "$BIND_RT_PW" "SELECT 1;" >/dev/null 2>&1
@@ -529,10 +724,12 @@ sys.stdout.write(text[:2000])
   set -e
   [ "$MIG_CODE" -eq 0 ] || { printf '%s' "$MIG_OUT" | safe_emit >&2; fail "alembic upgrade head failed"; }
   ver="$(bind_as "$BIND_MG" "$BIND_MG_PW" "SELECT version_num FROM alembic_version;" | tr -d '[:space:]')" || true
-  [ "$ver" = "004" ] || fail "alembic head is $ver, expected 004"
+  [ "$ver" = "005" ] || fail "alembic head is $ver, expected 005"
   alembic_owner="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT pg_get_userbyid(c.relowner) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = '$APP_SCHEMA' AND c.relname = 'alembic_version';" | tr -d '[:space:]')" || true
   [ "$alembic_owner" = "$BIND_MG" ] || fail "alembic owner is $alembic_owner, expected $BIND_MG"
-  log "pass: alembic head 004 applied via the migration role and owned by it"
+  log "pass: alembic head 005 applied via the migration role and owned by it"
+
+  model_checks "pre-rebind" "mpre"
 
   log "bind again after migration for post-object idempotence proof"
   set +e
@@ -543,6 +740,8 @@ sys.stdout.write(text[:2000])
   case "$POSTMIG_OUT" in *"BIND COMPLETE"*) ;; *) printf '%s' "$POSTMIG_OUT" | safe_emit >&2; fail "post-migration --bind missed BIND COMPLETE" ;; esac
   case "$POSTMIG_OUT" in *"$BIND_RT_PW"*|*"$BIND_MG_PW"*|*"$ADMIN_PW"*) fail "post-migration output leaked a synthetic password" ;; esac
   log "pass: post-migration rebind succeeds with migration-owned objects present"
+
+  model_checks "post-rebind" "mpost"
 
   verify_job() {
     LAUNCHCREW_DB_TLS_MODE=verify-full DATABASE_SSL_ROOTCERT="$CERTDIR/server.crt" \
@@ -556,10 +755,10 @@ sys.stdout.write(text[:2000])
   VERIFY_OUT="$(verify_job)"
   VERIFY_CODE=$?
   set -e
-  [ "$VERIFY_CODE" -eq 0 ] || { printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify failed at head 004"; }
-  case "$VERIFY_OUT" in *"VERIFY COMPLETE"*|*"revision=004"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed proof markers" ;; esac
+  [ "$VERIFY_CODE" -eq 0 ] || { printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify failed at head 005"; }
+  case "$VERIFY_OUT" in *"VERIFY COMPLETE"*|*"revision=005"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed proof markers" ;; esac
   case "$VERIFY_OUT" in *"$BIND_RT_PW"*|*"$RT_URL"*) fail "verify output leaked a synthetic secret" ;; esac
-  log "pass: actual --verify proves 004, identity, rolled-back write, DDL refusal"
+  log "pass: actual --verify proves 005, identity, rolled-back write, DDL refusal"
 
   log "bind roles repeat the CRUD and sequence split directly"
   bind_as "$BIND_MG" "$BIND_MG_PW" "CREATE TABLE $APP_SCHEMA.bind_items (id SERIAL PRIMARY KEY, note TEXT);" >/dev/null || fail "migration role cannot create"
@@ -805,14 +1004,14 @@ print("42501 ok")
   OLD_OUT="$(verify_job 2>&1)"
   OLD_CODE=$?
   set -e
-  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "UPDATE alembic_version SET version_num='004';" >/dev/null
+  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "UPDATE alembic_version SET version_num='005';" >/dev/null
   [ "$OLD_CODE" -ne 0 ] || fail "verify accepted the old head 003"
   case "$OLD_OUT" in *"FAIL"*) ;; *) printf '%s' "$OLD_OUT" | safe_emit >&2; fail "old head refusal left no FAIL marker" ;; esac
   set +e
   AGAIN_OUT="$(verify_job 2>&1)"
   AGAIN_CODE=$?
   set -e
-  [ "$AGAIN_CODE" -eq 0 ] || { printf '%s' "$AGAIN_OUT" | safe_emit >&2; fail "verify failed after restoring head 004"; }
+  [ "$AGAIN_CODE" -eq 0 ] || { printf '%s' "$AGAIN_OUT" | safe_emit >&2; fail "verify failed after restoring head 005"; }
   log "pass: old head refused, restored head proves again"
 
   bind_as "$BIND_MG" "$BIND_MG_PW" "DROP TABLE $APP_SCHEMA.bind_items;" >/dev/null || fail "owned bind table cleanup failed"

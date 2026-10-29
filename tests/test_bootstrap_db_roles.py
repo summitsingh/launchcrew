@@ -131,6 +131,8 @@ class FakeCursor:
             return []
         if "pg_class" in lowered:
             return list(self.state.inventory)
+        if "pg_proc" in lowered:
+            return list(self.state.function_inventory)
         return []
 
 
@@ -172,6 +174,7 @@ class FakeDriverState:
         self.role_rows = {}
         self.membership_map = {}
         self.inventory = []
+        self.function_inventory = []
         self.schema_owner = "launchcrew_master"
         self.database_owner = "launchcrew_master"
         self.spoof_identity = {}
@@ -179,7 +182,7 @@ class FakeDriverState:
         self.refuse_ddl = True
         self.ddl_sqlstate = "42501"
         self.schema_present = True
-        self.schema_version = "004"
+        self.schema_version = "005"
         self.current_identity = "launchcrew_runtime"
         self.connect_count = 0
         self.connects = []
@@ -357,12 +360,14 @@ class BindJobTests(unittest.TestCase):
     def test_runtime_never_gets_ddl(self):
         code, _ = self.run_main("--bind")
         self.assertEqual(code, 0)
-        runtime_stmts = [sql for sql in self.sql_texts() if "launchcrew_runtime" in sql]
-        for sql in runtime_stmts:
+        runtime_grants = [sql for sql in self.sql_texts()
+                          if "launchcrew_runtime" in sql
+                          and sql.strip().upper().startswith("GRANT")]
+        for sql in runtime_grants:
             self.assertNotIn("TRUNCATE", sql)
             self.assertNotIn("REFERENCES", sql)
             self.assertNotIn("TRIGGER", sql)
-            self.assertNotIn("CREATE ON SCHEMA", sql.replace("REVOKE CREATE", ""))
+            self.assertNotIn("CREATE ON SCHEMA", sql)
 
     def test_invalid_identifier_rejected_before_connect(self):
         code, out = self.run_main("--bind", {"RUNTIME_USER": "runtime;DROP"})
@@ -551,6 +556,123 @@ class BindJobTests(unittest.TestCase):
         ]
         code, out = self.run_main("--bind")
         self.assertEqual(code, 0, msg=out)
+
+    def test_bind_sets_function_defaults_global_public_revoke(self):
+        code, out = self.run_main("--bind")
+        self.assertEqual(code, 0, msg=out)
+        joined = "\n".join(self.sql_texts())
+        self.assertIn("REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC", joined)
+        self.assertIn("GRANT EXECUTE ON FUNCTIONS TO", joined)
+        revokes = [sql for sql in self.sql_texts()
+                   if "REVOKE EXECUTE ON FUNCTIONS" in sql]
+        self.assertTrue(revokes)
+        for sql in revokes:
+            self.assertNotIn("IN SCHEMA", sql)
+        grants = [sql for sql in self.sql_texts()
+                  if "GRANT EXECUTE ON FUNCTIONS" in sql]
+        self.assertTrue(grants)
+        for sql in grants:
+            self.assertIn("IN SCHEMA", sql)
+
+    def test_bind_applies_model_narrow_revokes_when_tables_exist(self):
+        self.state.inventory = [("model_budget", "r",
+                                 "launchcrew_migration"),
+                                ("model_calls", "r",
+                                 "launchcrew_migration")]
+        code, out = self.run_main("--bind")
+        self.assertEqual(code, 0, msg=out)
+        joined = "\n".join(self.sql_texts())
+        self.assertIn("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES",
+                      joined)
+        revokes = [sql for sql in self.sql_texts()
+                   if "model_budget" in sql or "model_calls" in sql]
+        self.assertTrue(any("REVOKE INSERT, UPDATE, DELETE" in sql
+                            for sql in revokes))
+        for sql in revokes:
+            if sql.strip().upper().startswith("REVOKE"):
+                prefix = sql.split("ON TABLE")[0]
+                self.assertNotIn("SELECT", prefix)
+                self.assertIn("TRUNCATE", sql)
+
+    def test_bind_skips_model_revokes_when_tables_absent(self):
+        self.state.inventory = []
+        self.state.function_inventory = []
+        code, out = self.run_main("--bind")
+        self.assertEqual(code, 0, msg=out)
+        self.assertIn("BIND COMPLETE", out)
+        for sql in self.sql_texts():
+            self.assertNotIn("model_budget", sql)
+            self.assertNotIn("model_calls", sql)
+            self.assertNotIn("model_reserve_call", sql)
+            self.assertNotIn("model_finalize_call", sql)
+            self.assertNotIn("model_no_direct", sql)
+
+    def test_bind_grants_model_functions_when_exist(self):
+        self.state.function_inventory = [
+            ("model_reserve_call", "launchcrew_migration"),
+            ("model_finalize_call", "launchcrew_migration"),
+        ]
+        code, out = self.run_main("--bind")
+        self.assertEqual(code, 0, msg=out)
+        joined = "\n".join(self.sql_texts())
+        self.assertIn("model_reserve_call", joined)
+        self.assertIn("model_finalize_call", joined)
+        self.assertIn("REVOKE EXECUTE ON FUNCTION", joined)
+        self.assertIn("GRANT EXECUTE ON FUNCTION", joined)
+        for sql in self.sql_texts():
+            if "GRANT EXECUTE ON FUNCTION" in sql:
+                self.assertNotIn("PUBLIC", sql)
+
+    def test_bind_revokes_trigger_function_from_runtime(self):
+        self.state.function_inventory = [("model_no_direct",
+                                          "launchcrew_migration")]
+        code, out = self.run_main("--bind")
+        self.assertEqual(code, 0, msg=out)
+        trigger_sqls = [sql for sql in self.sql_texts()
+                        if "model_no_direct" in sql]
+        self.assertTrue(trigger_sqls)
+        for sql in trigger_sqls:
+            self.assertTrue(sql.strip().upper().startswith("REVOKE"))
+        self.assertFalse(any("GRANT" in sql and "model_no_direct" in sql
+                             for sql in self.sql_texts()))
+
+    def test_bind_refuses_foreign_function_owner(self):
+        self.state.function_inventory = [("model_reserve_call",
+                                          "someone_else")]
+        code, out = self.run_main("--bind")
+        self.assertNotEqual(code, 0)
+        self.assertIn("unexpected owner", out)
+        mutating = [sql for sql in self.sql_texts()
+                    if sql.startswith(("CREATE ROLE", "ALTER ROLE",
+                                       "COMMENT ON ROLE", "GRANT",
+                                       "REVOKE"))]
+        self.assertEqual(mutating, [])
+        self.assertEqual(self.state.commits, 0)
+
+    def test_model_acls_survive_repeated_bind(self):
+        self.state.inventory = [("model_budget", "r",
+                                 "launchcrew_migration"),
+                                ("model_calls", "r",
+                                 "launchcrew_migration")]
+        self.state.function_inventory = [
+            ("model_reserve_call", "launchcrew_migration"),
+            ("model_finalize_call", "launchcrew_migration"),
+            ("model_no_direct", "launchcrew_migration"),
+        ]
+        code, out = self.run_main("--bind")
+        self.assertEqual(code, 0, msg=out)
+        self.assertTrue(any("model_budget" in sql
+                            for sql in self.sql_texts()))
+        self.state.statements = []
+        self.state.commits = 0
+        self.state.rollbacks = 0
+        code, out = self.run_main("--bind")
+        self.assertEqual(code, 0, msg=out)
+        self.assertIn("BIND COMPLETE", out)
+        self.assertTrue(any("model_budget" in sql
+                            for sql in self.sql_texts()))
+        self.assertTrue(any("model_reserve_call" in sql
+                            for sql in self.sql_texts()))
 
     def test_foreign_owned_view_refused_before_mutation(self):
         for kind in ("v", "m", "f"):
@@ -899,7 +1021,7 @@ class VerifyJobTests(BindJobTests):
                        "verify-runtime-no-drop ok",
                        "VERIFY COMPLETE"):
             self.assertIn(marker, out)
-        self.assertIn("revision=004", out)
+        self.assertIn("revision=005", out)
 
     def test_verify_fails_when_runtime_can_write(self):
         self.state.refuse_ddl = False
@@ -1016,6 +1138,18 @@ class StaticBoundaryTests(unittest.TestCase):
         self.assertIn("42P04", self.text)
         self.assertIn("_error_detail", self.text)
         self.assertIn("sqlstate=", self.text)
+
+    def test_model_narrow_guards_present(self):
+        self.assertIn("MODEL_TABLES", self.text)
+        self.assertIn("model_budget", self.text)
+        self.assertIn("model_calls", self.text)
+        self.assertIn("MODEL_RESERVE_FUNC", self.text)
+        self.assertIn("MODEL_FINALIZE_FUNC", self.text)
+        self.assertIn("MODEL_TRIGGER_FUNC", self.text)
+        self.assertIn("REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC", self.text)
+        self.assertIn("GRANT EXECUTE ON FUNCTIONS TO", self.text)
+        self.assertIn("_function_owners", self.text)
+        self.assertIn("pg_proc", self.text)
 
 
 if __name__ == "__main__":

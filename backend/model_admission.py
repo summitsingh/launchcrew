@@ -5,7 +5,7 @@ USD micros. Each bounded Standard muse-spark-1.3 call reserves one full
 fixed planning reservation of 4 USD (4000000 micros) before the caller
 may send. This is a local planning reservation only, never an external
 provider hard cap. There is no public refill endpoint and no secret in
-this module; a private operator grant is future separate work.
+this module; a private operator grant is via the migration owner only.
 
 Only a committed reservation authorizes the caller to send: the budget
 row lock, the full debit, and the ledger insert commit in one
@@ -35,15 +35,16 @@ written to the ledger and never echoed in error text. There is no FK to
 runs: sync runs and Campaign execute model work before their run row
 commits, while async runs commit before a worker; this module never
 locks run rows, so no lock order cycle exists. No HTTP and no
-credential access in this module.
+credential access in this module. Runtime writes only through the
+migration-owned SECURITY DEFINER reserve and finalize functions; it
+holds no direct INSERT, UPDATE, or DELETE on the model tables.
 """
 import hashlib
 import re
 from typing import TypedDict
-from uuid import uuid4
 
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
 MODEL = 'muse-spark-1.3'
 MAX_COMPLETION_TOKENS = 2048
@@ -125,6 +126,14 @@ def _check_digest(value) -> str | None:
     return lowered
 
 
+def _sqlstate(exc) -> str | None:
+    orig = getattr(exc, 'orig', None)
+    state = getattr(orig, 'sqlstate', None)
+    if isinstance(state, str) and len(state) == 5:
+        return state
+    return getattr(exc, 'sqlstate', None)
+
+
 def reserve_model_call(db, *, run_id, stage, attempt_id, request_digest,
                        model, max_completion_tokens, n, request_bytes_len) -> ModelCallRow:
     """Reserve one fixed planning reservation, or replay the persisted row.
@@ -155,52 +164,25 @@ def reserve_model_call(db, *, run_id, stage, attempt_id, request_digest,
     key = {'run': run_id, 'stage': stage, 'attempt': attempt_id}
     try:
         with db.begin() as connection:
-            existing = connection.execute(
-                text('SELECT * FROM model_calls WHERE run_id=:run AND stage=:stage '
-                     'AND attempt_id=:attempt FOR UPDATE'),
-                key).mappings().first()
-            if existing is not None:
-                if (existing['request_digest'] or '').lower() != digest:
-                    raise AdmissionConflict('a different request already holds this attempt identity')
-                return _row_to_call(existing, is_owner=False)
-            budget = connection.execute(
-                text("SELECT remaining_micros FROM model_budget WHERE id='global' FOR UPDATE")
-            ).scalar()
-            if budget is None:
+            row = connection.execute(
+                text('SELECT * FROM model_reserve_call(:run, :stage, :attempt, '
+                     ':digest, :max_tokens, :n, :bytes_len)'),
+                {'run': run_id, 'stage': stage, 'attempt': attempt_id,
+                 'digest': digest, 'max_tokens': max_completion_tokens,
+                 'n': n, 'bytes_len': request_bytes_len}).mappings().first()
+            if row is None:
                 raise AdmissionDenied('model budget unavailable')
-            # Lock-free re-read after waiting on the budget lock: a
-            # concurrent same-key arrival may have committed meanwhile.
-            # Returning here spends nothing.
-            again = connection.execute(
-                text('SELECT * FROM model_calls WHERE run_id=:run AND stage=:stage '
-                     'AND attempt_id=:attempt'),
-                key).mappings().first()
-            if again is not None:
-                if (again['request_digest'] or '').lower() != digest:
-                    raise AdmissionConflict('a different request already holds this attempt identity')
-                return _row_to_call(again, is_owner=False)
-            if budget < RESERVATION_USD_MICROS:
-                raise AdmissionDenied('model budget exhausted')
-            debited = connection.execute(
-                text('UPDATE model_budget SET remaining_micros=remaining_micros-:res,'
-                     'updated_at=now() WHERE id=\'global\' AND remaining_micros>=:res'),
-                {'res': RESERVATION_USD_MICROS})
-            if debited.rowcount != 1:
-                raise AdmissionDenied('model budget exhausted')
-            call_id = 'mc_' + uuid4().hex
-            connection.execute(
-                text('INSERT INTO model_calls(id,run_id,stage,attempt_id,request_digest,model,'
-                     'status,reservation_micros) VALUES (:id,:run,:stage,:attempt,:digest,'
-                     ':model,\'admitted\',:res)'),
-                {'id': call_id, 'run': run_id, 'stage': stage, 'attempt': attempt_id,
-                 'digest': digest, 'model': MODEL, 'res': RESERVATION_USD_MICROS})
-            return {'id': call_id, 'run_id': run_id, 'stage': stage, 'attempt_id': attempt_id,
-                    'request_digest': digest, 'model': MODEL, 'status': 'admitted',
-                    'outcome': None, 'prompt_tokens': None, 'completion_tokens': None,
-                    'total_tokens': None, 'reservation_micros': RESERVATION_USD_MICROS,
-                    'is_owner': True}
+            return _row_to_call(row, is_owner=bool(row['is_owner']))
     except IntegrityError:
         pass
+    except DBAPIError as exc:
+        state = _sqlstate(exc)
+        if state == '23505':
+            pass
+        elif state == 'P0001':
+            raise AdmissionDenied('model budget exhausted') from None
+        else:
+            raise AdmissionDenied('model budget unavailable') from None
     with db.begin() as connection:
         existing = connection.execute(
             text('SELECT * FROM model_calls WHERE run_id=:run AND stage=:stage '
@@ -235,24 +217,22 @@ def finalize_model_call(db, call_id, *, status, outcome=None,
         if value is not None and (isinstance(value, bool) or not isinstance(value, int)
                                   or value < 0 or value > _MAX_USAGE):
             raise AdmissionDenied('invalid usage')
-    with db.begin() as connection:
-        row = connection.execute(
-            text('SELECT * FROM model_calls WHERE id=:id FOR UPDATE'),
-            {'id': call_id}).mappings().first()
-        if row is None:
-            raise AdmissionDenied('unknown model operation')
-        if row['status'] != 'admitted':
+    try:
+        with db.begin() as connection:
+            row = connection.execute(
+                text('SELECT * FROM model_finalize_call(:id, :status, :outcome, '
+                     ':pt, :ct, :tt)'),
+                {'id': call_id, 'status': status, 'outcome': clean_outcome,
+                 'pt': prompt_tokens, 'ct': completion_tokens,
+                 'tt': total_tokens}).mappings().first()
+            if row is None:
+                raise AdmissionDenied('unknown model operation')
             return _row_to_call(row, is_owner=False)
-        connection.execute(
-            text('UPDATE model_calls SET status=:status,outcome=:outcome,'
-                 'prompt_tokens=:pt,completion_tokens=:ct,total_tokens=:tt,'
-                 'updated_at=now() WHERE id=:id AND status=\'admitted\''),
-            {'status': status, 'outcome': clean_outcome, 'pt': prompt_tokens,
-             'ct': completion_tokens, 'tt': total_tokens, 'id': call_id})
-        updated = connection.execute(
-            text('SELECT * FROM model_calls WHERE id=:id'),
-            {'id': call_id}).mappings().first()
-        return _row_to_call(updated, is_owner=False)
+    except DBAPIError as exc:
+        state = _sqlstate(exc)
+        if state == 'P0001':
+            raise AdmissionDenied('unknown model operation') from None
+        raise AdmissionDenied('unknown model operation') from None
 
 
 def budget_remaining_micros(db) -> int:

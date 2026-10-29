@@ -62,7 +62,14 @@ NATIVE_BOOTSTRAP_OID = 10
 PHASES_BIND = ("db-ensure", "password-binding", "schema-acls",
                "runtime-grants", "default-privileges")
 ROOTCERT_ENV = "DATABASE_SSL_ROOTCERT"
-EXPECTED_HEAD = "004"
+EXPECTED_HEAD = "005"
+MODEL_TABLES = ("model_budget", "model_calls")
+MODEL_RESERVE_FUNC = "model_reserve_call"
+MODEL_RESERVE_SIG = "(TEXT, TEXT, TEXT, TEXT, INTEGER, INTEGER, INTEGER)"
+MODEL_FINALIZE_FUNC = "model_finalize_call"
+MODEL_FINALIZE_SIG = "(TEXT, TEXT, TEXT, INTEGER, INTEGER, INTEGER)"
+MODEL_TRIGGER_FUNC = "model_no_direct"
+MODEL_TRIGGER_SIG = "()"
 VERIFY_PROBE = "_lc_verify_probe"
 MAINTENANCE_DB = "postgres"
 _SQLSTATE_RE = re.compile(r"^[0-9A-Z]{5}$")
@@ -356,6 +363,19 @@ def _schema_object_owners(cur, schema):
     return cur.fetchall()
 
 
+def _function_owners(cur, schema):
+    # Every function in the isolated app schema with its owner name.
+    # All must be migration owned before any EXECUTE grant. Empty before
+    # migration 005, which is safe to skip.
+    cur.execute(
+        "SELECT p.proname, owner.rolname FROM pg_proc p "
+        "JOIN pg_namespace n ON n.oid = p.pronamespace "
+        "JOIN pg_roles owner ON owner.oid = p.proowner "
+        "WHERE n.nspname = %s ORDER BY p.proname",
+        (schema,))
+    return cur.fetchall()
+
+
 def _schema_owner(cur, schema):
     cur.execute(
         "SELECT owner.rolname FROM pg_namespace n "
@@ -579,6 +599,7 @@ def do_bind():
             return _fail("schema-safety", schema_verdict)
         try:
             master_inventory = _schema_object_owners(cur, schema)
+            master_functions = _function_owners(cur, schema)
         except Exception:
             conn.rollback()
             return _fail("runtime-grants", "catalog check failed")
@@ -588,6 +609,12 @@ def do_bind():
                 return _fail("runtime-grants",
                              "unexpected owner %s on %s" % (owner,
                                                            relname))
+        for proname, owner in master_functions:
+            if owner != migration_user:
+                conn.rollback()
+                return _fail("runtime-grants",
+                             "unexpected owner %s on %s" % (owner,
+                                                           proname))
         try:
             # Phase 1: exact owned roles exist, passwords bound in memory.
             # One transaction for create plus marker plus password, so a
@@ -680,8 +707,8 @@ def do_bind():
         # default privileges atomically. Any failure rolls back, so a
         # partial REVOKE without its GRANT never persists.
         try:
-            for relname, _relkind, owner in _schema_object_owners(mcur,
-                                                                 schema):
+            mig_inventory = _schema_object_owners(mcur, schema)
+            for relname, _relkind, owner in mig_inventory:
                 if owner != migration_user:
                     try:
                         mconn.rollback()
@@ -690,6 +717,16 @@ def do_bind():
                     return _fail("runtime-grants",
                                  "unexpected owner %s on %s" % (owner,
                                                                relname))
+            mig_functions = _function_owners(mcur, schema)
+            for proname, owner in mig_functions:
+                if owner != migration_user:
+                    try:
+                        mconn.rollback()
+                    except Exception:
+                        pass
+                    return _fail("runtime-grants",
+                                 "unexpected owner %s on %s" % (owner,
+                                                               proname))
             mcur.execute("REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA %s "
                          "FROM %s" % (qi_schema, qi_runtime))
             mcur.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES "
@@ -698,6 +735,35 @@ def do_bind():
                          "FROM %s" % (qi_schema, qi_runtime))
             mcur.execute("GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA %s "
                          "TO %s" % (qi_schema, qi_runtime))
+            present_tables = {rel for rel, _kind, _own in mig_inventory}
+            for model_table in MODEL_TABLES:
+                if model_table in present_tables:
+                    mcur.execute("REVOKE INSERT, UPDATE, DELETE, TRUNCATE, "
+                                 "REFERENCES, TRIGGER ON TABLE %s.%s FROM %s"
+                                 % (qi_schema, _quote_ident(model_table),
+                                    qi_runtime))
+            present_funcs = {name for name, _own in mig_functions}
+            if MODEL_RESERVE_FUNC in present_funcs:
+                mcur.execute("REVOKE EXECUTE ON FUNCTION %s.%s%s FROM PUBLIC"
+                             % (qi_schema, _quote_ident(MODEL_RESERVE_FUNC),
+                                MODEL_RESERVE_SIG))
+                mcur.execute("GRANT EXECUTE ON FUNCTION %s.%s%s TO %s"
+                             % (qi_schema, _quote_ident(MODEL_RESERVE_FUNC),
+                                MODEL_RESERVE_SIG, qi_runtime))
+            if MODEL_FINALIZE_FUNC in present_funcs:
+                mcur.execute("REVOKE EXECUTE ON FUNCTION %s.%s%s FROM PUBLIC"
+                             % (qi_schema, _quote_ident(MODEL_FINALIZE_FUNC),
+                                MODEL_FINALIZE_SIG))
+                mcur.execute("GRANT EXECUTE ON FUNCTION %s.%s%s TO %s"
+                             % (qi_schema, _quote_ident(MODEL_FINALIZE_FUNC),
+                                MODEL_FINALIZE_SIG, qi_runtime))
+            if MODEL_TRIGGER_FUNC in present_funcs:
+                mcur.execute("REVOKE EXECUTE ON FUNCTION %s.%s%s FROM PUBLIC"
+                             % (qi_schema, _quote_ident(MODEL_TRIGGER_FUNC),
+                                MODEL_TRIGGER_SIG))
+                mcur.execute("REVOKE EXECUTE ON FUNCTION %s.%s%s FROM %s"
+                             % (qi_schema, _quote_ident(MODEL_TRIGGER_FUNC),
+                                MODEL_TRIGGER_SIG, qi_runtime))
         except Exception:
             try:
                 mconn.rollback()
@@ -707,13 +773,22 @@ def do_bind():
                          "completed: %s" % ",".join(done))
         # Phase 4: later migration-created tables keep the runtime split.
         # Executed as migration for its own role, which a NOSUPERUSER
-        # master could never set for another role.
+        # master could never set for another role. Function defaults deny
+        # PUBLIC globally, then grant the exact runtime role in the app
+        # schema only, so first-migration functions are safe without the
+        # migration task knowing the runtime name.
         try:
             mcur.execute("ALTER DEFAULT PRIVILEGES FOR ROLE %s IN SCHEMA %s "
                          "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %s"
                          % (qi_migration, qi_schema, qi_runtime))
             mcur.execute("ALTER DEFAULT PRIVILEGES FOR ROLE %s IN SCHEMA %s "
                          "GRANT USAGE, SELECT ON SEQUENCES TO %s"
+                         % (qi_migration, qi_schema, qi_runtime))
+            mcur.execute("ALTER DEFAULT PRIVILEGES FOR ROLE %s "
+                         "REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC"
+                         % qi_migration)
+            mcur.execute("ALTER DEFAULT PRIVILEGES FOR ROLE %s IN SCHEMA %s "
+                         "GRANT EXECUTE ON FUNCTIONS TO %s"
                          % (qi_migration, qi_schema, qi_runtime))
         except Exception:
             try:
