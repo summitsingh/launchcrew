@@ -30,6 +30,25 @@ Each brief is a plain dict with these keys:
     status: always "pending_owner_approval" (str).
     approved: always False (bool).
 
+The five labels are distinct editorial purposes, not reorderings:
+
+    Discovery Hook: open with an editorial hook question answered
+        only by the quoted facts.
+    Concrete Detail: present the quoted facts with exact wording
+        preserved.
+    Buyer Question: frame the quoted facts as material for one
+        buyer question, without answering beyond them.
+    Claim Boundary: state the evidence boundary: only quoted facts
+        are asserted, nothing more.
+    Concise Recap: recap the quoted facts in a compact draft
+        without adding claims.
+
+All five briefs quote the same supplied facts in input order. They
+differ in editorial purpose, instruction, questions, and rendered
+sections, not in ordering tricks. When only one fact is supplied,
+every brief carries an explicit note that the same single fact
+supports all five editorial frames, not five independent stories.
+
 Bounds:
     MIN_FACTS = 1, MAX_FACTS = 8, MAX_FACT_CHARS = 500,
     MAX_BRIEF_CHARS = 6000, NUM_ANGLES = 5.
@@ -41,9 +60,11 @@ Rules:
     - Output keeps each supplied fact string byte-for-byte exact.
     - Output never invents facts and never turns the absence of
       facts into a claim about the product.
-    - Editorial instructions live in their own field and heading and
-      must not be read as factual claims. They add no benefit,
-      audience, price, origin, guarantee, or performance assertion.
+    - Editorial instructions and questions live under their own
+      headings marked "(not a fact)" and must not be read as
+      factual claims. They add no benefit, audience, price,
+      origin, guarantee, performance, comparison, inventory, or
+      source assertion.
     - Every brief requires individual owner approval. This helper
       never approves anything.
     - Pure function: no input mutation, no randomness, no time,
@@ -58,11 +79,11 @@ MAX_BRIEF_CHARS = 6000
 APPROVAL_STATUS = "pending_owner_approval"
 
 ANGLE_LABELS = (
-    "Spotlight Opener",
-    "Sequential List",
-    "Closing Spotlight",
-    "Paired Opener",
-    "Reverse List",
+    "Discovery Hook",
+    "Concrete Detail",
+    "Buyer Question",
+    "Claim Boundary",
+    "Concise Recap",
 )
 
 _APPROVAL_BANNER = (
@@ -74,6 +95,26 @@ _REVIEW_NOTE = (
     "REVIEW NOTE: This draft re-presents the quoted facts above. "
     "It requires individual owner approval before any use. "
     "No additional facts are asserted here."
+)
+
+_HOOK_QUESTION = "What is one confirmed detail worth a closer look?"
+
+_BUYER_QUESTION = "What does the quoted material confirm, in its own words?"
+
+_BOUNDARY_STATEMENT = (
+    "Only the quoted facts above are asserted. No benefit, audience, "
+    "performance, comparison, price, origin, guarantee, inventory, "
+    "or source claim is made here."
+)
+
+_DETAIL_NOTE = (
+    "PRESENTATION NOTE (not a fact): Keep every quoted word exactly "
+    "as written; do not paraphrase or explain beyond the quotes."
+)
+
+_RECAP_NOTE = (
+    "RECAP NOTE (not a fact): This recap repeats the quotes above "
+    "with no new wording."
 )
 
 __all__ = [
@@ -114,38 +155,92 @@ def _validate_facts(confirmed_facts):
     return facts
 
 
-def _single_quote_block(fact):
-    return "QUOTE (verbatim):\n%s" % fact
-
-
-def _numbered_block(facts):
+def _numbered_block(facts, heading):
     lines = []
     for i, fact in enumerate(facts, start=1):
         lines.append("%d. %s" % (i, fact))
-    return "QUOTED FACTS (verbatim, in presentation order):\n" + "\n".join(lines)
+    return "%s\n%s" % (heading, "\n".join(lines))
 
 
-def _bullet_block(facts):
-    return "QUOTED FACTS (verbatim, in presentation order):\n" + "\n".join(
-        "- %s" % fact for fact in facts
+def _bullet_block(facts, heading):
+    return "%s\n%s" % (heading, "\n".join("- %s" % fact for fact in facts))
+
+
+def _source_scope_note(total):
+    if total == 1:
+        return (
+            "SOURCE SCOPE (not a fact): Only one owner-confirmed fact "
+            "was supplied. All five briefs quote this same single fact "
+            "as five editorial frames, not as five independent factual stories."
+        )
+    return (
+        "SOURCE SCOPE (not a fact): All five briefs quote from the same "
+        "%d supplied facts as five editorial frames, not as five "
+        "independent factual stories." % total
     )
 
 
 def _build_brief(label, approach, instruction, facts, indexes, total):
     facts_used = [facts[i] for i in indexes]
-    if label in ("Spotlight Opener", "Closing Spotlight"):
-        facts_block = _single_quote_block(facts_used[0])
-    elif label == "Paired Opener":
-        facts_block = _bullet_block(facts_used)
+    header = "[%s] DRAFT FOR REVIEW -- %s" % (label, _APPROVAL_BANNER)
+    instruction_block = "EDITORIAL INSTRUCTION (not a fact): %s" % instruction
+    scope_note = _source_scope_note(total)
+    if label == "Discovery Hook":
+        question_block = (
+            "EDITORIAL HOOK QUESTION (not a fact, do not treat as a claim):\n%s"
+            % _HOOK_QUESTION
+        )
+        facts_block = _numbered_block(
+            facts_used, "QUOTED FACTS (verbatim, hook support):"
+        )
+        facts_heading = (
+            "OWNER-CONFIRMED FACTS USED (%d of %d supplied, verbatim):\n%s"
+            % (len(facts_used), total, facts_block)
+        )
+        parts = [header, question_block, instruction_block, facts_heading, scope_note, _REVIEW_NOTE]
+    elif label == "Concrete Detail":
+        facts_block = _numbered_block(
+            facts_used, "QUOTED FACTS (verbatim, exact wording):"
+        )
+        facts_heading = (
+            "OWNER-CONFIRMED FACTS USED (%d of %d supplied, verbatim):\n%s"
+            % (len(facts_used), total, facts_block)
+        )
+        parts = [header, instruction_block, facts_heading, _DETAIL_NOTE, scope_note, _REVIEW_NOTE]
+    elif label == "Buyer Question":
+        question_block = (
+            "EDITORIAL BUYER QUESTION (not a fact, do not treat as a claim):\n%s"
+            % _BUYER_QUESTION
+        )
+        facts_block = _bullet_block(
+            facts_used, "QUOTED FACTS (verbatim, answer material only):"
+        )
+        facts_heading = (
+            "OWNER-CONFIRMED FACTS USED (%d of %d supplied, verbatim):\n%s"
+            % (len(facts_used), total, facts_block)
+        )
+        parts = [header, question_block, instruction_block, facts_heading, scope_note, _REVIEW_NOTE]
+    elif label == "Claim Boundary":
+        facts_block = _numbered_block(facts_used, "QUOTED FACTS (verbatim):")
+        facts_heading = (
+            "OWNER-CONFIRMED FACTS USED (%d of %d supplied, verbatim):\n%s"
+            % (len(facts_used), total, facts_block)
+        )
+        boundary_block = (
+            "EVIDENCE / CLAIM BOUNDARY (not a fact, scope note):\n%s"
+            % _BOUNDARY_STATEMENT
+        )
+        parts = [header, instruction_block, facts_heading, boundary_block, scope_note, _REVIEW_NOTE]
     else:
-        facts_block = _numbered_block(facts_used)
-    brief_text = (
-        "[%s] DRAFT FOR REVIEW -- %s\n\n"
-        "EDITORIAL INSTRUCTION (not a fact): %s\n\n"
-        "OWNER-CONFIRMED FACTS USED (%d of %d supplied, verbatim):\n"
-        "%s\n\n%s"
-        % (label, _APPROVAL_BANNER, instruction, len(facts_used), total, facts_block, _REVIEW_NOTE)
-    )
+        facts_block = _numbered_block(
+            facts_used, "QUOTED FACTS (verbatim, recap set):"
+        )
+        facts_heading = (
+            "OWNER-CONFIRMED FACTS USED (%d of %d supplied, verbatim):\n%s"
+            % (len(facts_used), total, facts_block)
+        )
+        parts = [header, instruction_block, facts_heading, _RECAP_NOTE, scope_note, _REVIEW_NOTE]
+    brief_text = "\n\n".join(parts)
     if len(brief_text) > MAX_BRIEF_CHARS:
         raise ValueError("Generated brief exceeds maximum length")
     return {
@@ -171,9 +266,12 @@ def generate_campaign_angles(confirmed_facts):
 
     Returns:
         A new list of exactly NUM_ANGLES dicts (see module docstring
-        for keys). Labels are distinct. When one fact is supplied,
-        all five briefs quote that same fact and differ only in
-        editorial presentation.
+        for keys). Labels are the five distinct editorial purposes.
+        All five briefs quote the same supplied facts in input
+        order; differentiation is editorial purpose and framing,
+        not reordering. When one fact is supplied, every brief
+        carries an explicit note that the same single fact supports
+        all five editorial frames, not five independent stories.
 
     Raises:
         TypeError: if the input is not a list or tuple of strings.
@@ -186,44 +284,45 @@ def generate_campaign_angles(confirmed_facts):
     """
     facts = _validate_facts(confirmed_facts)
     total = len(facts)
-    last = total - 1
-    pair = [0, 1] if total >= 2 else [0]
+    shared_indexes = list(range(total))
     specs = (
         (
             ANGLE_LABELS[0],
-            "Single-fact spotlight on the first supplied fact.",
-            "Display the single quoted fact on its own line. "
-            "Do not reword it and do not add surrounding sentences.",
-            [0],
+            "Open with an editorial hook question answered only by the quoted facts.",
+            "Start from the editorial hook question, then show the quoted "
+            "facts as the only supporting material. Do not reword the facts "
+            "and do not add surrounding factual sentences.",
+            list(shared_indexes),
         ),
         (
             ANGLE_LABELS[1],
-            "Numbered list of the supplied facts in input order.",
-            "List each quoted fact in the supplied order, one per "
-            "numbered line. Do not reword, combine, or add sentences.",
-            list(range(total)),
+            "Present the quoted facts with exact wording preserved.",
+            "Show each quoted fact exactly as written, preserving every word. "
+            "Do not paraphrase, combine, or add explanatory sentences.",
+            list(shared_indexes),
         ),
         (
             ANGLE_LABELS[2],
-            "Single-fact spotlight on the last supplied fact.",
-            "Display the single quoted fact as a standalone closing "
-            "quote. Do not reword it and do not add surrounding sentences.",
-            [last],
+            "Frame the quoted facts as material for one buyer question, without answering beyond them.",
+            "Present the editorial buyer question first, then list the quoted "
+            "facts as the only permitted answer material. Do not answer beyond "
+            "the quoted wording and do not add recommendations.",
+            list(shared_indexes),
         ),
         (
             ANGLE_LABELS[3],
-            "Opening bullet presentation from the start of the supplied order.",
-            "Show each quoted fact as a separate bullet line in the "
-            "supplied order. Do not merge facts into one sentence and "
-            "do not add sentences.",
-            pair,
+            "State the evidence boundary: only quoted facts are asserted, nothing more.",
+            "Quote the facts first, then restate the boundary that no other "
+            "benefit, audience, performance, comparison, price, origin, "
+            "guarantee, inventory, or source claim is made. Do not add new claims.",
+            list(shared_indexes),
         ),
         (
             ANGLE_LABELS[4],
-            "Numbered list of the supplied facts in reverse input order.",
-            "List each quoted fact in reverse supplied order, one per "
-            "numbered line. Do not reword, combine, or add sentences.",
-            list(reversed(range(total))),
+            "Recap the quoted facts in a compact draft without adding claims.",
+            "Repeat the quoted facts together as a short recap draft. Do not "
+            "shorten their wording and do not add summary claims beyond the quotes.",
+            list(shared_indexes),
         ),
     )
     briefs = [_build_brief(label, approach, instruction, facts, indexes, total) for label, approach, instruction, indexes in specs]

@@ -31,12 +31,118 @@ class CampaignAnglesTests(unittest.TestCase):
             self.assertTrue(label.strip())
         self.assertEqual(len(set(ca.ANGLE_LABELS)), 5)
 
+    def test_labels_are_five_editorial_purposes(self):
+        briefs = ca.generate_campaign_angles([FACT_A, FACT_B])
+        labels = [b["label"] for b in briefs]
+        self.assertEqual(labels, list(ca.ANGLE_LABELS))
+        self.assertEqual(
+            set(labels),
+            {
+                "Discovery Hook",
+                "Concrete Detail",
+                "Buyer Question",
+                "Claim Boundary",
+                "Concise Recap",
+            },
+        )
+        for label in labels:
+            lowered = label.lower()
+            for old in ("spotlight", "sequential", "reverse", "paired", "closing"):
+                self.assertNotIn(old, lowered)
+
+    def test_editorial_approaches_are_distinct_purposes(self):
+        briefs = ca.generate_campaign_angles([FACT_A, FACT_B, FACT_C])
+        approaches = [b["editorial_approach"] for b in briefs]
+        self.assertEqual(len(set(approaches)), 5)
+        for approach in approaches:
+            self.assertIsInstance(approach, str)
+            self.assertTrue(approach.strip())
+        joined = " ".join(a.lower() for a in approaches)
+        for keyword in ("hook", "exact", "buyer", "boundary", "recap"):
+            self.assertIn(keyword, joined)
+        for old in ("spotlight", "sequential", "reverse", "paired"):
+            self.assertNotIn(old, joined)
+
+    def test_editorial_instructions_distinct_and_not_mere_orderings(self):
+        briefs = ca.generate_campaign_angles([FACT_A, FACT_B, FACT_C])
+        instructions = [b["editorial_instruction"] for b in briefs]
+        self.assertEqual(len(set(instructions)), 5)
+        for instruction in instructions:
+            self.assertIsInstance(instruction, str)
+            self.assertTrue(instruction.strip())
+            self.assertIn("Do not", instruction)
+        joined = " ".join(i.lower() for i in instructions)
+        self.assertNotIn("reverse", joined)
+        self.assertNotIn("supplied order", joined)
+        self.assertNotIn("spotlight", joined)
+
     def test_brief_texts_are_distinct(self):
         briefs = ca.generate_campaign_angles([FACT_A, FACT_B, FACT_C])
         texts = [b["brief_text"] for b in briefs]
         self.assertEqual(len(set(texts)), 5)
         rendered = [str(b) for b in briefs]
         self.assertEqual(len(set(rendered)), 5)
+
+    def test_brief_texts_differ_beyond_labels_and_facts(self):
+        facts = [FACT_A, FACT_B, FACT_C]
+        briefs = ca.generate_campaign_angles(facts)
+        stripped = []
+        for brief in briefs:
+            text = brief["brief_text"]
+            text = text.replace(brief["label"], "")
+            for fact in facts:
+                text = text.replace(fact, "")
+            text = text.replace("1.", "").replace("2.", "").replace("3.", "")
+            text = text.replace("- ", "")
+            stripped.append(text)
+        self.assertEqual(len(set(stripped)), 5)
+        for i in range(5):
+            for j in range(i + 1, 5):
+                self.assertNotEqual(stripped[i], stripped[j])
+                diff = set(stripped[i].split()) ^ set(stripped[j].split())
+                self.assertGreater(len(diff), 5)
+
+    def test_each_frame_renders_distinct_useful_section(self):
+        briefs = ca.generate_campaign_angles([FACT_A, FACT_B])
+        by_label = {b["label"]: b["brief_text"] for b in briefs}
+        self.assertIn("EDITORIAL HOOK QUESTION", by_label["Discovery Hook"])
+        self.assertIn(
+            "What is one confirmed detail worth a closer look?",
+            by_label["Discovery Hook"],
+        )
+        self.assertIn("hook support", by_label["Discovery Hook"].lower())
+        self.assertIn("PRESENTATION NOTE", by_label["Concrete Detail"])
+        self.assertIn("exact wording", by_label["Concrete Detail"].lower())
+        self.assertIn("EDITORIAL BUYER QUESTION", by_label["Buyer Question"])
+        self.assertIn(
+            "What does the quoted material confirm", by_label["Buyer Question"]
+        )
+        self.assertIn("answer material only", by_label["Buyer Question"].lower())
+        self.assertIn("EVIDENCE / CLAIM BOUNDARY", by_label["Claim Boundary"])
+        self.assertIn(
+            "Only the quoted facts above are asserted", by_label["Claim Boundary"]
+        )
+        self.assertIn("RECAP NOTE", by_label["Concise Recap"])
+        self.assertIn("recap set", by_label["Concise Recap"].lower())
+        markers = {
+            "EDITORIAL HOOK QUESTION": "Discovery Hook",
+            "EDITORIAL BUYER QUESTION": "Buyer Question",
+            "EVIDENCE / CLAIM BOUNDARY": "Claim Boundary",
+            "PRESENTATION NOTE": "Concrete Detail",
+            "RECAP NOTE": "Concise Recap",
+        }
+        for marker, expected_label in markers.items():
+            holders = [label for label, text in by_label.items() if marker in text]
+            self.assertEqual(holders, [expected_label])
+
+    def test_shared_source_not_reorderings(self):
+        facts = [FACT_A, FACT_B, FACT_C]
+        briefs = ca.generate_campaign_angles(facts)
+        for brief in briefs:
+            self.assertEqual(brief["facts_used"], facts)
+            self.assertEqual(brief["fact_indexes"], [0, 1, 2])
+        texts = [b["brief_text"] for b in briefs]
+        self.assertEqual(len(set(texts)), 5)
 
     def test_single_fact_shared_without_fabrication(self):
         briefs = ca.generate_campaign_angles([FACT_A])
@@ -49,6 +155,26 @@ class CampaignAnglesTests(unittest.TestCase):
             for index in brief["fact_indexes"]:
                 self.assertEqual(index, 0)
 
+    def test_one_fact_honesty_note(self):
+        briefs = ca.generate_campaign_angles([FACT_A])
+        for brief in briefs:
+            text = brief["brief_text"]
+            self.assertIn("SOURCE SCOPE (not a fact)", text)
+            self.assertIn("Only one owner-confirmed fact was supplied", text)
+            self.assertIn("same single fact", text)
+            self.assertIn("five editorial frames", text)
+            self.assertIn("not as five independent", text)
+            self.assertEqual(brief["facts_used"], [FACT_A])
+
+    def test_multi_fact_shared_scope_honesty(self):
+        briefs = ca.generate_campaign_angles([FACT_A, FACT_B])
+        for brief in briefs:
+            text = brief["brief_text"]
+            self.assertIn("SOURCE SCOPE (not a fact)", text)
+            self.assertIn("same 2 supplied facts", text)
+            self.assertIn("five editorial frames", text)
+            self.assertIn("not as five independent", text)
+
     def test_several_facts_exact_and_identified(self):
         facts = [FACT_A, FACT_B, FACT_C]
         briefs = ca.generate_campaign_angles(facts)
@@ -60,12 +186,61 @@ class CampaignAnglesTests(unittest.TestCase):
                 self.assertEqual(fact, facts[index])
                 self.assertIn(fact, brief["brief_text"])
 
+    def test_exact_fact_preservation_byte_for_byte(self):
+        tricky = ["  Spaced Fact! With, punctuation?  ", "MiXeD CASE 123 & symbols #@!"]
+        briefs = ca.generate_campaign_angles(tricky)
+        for brief in briefs:
+            self.assertEqual(brief["facts_used"], tricky)
+            for fact, index in zip(brief["facts_used"], brief["fact_indexes"]):
+                self.assertEqual(fact, tricky[index])
+                self.assertIn(fact, brief["brief_text"])
+        single = ca.generate_campaign_angles([tricky[0]])
+        for brief in single:
+            self.assertEqual(brief["facts_used"], [tricky[0]])
+            self.assertIn(tricky[0], brief["brief_text"])
+
     def test_no_invented_facts(self):
         facts = [FACT_A, FACT_B, FACT_C]
         briefs = ca.generate_campaign_angles(facts)
         for brief in briefs:
             for fact in brief["facts_used"]:
                 self.assertIn(fact, facts)
+
+    def test_no_factual_additions_or_forbidden_claims(self):
+        facts = [FACT_A, FACT_B]
+        briefs = ca.generate_campaign_angles(facts)
+        forbidden_positive = (
+            "$",
+            "discount",
+            "cheap",
+            "affordable",
+            "made in",
+            "manufactured",
+            "guaranteed",
+            "in stock",
+            "limited stock",
+            "available now",
+            "better than",
+            "best in class",
+            "customers love",
+            "perfect for",
+            "ideal for",
+            "study shows",
+            "experts say",
+        )
+        for brief in briefs:
+            for fact in brief["facts_used"]:
+                self.assertIn(fact, facts)
+            text_without_facts = brief["brief_text"]
+            for fact in facts:
+                text_without_facts = text_without_facts.replace(fact, "")
+            lowered = text_without_facts.lower()
+            for phrase in forbidden_positive:
+                self.assertNotIn(phrase, lowered)
+            self.assertIn("No additional facts are asserted here", brief["brief_text"])
+        boundary = [b for b in briefs if b["label"] == "Claim Boundary"][0]
+        self.assertIn("Only the quoted facts above are asserted", boundary["brief_text"])
+        self.assertIn("No benefit, audience", boundary["brief_text"])
 
     def test_determinism(self):
         facts = [FACT_A, FACT_B, FACT_C]
@@ -132,6 +307,31 @@ class CampaignAnglesTests(unittest.TestCase):
             self.assertIn("pending", lowered)
             self.assertIn("owner approval", lowered)
 
+    def test_pending_approval_without_automation_or_live_claims(self):
+        briefs = ca.generate_campaign_angles([FACT_A, FACT_B])
+        banned = (
+            "automated",
+            "automatic",
+            "auto-generated",
+            "live campaign",
+            "live ui",
+            "integrated",
+            "published",
+            "ready to publish",
+            "approved for use",
+        )
+        for brief in briefs:
+            self.assertIs(brief["approved"], False)
+            self.assertEqual(brief["status"], "pending_owner_approval")
+            text = brief["brief_text"]
+            self.assertIn("PENDING", text)
+            self.assertIn("NOT APPROVED", text)
+            self.assertIn("individual owner approval", text.lower())
+            self.assertIn("DRAFT FOR REVIEW", text)
+            lowered = text.lower()
+            for phrase in banned:
+                self.assertNotIn(phrase, lowered)
+
     def test_editorial_instruction_separated_from_facts(self):
         briefs = ca.generate_campaign_angles([FACT_A, FACT_B])
         for brief in briefs:
@@ -140,6 +340,20 @@ class CampaignAnglesTests(unittest.TestCase):
             self.assertIn("EDITORIAL INSTRUCTION", brief["brief_text"])
             self.assertIn("OWNER-CONFIRMED FACTS", brief["brief_text"])
             self.assertNotIn(brief["editorial_instruction"], brief["facts_used"])
+
+    def test_editorial_questions_separated_from_facts(self):
+        briefs = ca.generate_campaign_angles([FACT_A, FACT_B])
+        by_label = {b["label"]: b for b in briefs}
+        for brief in briefs:
+            self.assertIn("EDITORIAL INSTRUCTION (not a fact)", brief["brief_text"])
+            self.assertIn("OWNER-CONFIRMED FACTS", brief["brief_text"])
+            self.assertNotIn(brief["editorial_instruction"], brief["facts_used"])
+        hook_text = by_label["Discovery Hook"]["brief_text"]
+        self.assertIn("EDITORIAL HOOK QUESTION (not a fact", hook_text)
+        buyer_text = by_label["Buyer Question"]["brief_text"]
+        self.assertIn("EDITORIAL BUYER QUESTION (not a fact", buyer_text)
+        boundary_text = by_label["Claim Boundary"]["brief_text"]
+        self.assertIn("EVIDENCE / CLAIM BOUNDARY (not a fact", boundary_text)
 
     def test_no_input_mutation(self):
         facts = [FACT_A, FACT_B, FACT_C]
