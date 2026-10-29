@@ -110,7 +110,10 @@ class VerdictTests(unittest.TestCase):
                 self.assertIsNone(result['evidence'])
                 self.assertIn(result['reason'],
                               ('Unapproved superlative or absolute',
+                               'Unapproved negation',
                                'Sentence not in approved claims'))
+                if text.startswith('Never'):
+                    self.assertIn('negation', result['reason'].lower())
 
     def test_wrong_price_sentence_conflicts(self):
         facts = owner_facts(['$129'])
