@@ -136,6 +136,37 @@ class ChannelVariantTests(unittest.TestCase):
             any("$99" in r or "verbatim" in r or "confirmed" in r for r in invented["reasons"])
         )
 
+    def test_validator_requires_complete_source_sentences_in_order(self):
+        draft = "Vegan leather wallet. Designed in Texas."
+        confirmed = ["Vegan leather wallet", "Designed in Texas"]
+        exact_cut = validate_x_variant("Vegan leather wall", confirmed, draft)
+        self.assertFalse(exact_cut["ok"])
+        self.assertFalse(exact_cut["exportable"])
+        self.assertTrue(
+            any("verbatim" in r or "complete" in r for r in exact_cut["reasons"])
+        )
+        for bad in (
+            "Vegan leather wallet",
+            "Vegan leather wallet. Designed in Texas",
+            "Vegan leather wallet. Designed in Texa",
+            "Vegan leather wallet. Designed",
+        ):
+            with self.subTest(candidate=bad):
+                check = validate_x_variant(bad, confirmed, draft)
+                self.assertFalse(check["ok"])
+                self.assertFalse(check["exportable"])
+                self.assertTrue(
+                    any("verbatim" in r or "complete" in r for r in check["reasons"])
+                )
+        reordered = validate_x_variant(
+            "Designed in Texas. Vegan leather wallet.", confirmed, draft
+        )
+        self.assertFalse(reordered["ok"])
+        self.assertFalse(reordered["exportable"])
+        prefix = validate_x_variant("Vegan leather wallet.", confirmed, draft)
+        self.assertTrue(prefix["ok"])
+        self.assertTrue(prefix["exportable"])
+
     def test_empty_draft_needs_revision(self):
         variant = build_x_variant("   ", [])
         self.assertFalse(variant["exportable"])

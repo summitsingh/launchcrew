@@ -657,7 +657,11 @@ def validate_x_variant(x_text, confirmed_facts, draft_text):
 
     Checks the 280 character limit, verbatim sentence relationship to
     the draft, and exact measured-claim relationship to confirmed
-    facts. Returns a dict with ok, exportable, char_count, limit, and
+    facts. The candidate must be a sequence of complete draft
+    sentences in source order with exact boundaries and terminal
+    punctuation, except a conservative trailing fragment that exactly
+    matches the full draft end. Partial prefixes and substrings fail.
+    Returns a dict with ok, exportable, char_count, limit, and
     reasons. Never raises on content; type errors fail closed.
     """
     limit = X_MAX_CHARS
@@ -701,15 +705,37 @@ def validate_x_variant(x_text, confirmed_facts, draft_text):
         x_sentences = split_sentences(x_text)
     except TypeError:
         x_sentences = []
+    try:
+        draft_sentences = split_sentences(draft_text)
+    except TypeError:
+        draft_sentences = []
     verbatim_ok = True
-    for sentence in x_sentences:
-        if sentence not in draft_text:
-            verbatim_ok = False
-            preview = sentence[:40]
-            reasons.append("Sentence not verbatim in draft: %s" % preview)
     if not x_sentences:
         verbatim_ok = False
         reasons.append("No complete sentence found in X text.")
+    elif not draft_sentences:
+        verbatim_ok = False
+        preview = x_sentences[0][:40]
+        reasons.append("Sentence not verbatim in draft: %s" % preview)
+    else:
+        draft_index = 0
+        for sentence in x_sentences:
+            found_at = -1
+            for k in range(draft_index, len(draft_sentences)):
+                if draft_sentences[k] == sentence:
+                    found_at = k
+                    break
+            if found_at == -1:
+                verbatim_ok = False
+                preview = sentence[:40]
+                if sentence in draft_sentences:
+                    reasons.append(
+                        "Sentence not verbatim in draft order: %s" % preview
+                    )
+                else:
+                    reasons.append("Sentence not verbatim in draft: %s" % preview)
+            else:
+                draft_index = found_at + 1
     confirmed_tokens = set()
     for fact in confirmed:
         confirmed_tokens.update(_measured_tokens(fact))
