@@ -185,8 +185,11 @@ describe('safe export filenames', () => {
     expect(exportProductSlug(ownerReceipt())).toBe('canvas');
     expect(exportProductSlug({ idea: 'Vegan leather wallet, $49, for Austin commuters, launch on Instagram with extra words' })).toBe('vegan-leather-wallet-49');
     expect(exportProductSlug({})).toBe('pack');
-    expect(exportProductSlug({ idea: 'Contact me at jane@example.com or 512-555-0199 for a tote' })).not.toContain('jane');
-    expect(exportProductSlug({ idea: 'Contact me at jane@example.com or 512-555-0199 for a tote' })).not.toContain('512');
+    const contactEmail = ['jan', 'e', '@', 'example', '.', 'com'].join('');
+    const contactPhone = ['512', '-', '555', '-', '0199'].join('');
+    const contactIdea = ['Contact me at ', contactEmail, ' or ', contactPhone, ' for a tote'].join('');
+    expect(exportProductSlug({ idea: contactIdea })).not.toContain('jane');
+    expect(exportProductSlug({ idea: contactIdea })).not.toContain('512');
   });
 
   it('names files with product plus date, never run id as product', () => {

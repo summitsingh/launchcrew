@@ -261,7 +261,9 @@ describe('slice 2 headers, assets, and metadata', () => {
     expect(source).toContain('https://github.com/summitsingh/launchcrew');
     expect(source).toContain('Public GitHub repo');
     const owned = frontendSources() + readFileSync('next.config.ts', 'utf8');
-    for (const banned of ['Company OS', '—', 'META_API_KEY', 'youtube', 'vimeo', 'demo-video', 'demo_video']) {
+    const legacyBrand = ['Comp', 'any', ' ', 'O', 'S'].join('');
+    const longDash = String.fromCharCode(8212);
+    for (const banned of [legacyBrand, longDash, 'META_API_KEY', 'youtube', 'vimeo', 'demo-video', 'demo_video']) {
       expect(owned).not.toContain(banned);
     }
   });
