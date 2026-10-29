@@ -28,7 +28,7 @@ def test_photo_fixtures_excluded_from_build_context():
         patterns = _patterns(name)
         text = '\n'.join(patterns)
         assert 'demo_photos' in text, name
-        for candidate in ('facts/demo_photos/DSC_3252.JPG', 'facts/demo_photos/wallet.png',
+        for candidate in ('facts/demo_photos/sample-photo.JPG', 'facts/demo_photos/wallet.png',
                           'notes/demo_photos/private.heic', 'tmp/upload.jpeg'):
             assert _matches(patterns, candidate), (name, candidate)
 

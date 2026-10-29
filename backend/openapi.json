@@ -12,6 +12,28 @@
             "title": "Approved By",
             "type": "string"
           },
+          "binding_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Binding Digest"
+          },
+          "binding_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Binding Version"
+          },
           "revision": {
             "anyOf": [
               {
@@ -34,6 +56,24 @@
           "timestamp"
         ],
         "title": "Approval",
+        "type": "object"
+      },
+      "ApprovalBinding": {
+        "properties": {
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "digest"
+        ],
+        "title": "ApprovalBinding",
         "type": "object"
       },
       "ApproveIn": {
@@ -219,12 +259,59 @@
             "title": "Blocked Count",
             "type": "integer"
           },
+          "claim_results": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/ClaimResult"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim Results"
+          },
+          "conflicts_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conflicts Count"
+          },
           "revision_instructions": {
             "items": {
               "type": "string"
             },
             "title": "Revision Instructions",
             "type": "array"
+          },
+          "supported_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supported Count"
+          },
+          "unsupported_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unsupported Count"
           },
           "verified_count": {
             "title": "Verified Count",
@@ -296,6 +383,67 @@
         "title": "CheckerPolicyOut",
         "type": "object"
       },
+      "ClaimResult": {
+        "properties": {
+          "blocked": {
+            "default": true,
+            "title": "Blocked",
+            "type": "boolean"
+          },
+          "claim": {
+            "default": "",
+            "title": "Claim",
+            "type": "string"
+          },
+          "evidence": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence"
+          },
+          "evidence_claims": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Claims"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "source": {
+            "default": "",
+            "title": "Source",
+            "type": "string"
+          },
+          "verdict": {
+            "default": "unsupported",
+            "title": "Verdict",
+            "type": "string"
+          },
+          "verified": {
+            "default": false,
+            "title": "Verified",
+            "type": "boolean"
+          }
+        },
+        "title": "ClaimResult",
+        "type": "object"
+      },
       "Clone": {
         "additionalProperties": false,
         "properties": {
@@ -319,9 +467,67 @@
             "title": "Claims",
             "type": "array"
           },
+          "draft_origin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Draft Origin"
+          },
           "email": {
             "title": "Email",
             "type": "string"
+          },
+          "line_evidence": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/LineEvidence"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Line Evidence"
+          },
+          "maker_schema": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maker Schema"
+          },
+          "model_used": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Used"
+          },
+          "model_written": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Written"
           },
           "post": {
             "title": "Post",
@@ -393,6 +599,111 @@
           }
         },
         "title": "ExportIn",
+        "type": "object"
+      },
+      "FounderNoteField": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed": {
+            "default": false,
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "source": {
+            "default": "owner",
+            "enum": [
+              "owner",
+              "pasted_text",
+              "memory",
+              "listing",
+              "campaign_brief",
+              "demo_template"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "value": {
+            "default": "",
+            "maxLength": 280,
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "title": "FounderNoteField",
+        "type": "object"
+      },
+      "FounderNoteState": {
+        "additionalProperties": true,
+        "properties": {
+          "authorized_as_fact": {
+            "default": false,
+            "title": "Authorized As Fact",
+            "type": "boolean"
+          },
+          "confirmed": {
+            "default": false,
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "label": {
+            "default": "Founder note",
+            "title": "Label",
+            "type": "string"
+          },
+          "sentence_ok": {
+            "default": false,
+            "title": "Sentence Ok",
+            "type": "boolean"
+          },
+          "source": {
+            "default": "owner",
+            "title": "Source",
+            "type": "string"
+          },
+          "value": {
+            "default": "",
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "title": "FounderNoteState",
+        "type": "object"
+      },
+      "FounderVariant": {
+        "additionalProperties": true,
+        "properties": {
+          "authorized": {
+            "default": false,
+            "title": "Authorized",
+            "type": "boolean"
+          },
+          "email": {
+            "default": "",
+            "title": "Email",
+            "type": "string"
+          },
+          "label": {
+            "default": "",
+            "title": "Label",
+            "type": "string"
+          },
+          "note": {
+            "default": "",
+            "title": "Note",
+            "type": "string"
+          },
+          "post": {
+            "default": "",
+            "title": "Post",
+            "type": "string"
+          },
+          "verified": {
+            "default": false,
+            "title": "Verified",
+            "type": "boolean"
+          }
+        },
+        "title": "FounderVariant",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -500,6 +811,36 @@
           "kind"
         ],
         "title": "LearnMemory",
+        "type": "object"
+      },
+      "LineEvidence": {
+        "properties": {
+          "channel": {
+            "default": "",
+            "title": "Channel",
+            "type": "string"
+          },
+          "evidence": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "line": {
+            "default": "",
+            "title": "Line",
+            "type": "string"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          }
+        },
+        "title": "LineEvidence",
         "type": "object"
       },
       "MemoryItemEdit": {
@@ -1091,6 +1432,237 @@
         "title": "Preview",
         "type": "object"
       },
+      "ProductFactField": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed": {
+            "default": false,
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "source": {
+            "default": "owner",
+            "enum": [
+              "owner",
+              "pasted_text",
+              "memory",
+              "listing",
+              "campaign_brief",
+              "demo_template"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "value": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "title": "ProductFactField",
+        "type": "object"
+      },
+      "ProductFactState": {
+        "additionalProperties": true,
+        "properties": {
+          "claim": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Claim"
+          },
+          "confirmed": {
+            "default": false,
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "field": {
+            "default": "",
+            "title": "Field",
+            "type": "string"
+          },
+          "label": {
+            "default": "",
+            "title": "Label",
+            "type": "string"
+          },
+          "source": {
+            "default": "",
+            "title": "Source",
+            "type": "string"
+          },
+          "value": {
+            "default": "",
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "title": "ProductFactState",
+        "type": "object"
+      },
+      "ProductFactsInput": {
+        "additionalProperties": false,
+        "properties": {
+          "allowed_claims": {
+            "items": {
+              "$ref": "#/components/schemas/ProductFactField"
+            },
+            "maxItems": 12,
+            "title": "Allowed Claims",
+            "type": "array"
+          },
+          "contents": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProductFactField"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "founder_note": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FounderNoteField"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "material": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProductFactField"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "price": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProductFactField"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "size": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProductFactField"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "ProductFactsInput",
+        "type": "object"
+      },
+      "ProductFactsSection": {
+        "additionalProperties": true,
+        "properties": {
+          "allowlist": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowlist",
+            "type": "array"
+          },
+          "confirmed_claims": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Confirmed Claims",
+            "type": "array"
+          },
+          "draft_variant": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FounderVariant"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "fields": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ProductFactState"
+            },
+            "title": "Fields",
+            "type": "array"
+          },
+          "founder_note": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FounderNoteState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "labels": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "title": "Labels",
+            "type": "object"
+          },
+          "mode": {
+            "default": "demo_template",
+            "title": "Mode",
+            "type": "string"
+          },
+          "suggested": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/SuggestedFact"
+            },
+            "title": "Suggested",
+            "type": "array"
+          },
+          "template": {
+            "default": "demo_facts.json",
+            "title": "Template",
+            "type": "string"
+          },
+          "template_label": {
+            "default": "Bundled fictional demo template",
+            "title": "Template Label",
+            "type": "string"
+          },
+          "template_note": {
+            "default": "",
+            "title": "Template Note",
+            "type": "string"
+          },
+          "template_used": {
+            "default": true,
+            "title": "Template Used",
+            "type": "boolean"
+          }
+        },
+        "title": "ProductFactsSection",
+        "type": "object"
+      },
       "Profile": {
         "additionalProperties": false,
         "properties": {
@@ -1175,6 +1747,16 @@
       "Receipt": {
         "additionalProperties": true,
         "properties": {
+          "approval_binding": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApprovalBinding"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "approval_state": {
             "enum": [
               "pending_approval",
@@ -1420,6 +2002,17 @@
             ],
             "title": "Photo Transport"
           },
+          "product_facts": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProductFactsSection"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Slice 1 confirmed product facts with provenance. Absent on historical or pending receipts."
+          },
           "revision": {
             "default": 0,
             "title": "Revision",
@@ -1574,14 +2167,12 @@
           "check": {
             "anyOf": [
               {
-                "additionalProperties": true,
-                "type": "object"
+                "$ref": "#/components/schemas/Check"
               },
               {
                 "type": "null"
               }
-            ],
-            "title": "Check"
+            ]
           },
           "checker_policies": {
             "anyOf": [
@@ -2110,6 +2701,17 @@
             "title": "Memory Ids",
             "type": "array"
           },
+          "product_facts": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProductFactsInput"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Slice 1 owner product facts. Only explicitly confirmed fields become evidence; suggestions never do. Absent means legacy demo-template mode."
+          },
           "scout_name": {
             "anyOf": [
               {
@@ -2294,6 +2896,38 @@
           }
         },
         "title": "ScoutSection",
+        "type": "object"
+      },
+      "SuggestedFact": {
+        "additionalProperties": true,
+        "properties": {
+          "field": {
+            "default": "",
+            "title": "Field",
+            "type": "string"
+          },
+          "label": {
+            "default": "",
+            "title": "Label",
+            "type": "string"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "source": {
+            "default": "",
+            "title": "Source",
+            "type": "string"
+          },
+          "value": {
+            "default": "",
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "title": "SuggestedFact",
         "type": "object"
       },
       "ValidationError": {

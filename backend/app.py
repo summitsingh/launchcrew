@@ -40,6 +40,30 @@ class Idea(Strict):
     idea: str = Field(min_length=1, max_length=2000)
 
 
+ProductFactSource = Literal['owner', 'pasted_text', 'memory', 'listing', 'campaign_brief', 'demo_template']
+
+
+class ProductFactField(Strict):
+    value: str = Field(default='', max_length=200)
+    confirmed: bool = False
+    source: ProductFactSource = 'owner'
+
+
+class FounderNoteField(Strict):
+    value: str = Field(default='', max_length=280)
+    confirmed: bool = False
+    source: ProductFactSource = 'owner'
+
+
+class ProductFactsInput(Strict):
+    material: ProductFactField | None = None
+    contents: ProductFactField | None = None
+    size: ProductFactField | None = None
+    price: ProductFactField | None = None
+    allowed_claims: list[ProductFactField] = Field(default_factory=list, max_length=12)
+    founder_note: FounderNoteField | None = None
+
+
 class RunInput(Idea):
     agent_name: str = Field(description='Legacy Maker selector. Preserved for compatibility. Maker stage uses maker_name when provided, else agent_name.')
     scout_name: str | None = Field(default=None, description='Scout stage agent name. Defaults to built-in Scout.')
@@ -48,6 +72,7 @@ class RunInput(Idea):
     seed_unverified_claim: bool = False
     memory_ids: list[str] = []
     checker_profile: Literal['standard', 'strict'] = Field(default='standard', description='Legacy strictness. Strict adds the superlatives policy. Checker agent policies add blocks on top.')
+    product_facts: ProductFactsInput | None = Field(default=None, description='Slice 1 owner product facts. Only explicitly confirmed fields become evidence; suggestions never do. Absent means legacy demo-template mode.')
 
 
 class Clone(Strict):
@@ -58,17 +83,54 @@ class Empty(Strict):
     pass
 
 
+class ClaimResult(BaseModel):
+    model_config = ConfigDict(extra='ignore')
+    claim: str = ''
+    verified: bool = False
+    verdict: str = 'unsupported'
+    evidence: str | None = None
+    evidence_claims: list[str] | None = None
+    reason: str = ''
+    blocked: bool = True
+    source: str = ''
+
+
+class LineEvidence(BaseModel):
+    model_config = ConfigDict(extra='ignore')
+    channel: str = ''
+    line: str = ''
+    evidence: list[str] = Field(default_factory=list)
+    reasons: list[str] = Field(default_factory=list)
+
+
+class ApprovalBinding(BaseModel):
+    model_config = ConfigDict(extra='ignore')
+    version: str
+    digest: str
+
+
 class Check(BaseModel):
+    model_config = ConfigDict(extra='ignore')
     blocked_count: int
     verified_count: int
     blocked_claims: list[dict[str, str]]
     revision_instructions: list[str]
+    claim_results: list[ClaimResult] | None = None
+    supported_count: int | None = None
+    unsupported_count: int | None = None
+    conflicts_count: int | None = None
 
 
 class Draft(BaseModel):
+    model_config = ConfigDict(extra='ignore')
     post: str
     email: str
     claims: list[str]
+    draft_origin: str | None = None
+    model_written: bool | None = None
+    maker_schema: str | None = None
+    model_used: str | None = None
+    line_evidence: list[LineEvidence] | None = None
 
 
 class Approval(BaseModel):
@@ -77,6 +139,8 @@ class Approval(BaseModel):
     action: str
     timestamp: str
     revision: int | None = None
+    binding_version: str | None = None
+    binding_digest: str | None = None
 
 
 class HumanDraft(BaseModel):
@@ -93,7 +157,7 @@ class RevisionHistoryEntry(BaseModel):
     model_config = ConfigDict(extra='allow')
     revision: int | None = None
     draft: dict[str, Any] | None = None
-    check: dict[str, Any] | None = None
+    check: Check | None = None
     approval_state: str | None = None
     approvals: list[Approval] = []
     approved_revision: int | None = None
@@ -171,6 +235,61 @@ class ModelCapabilities(Strict):
                  'credits, or authorization. No live call is made here.')
 
 
+class ProductFactState(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    field: str = ''
+    label: str = ''
+    value: str = ''
+    confirmed: bool = False
+    source: str = ''
+    claim: str | None = None
+
+
+class SuggestedFact(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    field: str = ''
+    label: str = ''
+    value: str = ''
+    source: str = ''
+    reason: str = ''
+
+
+class FounderNoteState(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    value: str = ''
+    confirmed: bool = False
+    source: str = 'owner'
+    label: str = 'Founder note'
+    sentence_ok: bool = False
+    authorized_as_fact: bool = False
+
+
+class FounderVariant(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    post: str = ''
+    email: str = ''
+    label: str = ''
+    authorized: bool = False
+    verified: bool = False
+    note: str = ''
+
+
+class ProductFactsSection(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    mode: str = 'demo_template'
+    template: str = 'demo_facts.json'
+    template_label: str = 'Bundled fictional demo template'
+    template_used: bool = True
+    template_note: str = ''
+    fields: list[ProductFactState] = []
+    confirmed_claims: list[str] = []
+    allowlist: list[str] = []
+    suggested: list[SuggestedFact] = []
+    founder_note: FounderNoteState | None = None
+    draft_variant: FounderVariant | None = None
+    labels: dict[str, str] = {}
+
+
 class Receipt(BaseModel):
     model_config = ConfigDict(extra='allow')
     run_id: str
@@ -184,6 +303,7 @@ class Receipt(BaseModel):
     approvals: list[Approval]
     revision: int = 0
     approved_revision: int | None = None
+    approval_binding: ApprovalBinding | None = None
     human_draft: HumanDraft | None = None
     human_check: Check | None = None
     revision_history: list[RevisionHistoryEntry] = []
@@ -206,6 +326,7 @@ class Receipt(BaseModel):
     model_usage: ModelUsage | None = None
     photo_status: PhotoStatus | None = None
     photo_transport: dict[str, Any] | None = None
+    product_facts: ProductFactsSection | None = Field(default=None, description='Slice 1 confirmed product facts with provenance. Absent on historical or pending receipts.')
 
 
 class Preview(BaseModel):
@@ -434,7 +555,8 @@ def create_run(body: RunInput, actor: str = Depends(auth.actor)):
     run_id = 'run_' + uuid4().hex
     receipt = adapter.execute(run_id, body.idea, legacy, body.seed_unverified_claim,
                               memory_items=items, checker_profile=body.checker_profile,
-                              scout_profile=scout, maker_profile=maker, checker_agent=checker)
+                              scout_profile=scout, maker_profile=maker, checker_agent=checker,
+                              product_facts=body.product_facts.model_dump() if body.product_facts is not None else None)
     with store.connect() as db:
         save_run(db, receipt, maker_name, actor)
     return receipt
@@ -449,7 +571,11 @@ def create_run_async(body: RunInput, actor: str = Depends(auth.actor)):
     reaches each real pipeline boundary. Polling never starts work.
     """
     from launchcrew import receipts as receipt_mod
+    from launchcrew.facts import parse_product_facts
     from backend import run_jobs
+    product_facts_raw = body.product_facts.model_dump() if body.product_facts is not None else None
+    # Invalid product-fact input fails with 422 before accept, never 503.
+    parse_product_facts(product_facts_raw)
     try:
         with store.connect() as db:
             legacy, scout, maker, checker = load_stage_profiles(db, body)
@@ -478,7 +604,8 @@ def create_run_async(body: RunInput, actor: str = Depends(auth.actor)):
         # context manager above already rolled the transaction back.
         raise HTTPException(503, 'Run acceptance unconfirmed; retry with a new request') from None
     started = run_jobs.start_async_run(run_id, body.idea, legacy, body.seed_unverified_claim, items,
-                                       body.checker_profile, scout, maker, checker, maker_name, actor)
+                                       body.checker_profile, scout, maker, checker, maker_name, actor,
+                                       product_facts=product_facts_raw)
     if not started:
         raise HTTPException(409, 'Run worker already active for this run')
     return {'run_id': run_id, 'status': 'running', 'receipt': pending}
@@ -674,7 +801,7 @@ def approve(run_id: str, body: ApproveIn, actor: str = Depends(auth.actor)):
 
 
 @app.post('/api/runs/{run_id}/export', response_model=Receipt)
-def export(run_id: str, body: ExportIn, actor: str = Depends(auth.actor)):
+def export(run_id: str, body: ExportIn, response: Response, actor: str = Depends(auth.actor)):
     with store.connect() as db:
         from backend.photo_review import photo_block_reason
         from launchcrew import human_review
@@ -694,7 +821,8 @@ def export(run_id: str, body: ExportIn, actor: str = Depends(auth.actor)):
             raise HTTPException(422, str(error))
         db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id'), {'receipt': json.dumps(exported), 'state': exported['approval_state'], 'id': run_id})
         store.audit(db, run_id, 'exported', actor)
-    return JSONResponse(exported, headers={'Content-Disposition': 'attachment; filename="launchcrew-pack.json"'})
+    response.headers['Content-Disposition'] = 'attachment; filename="launchcrew-pack.json"'
+    return exported
 
 
 
@@ -1032,6 +1160,9 @@ def campaign_detail(db, campaign_id):
 
 @app.post('/api/campaigns', response_model=CampaignOut, status_code=201)
 def create_campaign(body: RunInput, actor: str = Depends(auth.actor)):
+    from launchcrew.facts import parse_product_facts
+    product_facts_raw = body.product_facts.model_dump() if body.product_facts is not None else None
+    parse_product_facts(product_facts_raw)
     campaign_id = 'camp_' + uuid4().hex
     with store.connect() as db:
         legacy, scout, maker, checker = load_stage_profiles(db, body)
@@ -1045,7 +1176,8 @@ def create_campaign(body: RunInput, actor: str = Depends(auth.actor)):
             receipt = adapter.execute(run_id, body.idea, legacy, body.seed_unverified_claim,
                                       memory_items=items, checker_profile=body.checker_profile,
                                       brief=brief, campaign_day=day, extra_claims=[brief_claim],
-                                      scout_profile=scout, maker_profile=maker, checker_agent=checker)
+                                      scout_profile=scout, maker_profile=maker, checker_agent=checker,
+                                      product_facts=product_facts_raw)
             save_run(db, receipt, maker_name, actor)
             db.execute(text('INSERT INTO campaign_days(campaign_id,day,run_id) VALUES (:id,:day,:run)'),
                        {'id': campaign_id, 'day': day, 'run': run_id})
@@ -1079,5 +1211,5 @@ def approve_campaign_day(campaign_id: str, day: int, body: ApproveIn, actor: str
 
 
 @app.post('/api/campaigns/{campaign_id}/days/{day}/export', response_model=Receipt)
-def export_campaign_day(campaign_id: str, day: int, body: ExportIn, actor: str = Depends(auth.actor)):
-    return export(campaign_run(campaign_id, day), body, actor)
+def export_campaign_day(campaign_id: str, day: int, body: ExportIn, response: Response, actor: str = Depends(auth.actor)):
+    return export(campaign_run(campaign_id, day), body, response, actor)

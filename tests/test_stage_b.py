@@ -31,7 +31,10 @@ class HardeningTests(unittest.TestCase):
                 self.assertTrue(check_draft(sentence, facts))
         for sentence in facts['approved_claims']:
             self.assertEqual(check_draft(sentence + '.', facts), [])
-        self.assertEqual(check_draft('$59', facts)[0]['reason'], 'Unmatched price value')
+        wrong_price = check_draft('$59', facts)[0]
+        self.assertEqual(wrong_price['reason'], 'Conflicting price value')
+        self.assertEqual(wrong_price['verdict'], 'conflicts')
+        self.assertEqual(wrong_price['evidence'], '$49')
         custom = {'approved_claims': ['$49.99', 'Perfect wallet'], 'sources': ['demo']}
         self.assertEqual(check_draft('$49.99. Perfect wallet.', custom), [])
 
@@ -164,6 +167,53 @@ class WebTests(unittest.TestCase):
         file.write_text(json.dumps(receipt))
         self.assertEqual(self.request('POST', path + '/approve')[0], 400)
         self.assertEqual(self.request('GET', path + '/export')[0], 403)
+
+    def test_export_binding_gate_and_no_mutation(self):
+        import copy
+        from launchcrew import human_review
+        path = self.create_run()
+        run = path.rsplit('/', 1)[1]
+        file = self.root / 'runs' / (run + '.json')
+        with patch('launchcrew.spark.urlopen', side_effect=AssertionError('no provider expected')), \
+             patch('backend.sam.urlopen', side_effect=AssertionError('no provider expected')):
+            self.assertEqual(self.request('GET', path + '/export')[0], 403)
+            self.assertEqual(self.request('POST', path + '/approve')[0], 200)
+            stored = load_receipt(file)
+            self.assertTrue(human_review.exportable(stored))
+            before = file.read_text()
+            status, _, body = self.request('GET', path + '/export')
+            self.assertEqual(status, 200)
+            view = json.loads(body)
+            self.assertEqual(view['exported_revision'], 0)
+            self.assertEqual(view['exported_draft']['post'], stored['maker_draft_v2']['post'])
+            self.assertEqual(view['exported_draft']['email'], stored['maker_draft_v2']['email'])
+            self.assertEqual(file.read_text(), before)
+            tampered = copy.deepcopy(stored)
+            tampered['maker_draft_v2']['post'] = 'Tampered post'
+            file.write_text(json.dumps(tampered))
+            before_tamper = file.read_text()
+            self.assertEqual(self.request('GET', path + '/export')[0], 403)
+            self.assertEqual(file.read_text(), before_tamper)
+            historical = copy.deepcopy(stored)
+            historical['approval_binding'] = None
+            historical['approvals'][-1].pop('binding_version', None)
+            historical['approvals'][-1].pop('binding_digest', None)
+            file.write_text(json.dumps(historical))
+            before_hist = file.read_text()
+            self.assertEqual(self.request('GET', path + '/export')[0], 403)
+            self.assertEqual(file.read_text(), before_hist)
+            revised = human_review.apply_revision(
+                stored, 'Vegan leather wallet. Designed in Texas.',
+                'For Austin commuters. $49.', 'web_human', 0)
+            reapproved = human_review.approve_current(revised, 'web_human', 1)
+            file.write_text(json.dumps(reapproved))
+            status, _, body = self.request('GET', path + '/export')
+            self.assertEqual(status, 200)
+            view = json.loads(body)
+            self.assertEqual(view['exported_revision'], 1)
+            self.assertEqual(view['exported_draft']['post'], 'Vegan leather wallet. Designed in Texas.')
+            self.assertEqual(view['exported_draft']['email'], 'For Austin commuters. $49.')
+            self.assertNotEqual(view['exported_draft']['post'], stored['maker_draft_v2']['post'])
 
     def test_cross_origin_and_path_refused(self):
         self.assertEqual(self.request('POST', '/run', 'idea=demo', {'Origin': 'https://example.invalid'})[0], 403)

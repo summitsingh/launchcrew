@@ -78,7 +78,7 @@ History: superseded photo decisions are immutable (`revision_history` entries pl
 
 Gate: operator `SAM enable` flag plus verified preflight (key present, pricing/balance checked against the existing max-$1 envelope for the ONE approved file below), default OFF. Keyless callers get `method: "not_run"`, HTTP 200, honest UI ("SAM not configured, photo unchecked").
 
-The single already-approved paid test is EXACTLY the byte identity of `DSC_3252_demo_1600.jpg` (the 1067 by 1600 derivative, operator-verified sha256 recorded in preflight evidence), not a filename class and not any other photo sharing that name. Admission binds to that operator-verified digest: until a new explicit approval exists, the paid path admits only those exact bytes; budget alone never authorizes a different image. Current provider balance is UNVERIFIED and no real calls happen in this design work. Config defaults keep SAM OFF and the global budget at 0.
+The single already-approved paid test is EXACTLY the operator-verified byte identity recorded in private preflight evidence (downscaled derivative, exact digest held privately), not a filename class and not any other photo sharing a name. Admission binds to that operator-verified digest: until a new explicit approval exists, the paid path admits only those exact bytes; budget alone never authorizes a different image. Current provider balance is UNVERIFIED and no real calls happen in this design work. Config defaults keep SAM OFF and the global budget at 0.
 
 Bounded sequence per admitted check: at most one Files upload plus at most one Responses call, and the Responses call happens only if Files returned a valid file ID held volatile in memory only (never persisted to any DB row, receipt, export, or log). No retries.
 

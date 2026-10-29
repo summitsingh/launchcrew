@@ -15,6 +15,14 @@ def timestamp():
 
 
 def create_receipt(run_id, idea, scout, draft_v1, checker_v1, draft_v2, checker_v2, event_log, model_usage, approve=False):
+    """Create a pending completed receipt.
+
+    The approve flag is accepted for compatibility but never creates an
+    approval. Approval must happen after the final receipt contains
+    product_facts, checker policies, stage bindings, and photo state,
+    through the approve_current binding path. Historical unbound approvals
+    stay nonexportable until a fresh human revision and approval.
+    """
     if checker_v2['blocked_count']:
         raise ValueError('Final draft has blocked claims')
     now = timestamp()
@@ -27,8 +35,8 @@ def create_receipt(run_id, idea, scout, draft_v1, checker_v1, draft_v2, checker_
                         'verified_count': checker_v1['verified_count'] + checker_v2['verified_count'],
                         'blocked_count': checker_v1['blocked_count'], 'revised': draft_v1 != draft_v2,
                         'submit_attempted': False, 'submit_completed': False},
-            'approvals': [{'approved_by': 'demo_human', 'action': 'approved_for_export', 'timestamp': now}] if approve else [],
-            'approval_state': 'approved_for_export' if approve else 'pending_approval',
+            'approvals': [],
+            'approval_state': 'pending_approval',
             'visual_verification': {'checked': False, 'method': 'not_run'},
             'audit': {'event_log': event_log, 'duplicate_submit_prevented': True, 'stopped_reason': None},
             'model_usage': model_usage}

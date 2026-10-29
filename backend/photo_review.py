@@ -142,7 +142,8 @@ def apply_photo_event(receipt, *, event, actor, status):
     alongside the ``photo_event`` discriminator. The superseded snapshot
     keeps the PRIOR photo state; the new status lives only on the revised
     receipt, so the entry describes what changed. Superseded entries are
-    never mutated here; a new entry is appended.
+    never mutated here; a new entry is appended. The approval binding is
+    cleared with approval and preserved in history.
     """
     if event not in (PHOTO_EVENT_CHECKED, PHOTO_EVENT_REMOVED):
         raise ValueError('Unknown photo event')
@@ -161,6 +162,7 @@ def apply_photo_event(receipt, *, event, actor, status):
                     'approval_state': revised.get('approval_state'),
                     'approvals': copy.deepcopy(list(revised.get('approvals') or [])),
                     'approved_revision': revised.get('approved_revision'),
+                    'approval_binding': copy.deepcopy(revised.get('approval_binding')),
                     'checker_profile': revised.get('checker_profile'),
                     'checker_policies': copy.deepcopy(revised.get('checker_policies')),
                     'blocked_claims': copy.deepcopy(revised.get('blocked_claims')),
@@ -176,6 +178,7 @@ def apply_photo_event(receipt, *, event, actor, status):
     revised['revision_history'] = history
     revised['approvals'] = []
     revised['approved_revision'] = None
+    revised['approval_binding'] = None
     revised['approval_state'] = 'pending_approval'
     # The pending receipt entry is a request, not a completed check: the
     # DB audit already records 'photo_check_requested' here, and the
@@ -201,6 +204,9 @@ def attach_verdict(receipt, *, label, reason, actor, uploads=0, segmentations=0,
     only when a segmentation actually completed. The note never claims a
     send that did not happen, and only sanitized summary fields reach the
     receipt and audit log: no bytes, digests, file IDs, or geometry.
+    A verdict changes the bound photo state, so any prior approval and
+    binding is cleared. Normal finalization runs on an already-pending
+    receipt, where the clear is a no-op.
     """
     revised = copy.deepcopy(receipt)
     now = timestamp()
@@ -210,6 +216,10 @@ def attach_verdict(receipt, *, label, reason, actor, uploads=0, segmentations=0,
                    'revision': _current_revision(revised),
                    'actor': actor, 'checked_at': now})
     revised['photo_status'] = status
+    revised['approvals'] = []
+    revised['approved_revision'] = None
+    revised['approval_binding'] = None
+    revised['approval_state'] = 'pending_approval'
     transport = dict(revised.get('photo_transport') or {})
     try:
         prior_uploads = int(transport.get('uploads', 0))
