@@ -1905,6 +1905,109 @@ prereqs_deploy() {
   fi
 }
 
+# Defined early: infra proves stopped before later helpers are parsed.
+# Fail-closed ECS service stopped proof for quiesce and infra. Same owned
+# identity resolution as enable, but requires ACTIVE desired 0 running 0
+# pending 0. Used after the quiesce change set executes and before plus
+# after any owned infra task definition update. Any mismatch refuses. The
+# optional third argument names the failing phase, default quiesce.
+verify_ecs_service_stopped() {
+  STOP_LOGICAL="$1"
+  STOP_SHORT="$2"
+  STOP_LABEL="${3:-quiesce}"
+  STOP_PHYSICAL=""
+  if ! STOP_PHYSICAL="$(stack_resource "$STOP_LOGICAL" 2>"$TMP_ERR")"; then
+    echo "service $STOP_SHORT owned identifier unreadable, not claimed stopped." >&2
+    phase_failed "$STOP_LABEL"
+  fi
+  STOP_PHYSICAL="$(printf '%s' "$STOP_PHYSICAL" | tr -d '[:space:]')"
+  [ -n "$STOP_PHYSICAL" ] && [ "$STOP_PHYSICAL" != "None" ] || { echo "refused: service $STOP_SHORT owned identifier missing, not claimed stopped." >&2; phase_failed "$STOP_LABEL"; }
+  STOP_JSON="$(mktemp /tmp/launchcrew-svc-stop-XXXXXX)"
+  if ! "$AWS_BIN" ecs describe-services --cluster "$CLUSTER_NAME" --services "$STOP_PHYSICAL" --region "$EXPECTED_REGION" --output json >"$STOP_JSON" 2>"$TMP_ERR"; then
+    rm -f "$STOP_JSON"
+    echo "service $STOP_SHORT counts unreadable, not claimed stopped." >&2
+    phase_failed "$STOP_LABEL"
+  fi
+  STOP_PROOF="$(python3 - "$STOP_JSON" "$STOP_PHYSICAL" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$CLUSTER_NAME" 2>/dev/null <<'PYEOF'
+import json, sys
+path, expected_id, account, region, cluster = sys.argv[1:6]
+try:
+    doc = json.load(open(path))
+except Exception:
+    print("MALFORMED")
+    sys.exit(0)
+if not isinstance(doc, dict):
+    print("MALFORMED")
+    sys.exit(0)
+failures = doc.get("failures", None)
+if not isinstance(failures, list):
+    print("MALFORMED")
+    sys.exit(0)
+if failures:
+    print("FAILURES")
+    sys.exit(0)
+services = doc.get("services", None)
+if not isinstance(services, list):
+    print("MALFORMED")
+    sys.exit(0)
+if len(services) == 0:
+    print("EMPTY")
+    sys.exit(0)
+if len(services) != 1:
+    print("DUPLICATE")
+    sys.exit(0)
+svc = services[0]
+if not isinstance(svc, dict):
+    print("MALFORMED")
+    sys.exit(0)
+arn = svc.get("serviceArn", "")
+name = svc.get("serviceName", "")
+if (not isinstance(arn, str) or not isinstance(name, str)
+        or not arn or not name or arn == "None" or name == "None"):
+    print("IDENTITY_MISSING")
+    sys.exit(0)
+if arn != expected_id and name != expected_id:
+    print("WRONG_SERVICE")
+    sys.exit(0)
+prefix = "arn:aws:ecs:%s:%s:service/" % (region, account)
+if not arn.startswith(prefix):
+    print("WRONG_SERVICE")
+    sys.exit(0)
+expected_cluster = "arn:aws:ecs:%s:%s:cluster/%s" % (region, account, cluster)
+if (svc.get("clusterArn", "") or "") != expected_cluster:
+    print("WRONG_CLUSTER")
+    sys.exit(0)
+if (svc.get("status", "") or "") != "ACTIVE":
+    print("NOT_ACTIVE")
+    sys.exit(0)
+desired = svc.get("desiredCount", None)
+running = svc.get("runningCount", None)
+pending = svc.get("pendingCount", None)
+for value in (desired, running, pending):
+    if not isinstance(value, int) or isinstance(value, bool):
+        print("MALFORMED")
+        sys.exit(0)
+if desired != 0:
+    print("DESIRED_%s" % desired)
+    sys.exit(0)
+if running != 0:
+    print("RUNNING_%s" % running)
+    sys.exit(0)
+if pending != 0:
+    print("PENDING_%s" % pending)
+    sys.exit(0)
+print("OK")
+PYEOF
+)" || { rm -f "$STOP_JSON"; echo "service $STOP_SHORT proof unreadable, not claimed stopped." >&2; phase_failed "$STOP_LABEL"; }
+  rm -f "$STOP_JSON"
+  STOP_PROOF="$(printf '%s' "$STOP_PROOF" | tr -d '[:space:]')"
+  case "$STOP_PROOF" in
+    OK)
+      echo "Verified service $STOP_PHYSICAL desiredCount 0 runningCount 0 pendingCount 0 ACTIVE (stopped, not serving)" ;;
+    *) echo "refused: service $STOP_SHORT proof is $STOP_PROOF, expected ACTIVE fixed 0/0/0 on owned identity" >&2; phase_failed "$STOP_LABEL" ;;
+  esac
+}
+
 if [ "$PHASE" = "foundation" ]; then
   echo "Phase foundation: deploy Budget plus SNS"
   check_foundation_stack
@@ -3651,13 +3754,16 @@ is_mutating_label() {
 # never proves absence of prior work: each prior-generation active or
 # archived record must be owned, well-formed, complete, and terminally
 # re-proven STOPPED with every required essential container exit 0 before
-# any new release work. Same-generation archives from read-only rechecks
-# are field validated and must be complete; each was terminally proven at
-# archive time. Unknown, ambiguous, malformed, foreign, conflicting, or
-# over-bound records fail closed with no new launch and no automatic
-# resend. Every old record is preserved; nothing here deletes, renames, or
-# overwrites history. Requires the usual task globals plus ACTIVE_FILE and
-# LEGACY_ACTIVE_FILE set. Fails closed via phase_failed on any mismatch.
+# any new release work. Versioned predecessors must name an allowed head
+# (004, 005, or current) explicitly via headXXX or a delimited token, match
+# the filename generation exactly, and carry a recomputed config digest.
+# Same-generation archives from read-only rechecks are field validated and
+# must be complete; each was terminally proven at archive time. Unknown,
+# ambiguous, malformed, foreign, conflicting, or over-bound records fail
+# closed with no new launch and no automatic resend. Every old record is
+# preserved; nothing here deletes, renames, or overwrites history. Requires
+# the usual task globals plus ACTIVE_FILE and LEGACY_ACTIVE_FILE set. Fails
+# closed via phase_failed on any mismatch.
 reconcile_prior_generations() {
   PRIOR_LIST="$(mktemp /tmp/launchcrew-prior-list-XXXXXX)"
   PRIOR_ENUM="$(python3 - "$LAUNCH_JOURNAL_DIR" "$STACK_NAME" "$TASK_PHASE" "$TASK_LABEL" "$(basename "$ACTIVE_FILE")" "$(basename "$LEGACY_ACTIVE_FILE")" "$PRIOR_LIST" 2>/dev/null <<'PYEOF'
@@ -3715,11 +3821,11 @@ PYEOF
   while IFS= read -r PRIOR_BASE || [ -n "$PRIOR_BASE" ]; do
     [ -n "$PRIOR_BASE" ] || continue
     PRIOR_PATH="$LAUNCH_JOURNAL_DIR/$PRIOR_BASE"
-    PRIOR_PARSED="$(python3 - "$PRIOR_PATH" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$STACK_NAME" "$CLUSTER_NAME" "$TASK_PHASE" "$TASK_LABEL" "$TASKDEF_LOGICAL" "$TARGET_DB_HEAD" "${STACK_ID:-}" 2>/dev/null <<'PYEOF'
-import json, os, sys
+    PRIOR_PARSED="$(python3 - "$PRIOR_PATH" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$STACK_NAME" "$CLUSTER_NAME" "$TASK_PHASE" "$TASK_LABEL" "$TASKDEF_LOGICAL" "$TARGET_DB_HEAD" "${STACK_ID:-}" "$PRIOR_BASE" 2>/dev/null <<'PYEOF'
+import hashlib, json, os, re, sys
 (path, want_account, want_region, want_stack, want_cluster,
  want_phase, want_label, want_logical, want_head,
- want_stack_id) = sys.argv[1:12]
+ want_stack_id, want_file_base) = sys.argv[1:13]
 try:
     if os.path.islink(path):
         print("PROOF\tSYMLINK")
@@ -3770,10 +3876,41 @@ for char in gen:
     if char not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-":
         print("PROOF\tGENERATION_MALFORMED")
         sys.exit(0)
-if "head006" not in gen and "006" not in gen:
+try:
+    base_esc = "launchcrew-" + re.escape(want_stack) + "-" + re.escape(want_phase) + "-" + re.escape(want_label)
+    active_re = re.compile(r"^" + base_esc + r"-([A-Za-z0-9_.-]+)-active\.json$")
+    archive_re = re.compile(r"^" + base_esc + r"-([A-Za-z0-9_.-]+)-complete-(lc-[A-Za-z0-9]{30})\.json$")
+    file_gen = None
+    m = active_re.match(want_file_base or "")
+    if m:
+        file_gen = m.group(1)
+    else:
+        m2 = archive_re.match(want_file_base or "")
+        if m2:
+            file_gen = m2.group(1)
+except Exception:
+    file_gen = None
+if not file_gen or file_gen != gen:
+    print("PROOF\tGENERATION_FILENAME_MISMATCH")
+    sys.exit(0)
+head = doc.get("target_head", "")
+allowed_heads = {"004", "005", want_head}
+if not isinstance(head, str) or head not in allowed_heads:
+    print("PROOF\tHEAD_UNKNOWN")
+    sys.exit(0)
+named = set()
+for found in re.findall(r"head(\d{3})", gen):
+    named.add(found)
+for tok in re.split(r"[-_.]", gen):
+    if re.fullmatch(r"\d{3}", tok or ""):
+        named.add(tok)
+if len(named) == 0:
     print("PROOF\tGENERATION_FOREIGN")
     sys.exit(0)
-if doc.get("target_head", "") != want_head:
+if len(named) != 1:
+    print("PROOF\tGENERATION_AMBIGUOUS")
+    sys.exit(0)
+if next(iter(named)) != head:
     print("PROOF\tHEAD_MISMATCH")
     sys.exit(0)
 if want_stack_id and doc.get("stack_id", "") != want_stack_id:
@@ -3797,6 +3934,21 @@ taskdef_arn = doc.get("taskdef_arn", "")
 if not isinstance(taskdef_arn, str) or not taskdef_arn.startswith(
         "arn:aws:ecs:%s:%s:task" "-definition/" % (want_region, want_account)):
     print("PROOF\tTASKDEF_FOREIGN")
+    sys.exit(0)
+try:
+    rec_digest = doc.get("config_digest", "")
+    raw = "|".join([
+        doc.get("account", ""), doc.get("region", ""),
+        doc.get("stack", ""), doc.get("cluster", ""),
+        doc.get("phase", ""), doc.get("label", ""),
+        doc.get("taskdef_logical", ""), doc.get("taskdef_arn", ""),
+    ])
+    expect_digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+    if not isinstance(rec_digest, str) or rec_digest != expect_digest:
+        print("PROOF\tCONFIG_MISMATCH")
+        sys.exit(0)
+except Exception:
+    print("PROOF\tCONFIG_MISMATCH")
     sys.exit(0)
 print("PROOF\tOK")
 print("TOKEN\t%s" % token)
@@ -4568,108 +4720,6 @@ PYEOF
     OK)
       echo "Verified service $VERIFY_PHYSICAL desiredCount 1 runningCount 1 pendingCount 0 ACTIVE (configuration check; serving health needs ALB targets after DNS)" ;;
     *) echo "refused: service $VERIFY_SHORT proof is $VERIFY_PROOF, expected ACTIVE fixed 1/1/0 on owned identity" >&2; phase_failed enable ;;
-  esac
-}
-
-# Fail-closed ECS service stopped proof for quiesce and infra. Same owned
-# identity resolution as enable, but requires ACTIVE desired 0 running 0
-# pending 0. Used after the quiesce change set executes and before plus
-# after any owned infra task definition update. Any mismatch refuses. The
-# optional third argument names the failing phase, default quiesce.
-verify_ecs_service_stopped() {
-  STOP_LOGICAL="$1"
-  STOP_SHORT="$2"
-  STOP_LABEL="${3:-quiesce}"
-  STOP_PHYSICAL=""
-  if ! STOP_PHYSICAL="$(stack_resource "$STOP_LOGICAL" 2>"$TMP_ERR")"; then
-    echo "service $STOP_SHORT owned identifier unreadable, not claimed stopped." >&2
-    phase_failed "$STOP_LABEL"
-  fi
-  STOP_PHYSICAL="$(printf '%s' "$STOP_PHYSICAL" | tr -d '[:space:]')"
-  [ -n "$STOP_PHYSICAL" ] && [ "$STOP_PHYSICAL" != "None" ] || { echo "refused: service $STOP_SHORT owned identifier missing, not claimed stopped." >&2; phase_failed "$STOP_LABEL"; }
-  STOP_JSON="$(mktemp /tmp/launchcrew-svc-stop-XXXXXX)"
-  if ! "$AWS_BIN" ecs describe-services --cluster "$CLUSTER_NAME" --services "$STOP_PHYSICAL" --region "$EXPECTED_REGION" --output json >"$STOP_JSON" 2>"$TMP_ERR"; then
-    rm -f "$STOP_JSON"
-    echo "service $STOP_SHORT counts unreadable, not claimed stopped." >&2
-    phase_failed "$STOP_LABEL"
-  fi
-  STOP_PROOF="$(python3 - "$STOP_JSON" "$STOP_PHYSICAL" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$CLUSTER_NAME" 2>/dev/null <<'PYEOF'
-import json, sys
-path, expected_id, account, region, cluster = sys.argv[1:6]
-try:
-    doc = json.load(open(path))
-except Exception:
-    print("MALFORMED")
-    sys.exit(0)
-if not isinstance(doc, dict):
-    print("MALFORMED")
-    sys.exit(0)
-failures = doc.get("failures", None)
-if not isinstance(failures, list):
-    print("MALFORMED")
-    sys.exit(0)
-if failures:
-    print("FAILURES")
-    sys.exit(0)
-services = doc.get("services", None)
-if not isinstance(services, list):
-    print("MALFORMED")
-    sys.exit(0)
-if len(services) == 0:
-    print("EMPTY")
-    sys.exit(0)
-if len(services) != 1:
-    print("DUPLICATE")
-    sys.exit(0)
-svc = services[0]
-if not isinstance(svc, dict):
-    print("MALFORMED")
-    sys.exit(0)
-arn = svc.get("serviceArn", "")
-name = svc.get("serviceName", "")
-if (not isinstance(arn, str) or not isinstance(name, str)
-        or not arn or not name or arn == "None" or name == "None"):
-    print("IDENTITY_MISSING")
-    sys.exit(0)
-if arn != expected_id and name != expected_id:
-    print("WRONG_SERVICE")
-    sys.exit(0)
-prefix = "arn:aws:ecs:%s:%s:service/" % (region, account)
-if not arn.startswith(prefix):
-    print("WRONG_SERVICE")
-    sys.exit(0)
-expected_cluster = "arn:aws:ecs:%s:%s:cluster/%s" % (region, account, cluster)
-if (svc.get("clusterArn", "") or "") != expected_cluster:
-    print("WRONG_CLUSTER")
-    sys.exit(0)
-if (svc.get("status", "") or "") != "ACTIVE":
-    print("NOT_ACTIVE")
-    sys.exit(0)
-desired = svc.get("desiredCount", None)
-running = svc.get("runningCount", None)
-pending = svc.get("pendingCount", None)
-for value in (desired, running, pending):
-    if not isinstance(value, int) or isinstance(value, bool):
-        print("MALFORMED")
-        sys.exit(0)
-if desired != 0:
-    print("DESIRED_%s" % desired)
-    sys.exit(0)
-if running != 0:
-    print("RUNNING_%s" % running)
-    sys.exit(0)
-if pending != 0:
-    print("PENDING_%s" % pending)
-    sys.exit(0)
-print("OK")
-PYEOF
-)" || { rm -f "$STOP_JSON"; echo "service $STOP_SHORT proof unreadable, not claimed stopped." >&2; phase_failed "$STOP_LABEL"; }
-  rm -f "$STOP_JSON"
-  STOP_PROOF="$(printf '%s' "$STOP_PROOF" | tr -d '[:space:]')"
-  case "$STOP_PROOF" in
-    OK)
-      echo "Verified service $STOP_PHYSICAL desiredCount 0 runningCount 0 pendingCount 0 ACTIVE (stopped, not serving)" ;;
-    *) echo "refused: service $STOP_SHORT proof is $STOP_PROOF, expected ACTIVE fixed 0/0/0 on owned identity" >&2; phase_failed "$STOP_LABEL" ;;
   esac
 }
 

@@ -2388,22 +2388,32 @@ class BudgetPaginationTests(BootstrapHarness):
 
 class OptionalThresholdTypeTests(BootstrapHarness):
     def test_missing_threshold_type_allowed(self):
-        # Omitted ThresholdType means implicit percentage and passes the
-        # paid gates. Infra exercises the same notification check as enable
-        # but needs no prior one-off journals, so fail-closed enable priors
-        # stay out of this threshold compatibility proof.
+        # Omitted ThresholdType passes the notification gate (no UNVERIFIED),
+        # but standalone enable without prior one-off journals still fails
+        # closed on missing priors. This keeps the prior gate and proves the
+        # threshold compatibility is preserved, not removed.
         result, calls = self.run_bootstrap(
-            [*self.base_args(), "--phase", "infra"],
+            [*self.base_args(), "--phase", "enable"],
             extra_env={"FAKE_NOTIF": "missing_type"})
-        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
-        self.assertIn("BOOTSTRAP COMPLETE", result.stdout)
+        self.assertNotEqual(result.returncode, 0,
+                            msg=result.stdout + result.stderr)
+        combined = result.stdout + result.stderr
+        self.assertIn("needs prior", combined)
+        self.assertIn("No new launch", combined)
+        self.assertNotIn("UNVERIFIED", combined)
+        self.assertNotIn("BOOTSTRAP COMPLETE", result.stdout)
         self.assertFalse(any("run-task" in call for call in calls))
+        self.assertFalse(any("EnableServices=true" in call for call in calls))
 
     def test_explicit_bad_threshold_types_refused(self):
+        # Bad ThresholdType fails the same paid-gate notification check via
+        # infra, which needs no prior one-off journals. Enable would fail
+        # closed on missing priors before reaching the threshold gate, so
+        # infra keeps this a pure threshold refusal proof with no deploy.
         for mode in ("absolute", "absolute_short", "null_type", "unknown_type", "empty_type"):
             with self.subTest(mode=mode):
                 result, calls = self.run_bootstrap(
-                    [*self.base_args(), "--phase", "enable"],
+                    [*self.base_args(), "--phase", "infra"],
                     extra_env={"FAKE_NOTIF": mode})
                 self.assertNotEqual(result.returncode, 0, msg=mode)
                 combined = result.stdout + result.stderr
@@ -3059,6 +3069,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
                     logical="SdkMaterialTaskDefinition", taskdef=None,
                     generation="head006-old0000", outcome="complete",
                     archived=False, **overrides):
+        import hashlib as _hashlib
         import json as _json
         taskdef = taskdef if taskdef is not None else self.PRIOR_TASKDEF
         if archived:
@@ -3091,6 +3102,15 @@ class CrossGenerationJournalTests(BootstrapHarness):
             "updated_utc": "2026-01-01T00:00:00Z",
         }
         doc.update(overrides)
+        if "config_digest" not in overrides:
+            raw = "|".join([
+                doc.get("account", ""), doc.get("region", ""),
+                doc.get("stack", ""), doc.get("cluster", ""),
+                doc.get("phase", ""), doc.get("label", ""),
+                doc.get("taskdef_logical", ""), doc.get("taskdef_arn", ""),
+            ])
+            doc["config_digest"] = _hashlib.sha256(
+                raw.encode("utf-8")).hexdigest()[:32]
         path.write_text(_json.dumps(doc), encoding="utf-8")
         path.chmod(0o600)
         return path
@@ -3264,6 +3284,197 @@ class CrossGenerationJournalTests(BootstrapHarness):
             combined = result.stdout + result.stderr
             self.assertIn("UNKNOWN_FILE", combined)
             self.assertFalse(any("run-task" in call for call in calls))
+
+    def test_prior_head004_proceeds_when_fully_proven(self):
+        import json as _json
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_prior(
+                journals, generation="head004-old0000",
+                target_head="004", source_sha="old0000")
+            before = prior.read_text(encoding="utf-8")
+            self.seed_live_prior(shared)
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "material",
+                 "--release-generation", "head006-new1111"],
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            combined = result.stdout + result.stderr
+            self.assertIn("prior generation head004-old0000 reconciled",
+                          combined)
+            self.assertEqual(prior.read_text(encoding="utf-8"), before)
+            new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
+                                   "head006-new1111-active.json")
+            new_doc = _json.loads(new_file.read_text(encoding="utf-8"))
+            self.assertEqual(new_doc.get("release_generation"),
+                             "head006-new1111")
+            self.assertEqual(new_doc.get("target_head"), "006")
+            runs = [call for call in calls if "run-task" in call]
+            self.assertEqual(len(runs), 1)
+            self.assertNotIn("get-secret-value", " ".join(calls).lower())
+            self.assertNotIn("BEGIN PRIVATE", combined)
+
+    def test_prior_head005_proceeds_when_fully_proven(self):
+        import json as _json
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_prior(
+                journals, generation="head005-old0000",
+                target_head="005", source_sha="old0000")
+            before = prior.read_text(encoding="utf-8")
+            self.seed_live_prior(shared)
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "material",
+                 "--release-generation", "head006-new1111"],
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            combined = result.stdout + result.stderr
+            self.assertIn("prior generation head005-old0000 reconciled",
+                          combined)
+            self.assertEqual(prior.read_text(encoding="utf-8"), before)
+            new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
+                                   "head006-new1111-active.json")
+            new_doc = _json.loads(new_file.read_text(encoding="utf-8"))
+            self.assertEqual(new_doc.get("target_head"), "006")
+            runs = [call for call in calls if "run-task" in call]
+            self.assertEqual(len(runs), 1)
+            self.assertNotIn("get-secret-value", " ".join(calls).lower())
+            self.assertNotIn("BEGIN PRIVATE", combined)
+
+    def test_prior_custom_delimited_006_proceeds(self):
+        import json as _json
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_prior(
+                journals, generation="custom-006-qa",
+                target_head="006", source_sha="abc1234")
+            before = prior.read_text(encoding="utf-8")
+            self.seed_live_prior(shared)
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "material",
+                 "--release-generation", "head006-new1111"],
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            combined = result.stdout + result.stderr
+            self.assertIn("prior generation custom-006-qa reconciled",
+                          combined)
+            self.assertEqual(prior.read_text(encoding="utf-8"), before)
+            new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
+                                   "head006-new1111-active.json")
+            new_doc = _json.loads(new_file.read_text(encoding="utf-8"))
+            self.assertEqual(new_doc.get("outcome"), "complete")
+            runs = [call for call in calls if "run-task" in call]
+            self.assertEqual(len(runs), 1)
+            self.assertNotIn("get-secret-value", " ".join(calls).lower())
+
+    def test_unknown_head_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_prior(
+                journals, generation="head007-abc1234",
+                target_head="007", source_sha="abc1234")
+            before = prior.read_text(encoding="utf-8")
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "material",
+                 "--release-generation", "head006-new1111"],
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("HEAD_UNKNOWN", combined)
+            self.assertIn("no new launch", combined)
+            self.assertFalse(any("run-task" in call for call in calls))
+            self.assertEqual(prior.read_text(encoding="utf-8"), before)
+            new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
+                                   "head006-new1111-active.json")
+            self.assertFalse(new_file.exists())
+
+    def test_arbitrary_006_substring_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_prior(
+                journals, generation="x16006y",
+                target_head="006", source_sha="abc1234")
+            before = prior.read_text(encoding="utf-8")
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "material",
+                 "--release-generation", "head006-new1111"],
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("GENERATION_FOREIGN", combined)
+            self.assertIn("no new launch", combined)
+            self.assertFalse(any("run-task" in call for call in calls))
+            self.assertEqual(prior.read_text(encoding="utf-8"), before)
+            new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
+                                   "head006-new1111-active.json")
+            self.assertFalse(new_file.exists())
+
+    def test_filename_generation_mismatch_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_prior(journals, outcome="complete")
+            renamed = journals / (f"launchcrew-{STACK}-material-sdk-material-"
+                                  "head006-other1111-active.json")
+            prior.rename(renamed)
+            prior = renamed
+            before = prior.read_text(encoding="utf-8")
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "material",
+                 "--release-generation", "head006-new1111"],
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("GENERATION_FILENAME_MISMATCH", combined)
+            self.assertIn("no new launch", combined)
+            self.assertFalse(any("run-task" in call for call in calls))
+            self.assertEqual(prior.read_text(encoding="utf-8"), before)
+            new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
+                                   "head006-new1111-active.json")
+            self.assertFalse(new_file.exists())
+
+    def test_config_digest_mismatch_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_prior(
+                journals, outcome="complete", config_digest="0" * 32)
+            before = prior.read_text(encoding="utf-8")
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "material",
+                 "--release-generation", "head006-new1111"],
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("CONFIG_MISMATCH", combined)
+            self.assertIn("no new launch", combined)
+            self.assertFalse(any("run-task" in call for call in calls))
+            self.assertEqual(prior.read_text(encoding="utf-8"), before)
+            new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
+                                   "head006-new1111-active.json")
+            self.assertFalse(new_file.exists())
+
+    def test_ambiguous_generation_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_prior(
+                journals, generation="head004-head005",
+                target_head="004", source_sha="abc1234")
+            before = prior.read_text(encoding="utf-8")
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "material",
+                 "--release-generation", "head006-new1111"],
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("GENERATION_AMBIGUOUS", combined)
+            self.assertIn("no new launch", combined)
+            self.assertFalse(any("run-task" in call for call in calls))
+            self.assertEqual(prior.read_text(encoding="utf-8"), before)
+            new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
+                                   "head006-new1111-active.json")
+            self.assertFalse(new_file.exists())
 
 
 if __name__ == "__main__":
