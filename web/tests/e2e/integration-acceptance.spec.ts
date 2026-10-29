@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import { execFileSync } from 'node:child_process';
 import { writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -22,6 +22,11 @@ function seedReceipt(runId: string, path: string, value: string) {
   execFileSync('psql', [dbUrl, '-v', 'ON_ERROR_STOP=1', '-c', sql], { stdio: 'pipe' });
 }
 
+async function showAdvanced(page: Page) {
+  const toggle = page.getByRole('button', { name: 'Advanced', exact: true });
+  if ((await toggle.getAttribute('aria-expanded')) === 'false') await toggle.click();
+}
+
 test('integration acceptance V1 plus V2', async ({ page, request }) => {
   test.setTimeout(180_000);
   await page.setViewportSize({ width: 1024, height: 1000 });
@@ -29,6 +34,7 @@ test('integration acceptance V1 plus V2', async ({ page, request }) => {
   await page.screenshot({ path: `${local}/01-idea.png`, fullPage: true });
 
   // V1: create, edit, clone an agent.
+  await showAdvanced(page);
   await page.getByRole('button', { name: 'Agent builder', exact: false }).click();
   await page.getByRole('button', { name: 'New agent', exact: true }).click();
   await page.getByLabel('Name', { exact: true }).fill(agentName);
@@ -45,7 +51,8 @@ test('integration acceptance V1 plus V2', async ({ page, request }) => {
 
   // V1: seeded unsupported claim blocked, then revised; approve and export.
   await page.getByRole('button', { name: 'Launch brief', exact: false }).click();
-  await page.getByLabel('Maker profile', { exact: true }).selectOption(agentName);
+  await page.getByLabel('Maker agent', { exact: true }).selectOption(agentName);
+  await page.getByLabel('Include the unsupported claim demo').check();
   await page.getByRole('button', { name: 'Create draft', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Unsupported claims stopped.' })).toBeVisible();
   await expect(page.getByText('best in Texas', { exact: true })).toBeVisible();
@@ -85,6 +92,7 @@ test('integration acceptance V1 plus V2', async ({ page, request }) => {
   await expect(page.getByText('Not attempted', { exact: true })).toBeVisible();
 
   // V2 Memory: create a brand fact, run with it, edit it, run again.
+  await showAdvanced(page);
   await page.getByRole('button', { name: 'Memory', exact: false }).click();
   await page.getByLabel('Title', { exact: true }).fill(`Handmade${suffix}`);
   await page.getByLabel('Content JSON object', { exact: true }).fill('{"claim": "Handmade vegan wallet for commuters"}');
@@ -94,16 +102,17 @@ test('integration acceptance V1 plus V2', async ({ page, request }) => {
   const handmadeId = await handmadeCard.locator('.run-id').innerText();
   await page.getByRole('button', { name: 'Launch brief', exact: false }).click();
   await page.getByLabel('Memory ids, comma separated, optional').fill(handmadeId);
-  await page.getByLabel('Maker profile', { exact: true }).selectOption(agentName);
+  await page.getByLabel('Maker agent', { exact: true }).selectOption(agentName);
   await page.getByRole('button', { name: 'Create draft', exact: true }).click();
   await expect(page.getByText('Handmade vegan wallet for commuters').first()).toBeVisible();
+  await showAdvanced(page);
   await page.getByRole('button', { name: 'Memory', exact: false }).click();
   await handmadeCard.getByRole('button', { name: 'Edit memory', exact: true }).click();
   await page.getByLabel('Edit content JSON object').fill('{"claim": "Handmade vegan wallet, designed in Texas"}');
   await page.getByRole('button', { name: 'Save memory', exact: true }).click();
   await page.getByRole('button', { name: 'Launch brief', exact: false }).click();
   await page.getByLabel('Memory ids, comma separated, optional').fill(handmadeId);
-  await page.getByLabel('Maker profile', { exact: true }).selectOption(agentName);
+  await page.getByLabel('Maker agent', { exact: true }).selectOption(agentName);
   await page.getByRole('button', { name: 'Create draft', exact: true }).click();
   await expect(page.getByText('Handmade vegan wallet, designed in Texas').first()).toBeVisible();
   await expect(page.getByText('Handmade vegan wallet for commuters')).toHaveCount(0);
@@ -111,6 +120,7 @@ test('integration acceptance V1 plus V2', async ({ page, request }) => {
 
   // V2 Memory delete: a blocked rule filters the real $49 claim,
   // then after delete it does not.
+  await showAdvanced(page);
   await page.getByRole('button', { name: 'Memory', exact: false }).click();
   await page.getByLabel('Title', { exact: true }).fill(`NoSuperlative${suffix}`);
   await page.getByLabel('Content JSON object', { exact: true }).fill('{"claim": "$49"}');
@@ -121,10 +131,11 @@ test('integration acceptance V1 plus V2', async ({ page, request }) => {
   const blockedId = await blockedCard.locator('.run-id').innerText();
   await page.getByRole('button', { name: 'Launch brief', exact: false }).click();
   await page.getByLabel('Memory ids, comma separated, optional').fill(blockedId);
-  await page.getByLabel('Maker profile', { exact: true }).selectOption(agentName);
+  await page.getByLabel('Maker agent', { exact: true }).selectOption(agentName);
   await page.getByLabel('Include the unsupported claim demo').uncheck();
   await page.getByRole('button', { name: 'Create draft', exact: true }).click();
   await expect(page.getByText('1 blocked in v1').first()).toBeVisible();
+  await showAdvanced(page);
   await page.getByRole('button', { name: 'Memory', exact: false }).click();
   page.once('dialog', (dialog) => dialog.accept());
   await blockedCard.getByRole('button', { name: 'Delete memory', exact: true }).click();
@@ -133,11 +144,12 @@ test('integration acceptance V1 plus V2', async ({ page, request }) => {
   expect(deletedRun.status()).toBe(404);
   await page.getByRole('button', { name: 'Launch brief', exact: false }).click();
   await page.getByLabel('Memory ids, comma separated, optional').fill('');
-  await page.getByLabel('Maker profile', { exact: true }).selectOption(agentName);
+  await page.getByLabel('Maker agent', { exact: true }).selectOption(agentName);
   await page.getByRole('button', { name: 'Create draft', exact: true }).click();
   await expect(page.getByText('0 blocked in v1').first()).toBeVisible();
 
   // V2 Replay: standard versus strict Checker on the same idea.
+  await showAdvanced(page);
   await page.getByRole('button', { name: 'Memory', exact: false }).click();
   await page.getByLabel('Title', { exact: true }).fill(`Hype${suffix}`);
   await page.getByLabel('Content JSON object', { exact: true }).fill('{"claim": "Amazing vegan wallet for commuters"}');
@@ -150,10 +162,11 @@ test('integration acceptance V1 plus V2', async ({ page, request }) => {
     await page.getByRole('button', { name: 'Launch brief', exact: false }).click();
     await page.getByLabel('Checker profile').selectOption(profile);
     await page.getByLabel('Memory ids, comma separated, optional').fill(hypeId);
-    await page.getByLabel('Maker profile', { exact: true }).selectOption(agentName);
+    await page.getByLabel('Maker agent', { exact: true }).selectOption(agentName);
     await page.getByRole('button', { name: 'Create draft', exact: true }).click();
     replayIds.push(await page.locator('.section-row .run-id').innerText());
   }
+  await showAdvanced(page);
   await page.getByRole('button', { name: 'Replay', exact: false }).click();
   await page.getByLabel('Run A id').fill(replayIds[0]);
   await page.getByLabel('Run B id').fill(replayIds[1]);
@@ -163,8 +176,9 @@ test('integration acceptance V1 plus V2', async ({ page, request }) => {
   await page.screenshot({ path: `${local}/06-replay.png`, fullPage: true });
 
   // V2 Campaign Week: seven distinct day cards, per-day gates.
+  await showAdvanced(page);
   await page.getByRole('button', { name: 'Campaign', exact: false }).click();
-  await page.getByLabel('Maker profile', { exact: true }).selectOption(agentName);
+  await page.getByLabel('Maker agent', { exact: true }).selectOption(agentName);
   await page.getByRole('button', { name: 'Create week', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Day 1: Origin story' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Day 7: Launch offer' })).toBeVisible();
@@ -180,7 +194,7 @@ test('integration acceptance V1 plus V2', async ({ page, request }) => {
   expect(briefs).toHaveLength(7);
   expect(briefs.every((brief) => brief.trim().length > 0)).toBe(true);
   expect(new Set(briefs).size).toBe(7);
-  const weekId = await page.locator('section p.run-id').first().innerText();
+  const weekId = await page.locator('section .run-id').first().innerText();
   const week = await request.get(`/api/campaigns/${weekId}`);
   const weekJson = await week.json();
   const apiBriefs = weekJson.days.map((d: { brief: string }) => d.brief);
@@ -192,6 +206,7 @@ test('integration acceptance V1 plus V2', async ({ page, request }) => {
   // then the browser must render the guard. Not a natural UI blocked path.
   seedReceipt(day2Run, 'checker_v2,blocked_count', '1');
   await page.reload();
+  await showAdvanced(page);
   await page.getByRole('button', { name: 'Campaign', exact: false }).click();
   await page.getByLabel('Open a campaign').selectOption(weekId);
   await expect(page.getByRole('heading', { name: 'Day 1: Origin story' })).toBeVisible();

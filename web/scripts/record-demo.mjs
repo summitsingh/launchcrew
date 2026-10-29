@@ -403,12 +403,19 @@ async function dryRun(opts, ffmpeg, ffprobe, sayExe) {
     const context = await browser.newContext({ viewport: VIEWPORT });
     const page = await context.newPage();
     await page.goto(clean, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    try {
+      const toggle = page.getByRole('button', { name: 'Advanced', exact: true });
+      if ((await toggle.getAttribute('aria-expanded')) === 'false') await toggle.click({ timeout: 15000 });
+      info('selector OK: Advanced toggle expands agent builder');
+    } catch {
+      fail('dry run selector missing: Advanced toggle. Recording would refuse here.');
+    }
     const selectors = [
       ['Launch brief nav', 'button:has-text("Launch brief")'],
       ['Agent builder nav', 'button:has-text("Agent builder")'],
       ['Brief textarea', 'label:has-text("Product, audience, and launch channel")'],
       ['Scout agent select', '#run-scout'],
-      ['Maker profile select', '#run-agent'],
+      ['Maker agent select', '#run-agent'],
       ['Checker agent select', '#run-checker-agent'],
       ['Seed checkbox', 'text=Include the unsupported claim demo'],
       ['Create draft button', 'button:has-text("Create draft")'],
@@ -795,6 +802,14 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
         fail(`selector failed: role=${role} name="${name}". UI changed or app is down. Refusing to fake this step.`);
       }
     };
+    const showAdvanced = async () => {
+      try {
+        const toggle = page.getByRole('button', { name: 'Advanced', exact: true });
+        if ((await toggle.getAttribute('aria-expanded')) === 'false') await toggle.click({ timeout: 20000 });
+      } catch {
+        fail('Advanced toggle missing or unreadable. UI changed or app is down. Refusing to fake this step.');
+      }
+    };
     const mustFill = async (label, value, exact = true) => {
       try {
         await page.getByLabel(label, { exact }).fill(value, { timeout: 20000 });
@@ -845,6 +860,7 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
     // plus dry-run preview are the narrated central actions, so the kept
     // hold starts before PriceGuard creation and keeps evidence after.
     async function createAgent(fields) {
+      await showAdvanced();
       await mustClick('button', 'Agent builder', false);
       await mustClick('button', 'New agent', true);
       await mustFill('Name', fields.name, true);
@@ -891,7 +907,7 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
     async function runViaUi({ checker, seed, memoryIds = '' }, label) {
       await mustClick('button', 'Launch brief', false);
       await mustSelect('Scout agent', scoutName);
-      await mustSelect('Maker profile', 'Maker');
+      await mustSelect('Maker agent', 'Maker');
       await mustSelect('Checker agent', checker);
       await mustSelect('Checker profile', 'standard');
       await mustFill('Memory ids, comma separated, optional', memoryIds);
@@ -998,6 +1014,7 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
     }
 
     // S5: Replay the two actual run IDs.
+    await showAdvanced();
     await mustClick('button', 'Replay', false);
     await mustFill('Run A id', runDefault);
     await mustFill('Run B id', runGuarded);
@@ -1016,6 +1033,7 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
 
     // S6: Memory rule before and after, two actual UI runs, labelled comparison.
     // Labels derive from stored receipts only after exact checks pass.
+    await showAdvanced();
     await mustClick('button', 'Memory', false);
     const memTitle = `DemoRule${suffix}`;
     await mustFill('Title', memTitle, true);
@@ -1033,6 +1051,7 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
     const memBefore = await runViaUi({ checker: 'Checker', seed: false, memoryIds: memId }, 's6 before run');
     manifest.runs.memBefore = memBefore;
     await page.screenshot({ path: join(shotsDir, 's6-before.png') });
+    await showAdvanced();
     await mustClick('button', 'Memory', false);
     await memCard.getByRole('button', { name: 'Edit memory', exact: true }).click({ timeout: 20000 });
     await mustFill('Edit content JSON object', '{"blocked_claims": [{"claim": "Designed in Texas", "reason": "Edited rule"}]}');
@@ -1089,8 +1108,9 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
     // S7: Campaign week, seven distinct days. DOM count alone is not proof,
     // so each day card is scrolled into the viewport and asserted readable
     // inside the actual shot hold. Approvals stay per day and independent.
+    await showAdvanced();
     await mustClick('button', 'Campaign', false);
-    await mustSelect('Maker profile', 'Maker');
+    await mustSelect('Maker agent', 'Maker');
     await mustClick('button', 'Create week', true);
     try {
       await page.getByRole('heading', { name: 'Day 1: Origin story' }).waitFor({ timeout: 90000 });
@@ -1103,7 +1123,7 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
     if (days.length !== 7 || new Set(days).size !== 7) {
       fail(`campaign days are not seven distinct cards (got ${days.length}). Refusing to misstate.`);
     }
-    const weekId = (await page.locator('section p.run-id').first().innerText()).trim();
+    const weekId = (await page.locator('section .run-id').first().innerText()).trim();
     manifest.runs.campaignId = weekId;
     {
       const campRes = await fetchStatus(`${clean}/api/campaigns/${encodeURIComponent(weekId)}`);

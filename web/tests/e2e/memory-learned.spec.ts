@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 
 // Learned memory end to end through the real desk UI and API, no route
@@ -14,6 +14,11 @@ import { readFileSync } from 'node:fs';
 // is false.
 const wallet = 'Vegan leather wallet, $49, for Austin commuters, launch on Instagram';
 
+async function showAdvanced(page: Page) {
+  const toggle = page.getByRole('button', { name: 'Advanced', exact: true });
+  if ((await toggle.getAttribute('aria-expanded')) === 'false') await toggle.click();
+}
+
 test('learned memory rules and multiline crew survive the desk', async ({ page, request }) => {
   test.setTimeout(180_000);
   await page.setViewportSize({ width: 1024, height: 1000 });
@@ -24,6 +29,7 @@ test('learned memory rules and multiline crew survive the desk', async ({ page, 
   await expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
   // Multiline personality and expertise through accessible textarea controls.
+  await showAdvanced(page);
   await page.getByRole('button', { name: 'Agent builder', exact: false }).click();
   await page.getByRole('button', { name: 'New agent', exact: true }).click();
   await page.getByLabel('Name', { exact: true }).fill(agentName);
@@ -73,7 +79,7 @@ test('learned memory rules and multiline crew survive the desk', async ({ page, 
 
   // Policy-triggered run: no unsupported seed, the $49 claim is real.
   await page.getByRole('button', { name: 'Launch brief', exact: false }).click();
-  await page.getByLabel('Maker profile', { exact: true }).selectOption(agentName);
+  await page.getByLabel('Maker agent', { exact: true }).selectOption(agentName);
   await page.getByLabel('Checker agent', { exact: true }).selectOption(guardName);
   await page.getByLabel('Include the unsupported claim demo').uncheck();
   await page.getByRole('button', { name: 'Create draft', exact: true }).click();
@@ -103,6 +109,7 @@ test('learned memory rules and multiline crew survive the desk', async ({ page, 
   expect(exported.summary.submit_attempted).toBe(false);
 
   // Learn both kinds from the approved run through the desk UI.
+  await showAdvanced(page);
   await page.getByRole('button', { name: 'Memory', exact: false }).click();
   await page.getByLabel('Run id', { exact: true }).fill(seedId);
   await page.getByLabel('Learned kind', { exact: true }).selectOption('blocked_rule');
@@ -125,7 +132,7 @@ test('learned memory rules and multiline crew survive the desk', async ({ page, 
   // Learned blocked rule filters the real claim under the default Checker.
   await page.getByRole('button', { name: 'Launch brief', exact: false }).click();
   await page.getByLabel('Memory ids, comma separated, optional').fill(ruleId);
-  await page.getByLabel('Maker profile', { exact: true }).selectOption(agentName);
+  await page.getByLabel('Maker agent', { exact: true }).selectOption(agentName);
   await page.getByLabel('Checker agent', { exact: true }).selectOption('Checker');
   await page.getByLabel('Include the unsupported claim demo').uncheck();
   await page.getByRole('button', { name: 'Create draft', exact: true }).click();
@@ -173,13 +180,14 @@ test('learned memory rules and multiline crew survive the desk', async ({ page, 
   expect(withExample.memory_examples.map((entry) => entry.id)).toContain(exampleId);
 
   // Editing the learned rule to another real claim changes the verdict identity.
+  await showAdvanced(page);
   await page.getByRole('button', { name: 'Memory', exact: false }).click();
   await learnedRuleCard.first().getByRole('button', { name: 'Edit memory', exact: true }).click();
   await page.getByLabel('Edit content JSON object').fill('{"blocked_claims": [{"claim": "Designed in Texas", "reason": "Edited rule"}]}');
   await page.getByRole('button', { name: 'Save memory', exact: true }).click();
   await page.getByRole('button', { name: 'Launch brief', exact: false }).click();
   await page.getByLabel('Memory ids, comma separated, optional').fill(ruleId);
-  await page.getByLabel('Maker profile', { exact: true }).selectOption(agentName);
+  await page.getByLabel('Maker agent', { exact: true }).selectOption(agentName);
   await page.getByLabel('Checker agent', { exact: true }).selectOption('Checker');
   await page.getByLabel('Include the unsupported claim demo').uncheck();
   await page.getByRole('button', { name: 'Create draft', exact: true }).click();
@@ -195,6 +203,7 @@ test('learned memory rules and multiline crew survive the desk', async ({ page, 
 
   // Deleting the learned rule removes its effect; reuse is refused and the
   // old receipt still carries its snapshot.
+  await showAdvanced(page);
   await page.getByRole('button', { name: 'Memory', exact: false }).click();
   page.once('dialog', (dialog) => dialog.accept());
   await learnedRuleCard.first().getByRole('button', { name: 'Delete memory', exact: true }).click();
@@ -203,7 +212,7 @@ test('learned memory rules and multiline crew survive the desk', async ({ page, 
   expect(reused.status()).toBe(404);
   await page.getByRole('button', { name: 'Launch brief', exact: false }).click();
   await page.getByLabel('Memory ids, comma separated, optional').fill('');
-  await page.getByLabel('Maker profile', { exact: true }).selectOption(agentName);
+  await page.getByLabel('Maker agent', { exact: true }).selectOption(agentName);
   await page.getByLabel('Checker agent', { exact: true }).selectOption('Checker');
   await page.getByLabel('Include the unsupported claim demo').uncheck();
   await page.getByRole('button', { name: 'Create draft', exact: true }).click();
