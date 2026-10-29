@@ -144,12 +144,12 @@ def main(argv=None):
             print("loader refused: created tag mismatch", file=sys.stderr)
             return 1
         effective_arn = generated
-    payload = json.dumps({"SecretId": effective_arn,
-                          "SecretString": json.dumps({"meta-api-key": key})})
+    secret_string = json.dumps({"meta-api-key": key})
     updated = _run(["secretsmanager", "put-secret-value",
-                    "--cli-input-json", "file:///dev/stdin",
+                    "--secret-id", effective_arn,
+                    "--secret-string", "file:///dev/stdin",
                     "--region", args.expected_region],
-                   input_text=payload)
+                   input_text=secret_string)
     if updated.returncode != 0:
         print("loader put-secret-value failed; no value logged", file=sys.stderr)
         return 1

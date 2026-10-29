@@ -115,6 +115,7 @@ if [ "$1" = "secretsmanager" ] && [ "$2" = "create-secret" ]; then
   exit 0
 fi
 if [ "$1" = "secretsmanager" ] && [ "$2" = "put-secret-value" ]; then
+  cat >"$STATE/put_secret_stdin" 2>/dev/null || true
   exit 0
 fi
 echo "fake-aws: unexpected call: $*" >&2
@@ -356,58 +357,91 @@ class LoaderTests(unittest.TestCase):
                 [os.environ.get("PYTHON_BIN", "python3"), str(LOADER), *full],
                 capture_output=True, text=True, env=env, check=False)
             calls = [line for line in log.read_text(encoding="utf-8").splitlines() if line.strip()]
-            return result, calls
+            stdin_path = state / "put_secret_stdin"
+            put_stdin = stdin_path.read_text(encoding="utf-8") if stdin_path.exists() else ""
+            return result, calls, put_stdin
 
     def test_success_metadata_only_no_value(self):
-        result, calls = self.run_loader([])
+        key = "test-synthetic-key-not-real"
+        result, calls, put_stdin = self.run_loader([], key=key)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("metadata only", result.stdout)
-        self.assertNotIn("test-synthetic-key-not-real", result.stdout + result.stderr)
+        self.assertNotIn(key, result.stdout + result.stderr)
         for call in calls:
-            self.assertNotIn("test-synthetic-key-not-real", call)
-        self.assertTrue(any("put-secret-value" in call for call in calls))
+            self.assertNotIn(key, call)
+        put_calls = [call for call in calls if "put-secret-value" in call]
+        self.assertTrue(put_calls)
         self.assertFalse(any("get-secret-value" in call for call in calls))
+        for call in put_calls:
+            self.assertNotIn(key, call)
+            self.assertNotIn("meta-api-key", call)
+            self.assertNotIn("{", call)
+            self.assertIn(META_ARN, call)
+        self.assertEqual(json.loads(put_stdin), {"meta-api-key": key})
+        self.assertEqual(put_stdin, json.dumps({"meta-api-key": key}))
 
     def test_missing_key_refused(self):
-        result, calls = self.run_loader([], key=None)
+        result, calls, put_stdin = self.run_loader([], key=None)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(calls, [])
+        self.assertEqual(put_stdin, "")
 
     def test_tag_mismatch_refused(self):
-        result, calls = self.run_loader([], mode="tag_mismatch")
+        result, calls, put_stdin = self.run_loader([], mode="tag_mismatch")
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(any("put-secret-value" in call for call in calls))
+        self.assertEqual(put_stdin, "")
 
     def test_access_denied_zero_mutations(self):
-        result, calls = self.run_loader([], mode="describe_access_denied")
+        result, calls, put_stdin = self.run_loader([], mode="describe_access_denied")
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(any("create-secret" in call for call in calls))
         self.assertFalse(any("put-secret-value" in call for call in calls))
+        self.assertEqual(put_stdin, "")
 
     def test_throttle_zero_mutations(self):
-        result, calls = self.run_loader([], mode="describe_throttle")
+        result, calls, put_stdin = self.run_loader([], mode="describe_throttle")
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(any("create-secret" in call for call in calls))
         self.assertFalse(any("put-secret-value" in call for call in calls))
+        self.assertEqual(put_stdin, "")
 
     def test_resource_not_found_permits_create(self):
-        result, calls = self.run_loader([], mode="secret_missing")
+        key = "test-synthetic-key-not-real"
+        result, calls, put_stdin = self.run_loader([], mode="secret_missing", key=key)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertTrue(any("create-secret" in call for call in calls))
-        self.assertTrue(any("put-secret-value" in call for call in calls))
+        put_calls = [call for call in calls if "put-secret-value" in call]
+        self.assertTrue(put_calls)
+        for call in calls:
+            self.assertNotIn(key, call)
+        for call in put_calls:
+            self.assertIn(META_ARN, call)
+        self.assertEqual(json.loads(put_stdin), {"meta-api-key": key})
 
     def test_fictional_suffix_uses_generated_arn(self):
         fictional = "arn:aws:secretsmanager:us-east-1:111122223333:secret:launchcrew-demo-meta-key-zzz"
-        result, _ = self.run_loader(["--secret-arn", fictional], mode="secret_missing")
+        key = "test-synthetic-key-not-real"
+        result, calls, put_stdin = self.run_loader(
+            ["--secret-arn", fictional], mode="secret_missing", key=key)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn(META_ARN, result.stdout)
         self.assertNotIn(fictional, result.stdout)
+        for call in calls:
+            self.assertNotIn(key, call)
+        put_calls = [call for call in calls if "put-secret-value" in call]
+        self.assertTrue(put_calls)
+        for call in put_calls:
+            self.assertIn(META_ARN, call)
+            self.assertNotIn(fictional, call)
+        self.assertEqual(json.loads(put_stdin), {"meta-api-key": key})
 
     def test_slash_arn_refused_no_calls(self):
         slash = META_ARN.replace(":secret:", ":secret/")
-        result, calls = self.run_loader(["--secret-arn", slash])
+        result, calls, put_stdin = self.run_loader(["--secret-arn", slash])
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(calls, [])
+        self.assertEqual(put_stdin, "")
 
 
 if __name__ == "__main__":
