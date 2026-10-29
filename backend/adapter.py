@@ -5,6 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from launchcrew import agents, run, receipts
 from launchcrew.checker_policies import FLOOR_NOTE, MATCHING_NOTE, describe_supported, parse_checker_agent
+from launchcrew.facts import parse_product_facts
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -86,13 +87,29 @@ def _memory_effects(memory_items):
     return claims, blocked, blocked_rules, expertise, approval_examples, used
 
 
-def execute(run_id, idea, profile, seed, memory_items=None, checker_profile='standard', brief=None, campaign_day=None, extra_claims=None, profile_expertise=None, scout_profile=None, maker_profile=None, checker_agent=None, progress_sink=None, stage_gate=None):
+def execute(run_id, idea, profile, seed, memory_items=None, checker_profile='standard', brief=None, campaign_day=None, extra_claims=None, profile_expertise=None, scout_profile=None, maker_profile=None, checker_agent=None, progress_sink=None, stage_gate=None, product_facts=None):
+    # Invalid product-fact input fails before any pipeline work, so the
+    # API reports 422 instead of storing a run.
+    parsed_product = parse_product_facts(product_facts)
     captured = []
     (ROOT / '.local').mkdir(exist_ok=True)
     claims, blocked, blocked_rules, expertise, approval_examples, used = _memory_effects(memory_items)
+    memory_sourced = list(claims)
+    extras = []
     for claim in (extra_claims or []):
         if isinstance(claim, str) and claim.strip() and claim.strip() not in claims:
             claims.append(claim.strip())
+            extras.append(claim.strip())
+    if parsed_product is None:
+        applied_memory = list(claims)
+        withheld_memory = []
+    else:
+        # Owner mode: selected memory items are suggestions only until the
+        # owner explicitly confirms them in product_facts. Explicit extra
+        # pipeline claims (campaign briefs) still apply. Blocked-rule
+        # vetoes stay active in both modes.
+        applied_memory = list(extras)
+        withheld_memory = [c for c in memory_sourced if c not in extras]
     if profile_expertise and isinstance(profile_expertise, str) and profile_expertise.strip():
         expertise = profile_expertise
     effective_scout = copy.deepcopy(scout_profile) if scout_profile is not None else agents.load_agent('Scout', ROOT / 'agents')
@@ -124,16 +141,23 @@ def execute(run_id, idea, profile, seed, memory_items=None, checker_profile='sta
             run.run_pipeline(idea, ROOT / 'facts/demo_facts.json', directory, run_id,
                              seed_unverified_claim=seed, model_enabled=True,
                              receipt_writer=lambda receipt, path: captured.append(receipt),
-                             memory_claims=claims, blocked_claims=blocked,
+                             memory_claims=applied_memory, blocked_claims=blocked,
                              checker_profile=checker_profile, brief=brief, campaign_day=campaign_day,
-                             progress=progress_sink, stage_gate=stage_gate)
+                             progress=progress_sink, stage_gate=stage_gate,
+                             product_facts=product_facts)
         except Exception:
             if not captured:
                 raise
     receipt = captured[0]
     receipt['memory_used'] = used
     receipt['checker_profile'] = checker_profile
-    receipt['memory_claims'] = claims
+    receipt['memory_claims'] = applied_memory
+    if withheld_memory and isinstance(receipt.get('product_facts'), dict):
+        suggested = receipt['product_facts'].setdefault('suggested', [])
+        for claim in withheld_memory:
+            suggested.append({'field': 'memory', 'label': 'Memory suggestion',
+                              'value': claim, 'source': 'memory',
+                              'reason': 'Selected memory is a suggestion until explicitly confirmed in product_facts'})
     receipt['blocked_claims'] = blocked
     receipt['memory_blocked_rules'] = blocked_rules
     receipt['memory_examples'] = approval_examples
