@@ -53,20 +53,27 @@ class DistinctCopyTests(unittest.TestCase):
 
     def test_structured_model_copy_is_distinct_with_metadata(self):
         good = 'Designed in Texas'
+        post_line = 'Hello Designed in Texas, shop now!'
+        email_line = 'Hi Designed in Texas, learn more.'
         receipt = self.run_demo({'claims': [good],
-                                 'post_lines': [good],
-                                 'email_lines': [good]})
+                                 'post_lines': [post_line],
+                                 'email_lines': [email_line]})
         v1 = receipt['maker_draft_v1']
         self.assertEqual(v1['draft_origin'], 'model_safe')
         self.assertTrue(v1['model_written'])
         self.assertEqual(v1['maker_schema'], 'structured_post_email')
         self.assertEqual(v1['model_used'], 'muse-spark-1.3')
         self.assertNotEqual(v1['post'], v1['email'])
-        self.assertIn(good, v1['post'])
-        self.assertIn(good, v1['email'])
-        # Format-specific structure: post paragraph, email lines.
-        self.assertIn('. ', v1['post'] + ' ')
+        self.assertEqual(v1['post'], post_line)
+        self.assertEqual(v1['email'], email_line)
+        v2 = receipt['maker_draft_v2']
+        self.assertEqual(v2['draft_origin'], 'model_safe')
+        self.assertTrue(v2['model_written'])
+        self.assertEqual(v2['post'], post_line)
+        self.assertEqual(v2['email'], email_line)
+        self.assertNotEqual(v2['post'], v2['email'])
         self.assertEqual(receipt['checker_v1']['blocked_count'], 0)
+        self.assertEqual(receipt['checker_v2']['blocked_count'], 0)
         marker = receipt['seed_unverified_claim']
         self.assertFalse(marker['enabled'])
         self.assertIsNone(marker['claim'])
@@ -74,13 +81,16 @@ class DistinctCopyTests(unittest.TestCase):
         self.assertFalse(marker['v2_included'])
 
     def test_legacy_claims_only_model_builds_distinct_draft(self):
+        # Claims-only safe subset without verbatim channels is deterministic
+        # identical fallback, never labelled model-written.
         good = '$49'
         receipt = self.run_demo({'claims': [good]})
         v1 = receipt['maker_draft_v1']
-        self.assertEqual(v1['draft_origin'], 'model_safe')
-        self.assertTrue(v1['model_written'])
+        self.assertEqual(v1['draft_origin'], 'deterministic_fallback')
+        self.assertFalse(v1['model_written'])
         self.assertEqual(v1['maker_schema'], 'legacy_claims_only')
-        self.assertNotEqual(v1['post'], v1['email'])
+        self.assertEqual(v1['model_used'], 'none')
+        self.assertEqual(v1['post'], v1['email'])
         self.assertIn(good, v1['post'])
         self.assertIn(good, v1['email'])
         self.assertEqual(v1['claims'], [good])
@@ -141,9 +151,11 @@ class DistinctCopyTests(unittest.TestCase):
 
     def test_seed_marker_model_path(self):
         good = 'Designed in Texas'
+        post_line = 'Hello Designed in Texas, shop now!'
+        email_line = 'Hi Designed in Texas, learn more.'
         receipt = self.run_demo({'claims': [good],
-                                 'post_lines': [good],
-                                 'email_lines': [good]},
+                                 'post_lines': [post_line],
+                                 'email_lines': [email_line]},
                                 seed=True)
         marker = receipt['seed_unverified_claim']
         self.assertTrue(marker['enabled'])
@@ -152,11 +164,21 @@ class DistinctCopyTests(unittest.TestCase):
         self.assertTrue(marker['v2_removed'])
         v1 = receipt['maker_draft_v1']
         self.assertEqual(v1['draft_origin'], 'model_safe')
+        self.assertTrue(v1['model_written'])
         self.assertNotEqual(v1['post'], v1['email'])
+        self.assertIn(post_line, v1['post'])
+        self.assertIn(email_line, v1['email'])
         self.assertIn(SEED, v1['post'])
         self.assertIn(SEED, v1['email'])
         self.assertIn(SEED, [c['claim'] for c in receipt['checker_v1']['blocked_claims']])
-        self.assertNotIn(SEED, receipt['maker_draft_v2']['post'])
+        v2 = receipt['maker_draft_v2']
+        self.assertEqual(v2['draft_origin'], 'model_safe')
+        self.assertTrue(v2['model_written'])
+        self.assertEqual(v2['post'], post_line)
+        self.assertEqual(v2['email'], email_line)
+        self.assertNotEqual(v2['post'], v2['email'])
+        self.assertNotIn(SEED, v2['post'])
+        self.assertNotIn(SEED, v2['email'])
         self.assertEqual(receipt['checker_v2']['blocked_count'], 0)
 
     def test_model_founder_note_never_becomes_approved(self):

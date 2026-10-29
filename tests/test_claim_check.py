@@ -44,5 +44,10 @@ class ClaimTests(unittest.TestCase):
         self.assertIn('price_claims', result['blocked_claims'][0]['reason'])
 
     def test_approved_claim_containment(self):
-        self.assertTrue(check_claim('This wallet is Designed in Texas', self.facts)['verified'])
+        # Explicit claims require exact confirmed sentences. A composite
+        # containing one approved fragment plus extra content stays blocked.
+        first = check_claim('This wallet is Designed in Texas', self.facts)
+        self.assertFalse(first['verified'])
+        self.assertEqual(first['verdict'], 'unsupported')
+        self.assertIsNone(first['evidence'])
         self.assertFalse(check_claim('Designed in Texas, best in Texas', self.facts)['verified'])
