@@ -64,11 +64,16 @@ class ImportSuggestionsTests(unittest.TestCase):
                     parse_import_text(long_text, source)
 
     def test_input_at_max_length_accepted(self):
-        text = "a" * MAX_SUGGESTION_CHARS
-        padding_lines = ["ok"] * 5
-        _ = padding_lines
+        lines = [f"Sample item {i:02d}" for i in range(MAX_SUGGESTIONS + 5)]
+        base = "\n".join(lines)
+        self.assertLess(len(base), MAX_INPUT_CHARS)
+        text = base + " " * (MAX_INPUT_CHARS - len(base))
+        self.assertEqual(len(text), MAX_INPUT_CHARS)
         result = parse_import_text(text, "listing")
-        self.assertEqual(len(result["suggestions"]), 1)
+        self.assertEqual(len(result["suggestions"]), MAX_SUGGESTIONS)
+        self.assertTrue(result["truncated"])
+        for item in result["suggestions"]:
+            self.assertLessEqual(len(item["text"]), MAX_SUGGESTION_CHARS)
         _assert_all_unconfirmed(self, result, "listing")
 
     def test_malformed_text_type_rejected(self):
