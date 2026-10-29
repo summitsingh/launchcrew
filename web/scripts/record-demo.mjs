@@ -1,17 +1,20 @@
 #!/usr/bin/env node
 // LaunchCrew demo recording harness, source only.
-// Records the real LaunchCrew UI with existing Playwright Chromium, then
-// muxes offline macOS say narration and captions with ffmpeg.
+// Records the real LaunchCrew UI with existing Playwright Chromium, then cuts
+// honest evidence holds with ONE edit decision list and muxes offline macOS
+// say narration plus captions with ffmpeg.
 // Default is dry run. No recording without explicit --record.
 // No route interception, no mocks, no fabricated responses, no fake LLM
 // activity, no direct SQL seed, no API created state presented as UI.
 // All runs, memories, campaigns, approvals, and exports are created through
 // natural UI actions. Responses may be observed to collect run IDs, never
-// replaced. Failures exit nonzero with the failing selector, no placeholder pass.
+// replaced. Read only GET readbacks validate receipts and memory. Failures
+// exit nonzero with the failing step, no placeholder pass.
 // Private outputs only under .local/demo (gitignored). No IDs, evidence,
 // recordings, or manifests are written to committed paths. No credentials are
 // accepted, read, logged, or interpolated. Subprocesses use argv, never shell
 // strings. This script never clicks Check photo and never makes paid calls.
+// Keyless is proven before any mutation and rechecked through capture.
 // Root runs this after terminal checks plus live proof. Source checks UNRUN here.
 
 import { createRequire } from 'node:module';
@@ -43,58 +46,62 @@ const HARD_LIMIT_SECONDS = 180;
 
 // Narration segments. Keep in sync with docs/demo-narration.md.
 // Each id must appear in that file. Say text is plain, no hype, no em dash.
+// slot_seconds sums to 170 with SAM and without Spark. ONE edit decision list
+// derives video cuts, audio placement, captions, and manifest from these slots.
 const SEGMENTS = [
   {
-    id: 's1-brief', title: 'Wallet brief', slot: '0:00-0:12',
-    say: 'LaunchCrew turns one demo idea into a launch pack you approve before export. This is a fictional wallet brief: forty nine dollars, Austin commuters, Instagram. The flow you will see is keyless and deterministic.',
+    id: 's1-brief', title: 'Wallet brief', slot: '0:00-0:12', slot_seconds: 12,
+    say: 'LaunchCrew turns one demo idea into a pack you approve before export. Fictional wallet brief: forty nine dollars, Austin commuters, Instagram. Keyless deterministic flow.',
     caption: 'Fictional wallet brief. Keyless deterministic flow.',
   },
   {
-    id: 's2-guard', title: 'Custom PriceGuard checker', slot: '0:12-0:32',
+    id: 's2-guard', title: 'Custom PriceGuard checker', slot: '0:12-0:32', slot_seconds: 20,
     say: 'This is a custom checker named PriceGuard. Its veto scope is price claims, exact match, a supported policy. Its rule is Block price claims. Free text rules outside the supported list stay advisory only and are never enforced.',
     caption: 'PriceGuard: supported price_claims policy. Other text stays advisory.',
   },
   {
-    id: 's3-scout', title: 'Scout facts and sources', slot: '0:32-0:58',
+    id: 's3-scout', title: 'Scout facts and sources', slot: '0:32-0:58', slot_seconds: 26,
     say: 'Scout sourced five demo facts with sources, plus three demo risks. These come from the local demo facts file and the demo brand brief. No external research ran, and no live product check is claimed.',
     caption: '5 demo facts, 3 demo risks. Demo sources. No external research.',
   },
   {
-    id: 's4-seed', title: 'Seeded block and revision', slot: '0:58-1:22',
+    id: 's4-seed', title: 'Seeded block and revision', slot: '0:58-1:22', slot_seconds: 24,
     say: 'With the seeded demo box checked, the unsupported claim best in Texas is blocked with a reason, then left out of the revised draft. PriceGuard also removes the forty nine dollar claim under its price policy. The final check shows zero blocked.',
     caption: 'Seeded demo: unsupported claim blocked and revised out.',
   },
   {
-    id: 's5-replay', title: 'Replay', slot: '1:22-1:40',
+    id: 's5-replay', title: 'Replay', slot: '1:22-1:40', slot_seconds: 18,
     say: 'Replay compares two actual runs from this session by their stored run IDs. Same brief, different checker binding. The verdict difference comes from the recorded receipts, not from editing.',
     caption: 'Replay of two actual run IDs from this session.',
   },
   {
-    id: 's6-memory', title: 'Memory edit', slot: '1:40-1:55',
+    id: 's6-memory', title: 'Memory edit', slot: '1:40-1:55', slot_seconds: 15,
     say: 'This is a prepared comparison from two actual runs made through the UI. After editing the memory rule, the next run blocks a different real claim. Nothing here is typed as a fake result.',
     caption: 'Prepared comparison. Two actual UI runs, before and after edit.',
   },
   {
-    id: 's7-campaign', title: 'Campaign week', slot: '1:55-2:08',
+    id: 's7-campaign', title: 'Campaign week', slot: '1:55-2:08', slot_seconds: 13,
     say: 'Campaign week holds seven distinct day packs. Each day stays pending until you approve it on its own. No batch approval, no auto publish.',
     caption: 'Seven distinct days. Each approved on its own.',
   },
   {
-    id: 's8-sam', title: 'Separate photo result', slot: '2:08-2:25',
+    id: 's8-sam', title: 'Separate photo result', slot: '2:08-2:25', slot_seconds: 17,
     say: 'This is the stored result from a separate authorized private jacket photo test. The photo is withheld. This wallet demo has not had a SAM photo check. Checked alone never means segmented.',
     caption: 'Separate private jacket test. Photo withheld. Wallet not SAM checked.',
   },
   {
-    id: 's9-approve', title: 'Human approve and export', slot: '2:25-2:43',
+    id: 's9-approve', title: 'Human approve and export', slot: '2:25-2:43', slot_seconds: 18,
     say: 'Nothing exports without your tap. Approval and export are recorded with the demo actor and time, and the receipt timeline keeps the history. Submission shows not attempted.',
     caption: 'Human approve, export download, stored timeline. Not attempted.',
   },
   {
-    id: 's10-close', title: 'Close', slot: '2:43-2:50',
-    say: 'LaunchCrew: one idea, three agents, one pack you approve, then export. Demo only. See the public repo and the verified site address shown here.',
-    caption: 'Demo only. Public repo and verified site address on screen.',
+    id: 's10-close', title: 'Close', slot: '2:43-2:50', slot_seconds: 7,
+    say: 'LaunchCrew: one idea, three agents, one pack you approve. Demo only. Repo and site address on screen.',
+    caption: 'Demo only. Closing card with repo and site address.',
   },
 ];
+const SPARK_SLOT_SECONDS = 8;
+const PUBLIC_REPO = 'https://github.com/summitsingh/launchcrew';
 
 function printHelp() {
   const lines = [
@@ -127,16 +134,25 @@ function printHelp() {
     '  --no-verify             Skip ffprobe verification (not recommended).',
     '',
     'Gates for --record:',
-    '  HTTPS base URL, GET /api/health 200, GET /api/auth/status 200,',
-    '  GET / 200, narration doc contains every segment id, tools present.',
+    '  HTTPS base URL, GET /api/health is status ok with auth disabled_demo,',
+    '  GET /api/auth/status is enabled false, GET /api/model-capabilities shows',
+    '  no configured text models, GET / 200, narration ids present, tools present.',
+    '  Each new run and campaign receipt must show zero model calls with',
+    '  deterministic fallback usage, else refuse. Keyless is rechecked.',
+    '  Each say clip must fit its EDL slot, else shorten say plus doc.',
     '  Out dir must be under <repo>/.local to keep IDs and video private.',
     '  SAM card only from a validated sanitized proof file. No photo bytes,',
     '  digests, provider IDs, geometry, filenames, or crop data are accepted.',
     '  This script never clicks Check photo and never makes paid calls.',
     '',
+    'Edit: ONE decision list cuts evidence holds to slots 12,20,26,24,18,15,',
+    '  13,17,18,7 plus optional 8s Spark. Total at most 180. Setup and run',
+    '  waits between holds are trimmed and logged, never sped up or faked.',
+    '',
     'Outputs (all private, gitignored):',
-    '  <out>/demo-ui.mp4, <out>/narration/*.m4a, <out>/launchcrew-demo.mp4,',
-    '  <out>/launchcrew-demo.srt, <out>/shot-manifest.json, <out>/clips/*',
+    '  <out>/demo-ui.mp4, <out>/trimmed-ui.mp4, <out>/narration/*.m4a,',
+    '  <out>/launchcrew-demo.mp4, <out>/launchcrew-demo.srt,',
+    '  <out>/shot-manifest.json, <out>/edl.json, <out>/clips/*',
     '',
     'No video is claimed until root runs this and verifies duration, sound,',
     'frame privacy, and receipt claims, then opens the private video for review.',
@@ -246,6 +262,14 @@ async function fetchStatus(url, timeoutMs = 15000) {
   }
 }
 
+function parseJsonBody(res, label) {
+  try {
+    return JSON.parse(res.bodyText);
+  } catch {
+    fail(`${label} did not return valid JSON (status ${res.status}). Refusing.`);
+  }
+}
+
 async function healthGate(baseUrl, forRecord) {
   let parsed;
   try {
@@ -260,15 +284,82 @@ async function healthGate(baseUrl, forRecord) {
     fail(`base URL must be http or https. Got: ${baseUrl}`);
   }
   const clean = baseUrl.replace(/\/$/, '');
-  info(`checking ${clean} health...`);
+  info(`checking ${clean} health plus keyless boundary...`);
+  // Actual schemas from source: health has status/auth/approval_by, auth
+  // status has enabled/user/live_verified, capabilities has spark and wonder
+  // configured flags plus variants. Backend runs with model_enabled True but
+  // calls models only when a server key exists, so no configured models plus
+  // deterministic receipts proves the wallet flow never paid and stayed keyless.
   const health = await fetchStatus(`${clean}/api/health`);
   if (health.status !== 200) fail(`GET /api/health returned ${health.status}, expected 200`);
+  const healthJson = parseJsonBody(health, 'GET /api/health');
+  if (healthJson.status !== 'ok' || healthJson.auth !== 'disabled_demo' || healthJson.approval_by !== 'demo_placeholder') {
+    fail(`keyless boundary refused: /api/health is status=${String(healthJson.status)} auth=${String(healthJson.auth)} approval_by=${String(healthJson.approval_by)}, expected ok/disabled_demo/demo_placeholder.`);
+  }
   const auth = await fetchStatus(`${clean}/api/auth/status`);
   if (auth.status !== 200) fail(`GET /api/auth/status returned ${auth.status}, expected 200`);
+  const authJson = parseJsonBody(auth, 'GET /api/auth/status');
+  if (authJson.enabled !== false || authJson.live_verified !== false || authJson.user !== '') {
+    fail(`keyless boundary refused: /api/auth/status is enabled=${String(authJson.enabled)} user=${String(authJson.user)} live_verified=${String(authJson.live_verified)}, expected false/empty/false.`);
+  }
+  const caps = await fetchStatus(`${clean}/api/model-capabilities`);
+  if (caps.status !== 200) fail(`GET /api/model-capabilities returned ${caps.status}, expected 200`);
+  const capsJson = parseJsonBody(caps, 'GET /api/model-capabilities');
+  if (capsJson.spark_configured !== false || capsJson.wonder_configured !== false || capsJson.sam_configured !== false) {
+    fail('keyless boundary refused: model capabilities show a configured model. Omit paid claims and recheck a keyless base URL.');
+  }
+  if (capsJson.spark_variant !== 'not_configured' || capsJson.wonder_variant !== 'not_configured') {
+    fail(`keyless boundary refused: model variants are ${String(capsJson.spark_variant)}/${String(capsJson.wonder_variant)}, expected not_configured.`);
+  }
   const home = await fetchStatus(`${clean}/`);
   if (home.status !== 200) fail(`GET / returned ${home.status}, expected 200`);
-  info('health gate PASS (api health, auth status, home all 200)');
+  info('health gate PASS (https, disabled_demo auth, no configured models, home 200)');
   return clean;
+}
+
+async function recheckKeyless(clean, label) {
+  // Recheck the same boundary through capture. Any drift refuses.
+  const health = await fetchStatus(`${clean}/api/health`);
+  const auth = await fetchStatus(`${clean}/api/auth/status`);
+  const caps = await fetchStatus(`${clean}/api/model-capabilities`);
+  if (health.status !== 200 || auth.status !== 200 || caps.status !== 200) {
+    fail(`keyless recheck failed at ${label}: a gate endpoint is not 200. Refusing to continue.`);
+  }
+  const h = parseJsonBody(health, 'recheck health');
+  const a = parseJsonBody(auth, 'recheck auth');
+  const c = parseJsonBody(caps, 'recheck capabilities');
+  if (h.auth !== 'disabled_demo' || a.enabled !== false || c.spark_configured !== false || c.wonder_configured !== false) {
+    fail(`keyless recheck failed at ${label}: boundary drifted. Refusing to continue.`);
+  }
+  info(`keyless recheck OK at ${label}`);
+}
+
+async function fetchReceipt(clean, runId, label) {
+  const res = await fetchStatus(`${clean}/api/runs/${encodeURIComponent(runId)}/receipt`);
+  if (res.status !== 200) fail(`readback failed at ${label}: GET receipt for ${runId.slice(0, 12)} returned ${res.status}. Refusing to label without a receipt.`);
+  return parseJsonBody(res, `receipt ${label}`);
+}
+
+function assertKeylessReceipt(receipt, label) {
+  // Zero actual model calls with deterministic usage. Any spark use refuses.
+  const usage = receipt.model_usage || receipt.modelUsage || null;
+  if (!usage) fail(`keyless receipt check failed at ${label}: no stored model_usage. Refusing.`);
+  const calls = usage.spark_calls ?? usage.sparkCalls ?? null;
+  const wonderAttempts = usage.wonder_attempts ?? usage.wonderAttempts ?? null;
+  if (calls !== 0) fail(`keyless receipt check failed at ${label}: spark_calls is ${String(calls)}, expected 0. Refusing.`);
+  if (wonderAttempts !== 0) fail(`keyless receipt check failed at ${label}: wonder attempts is ${String(wonderAttempts)}, expected 0. Refusing.`);
+  if (usage.mode !== 'deterministic_fallback' || usage.spark_mode !== 'deterministic_fallback') {
+    fail(`keyless receipt check failed at ${label}: mode is ${String(usage.mode)}/${String(usage.spark_mode)}, expected deterministic_fallback. Refusing.`);
+  }
+  if (usage.model_used !== 'none' || usage.wonder_used !== false) {
+    fail(`keyless receipt check failed at ${label}: model_used=${String(usage.model_used)} wonder_used=${String(usage.wonder_used)}. Refusing.`);
+  }
+  if (usage.tokens_known !== false) fail(`keyless receipt check failed at ${label}: tokens_known is not false. Refusing.`);
+  const scoutMode = receipt.scout ? receipt.scout.model_mode : null;
+  if (scoutMode !== null && scoutMode !== 'deterministic_fallback') {
+    fail(`keyless receipt check failed at ${label}: scout model_mode is ${String(scoutMode)}. Refusing.`);
+  }
+  info(`keyless receipt OK at ${label} (${String(receipt.run_id || '').slice(0, 12)})`);
 }
 
 function loadChromium() {
@@ -355,10 +446,14 @@ async function dryRun(opts, ffmpeg, ffprobe, sayExe) {
 
   mkdirSync(resolve(opts.outDir), { recursive: true });
   info(`out dir ready (private): ${resolve(opts.outDir)}`);
+  const includeSamDry = Boolean(opts.samProof);
+  const activeDry = includeSamDry ? SEGMENTS : SEGMENTS.filter((s) => s.id !== 's8-sam');
+  const sparkExtra = opts.sparkRunId ? SPARK_SLOT_SECONDS : 0;
+  const totalDry = activeDry.reduce((sum, s) => sum + s.slot_seconds, 0) + sparkExtra;
   console.log('');
   console.log('Dry run PASS. To record after live proof, root runs the same command with --record.');
-  console.log('Planned slots: ' + SEGMENTS.map((s) => `${s.slot} ${s.title}`).join(' | '));
-  console.log(`Target ${TARGET_SECONDS}s, hard limit ${HARD_LIMIT_SECONDS}s. Nothing was created.`);
+  console.log('Planned EDL slots: ' + activeDry.map((s) => `${s.slot} ${s.title} (${s.slot_seconds}s)`).join(' | ') + (opts.sparkRunId ? ` | spark-proof Stored Spark receipt (${SPARK_SLOT_SECONDS}s)` : ''));
+  console.log(`EDL total ${totalDry}s, target ${TARGET_SECONDS}s, hard limit ${HARD_LIMIT_SECONDS}s. Nothing was created.`);
 }
 
 function readJsonFile(path, label) {
@@ -449,6 +544,7 @@ figcaption{margin-top:8px;font-size:14px;color:#c6cfdb}
 
 function writeSamCard(path, proof) {
   // Pixel free evidence card. No photo, picker, canvas, image, or geometry.
+  // Root alone correlates the private proof before supplying this JSON.
   const html = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <title>Separate private photo result</title>
@@ -459,7 +555,8 @@ dl{display:grid;grid-template-columns:220px 1fr;gap:8px 16px;margin-top:16px}
 dt{color:#9aa4b2}dd{margin:0}
 .warn{margin-top:16px;padding:12px;border-radius:8px;background:#2a2113;color:#f5c518}</style></head><body>
 <div class="card"><span class="badge">SEPARATE PRIVATE TEST</span>
-<h1>Stored photo result (sanitized summary)</h1>
+<h1>Stored jacket photo result (sanitized summary)</h1>
+<p>Separate private jacket photo test. The photo is withheld. Stored in a separate private host DB, not the public AWS DB.</p>
 <p>This card shows a stored summary only. No photo pixels are shown here and none were placed beside this card.</p>
 <dl>
 <dt>Method</dt><dd>${escapeHtml(proof.method)}</dd>
@@ -477,6 +574,62 @@ dt{color:#9aa4b2}dd{margin:0}
   for (const token of ['<img', '<canvas', '<input type="file"', 'picker', 'data:image']) {
     if (check.includes(token)) fail(`sam card must not contain "${token}". Refusing SAM shot.`);
   }
+}
+
+function writeClosingCard(path, baseUrl) {
+  // Closing card carries repo plus site addresses on screen. Playwright video
+  // captures the viewport only, not the browser address bar, so this card is
+  // the honest on screen source. No verified claim is printed here; the
+  // manifest records the HTTPS health gate that root verifies at runtime.
+  const html = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>LaunchCrew demo close</title>
+<style>body{font-family:system-ui,sans-serif;background:#0b0e14;color:#e8ecf1;margin:0;padding:40px}
+.card{max-width:900px;margin:0 auto;background:#141a24;border-radius:16px;padding:32px}
+.badge{display:inline-block;background:#8ab4ff;color:#0b1a33;padding:4px 12px;border-radius:999px;font-weight:700}
+dl{display:grid;grid-template-columns:220px 1fr;gap:8px 16px;margin-top:16px}
+dt{color:#9aa4b2}dd{margin:0;word-break:break-all}
+.note{margin-top:16px;color:#9aa4b2}</style></head><body>
+<div class="card"><span class="badge">CLOSING CARD</span>
+<h1>LaunchCrew demo close</h1>
+<p>Demo only. No upload, publication, or submission is claimed.</p>
+<dl>
+<dt>Public repo</dt><dd>${escapeHtml(PUBLIC_REPO)}</dd>
+<dt>Site address</dt><dd>${escapeHtml(baseUrl)}</dd>
+</dl>
+<p class="note">Addresses shown on screen in the viewport. Recorded base URL only, no localhost shown as public.</p>
+</div></body></html>
+`;
+  writeFileSync(path, html);
+}
+
+function assertMemoryPair(beforeReceipt, afterReceipt, memId) {
+  // Exact blocked claims, final draft differences, no supersede. Fail honestly.
+  const beforeBlocked = Array.isArray(beforeReceipt.blocked_claims) ? beforeReceipt.blocked_claims : [];
+  const afterBlocked = Array.isArray(afterReceipt.blocked_claims) ? afterReceipt.blocked_claims : [];
+  if (!beforeBlocked.includes('$49')) fail(`memory check failed: before receipt blocked_claims is [${beforeBlocked.join(', ')}], expected to include $49. Refusing labels.`);
+  if (beforeBlocked.includes('Designed in Texas')) fail('memory check failed: before receipt unexpectedly blocks Designed in Texas. Refusing labels.');
+  if (!afterBlocked.includes('Designed in Texas')) fail(`memory check failed: after receipt blocked_claims is [${afterBlocked.join(', ')}], expected to include Designed in Texas. Refusing labels.`);
+  if (afterBlocked.includes('$49')) fail('memory check failed: after receipt still blocks $49 after the edit. Refusing labels.');
+  const beforeV1 = (beforeReceipt.checker_v1 && beforeReceipt.checker_v1.blocked_claims) || [];
+  const afterV1 = (afterReceipt.checker_v1 && afterReceipt.checker_v1.blocked_claims) || [];
+  const beforeClaims = beforeV1.map((e) => e.claim);
+  const afterClaims = afterV1.map((e) => e.claim);
+  if (!beforeClaims.includes('$49')) fail(`memory check failed: before checker_v1 blocked [${beforeClaims.join(', ')}], expected $49. Refusing labels.`);
+  if (!afterClaims.includes('Designed in Texas')) fail(`memory check failed: after checker_v1 blocked [${afterClaims.join(', ')}], expected Designed in Texas. Refusing labels.`);
+  const beforePost = (beforeReceipt.maker_draft_v2 && beforeReceipt.maker_draft_v2.post) || '';
+  const afterPost = (afterReceipt.maker_draft_v2 && afterReceipt.maker_draft_v2.post) || '';
+  if (beforePost.includes('$49')) fail('memory check failed: before final draft still contains $49. Revision did not apply. Refusing labels.');
+  if (afterPost.includes('Designed in Texas')) fail('memory check failed: after final draft still contains Designed in Texas. Revision did not apply. Refusing labels.');
+  if (beforePost === afterPost) fail('memory check failed: final drafts are identical, expected a revision difference. Refusing labels.');
+  for (const [label, receipt] of [['before', beforeReceipt], ['after', afterReceipt]]) {
+    if ((receipt.revision || 0) !== 0) fail(`memory check failed: ${label} receipt revision is ${String(receipt.revision)}, expected 0 with no supersede. Refusing labels.`);
+    if (Array.isArray(receipt.revision_history) && receipt.revision_history.length !== 0) fail(`memory check failed: ${label} receipt has superseded revisions. Refusing labels.`);
+    if (receipt.approved_revision !== null && receipt.approved_revision !== undefined) fail(`memory check failed: ${label} receipt has an approved revision. Refusing labels.`);
+    const used = Array.isArray(receipt.memory_used) ? receipt.memory_used.map((e) => e.id) : [];
+    if (!used.includes(memId)) fail(`memory check failed: ${label} receipt memory_used does not list ${memId.slice(0, 12)}. Refusing labels.`);
+  }
+  info('memory receipt pair OK (exact blocks, draft difference, no supersede)');
 }
 
 async function sayClip(sayExe, voice, text, outAiff) {
@@ -546,7 +699,8 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
     info('no --spark-run-id: narration stays keyless only, no model claim is made');
   }
 
-  // Phase 1: narration clips first, so UI holds can match real audio timing.
+  // Phase 1: narration clips first. Each clip must fit its EDL slot, else
+  // shorten the SEGMENTS say string plus docs/demo-narration.md together.
   const activeSegments = includeSam ? SEGMENTS : SEGMENTS.filter((s) => s.id !== 's8-sam');
   const clipPlan = [];
   if (opts.audio) {
@@ -558,17 +712,18 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
       const convert = await runTool(ffmpeg, ['-y', '-i', aiff, '-c:a', 'aac', '-b:a', '128k', m4a], 'ffmpeg convert');
       if (!convert.ok) fail(`ffmpeg narration convert failed for ${seg.id}: ${convert.stderr.slice(0, 500)}`);
       const seconds = await ffprobeDuration(ffprobe, m4a);
+      if (seconds > seg.slot_seconds) {
+        fail(`narration clip ${seg.id} is ${seconds.toFixed(1)}s, over its ${seg.slot_seconds}s EDL slot. Shorten the SEGMENTS say string and docs/demo-narration.md together, then re-run.`);
+      }
       clipPlan.push({ ...seg, m4a, seconds });
-      info(`${seg.id}: ${seconds.toFixed(1)}s`);
+      info(`${seg.id}: ${seconds.toFixed(1)}s fits ${seg.slot_seconds}s slot`);
     }
-    const total = clipPlan.reduce((sum, clip) => sum + clip.seconds, 0);
-    info(`narration total ${total.toFixed(1)}s (target under ${TARGET_SECONDS}s)`);
-    if (total > HARD_LIMIT_SECONDS) {
-      fail(`narration alone is ${total.toFixed(1)}s, over the ${HARD_LIMIT_SECONDS}s hard limit. Shorten docs/demo-narration.md before recording.`);
-    }
+    const slotTotal = activeSegments.reduce((sum, s) => sum + s.slot_seconds, 0) + (opts.sparkRunId ? SPARK_SLOT_SECONDS : 0);
+    info(`EDL slot total ${slotTotal}s (target ${TARGET_SECONDS}s, hard limit ${HARD_LIMIT_SECONDS}s)`);
+    if (slotTotal > HARD_LIMIT_SECONDS) fail(`EDL slot total ${slotTotal}s exceeds the ${HARD_LIMIT_SECONDS}s hard limit. Refusing.`);
   } else {
-    for (const seg of activeSegments) clipPlan.push({ ...seg, m4a: '', seconds: 8 });
-    warn('audio disabled: using 8s placeholder holds per segment');
+    for (const seg of activeSegments) clipPlan.push({ ...seg, m4a: '', seconds: 0 });
+    warn('audio disabled: video cuts still follow EDL slots, no narration placed');
   }
 
   // Phase 2: record the real UI in one continuous take.
@@ -586,11 +741,29 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
   const checkerName = `PriceGuard${suffix}`;
   let uiVideoSource = '';
   const takeStart = Date.now();
-
-  const holdFor = async (page, clipId, extraMs = 1200) => {
-    const clip = clipPlan.find((c) => c.id === clipId);
-    const holdMs = clip ? Math.max(2000, Math.round(clip.seconds * 1000)) + extraMs : 3000;
-    await page.waitForTimeout(holdMs);
+  const takeElapsed = () => (Date.now() - takeStart) / 1000;
+  // EDL captures actual source in/out per evidence hold. Video cuts, audio
+  // placement, captions, and manifest all derive from this ONE list. Holds
+  // between source_in and source_out are the only kept footage, in real
+  // order. Setup, navigation, and run waits outside holds are trimmed and
+  // logged, never sped up and never faked.
+  const edl = [];
+  const slotSecondsFor = (id) => {
+    if (id === 'spark-proof') return SPARK_SLOT_SECONDS;
+    const seg = SEGMENTS.find((s) => s.id === id);
+    if (!seg) fail(`unknown EDL id ${id}`);
+    return seg.slot_seconds;
+  };
+  const beginHold = (id) => takeElapsed();
+  const endHold = async (page, id, sourceIn, note) => {
+    const slot = slotSecondsFor(id);
+    while (takeElapsed() - sourceIn < slot) {
+      await page.waitForTimeout(500);
+    }
+    const sourceOut = takeElapsed();
+    edl.push({ id, slot_seconds: slot, source_in: sourceIn, source_out: sourceOut, note });
+    manifest.segments.push({ id, source_in_seconds: sourceIn, source_out_seconds: sourceOut, slot_seconds: slot, note });
+    info(`hold ${id}: kept ${slot}s from take ${sourceIn.toFixed(1)}s to ${(sourceIn + slot).toFixed(1)}s (${note})`);
   };
 
   try {
@@ -601,9 +774,6 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
       ignoreHTTPSErrors: false,
     });
     const page = await context.newPage();
-    const stepTime = (id, note) => {
-      manifest.segments.push({ id, at_seconds: (Date.now() - takeStart) / 1000, note });
-    };
 
     const mustClick = async (role, name, exact = true) => {
       try {
@@ -626,16 +796,36 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
         fail(`select failed: "${label}" option "${value}". Refusing to fake this step.`);
       }
     };
+    const showInViewport = async (locator, label) => {
+      // DOM presence is not proof. Scroll into the viewport and assert the
+      // box is actually readable inside 1600x900.
+      try {
+        await locator.first().scrollIntoViewIfNeeded({ timeout: 20000 });
+      } catch {
+        fail(`evidence not scrollable into view: ${label}. Refusing to claim it.`);
+      }
+      await page.waitForTimeout(600);
+      const box = await locator.first().boundingBox().catch(() => null);
+      if (!box) fail(`evidence has no bounding box in viewport: ${label}. Refusing to claim it.`);
+      if (box.y < 0 || box.x < 0 || box.y + box.height > VIEWPORT.height + 4 || box.x + box.width > VIEWPORT.width + 4) {
+        fail(`evidence is outside the viewport: ${label} at y=${Math.round(box.y)}. Scroll proof failed.`);
+      }
+      if (box.height < 12 || box.width < 40) fail(`evidence box is too small to read: ${label}. Refusing.`);
+    };
 
     await page.goto(clean, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    stepTime('open', 'home opened');
 
-    // S1: wallet brief visible with approved demo facts.
+    // S1: wallet brief visible with approved demo facts. Hold starts on the
+    // asserted evidence, so setup navigation before the hold is trimmed.
     await mustClick('button', 'Launch brief', false);
     await mustFill('Product, audience, and launch channel', WALLET_BRIEF);
+    await showInViewport(page.getByLabel('Product, audience, and launch channel'), 'wallet brief textarea');
     await page.screenshot({ path: join(shotsDir, 's1-brief.png') });
-    stepTime('s1-brief', 'wallet brief filled, demo facts aside');
-    await holdFor(page, 's1-brief', 800);
+    {
+      const sourceIn = beginHold('s1-brief');
+      await showInViewport(page.getByLabel('Product, audience, and launch channel'), 's1 wallet brief');
+      await endHold(page, 's1-brief', sourceIn, 'wallet brief filled, demo facts aside');
+    }
 
     // S2: create Scout and PriceGuard through the Agent builder UI.
     async function createAgent(fields) {
@@ -674,11 +864,15 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
       fail('PriceGuard dry-run preview did not show enforced price_claims. Refusing to claim the policy.');
     }
     await page.screenshot({ path: join(shotsDir, 's2-guard.png') });
-    stepTime('s2-guard', `PriceGuard ${checkerName} enforced price_claims`);
-    await holdFor(page, 's2-guard', 800);
+    {
+      const sourceIn = beginHold('s2-guard');
+      await showInViewport(page.getByText('Enforced policies: price_claims'), 's2 enforced policies');
+      await endHold(page, 's2-guard', sourceIn, `PriceGuard ${checkerName} enforced price_claims`);
+    }
 
     // Natural runs through the Launch brief UI. Observe responses, never replace them.
-    async function runViaUi({ checker, seed, memoryIds = '' }) {
+    // After each run, read back the stored receipt and prove zero model calls.
+    async function runViaUi({ checker, seed, memoryIds = '' }, label) {
       await mustClick('button', 'Launch brief', false);
       await mustSelect('Scout agent', scoutName);
       await mustSelect('Maker profile', 'Maker');
@@ -718,11 +912,16 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
       } catch {
         fail(`run ${uiId.slice(0, 12)} never reached review. Refusing to fake completion.`);
       }
+      const receipt = await fetchReceipt(clean, uiId, label || 'run');
+      assertKeylessReceipt(receipt, label || 'run');
+      await recheckKeyless(clean, label || 'run');
       return uiId;
     }
 
     // S3: default checker, clean (seed off). Scout facts plus risks on screen.
-    const runDefault = await runViaUi({ checker: 'Checker', seed: false });
+    // Run wait happens before the hold and is trimmed; the hold keeps only
+    // the asserted facts evidence in the viewport.
+    const runDefault = await runViaUi({ checker: 'Checker', seed: false }, 's3 default run');
     manifest.runs.runDefault = runDefault;
     try {
       await page.locator('section[aria-label="Scout facts and sources"] .scout-fact').first().waitFor({ timeout: 20000 });
@@ -736,16 +935,21 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
       fail(`Scout counts are ${factCount} facts and ${riskCount} risks, expected 5 and 3. Refusing to misstate counts.`);
     }
     await page.screenshot({ path: join(shotsDir, 's3-scout.png') });
-    stepTime('s3-scout', `default run ${runDefault.slice(0, 12)}, 5 facts 3 risks`);
-    await holdFor(page, 's3-scout', 800);
+    {
+      const sourceIn = beginHold('s3-scout');
+      await showInViewport(page.locator('section[aria-label="Scout facts and sources"]'), 's3 scout section');
+      await showInViewport(page.locator('section[aria-label="Scout facts and sources"] .scout-fact').first(), 's3 first fact');
+      await showInViewport(page.getByText('No external research was run'), 's3 honesty copy');
+      await endHold(page, 's3-scout', sourceIn, `default run ${runDefault.slice(0, 12)}, 5 facts 3 risks`);
+    }
 
     // PriceGuard clean run shows the genuine price veto without any seed.
-    const runGuarded = await runViaUi({ checker: checkerName, seed: false });
+    const runGuarded = await runViaUi({ checker: checkerName, seed: false }, 's4 guarded run');
     manifest.runs.runGuarded = runGuarded;
     await page.screenshot({ path: join(shotsDir, 's4a-guarded.png') });
 
     // S4: seeded run with PriceGuard shows both the seed block and the price veto.
-    const runSeeded = await runViaUi({ checker: checkerName, seed: true });
+    const runSeeded = await runViaUi({ checker: checkerName, seed: true }, 's4 seeded run');
     manifest.runs.runSeeded = runSeeded;
     try {
       await page.getByText('best in Texas', { exact: true }).first().waitFor({ timeout: 20000 });
@@ -753,8 +957,11 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
       fail('seeded claim text never appeared. The seed checkbox may not have applied. Refusing to fake the block.');
     }
     await page.screenshot({ path: join(shotsDir, 's4-seed.png') });
-    stepTime('s4-seed', `seeded run ${runSeeded.slice(0, 12)}, best-in-Texas plus price veto`);
-    await holdFor(page, 's4-seed', 800);
+    {
+      const sourceIn = beginHold('s4-seed');
+      await showInViewport(page.getByText('best in Texas', { exact: true }).first(), 's4 seeded block');
+      await endHold(page, 's4-seed', sourceIn, `seeded run ${runSeeded.slice(0, 12)}, best-in-Texas plus price veto`);
+    }
 
     // S5: Replay the two actual run IDs.
     await mustClick('button', 'Replay', false);
@@ -767,10 +974,14 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
       fail('Replay did not show the expected binding difference for the two actual runs.');
     }
     await page.screenshot({ path: join(shotsDir, 's5-replay.png') });
-    stepTime('s5-replay', 'replay compared two actual run IDs');
-    await holdFor(page, 's5-replay', 800);
+    {
+      const sourceIn = beginHold('s5-replay');
+      await showInViewport(page.getByText('Stage bindings changed: true'), 's5 binding difference');
+      await endHold(page, 's5-replay', sourceIn, 'replay compared two actual run IDs');
+    }
 
     // S6: Memory rule before and after, two actual UI runs, labelled comparison.
+    // Labels derive from stored receipts only after exact checks pass.
     await mustClick('button', 'Memory', false);
     const memTitle = `DemoRule${suffix}`;
     await mustFill('Title', memTitle, true);
@@ -785,35 +996,65 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
     const memCard = page.locator(`article[aria-label="Memory item: ${memTitle}"]`);
     const memId = (await memCard.locator('.run-id').innerText()).trim();
     manifest.runs.memoryId = memId;
-    const memBefore = await runViaUi({ checker: 'Checker', seed: false, memoryIds: memId });
+    const memBefore = await runViaUi({ checker: 'Checker', seed: false, memoryIds: memId }, 's6 before run');
     manifest.runs.memBefore = memBefore;
     await page.screenshot({ path: join(shotsDir, 's6-before.png') });
     await mustClick('button', 'Memory', false);
     await memCard.getByRole('button', { name: 'Edit memory', exact: true }).click({ timeout: 20000 });
     await mustFill('Edit content JSON object', '{"blocked_claims": [{"claim": "Designed in Texas", "reason": "Edited rule"}]}');
     await mustClick('button', 'Save memory', true);
-    const memAfter = await runViaUi({ checker: 'Checker', seed: false, memoryIds: memId });
+    // Wait the true UI save close plus persisted content, then read back.
+    try {
+      await memCard.getByRole('button', { name: 'Edit memory', exact: true }).waitFor({ timeout: 20000 });
+      await memCard.locator('pre', { hasText: 'Designed in Texas' }).waitFor({ timeout: 20000 });
+    } catch {
+      fail('memory edit was not confirmed in the UI with updated content. Refusing to run after.');
+    }
+    {
+      const memRes = await fetchStatus(`${clean}/api/memory/${encodeURIComponent(memId)}`);
+      if (memRes.status !== 200) fail(`memory readback failed for ${memId.slice(0, 12)}. Refusing labels.`);
+      const memJson = parseJsonBody(memRes, 'memory readback');
+      const blockedList = memJson.content && memJson.content.blocked_claims;
+      const hasTexas = Array.isArray(blockedList) && blockedList.some((e) => e && e.claim === 'Designed in Texas');
+      if (memJson.kind !== 'blocked_rule' || !hasTexas) fail('memory readback does not show the edited Designed in Texas rule. Refusing labels.');
+      info('memory edit persisted and read back OK');
+    }
+    const memAfter = await runViaUi({ checker: 'Checker', seed: false, memoryIds: memId }, 's6 after run');
     manifest.runs.memAfter = memAfter;
     await page.screenshot({ path: join(shotsDir, 's6-after.png') });
-    writeComparisonCard(
-      join(shotsDir, 's6-comparison.html'),
-      'Memory edit changes the next run',
-      's6-before.png', 's6-after.png',
-      `run ${memBefore.slice(0, 12)} blocked $49`,
-      `run ${memAfter.slice(0, 12)} blocked Designed in Texas`,
-      'Prepared comparison. Both screenshots are actual UI captures from this session.',
-    );
+    {
+      const beforeReceipt = await fetchReceipt(clean, memBefore, 's6 before');
+      const afterReceipt = await fetchReceipt(clean, memAfter, 's6 after');
+      assertKeylessReceipt(beforeReceipt, 's6 before');
+      assertKeylessReceipt(afterReceipt, 's6 after');
+      assertMemoryPair(beforeReceipt, afterReceipt, memId);
+      const beforeLabelClaim = String((beforeReceipt.checker_v1.blocked_claims[0] || {}).claim || '$49');
+      const afterLabelClaim = String((afterReceipt.checker_v1.blocked_claims.find((e) => e.claim === 'Designed in Texas') || {}).claim || 'Designed in Texas');
+      writeComparisonCard(
+        join(shotsDir, 's6-comparison.html'),
+        'Memory edit changes the next run',
+        's6-before.png', 's6-after.png',
+        `run ${memBefore.slice(0, 12)} blocked ${beforeLabelClaim}`,
+        `run ${memAfter.slice(0, 12)} blocked ${afterLabelClaim}`,
+        'Prepared comparison. Both screenshots are actual UI captures from this session. Labels derive from stored receipts.',
+      );
+    }
     await page.goto('file://' + join(shotsDir, 's6-comparison.html'), { waitUntil: 'domcontentloaded' });
     try {
       await page.getByText('PREPARED COMPARISON').waitFor({ timeout: 10000 });
     } catch {
       fail('comparison card failed to render.');
     }
-    stepTime('s6-memory', 'memory before and after comparison card');
-    await holdFor(page, 's6-memory', 800);
+    {
+      const sourceIn = beginHold('s6-memory');
+      await showInViewport(page.getByText('PREPARED COMPARISON'), 's6 comparison badge');
+      await endHold(page, 's6-memory', sourceIn, 'memory before and after comparison card');
+    }
     await page.goto(clean, { waitUntil: 'domcontentloaded' });
 
-    // S7: Campaign week, seven distinct days.
+    // S7: Campaign week, seven distinct days. DOM count alone is not proof,
+    // so each day card is scrolled into the viewport and asserted readable
+    // inside the actual shot hold. Approvals stay per day and independent.
     await mustClick('button', 'Campaign', false);
     await mustSelect('Maker profile', 'Maker');
     await mustClick('button', 'Create week', true);
@@ -830,9 +1071,30 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
     }
     const weekId = (await page.locator('section p.run-id').first().innerText()).trim();
     manifest.runs.campaignId = weekId;
+    {
+      const campRes = await fetchStatus(`${clean}/api/campaigns/${encodeURIComponent(weekId)}`);
+      if (campRes.status !== 200) fail(`campaign readback failed for ${weekId.slice(0, 12)}. Refusing seven claim.`);
+      const campJson = parseJsonBody(campRes, 'campaign readback');
+      if (!Array.isArray(campJson.days) || campJson.days.length !== 7) fail('campaign readback does not show seven stored days. Refusing seven claim.');
+      for (const day of campJson.days) {
+        const dayReceipt = await fetchReceipt(clean, day.run_id, `s7 day ${day.day}`);
+        assertKeylessReceipt(dayReceipt, `s7 day ${day.day}`);
+        if (dayReceipt.campaign_day !== day.day) fail(`campaign day ${day.day} receipt mismatch. Refusing.`);
+      }
+      await recheckKeyless(clean, 's7 campaign');
+      info('campaign seven receipts all keyless deterministic');
+    }
     await page.screenshot({ path: join(shotsDir, 's7-campaign.png') });
-    stepTime('s7-campaign', 'seven distinct campaign days');
-    await holdFor(page, 's7-campaign', 800);
+    {
+      const sourceIn = beginHold('s7-campaign');
+      for (let day = 1; day <= 7; day += 1) {
+        const card = page.locator('article', { has: page.locator(`h3:text("Day ${day}:")`) });
+        await showInViewport(card.locator('h3'), `s7 day ${day} heading`);
+        await showInViewport(card, `s7 day ${day} card`);
+      }
+      await showInViewport(page.getByRole('heading', { name: 'Day 7: Launch offer' }), 's7 final day evidence');
+      await endHold(page, 's7-campaign', sourceIn, 'seven distinct campaign days scrolled readable');
+    }
 
     // S8: optional pixel free SAM card only from validated proof. No photo UI.
     if (includeSam && samProof) {
@@ -852,14 +1114,19 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
         }
       }
       await page.screenshot({ path: join(shotsDir, 's8-sam.png') });
-      stepTime('s8-sam', `separate private result, method ${samProof.method}`);
-      await holdFor(page, 's8-sam', 800);
+      {
+        const sourceIn = beginHold('s8-sam');
+        await showInViewport(page.getByText('SEPARATE PRIVATE TEST'), 's8 sam badge');
+        await endHold(page, 's8-sam', sourceIn, `separate private result, method ${samProof.method}`);
+      }
       await page.goto(clean, { waitUntil: 'domcontentloaded' });
     } else {
-      stepTime('s8-sam', 'skipped honestly, no sanitized proof supplied');
+      manifest.segments.push({ id: 's8-sam', skipped: true, note: 'skipped honestly, no sanitized proof supplied' });
+      info('s8-sam skipped honestly, no EDL entry');
     }
 
-    // Optional stored Spark proof, read back separately from the keyless wallet.
+    // Optional stored Spark proof with its own explicit 8s EDL slot, silent.
+    // Read back only, shown apart. Never claims the new wallet used models.
     if (sparkReceipt && opts.sparkRunId) {
       await page.getByRole('navigation', { name: 'Workspace' }).getByRole('button', { name: 'Approval queue' }).click({ timeout: 20000 });
       const sparkCard = page.locator(`[data-run-id="${opts.sparkRunId}"]`);
@@ -875,8 +1142,11 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
         fail('Spark receipt view did not open.');
       }
       await page.screenshot({ path: join(shotsDir, 'spark-receipt.png') });
-      stepTime('spark-proof', 'stored Spark receipt shown separately from keyless flow');
-      await page.waitForTimeout(4000);
+      {
+        const sourceIn = beginHold('spark-proof');
+        await showInViewport(page.getByRole('heading', { name: 'Receipt', exact: true }), 'spark receipt heading');
+        await endHold(page, 'spark-proof', sourceIn, 'stored Spark receipt shown separately from keyless flow');
+      }
       await page.goto(clean, { waitUntil: 'domcontentloaded' });
     }
 
@@ -912,15 +1182,36 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
     } catch {
       fail('receipt timeline did not show stored events with no submission. Refusing to fake the record.');
     }
+    {
+      const approvedReceipt = await fetchReceipt(clean, runSeeded, 's9 approved');
+      assertKeylessReceipt(approvedReceipt, 's9 approved');
+      await recheckKeyless(clean, 's9 approved');
+    }
     await page.screenshot({ path: join(shotsDir, 's9-receipt.png') });
-    stepTime('s9-approve', 'approved, exported, timeline kept, not attempted');
-    await holdFor(page, 's9-approve', 800);
+    {
+      const sourceIn = beginHold('s9-approve');
+      await showInViewport(page.getByText('Not attempted', { exact: true }), 's9 not attempted');
+      await showInViewport(page.getByRole('heading', { name: 'Recorded events' }), 's9 timeline');
+      await endHold(page, 's9-approve', sourceIn, 'approved, exported, timeline kept, not attempted');
+    }
 
-    // S10: close on the verified base URL. No localhost shown as public.
-    await page.goto(clean, { waitUntil: 'domcontentloaded' });
-    await page.screenshot({ path: join(shotsDir, 's10-close.png') });
-    stepTime('s10-close', `close on ${clean}`);
-    await holdFor(page, 's10-close', 800);
+    // S10: closing card with repo plus site addresses on screen in viewport.
+    {
+      const closePath = join(shotsDir, 's10-close.html');
+      writeClosingCard(closePath, clean);
+      await page.goto('file://' + closePath, { waitUntil: 'domcontentloaded' });
+      try {
+        await page.getByText('CLOSING CARD').waitFor({ timeout: 10000 });
+        await page.getByText(PUBLIC_REPO, { exact: false }).waitFor({ timeout: 10000 });
+      } catch {
+        fail('closing card failed to render repo address.');
+      }
+      await page.screenshot({ path: join(shotsDir, 's10-close.png') });
+      const sourceIn = beginHold('s10-close');
+      await showInViewport(page.getByText('CLOSING CARD'), 's10 closing badge');
+      await showInViewport(page.getByText(PUBLIC_REPO, { exact: false }), 's10 repo address');
+      await endHold(page, 's10-close', sourceIn, `closing card on ${clean}`);
+    }
 
     // Close context BEFORE video saveAs. Required for a finalizable file.
     const video = page.video();
@@ -939,36 +1230,100 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
     await browser.close().catch(() => {});
   }
 
-  // Phase 3: mux narration plus captions, then verify with ffprobe.
+  // Phase 3: ONE EDL drives video cuts, audio placement, captions, manifest.
   const uiMp4 = join(outDir, 'demo-ui.mp4');
   if (!existsSync(uiMp4)) fail('UI video missing after recording. Refusing to fake output.');
+  if (edl.length === 0) fail('no EDL entries were captured. Refusing to fake output.');
+  let slotCursor = 0;
+  for (const entry of edl) {
+    const kept = entry.source_out - entry.source_in;
+    if (kept + 0.5 < entry.slot_seconds) {
+      fail(`EDL hold ${entry.id} kept only ${kept.toFixed(1)}s, expected ${entry.slot_seconds}s. Evidence too short, refusing to pad video.`);
+    }
+    entry.slot_start = slotCursor;
+    entry.slot_end = slotCursor + entry.slot_seconds;
+    slotCursor = entry.slot_end;
+  }
+  const slotTotal = slotCursor;
+  if (slotTotal > HARD_LIMIT_SECONDS) fail(`EDL total ${slotTotal}s exceeds the ${HARD_LIMIT_SECONDS}s hard limit. Refusing.`);
+  const trimmedSpans = [];
+  let prevOut = 0;
+  for (const entry of edl) {
+    if (entry.source_in > prevOut + 0.1) trimmedSpans.push({ from_take: prevOut, to_take: entry.source_in, reason: 'setup, navigation, or run wait trimmed' });
+    prevOut = entry.source_in + entry.slot_seconds;
+  }
+  manifest.edl = edl;
+  manifest.trimmed_spans = trimmedSpans;
+  manifest.slot_total_seconds = slotTotal;
+  writeFileSync(join(outDir, 'edl.json'), JSON.stringify({ base_url: clean, slot_total_seconds: slotTotal, entries: edl, trimmed_spans: trimmedSpans }, null, 2));
+  info(`EDL total ${slotTotal}s from ${edl.length} evidence holds in real order. Trimmed ${trimmedSpans.length} setup and wait spans.`);
+
   const finalMp4 = join(outDir, 'launchcrew-demo.mp4');
   const srtPath = join(outDir, 'launchcrew-demo.srt');
+  const trimmedMp4 = join(outDir, 'trimmed-ui.mp4');
 
-  // Build captions from actual narration clip durations in take order.
-  let cursor = 0;
-  const srtBlocks = [];
-  let index = 1;
-  for (const clip of clipPlan) {
-    const start = cursor;
-    const end = cursor + clip.seconds;
-    srtBlocks.push(`${index}\n${formatSrtTime(start)} --> ${formatSrtTime(end)}\n[${clip.slot} ${clip.title}] ${clip.caption}\n`);
-    cursor = end + 0.4;
-    index += 1;
+  // Video: cut exactly slot_seconds from each source_in, concat in EDL order.
+  // No speedup, no freeze frames, no reordered evidence.
+  {
+    const cutList = [];
+    for (let i = 0; i < edl.length; i += 1) {
+      const entry = edl[i];
+      const cutPath = join(clipsDir, `edl_${String(i).padStart(2, '0')}_${entry.id}.mp4`);
+      const cut = await runTool(ffmpeg, ['-y', '-ss', String(entry.source_in), '-i', uiMp4, '-t', String(entry.slot_seconds), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-an', cutPath], 'ffmpeg edl cut');
+      if (!cut.ok) fail(`ffmpeg EDL cut failed for ${entry.id}: ${cut.stderr.slice(0, 500)}`);
+      cutList.push(`file '${cutPath.replace(/'/g, "'\\''")}'`);
+    }
+    const videoListPath = join(clipsDir, 'edl-video.txt');
+    writeFileSync(videoListPath, cutList.join('\n') + '\n');
+    const joinVideo = await runTool(ffmpeg, ['-y', '-f', 'concat', '-safe', '0', '-i', videoListPath, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', trimmedMp4], 'ffmpeg edl join');
+    if (!joinVideo.ok) fail(`ffmpeg EDL join failed: ${joinVideo.stderr.slice(0, 500)}`);
+    manifest.trimmed_video = 'trimmed-ui.mp4';
   }
-  writeFileSync(srtPath, srtBlocks.join('\n'));
+
+  // Captions from EDL slot times, contiguous, no invented gaps.
+  {
+    const srtBlocks = [];
+    for (let i = 0; i < edl.length; i += 1) {
+      const entry = edl[i];
+      const seg = SEGMENTS.find((s) => s.id === entry.id);
+      const title = seg ? seg.title : 'Stored Spark receipt';
+      const caption = seg ? seg.caption : 'Separate stored Spark receipt. Keyless wallet stays apart.';
+      const slotLabel = seg ? seg.slot : 'spark';
+      srtBlocks.push(`${i + 1}\n${formatSrtTime(entry.slot_start)} --> ${formatSrtTime(entry.slot_end)}\n[${slotLabel} ${title}] ${caption}\n`);
+    }
+    writeFileSync(srtPath, srtBlocks.join('\n'));
+  }
 
   if (opts.audio) {
-    const listPath = join(narrationDir, 'concat.txt');
-    const lines = clipPlan.map((clip) => `file '${clip.m4a.replace(/'/g, "'\\''")}'`);
-    writeFileSync(listPath, lines.join('\n') + '\n');
+    // Audio: pad each say clip with silence to its slot, silent slot for
+    // Spark, then concat in EDL order so audio aligns to video cuts.
+    const paddedList = [];
+    for (const entry of edl) {
+      if (entry.id === 'spark-proof') {
+        const silencePath = join(narrationDir, 'spark-proof-silence.m4a');
+        const silence = await runTool(ffmpeg, ['-y', '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo', '-t', String(entry.slot_seconds), '-c:a', 'aac', '-b:a', '128k', silencePath], 'ffmpeg silence');
+        if (!silence.ok) fail(`ffmpeg silence failed: ${silence.stderr.slice(0, 500)}`);
+        paddedList.push(`file '${silencePath.replace(/'/g, "'\\''")}'`);
+        entry.audio_seconds = 0;
+      } else {
+        const clip = clipPlan.find((c) => c.id === entry.id);
+        if (!clip || !clip.m4a) fail(`missing narration clip for EDL entry ${entry.id}. Refusing.`);
+        const paddedPath = join(narrationDir, `${entry.id}.padded.m4a`);
+        const pad = await runTool(ffmpeg, ['-y', '-i', clip.m4a, '-af', `apad,atrim=0:${entry.slot_seconds}`, '-c:a', 'aac', '-b:a', '128k', paddedPath], 'ffmpeg pad');
+        if (!pad.ok) fail(`ffmpeg audio pad failed for ${entry.id}: ${pad.stderr.slice(0, 500)}`);
+        paddedList.push(`file '${paddedPath.replace(/'/g, "'\\''")}'`);
+        entry.audio_seconds = clip.seconds;
+      }
+    }
+    const audioListPath = join(narrationDir, 'edl-concat.txt');
+    writeFileSync(audioListPath, paddedList.join('\n') + '\n');
     const narrationTrack = join(narrationDir, 'narration.m4a');
-    const concat = await runTool(ffmpeg, ['-y', '-f', 'concat', '-safe', '0', '-i', listPath, '-c', 'copy', narrationTrack], 'ffmpeg concat');
+    const concat = await runTool(ffmpeg, ['-y', '-f', 'concat', '-safe', '0', '-i', audioListPath, '-c', 'copy', narrationTrack], 'ffmpeg concat');
     if (!concat.ok) fail(`ffmpeg narration concat failed: ${concat.stderr.slice(0, 500)}`);
-    const mux = await runTool(ffmpeg, ['-y', '-i', uiMp4, '-i', narrationTrack, '-c:v', 'copy', '-c:a', 'aac', '-map', '0:v:0', '-map', '1:a:0', '-movflags', '+faststart', finalMp4], 'ffmpeg mux');
+    const mux = await runTool(ffmpeg, ['-y', '-i', trimmedMp4, '-i', narrationTrack, '-c:v', 'copy', '-c:a', 'aac', '-map', '0:v:0', '-map', '1:a:0', '-movflags', '+faststart', finalMp4], 'ffmpeg mux');
     if (!mux.ok) fail(`ffmpeg mux failed: ${mux.stderr.slice(0, 500)}`);
   } else {
-    copyFileSync(uiMp4, finalMp4);
+    copyFileSync(trimmedMp4, finalMp4);
   }
 
   // Burn captions is optional; keep the srt alongside for review.
@@ -986,15 +1341,18 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
     const streams = await ffprobeStreams(ffprobe, finalMp4);
     manifest.ffprobe = { duration_seconds: duration, width: streams.width, height: streams.height, has_audio: streams.hasAudio };
     writeFileSync(join(outDir, 'shot-manifest.json'), JSON.stringify(manifest, null, 2));
-    info(`ffprobe: ${duration.toFixed(1)}s, ${streams.width}x${streams.height}, audio ${streams.hasAudio ? 'yes' : 'no'}`);
+    info(`ffprobe: ${duration.toFixed(1)}s, ${streams.width}x${streams.height}, audio ${streams.hasAudio ? 'yes' : 'no'} (EDL ${slotTotal}s)`);
     if (streams.width !== VIEWPORT.width || streams.height !== VIEWPORT.height) {
       fail(`dimensions are ${streams.width}x${streams.height}, expected ${VIEWPORT.width}x${VIEWPORT.height}. Refusing to pass.`);
     }
     if (opts.audio && !streams.hasAudio) fail('final video has no audio track. Refusing to pass.');
     if (duration > HARD_LIMIT_SECONDS) {
-      fail(`final video is ${duration.toFixed(1)}s, over the ${HARD_LIMIT_SECONDS}s hard limit. Trim dead time honestly and re-run. No fake pass.`);
+      fail(`final video is ${duration.toFixed(1)}s, over the ${HARD_LIMIT_SECONDS}s hard limit. No fake pass.`);
     }
-    if (duration > TARGET_SECONDS + 10) {
+    if (Math.abs(duration - slotTotal) > 3) {
+      fail(`final video is ${duration.toFixed(1)}s but EDL total is ${slotTotal}s. Audio, video, and captions diverged. Refusing to pass.`);
+    }
+    if (duration > TARGET_SECONDS + 10 && slotTotal <= TARGET_SECONDS + 10) {
       warn(`final video is ${duration.toFixed(1)}s, over the ${TARGET_SECONDS}s target but within the hard limit`);
     }
     // Readability: file must be nontrivial and dimensions exact (above).
