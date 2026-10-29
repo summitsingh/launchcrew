@@ -898,7 +898,7 @@ export interface components {
                 [key: string]: unknown;
             };
             /** Kind */
-            kind?: ("brand_fact" | "profile" | "approval_example" | "blocked_rule") | null;
+            kind?: ("brand_fact" | "profile" | "approval_example" | "blocked_rule" | "voice_profile") | null;
             /** Title */
             title: string;
         };
@@ -912,7 +912,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "brand_fact" | "profile" | "approval_example" | "blocked_rule";
+            kind: "brand_fact" | "profile" | "approval_example" | "blocked_rule" | "voice_profile";
             /** Title */
             title: string;
         };
@@ -933,7 +933,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "brand_fact" | "profile" | "approval_example" | "blocked_rule";
+            kind: "brand_fact" | "profile" | "approval_example" | "blocked_rule" | "voice_profile";
             /** Source Run Id */
             source_run_id: string | null;
             /** Title */
@@ -1448,6 +1448,10 @@ export interface components {
             summary: {
                 [key: string]: unknown;
             };
+            /** @description Slice 3 selected voice source/version with banned terms. Style samples stay in Memory and never become facts. */
+            voice_profile?: components["schemas"]["VoiceProfileSection"] | null;
+            /** @description True when the selected voice was edited or deleted after this receipt; a new human revision check is required. */
+            voice_stale?: boolean | null;
         } & {
             [key: string]: unknown;
         };
@@ -1599,6 +1603,23 @@ export interface components {
             status_a: string;
             /** Status B */
             status_b: string;
+            /**
+             * Voice Changed
+             * @default false
+             */
+            voice_changed: boolean;
+            /** Voice Id A */
+            voice_id_a?: string | null;
+            /** Voice Id B */
+            voice_id_b?: string | null;
+            /** Voice Title A */
+            voice_title_a?: string | null;
+            /** Voice Title B */
+            voice_title_b?: string | null;
+            /** Voice Version A */
+            voice_version_a?: string | null;
+            /** Voice Version B */
+            voice_version_b?: string | null;
         };
         /** RunInput */
         RunInput: {
@@ -1766,6 +1787,27 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
+        };
+        /** VoiceProfileSection */
+        VoiceProfileSection: {
+            /** Banned Term Count */
+            banned_term_count?: number | null;
+            /** Banned Terms */
+            banned_terms?: string[] | null;
+            /** Digest */
+            digest?: string | null;
+            /** Example Count */
+            example_count?: number | null;
+            /** Id */
+            id?: string | null;
+            /** Notice */
+            notice?: string | null;
+            /** Title */
+            title?: string | null;
+            /** Version */
+            version?: string | null;
+        } & {
+            [key: string]: unknown;
         };
     };
     responses: never;

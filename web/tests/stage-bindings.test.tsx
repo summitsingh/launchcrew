@@ -61,6 +61,7 @@ describe('per-stage role selections', () => {
       checker_name_a: 'Checker', checker_name_b: 'PriceGuard',
       stage_bindings_changed: true,
       memory_ids_a: [], memory_ids_b: [],
+      voice_changed: false,
       blocked_claims_only_in_a: [], blocked_claims_only_in_b: [{ claim: '$49', reason: "Blocked by Checker policy 'price_claims': price value" }],
       approval_state_a: 'pending_approval', approval_state_b: 'pending_approval', approval_state_changed: false,
       status_a: 'completed', status_b: 'completed',

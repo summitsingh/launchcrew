@@ -42,7 +42,7 @@ describe('v2 review controls', () => {
       draft_v1_post_a: 'First A', draft_v1_post_b: 'First B', draft_v2_post_a: 'Final A', draft_v2_post_b: 'Final B', draft_v2_email_a: 'Email A', draft_v2_email_b: 'Email B',
       checker_v1_blocked_count_a: 1, checker_v1_blocked_count_b: 0, checker_v2_blocked_count_a: 0, checker_v2_blocked_count_b: 0,
       blocked_claims_only_in_a: [{ claim: 'best in Texas', reason: 'Unsupported' }], blocked_claims_only_in_b: [],
-      approval_state_a: 'pending_approval', approval_state_b: 'approved_for_export', approval_state_changed: true, status_a: 'completed', status_b: 'completed', receipt_keys_only_in_a: ['demo_extra'], receipt_keys_only_in_b: [], checker_profile_a: 'standard', checker_profile_b: 'strict', checker_profile_changed: true, memory_ids_a: [], memory_ids_b: [], stage_bindings_changed: false
+      approval_state_a: 'pending_approval', approval_state_b: 'approved_for_export', approval_state_changed: true, status_a: 'completed', status_b: 'completed', receipt_keys_only_in_a: ['demo_extra'], receipt_keys_only_in_b: [], checker_profile_a: 'standard', checker_profile_b: 'strict', checker_profile_changed: true, memory_ids_a: [], memory_ids_b: [], stage_bindings_changed: false, voice_changed: false
     };
     const html = renderToStaticMarkup(<DiffResult diff={diff} />);
     for (const text of ['different ideas', 'Draft changes', 'First A', 'Final B', 'Email A', 'Checker verdict changes', 'Checker profile changes', 'standard', 'strict', 'best in Texas', 'Approval state changes', 'approved_for_export', 'Receipt key diff', 'demo_extra']) expect(html).toContain(text);
