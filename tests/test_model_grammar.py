@@ -61,7 +61,8 @@ class GrammarTests(unittest.TestCase):
         receipt = self.run_demo({'claims': [good],
                                  'post_lines': [post_line],
                                  'email_lines': [email_line]},
-                                approve=True)
+                                approve=False)
+        receipt = human_review.approve_current(receipt, 'demo_human')
         for key in ('maker_draft_v1', 'maker_draft_v2'):
             draft = receipt[key]
             self.assertEqual(draft['draft_origin'], 'model_safe')

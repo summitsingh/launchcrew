@@ -44,16 +44,23 @@ class ReceiptTests(unittest.TestCase):
             export_receipt(receipt, Path(self.temp.name) / 'export.json')
 
     def test_seed_revision_and_approval(self):
-        receipt = self.run_demo(True, True)
+        from launchcrew import human_review
+        receipt = self.run_demo(False, True)
         self.assertEqual(receipt['checker_v1']['blocked_claims'], [{'claim': 'best in Texas', 'reason': 'Claim not found in facts file'}])
         self.assertEqual(receipt['checker_v2']['blocked_count'], 0)
         self.assertNotIn('best in Texas', json.dumps(receipt['maker_draft_v2']))
         self.assertTrue(receipt['summary']['revised'])
+        self.assertEqual(receipt['approval_state'], 'pending_approval')
+        # Bound approval happens after the receipt is prepared, so the
+        # approval event follows receipt instead of preceding it.
+        receipt = human_review.approve_current(receipt, 'demo_human')
         self.assertEqual(receipt['approval_state'], 'approved_for_export')
         self.assertEqual(receipt['approvals'][0]['approved_by'], 'demo_human')
+        self.assertEqual(receipt['approval_binding']['version'],
+                         human_review.APPROVAL_BINDING_VERSION)
         export_receipt(receipt, Path(self.temp.name) / 'export.json')
         steps = [e['step'] for e in receipt['audit']['event_log']]
-        self.assertEqual(steps, ['deterministic_checks', 'scout', 'maker_draft_v1', 'checker_v1', 'maker_draft_v2', 'checker_v2', 'approval', 'receipt'])
+        self.assertEqual(steps, ['deterministic_checks', 'scout', 'maker_draft_v1', 'checker_v1', 'maker_draft_v2', 'checker_v2', 'receipt', 'approval'])
 
     def test_no_key_never_calls_network(self):
         with patch.object(spark, 'urlopen') as network:
