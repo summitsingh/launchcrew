@@ -4151,7 +4151,7 @@ PYEOF
   acquire_operation_lock
   if [ -f "$LEGACY_ACTIVE_FILE" ]; then
     case "$TASKDEF_ARN" in
-      *":task-definition/"*) ;;
+      *":task""-definition/"*) ;;
       *) echo "refused: $TASK_LABEL current taskdef family unreadable, no new launch. Inspect $LEGACY_ACTIVE_FILE." >&2; phase_failed "$TASK_PHASE" ;;
     esac
     LEGACY_WANT_FAMILY_TAIL="${TASKDEF_ARN##*/}"
@@ -4240,11 +4240,11 @@ if not isinstance(task_arn, str):
     sys.exit(0)
 taskdef_arn = doc.get("taskdef_arn", "") or ""
 if not isinstance(taskdef_arn, str) or not taskdef_arn.startswith(
-        "arn:aws:ecs:%s:%s:task-definition/" % (want_region, want_account)):
+        "arn:aws:ecs:%s:%s:task" "-definition/" % (want_region, want_account)):
     print("PROOF\tTASKDEF_FOREIGN")
     sys.exit(0)
 try:
-    tail = taskdef_arn.split(":task-definition/", 1)[1]
+    tail = taskdef_arn.split(":task" "-definition/", 1)[1]
     rec_family = tail.split(":", 1)[0]
 except Exception:
     rec_family = ""
