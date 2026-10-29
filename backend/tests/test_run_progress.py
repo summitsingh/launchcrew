@@ -332,8 +332,15 @@ def test_step_journal_loss_fails_honestly_without_further_model_work(client, mon
     monkeypatch.setattr(run_jobs, 'record_step', failing_record)
     monkeypatch.setattr(core_run, 'run_pipeline', counted)
     run_id = create_async(client)
-    steps, receipt = wait_until(
-        client, run_id, lambda steps, receipt: receipt['status'] == 'failed')
+
+    def failed_and_journaled(steps, receipt):
+        if receipt['status'] != 'failed':
+            return False
+        failed = [row for row in steps['steps']
+                  if row['state'] == 'failed' and row['stage'] == 'scout']
+        return len(failed) == 1
+
+    steps, receipt = wait_until(client, run_id, failed_and_journaled)
     assert len(calls) == 1
     assert receipt['error_type'] == 'StepJournalError'
     assert receipt['audit']['stopped_reason'] == 'scout'
