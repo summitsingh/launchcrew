@@ -42,7 +42,8 @@ for (const width of [375, 768, 1024, 1440]) {
       await page.getByLabel('Include the unsupported claim demo').check();
       await page.getByRole('button', { name: 'Create draft', exact: true }).click();
       await expect(page.getByRole('heading', { name: 'Unsupported claims stopped.' })).toBeVisible();
-      await expect(page.getByText('best in Texas', { exact: true })).toBeVisible();
+      const firstCheck = page.locator('section', { has: page.getByRole('heading', { name: 'Unsupported claims stopped.' }) });
+      await expect(firstCheck.getByText('best in Texas', { exact: true })).toBeVisible();
       await expect(page.getByText('The revised draft uses only approved facts. Final blocked count: 0.')).toBeVisible();
       await noOverflow(page);
       await page.screenshot({ path: `${local}/run-${width}.png`, fullPage: true });

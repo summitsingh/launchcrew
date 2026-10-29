@@ -105,7 +105,8 @@ test('custom Scout and Checker selection changes verdict and receipt identity', 
   expect(defaultReceipt.scout.facts_used).toHaveLength(5);
   expect(defaultReceipt.scout.risks).toHaveLength(3);
   const defaultScout = page.locator('section[aria-label="Scout facts and sources"]');
-  await expect(defaultScout.locator('.scout-fact')).toHaveCount(5);
+  const defaultSourcedFacts = defaultScout.locator('h3:has-text("Sourced facts") + ul > li.scout-fact');
+  await expect(defaultSourcedFacts).toHaveCount(5);
   await expect(defaultScout.locator('.scout-risk')).toHaveCount(3);
   await page.screenshot({ path: `${local}/04-default.png`, fullPage: true });
 
@@ -135,7 +136,8 @@ test('custom Scout and Checker selection changes verdict and receipt identity', 
   expect(guardedReceipt.scout.sources).toEqual(['demo_facts.json', 'demo brand brief']);
   const guardedScout = page.locator('section[aria-label="Scout facts and sources"]');
   await expect(guardedScout).toContainText(`Scout stage: ${scoutName}`);
-  await expect(guardedScout.locator('.scout-fact')).toHaveCount(5);
+  const guardedSourcedFacts = guardedScout.locator('h3:has-text("Sourced facts") + ul > li.scout-fact');
+  await expect(guardedSourcedFacts).toHaveCount(5);
   await expect(guardedScout.locator('.scout-risk')).toHaveCount(3);
   await expect(guardedScout.getByText('Verified', { exact: true })).toHaveCount(5);
   for (const claim of ['100% vegan PU leather', 'Designed in Texas', '$49', 'Vegan leather wallet', 'For Austin commuters']) {
