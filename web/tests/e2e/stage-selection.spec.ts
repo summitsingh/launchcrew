@@ -141,7 +141,7 @@ test('custom Scout and Checker selection changes verdict and receipt identity', 
   await expect(guardedScout.locator('.scout-risk')).toHaveCount(3);
   await expect(guardedScout.getByText('Verified', { exact: true })).toHaveCount(5);
   for (const claim of ['100% vegan PU leather', 'Designed in Texas', '$49', 'Vegan leather wallet', 'For Austin commuters']) {
-    await expect(guardedScout.getByText(claim, { exact: true })).toBeVisible();
+    await expect(guardedSourcedFacts.getByText(claim, { exact: true })).toBeVisible();
   }
   await expect(guardedScout.getByText('Demo risk, unverified').first()).toBeVisible();
   await expect(guardedScout).toContainText('No external research was run');

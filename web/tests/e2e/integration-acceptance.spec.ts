@@ -55,8 +55,8 @@ test('integration acceptance V1 plus V2', async ({ page, request }) => {
   await page.getByLabel('Include the unsupported claim demo').check();
   await page.getByRole('button', { name: 'Create draft', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Unsupported claims stopped.' })).toBeVisible();
-  const firstCheck = page.locator('section', { has: page.getByRole('heading', { name: 'Unsupported claims stopped.' }) });
-  await expect(firstCheck.getByText('best in Texas', { exact: true })).toBeVisible();
+  const firstCheck = page.locator('section.panel', { has: page.getByRole('heading', { name: 'Unsupported claims stopped.', exact: true }) });
+  await expect(firstCheck.locator('.blocked').getByText('best in Texas', { exact: true })).toBeVisible();
   await expect(page.getByText('The revised draft uses only approved facts. Final blocked count: 0.')).toBeVisible();
   const v1Scout = page.locator('section[aria-label="Scout facts and sources"]');
   const v1SourcedFacts = v1Scout.locator('h3:has-text("Sourced facts") + ul > li.scout-fact');
