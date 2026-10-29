@@ -160,6 +160,8 @@ if [ "$1" = "cloudformation" ] && [ "$2" = "describe-stack-resource" ]; then
     PublicSubnetB) printf 'subnet-bbb\\n'; exit 0 ;;
     JobSecurityGroup) printf 'sg-ccc\\n'; exit 0 ;;
     Database) printf 'launchcrew-demo-db\\n'; exit 0 ;;
+    ApiService) printf '%s\\n' "${FAKE_API_SERVICE:-launchcrew-demo-ApiService-A1B2C3D4E5F6}"; exit 0 ;;
+    WebService) printf '%s\\n' "${FAKE_WEB_SERVICE:-launchcrew-demo-WebService-G7H8I9J0K1L2}"; exit 0 ;;
     ApiExecutionRole|WebExecutionRole|MigrationExecutionRole|BootstrapExecutionRole|VerifyExecutionRole|SdkInitExecutionRole|SdkMaterialExecutionRole|ApiTaskRole|WebTaskRole|MigrationTaskRole|BootstrapTaskRole|VerifyTaskRole|SdkInitTaskRole|SdkMaterialTaskRole) printf '%s-physical\\n' "$RESOURCE_LOGICAL"; exit 0 ;;
   esac
   echo "fake-aws: unexpected resource lookup: $*" >&2
@@ -604,8 +606,40 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-task""-definition" ]; then
   exit 0
 fi
 if [ "$1" = "ecs" ] && [ "$2" = "describe-services" ]; then
-  if [ "$MODE" = "enable_wrong" ]; then printf '2\\t0\\n'; exit 0; fi
-  printf '1\\t1\\n'; exit 0
+  SVC_ARG=""
+  SVC_PREV=""
+  for SVC_ITEM in "$@"; do
+    if [ "$SVC_PREV" = "--services" ]; then SVC_ARG="$SVC_ITEM"; fi
+    SVC_PREV="$SVC_ITEM"
+  done
+  OWNED_API="${FAKE_API_SERVICE:-launchcrew-demo-ApiService-A1B2C3D4E5F6}"
+  OWNED_WEB="${FAKE_WEB_SERVICE:-launchcrew-demo-WebService-G7H8I9J0K1L2}"
+  SVC_MODE="${FAKE_SERVICE:-ok}"
+  if [ "$MODE" = "enable_wrong" ]; then SVC_MODE="desired2"; fi
+  case "$SVC_ARG" in
+    "$OWNED_API"|"$OWNED_WEB") ;;
+    *) printf '{"services":[],"failures":[{"arn":"arn:aws:ecs:us-east-1:111122223333:service/launchcrew-demo/%s","reason":"MISSING"}]}\\n' "$SVC_ARG"; exit 0 ;;
+  esac
+  SVC_NAME="$SVC_ARG"
+  SVC_ARN="arn:aws:ecs:us-east-1:111122223333:service/launchcrew-demo/$SVC_NAME"
+  SVC_CLUSTER="arn:aws:ecs:us-east-1:111122223333:cluster/launchcrew-demo"
+  SVC_STATUS="ACTIVE"
+  SVC_DESIRED=1
+  SVC_RUNNING=1
+  SVC_PENDING=0
+  if [ "$SVC_MODE" = "malformed" ]; then printf 'not-json{{{\\n'; exit 0; fi
+  if [ "$SVC_MODE" = "empty" ]; then printf '{"services":[],"failures":[{"arn":"%s","reason":"MISSING"}]}\\n' "$SVC_ARN"; exit 0; fi
+  if [ "$SVC_MODE" = "duplicate" ]; then printf '{"services":[{"serviceArn":"%s","serviceName":"%s","clusterArn":"%s","status":"ACTIVE","desiredCount":1,"runningCount":1,"pendingCount":0},{"serviceArn":"%s","serviceName":"%s","clusterArn":"%s","status":"ACTIVE","desiredCount":1,"runningCount":1,"pendingCount":0}],"failures":[]}\\n' "$SVC_ARN" "$SVC_NAME" "$SVC_CLUSTER" "$SVC_ARN" "$SVC_NAME" "$SVC_CLUSTER"; exit 0; fi
+  if [ "$SVC_MODE" = "wrong" ]; then SVC_NAME="other-service"; SVC_ARN="arn:aws:ecs:us-east-1:111122223333:service/launchcrew-demo/other-service"; fi
+  if [ "$SVC_MODE" = "wrong_cluster" ]; then SVC_CLUSTER="arn:aws:ecs:us-east-1:111122223333:cluster/other-cluster"; fi
+  if [ "$SVC_MODE" = "inactive" ]; then SVC_STATUS="DRAINING"; fi
+  if [ "$SVC_MODE" = "desired" ]; then SVC_DESIRED=0; fi
+  if [ "$SVC_MODE" = "desired2" ]; then SVC_DESIRED=2; SVC_RUNNING=0; fi
+  if [ "$SVC_MODE" = "running" ]; then SVC_RUNNING=0; fi
+  if [ "$SVC_MODE" = "pending" ]; then SVC_PENDING=1; fi
+  if [ "$SVC_MODE" = "failures" ]; then printf '{"services":[{"serviceArn":"%s","serviceName":"%s","clusterArn":"%s","status":"%s","desiredCount":%s,"runningCount":%s,"pendingCount":%s}],"failures":[{"arn":"%s","reason":"FAIL"}]}\\n' "$SVC_ARN" "$SVC_NAME" "$SVC_CLUSTER" "$SVC_STATUS" "$SVC_DESIRED" "$SVC_RUNNING" "$SVC_PENDING" "$SVC_ARN"; exit 0; fi
+  printf '{"services":[{"serviceArn":"%s","serviceName":"%s","clusterArn":"%s","status":"%s","desiredCount":%s,"runningCount":%s,"pendingCount":%s}],"failures":[]}\\n' "$SVC_ARN" "$SVC_NAME" "$SVC_CLUSTER" "$SVC_STATUS" "$SVC_DESIRED" "$SVC_RUNNING" "$SVC_PENDING"
+  exit 0
 fi
 if [ "$1" = "budgets" ] && [ "$2" = "describe-budget" ]; then
   BUDGET_MODE="${FAKE_BUDGET:-exact}"
@@ -1199,6 +1233,112 @@ class PhaseOrderingTests(BootstrapHarness):
                 index += 1
         return [{"ParameterKey": key, "ParameterValue": value}
                 for key, value in sorted(items.items())]
+
+
+class EnableServiceProofTests(BootstrapHarness):
+    API_PHYSICAL = "launchcrew-demo-ApiService-A1B2C3D4E5F6"
+    WEB_PHYSICAL = "launchcrew-demo-WebService-G7H8I9J0K1L2"
+
+    def test_enable_uses_owned_physical_service_ids(self):
+        result, calls = self.run_bootstrap([*self.base_args(), "--phase", "enable"])
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertIn("BOOTSTRAP COMPLETE", result.stdout)
+        self.assertIn("desiredCount 1", result.stdout)
+        self.assertIn("pendingCount 0", result.stdout)
+        self.assertIn("ACTIVE", result.stdout)
+        self.assertTrue(any("describe-stack-resource" in call and "ApiService" in call
+                           for call in calls))
+        self.assertTrue(any("describe-stack-resource" in call and "WebService" in call
+                           for call in calls))
+        svc_calls = [call for call in calls if "describe-services" in call]
+        self.assertEqual(len(svc_calls), 2)
+        for call in svc_calls:
+            self.assertIn("--cluster launchcrew-demo", call)
+            self.assertIn("--output json", call)
+            self.assertNotIn("--query services[0]", call)
+        joined = " ".join(svc_calls)
+        self.assertIn(self.API_PHYSICAL, joined)
+        self.assertIn(self.WEB_PHYSICAL, joined)
+        self.assertNotIn("launchcrew-demo-api", joined)
+        self.assertNotIn("launchcrew-demo-web", joined)
+
+    def test_enable_refuses_service_proof_failures(self):
+        cases = {
+            "empty": "EMPTY",
+            "failures": "FAILURES",
+            "inactive": "NOT_ACTIVE",
+            "desired": "DESIRED_",
+            "running": "RUNNING_",
+            "pending": "PENDING_",
+            "wrong": "WRONG_SERVICE",
+            "duplicate": "DUPLICATE",
+            "malformed": "MALFORMED",
+            "wrong_cluster": "WRONG_CLUSTER",
+        }
+        for mode, token in cases.items():
+            with self.subTest(mode=mode):
+                result, calls = self.run_bootstrap(
+                    [*self.base_args(), "--phase", "enable"],
+                    extra_env={"FAKE_SERVICE": mode})
+                self.assertNotEqual(result.returncode, 0, msg=mode)
+                combined = result.stdout + result.stderr
+                self.assertIn("refused", combined, msg=mode)
+                self.assertIn(token, combined, msg=mode)
+                self.assertNotIn("BOOTSTRAP COMPLETE", result.stdout, msg=mode)
+                self.assertTrue(any("describe-services" in call for call in calls),
+                                msg=mode)
+
+    def test_enable_refuses_missing_service_identity(self):
+        result, _ = self.run_bootstrap(
+            [*self.base_args(), "--phase", "enable"],
+            extra_env={"FAKE_API_SERVICE": "None"})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("owned identifier missing", combined)
+        self.assertNotIn("BOOTSTRAP COMPLETE", result.stdout)
+
+    def test_describe_services_fixture_shapes(self):
+        import json as _json
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = Path(tmp) / "fake-aws"
+            fake.write_text(FAKE_AWS, encoding="utf-8")
+            fake.chmod(fake.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            env = dict(os.environ)
+            env["FAKE_MODE"] = "success"
+            proc = subprocess.run(
+                [str(fake), "ecs", "describe-services",
+                 "--cluster", "launchcrew-demo",
+                 "--services", "launchcrew-demo-api",
+                 "--region", REGION, "--output", "json"],
+                capture_output=True, text=True, env=env, check=False)
+            self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+            doc = _json.loads(proc.stdout)
+            self.assertEqual(doc["services"], [])
+            self.assertTrue(doc["failures"])
+            self.assertEqual(doc["failures"][0]["reason"], "MISSING")
+            for physical in (self.API_PHYSICAL, self.WEB_PHYSICAL):
+                proc = subprocess.run(
+                    [str(fake), "ecs", "describe-services",
+                     "--cluster", "launchcrew-demo",
+                     "--services", physical,
+                     "--region", REGION, "--output", "json"],
+                    capture_output=True, text=True, env=env, check=False)
+                self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+                doc = _json.loads(proc.stdout)
+                self.assertEqual(doc["failures"], [])
+                self.assertEqual(len(doc["services"]), 1)
+                svc = doc["services"][0]
+                self.assertEqual(svc["serviceName"], physical)
+                self.assertEqual(
+                    svc["serviceArn"],
+                    f"arn:aws:ecs:{REGION}:{ACCOUNT}:service/launchcrew-demo/{physical}")
+                self.assertEqual(
+                    svc["clusterArn"],
+                    f"arn:aws:ecs:{REGION}:{ACCOUNT}:cluster/launchcrew-demo")
+                self.assertEqual(svc["status"], "ACTIVE")
+                self.assertEqual(svc["desiredCount"], 1)
+                self.assertEqual(svc["runningCount"], 1)
+                self.assertEqual(svc["pendingCount"], 0)
 
 
 class CostTagAdmissionTests(BootstrapHarness):

@@ -28,9 +28,9 @@
 #   phase enable  re-prove images, owned secrets and execution roles, plus the
 #                 read-only material verify and the runtime-only verify proof,
 #                 then update the stack with EnableServices=true for fixed
-#                 count 1 each, then verify both services report desired 1 and
-#                 running 1. Standalone enable never populates, exports,
-#                 binds, or migrates.
+#                 count 1 each, then verify both owned physical services report
+#                 ACTIVE desired 1 running 1 pending 0 with no failures.
+#                 Standalone enable never populates, exports, binds, or migrates.
 #   phase all     full readiness chain: owned foundation COMPLETE plus exact
 #                 confirmed SNS gate, owned prereqs ISSUED plus owned secret
 #                 metadata, then infra, images, init, material, dbroles,
@@ -204,8 +204,9 @@ phase_plan() {
   echo "     thresholds read back, Project activation verified Active read-only, never"
   echo "     activated here), then re-prove images, bindings, the read-only material"
   echo "     verify and the runtime-only verify proof from live state, then update stack"
-  echo "     with EnableServices=true, verify desired 1 and running 1 each (configuration"
-  echo "     check only; serving health is proven by ALB targets after DNS). Standalone"
+  echo "     with EnableServices=true, verify owned services ACTIVE desired 1 running 1"
+  echo "     pending 0 each (configuration check only; serving health is proven by"
+  echo "     ALB targets after DNS). Standalone"
   echo "     enable never populates, exports, binds, or migrates."
   echo "Per-phase inputs: infra needs stack, account, region, parameters file plus foundation gate args;"
   echo "  images needs the five image URIs plus the four secret ARNs for the API and web bindings;"
@@ -3531,6 +3532,112 @@ check_budget_readiness() {
   echo "Budget readiness: filtered spend with no data or 0 is NOT proof of zero spend and NOT a hard cap. Spend starts at infra, RDS, and ALB creation even at DesiredCount 0. Manual billing guard stays on the operator."
 }
 
+# Fail-closed ECS service count proof for enable. CloudFormation does not set
+# ServiceName, so physical service names are generated. A guessed name query
+# returns empty services plus failures with CLI exit 0, and services[0]
+# yields None, which is never treated as success. This resolves the exact
+# owned physical ApiService or WebService identifier via describe-stack-resource,
+# queries that identifier on the current cluster with full DescribeServices
+# JSON and no JMESPath projection, then requires exactly one service with no
+# failures, matching owned identity, owned cluster ARN, ACTIVE status, and
+# desired 1, running 1, pending 0. Missing, duplicate, wrong identity,
+# failures, non-ACTIVE, count mismatch, or malformed JSON all refuse.
+verify_ecs_service() {
+  VERIFY_LOGICAL="$1"
+  VERIFY_SHORT="$2"
+  VERIFY_PHYSICAL=""
+  if ! VERIFY_PHYSICAL="$(stack_resource "$VERIFY_LOGICAL" 2>"$TMP_ERR")"; then
+    echo "service $VERIFY_SHORT owned identifier unreadable, not claimed running." >&2
+    phase_failed enable
+  fi
+  VERIFY_PHYSICAL="$(printf '%s' "$VERIFY_PHYSICAL" | tr -d '[:space:]')"
+  [ -n "$VERIFY_PHYSICAL" ] && [ "$VERIFY_PHYSICAL" != "None" ] || { echo "refused: service $VERIFY_SHORT owned identifier missing, not claimed running." >&2; phase_failed enable; }
+  VERIFY_JSON="$(mktemp /tmp/launchcrew-svc-XXXXXX)"
+  if ! "$AWS_BIN" ecs describe-services --cluster "$CLUSTER_NAME" --services "$VERIFY_PHYSICAL" --region "$EXPECTED_REGION" --output json >"$VERIFY_JSON" 2>"$TMP_ERR"; then
+    rm -f "$VERIFY_JSON"
+    echo "service $VERIFY_SHORT counts unreadable, not claimed running." >&2
+    phase_failed enable
+  fi
+  VERIFY_PROOF="$(python3 - "$VERIFY_JSON" "$VERIFY_PHYSICAL" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$CLUSTER_NAME" 2>/dev/null <<'PYEOF'
+import json, sys
+path, expected_id, account, region, cluster = sys.argv[1:6]
+try:
+    doc = json.load(open(path))
+except Exception:
+    print("MALFORMED")
+    sys.exit(0)
+if not isinstance(doc, dict):
+    print("MALFORMED")
+    sys.exit(0)
+failures = doc.get("failures", None)
+if not isinstance(failures, list):
+    print("MALFORMED")
+    sys.exit(0)
+if failures:
+    print("FAILURES")
+    sys.exit(0)
+services = doc.get("services", None)
+if not isinstance(services, list):
+    print("MALFORMED")
+    sys.exit(0)
+if len(services) == 0:
+    print("EMPTY")
+    sys.exit(0)
+if len(services) != 1:
+    print("DUPLICATE")
+    sys.exit(0)
+svc = services[0]
+if not isinstance(svc, dict):
+    print("MALFORMED")
+    sys.exit(0)
+arn = svc.get("serviceArn", "")
+name = svc.get("serviceName", "")
+if (not isinstance(arn, str) or not isinstance(name, str)
+        or not arn or not name or arn == "None" or name == "None"):
+    print("IDENTITY_MISSING")
+    sys.exit(0)
+if arn != expected_id and name != expected_id:
+    print("WRONG_SERVICE")
+    sys.exit(0)
+prefix = "arn:aws:ecs:%s:%s:service/" % (region, account)
+if not arn.startswith(prefix):
+    print("WRONG_SERVICE")
+    sys.exit(0)
+expected_cluster = "arn:aws:ecs:%s:%s:cluster/%s" % (region, account, cluster)
+if (svc.get("clusterArn", "") or "") != expected_cluster:
+    print("WRONG_CLUSTER")
+    sys.exit(0)
+if (svc.get("status", "") or "") != "ACTIVE":
+    print("NOT_ACTIVE")
+    sys.exit(0)
+desired = svc.get("desiredCount", None)
+running = svc.get("runningCount", None)
+pending = svc.get("pendingCount", None)
+for value in (desired, running, pending):
+    if not isinstance(value, int) or isinstance(value, bool):
+        print("MALFORMED")
+        sys.exit(0)
+if desired != 1:
+    print("DESIRED_%s" % desired)
+    sys.exit(0)
+if running != 1:
+    print("RUNNING_%s" % running)
+    sys.exit(0)
+if pending != 0:
+    print("PENDING_%s" % pending)
+    sys.exit(0)
+print("OK")
+PYEOF
+)" || { rm -f "$VERIFY_JSON"; echo "service $VERIFY_SHORT proof unreadable, not claimed running." >&2; phase_failed enable; }
+  rm -f "$VERIFY_JSON"
+  VERIFY_PROOF="$(printf '%s' "$VERIFY_PROOF" | tr -d '[:space:]')"
+  case "$VERIFY_PROOF" in
+    OK)
+      echo "Verified service $VERIFY_PHYSICAL desiredCount 1 runningCount 1 pendingCount 0 ACTIVE (configuration check; serving health needs ALB targets after DNS)" ;;
+    *) echo "refused: service $VERIFY_SHORT proof is $VERIFY_PROOF, expected ACTIVE fixed 1/1/0 on owned identity" >&2; phase_failed enable ;;
+  esac
+}
+
 if wants_phase enable; then
   echo "Phase enable: update stack with EnableServices=true for fixed count 1 each"
   [ "$STACK_EXISTS" -eq 1 ] || { echo "refused: no stack to enable; run --phase infra first" >&2; phase_failed enable; }
@@ -3577,19 +3684,8 @@ if wants_phase enable; then
     echo "enable wait reported, verifying service counts before any claim." >&2
   fi
   require_stack_complete enable
-  for SERVICE in api web; do
-    COUNTS=""
-    if ! COUNTS="$("$AWS_BIN" ecs describe-services --cluster "$CLUSTER_NAME" --services "launchcrew-demo-$SERVICE" --region "$EXPECTED_REGION" --query "services[0].[desiredCount,runningCount]" --output text 2>"$TMP_ERR")"; then
-      echo "service $SERVICE counts unreadable, not claimed running." >&2
-      phase_failed enable
-    fi
-    COUNTS="$(printf '%s' "$COUNTS" | tr '\t' ' ' | tr -s ' ')"
-    DESIRED="$(printf '%s' "$COUNTS" | cut -d' ' -f1)"
-    RUNNING="$(printf '%s' "$COUNTS" | cut -d' ' -f2)"
-    [ "$DESIRED" = "1" ] || { echo "refused: service $SERVICE desiredCount is $DESIRED, expected fixed 1" >&2; phase_failed enable; }
-    [ "$RUNNING" = "1" ] || { echo "refused: service $SERVICE runningCount is $RUNNING, expected 1; configuration set but tasks not running" >&2; phase_failed enable; }
-    echo "Verified service launchcrew-demo-$SERVICE desiredCount 1 runningCount 1 (configuration check; serving health needs ALB targets after DNS)"
-  done
+  verify_ecs_service ApiService api
+  verify_ecs_service WebService web
   mark_done enable
   echo "Phase enable complete: both services fixed count 1 each, no autoscaling"
 fi

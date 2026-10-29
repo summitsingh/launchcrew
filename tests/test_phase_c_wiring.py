@@ -136,6 +136,8 @@ if [ "$1" = "cloudformation" ] && [ "$2" = "describe-stack-resource" ]; then
     PublicSubnetB) printf 'subnet-bbb\\n'; exit 0 ;;
     JobSecurityGroup) printf 'sg-ccc\\n'; exit 0 ;;
     Database) printf 'launchcrew-demo-db\\n'; exit 0 ;;
+    ApiService) printf '%s\\n' "${FAKE_API_SERVICE:-launchcrew-demo-ApiService-A1B2C3D4E5F6}"; exit 0 ;;
+    WebService) printf '%s\\n' "${FAKE_WEB_SERVICE:-launchcrew-demo-WebService-G7H8I9J0K1L2}"; exit 0 ;;
     ApiExecutionRole|WebExecutionRole|MigrationExecutionRole|BootstrapExecutionRole|VerifyExecutionRole|SdkInitExecutionRole|SdkMaterialExecutionRole|ApiTaskRole|WebTaskRole|MigrationTaskRole|BootstrapTaskRole|VerifyTaskRole|SdkInitTaskRole|SdkMaterialTaskRole) printf '%s-physical\\n' "$RESOURCE_LOGICAL"; exit 0 ;;
   esac
   echo "fake-aws: unexpected resource lookup: $*" >&2
@@ -415,7 +417,20 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-task""-definition" ]; then
   exit 0
 fi
 if [ "$1" = "ecs" ] && [ "$2" = "describe-services" ]; then
-  printf '1\\t1\\n'; exit 0
+  SVC_ARG=""
+  SVC_PREV=""
+  for SVC_ITEM in "$@"; do
+    if [ "$SVC_PREV" = "--services" ]; then SVC_ARG="$SVC_ITEM"; fi
+    SVC_PREV="$SVC_ITEM"
+  done
+  OWNED_API="${FAKE_API_SERVICE:-launchcrew-demo-ApiService-A1B2C3D4E5F6}"
+  OWNED_WEB="${FAKE_WEB_SERVICE:-launchcrew-demo-WebService-G7H8I9J0K1L2}"
+  case "$SVC_ARG" in
+    "$OWNED_API"|"$OWNED_WEB") ;;
+    *) printf '{"services":[],"failures":[{"arn":"arn:aws:ecs:us-east-1:111122223333:service/launchcrew-demo/%s","reason":"MISSING"}]}\\n' "$SVC_ARG"; exit 0 ;;
+  esac
+  printf '{"services":[{"serviceArn":"arn:aws:ecs:us-east-1:111122223333:service/launchcrew-demo/%s","serviceName":"%s","clusterArn":"arn:aws:ecs:us-east-1:111122223333:cluster/launchcrew-demo","status":"ACTIVE","desiredCount":1,"runningCount":1,"pendingCount":0}],"failures":[]}\\n' "$SVC_ARG" "$SVC_ARG"
+  exit 0
 fi
 if [ "$1" = "budgets" ] && [ "$2" = "describe-budget" ]; then
   BUDGET_MODE="${FAKE_BUDGET:-exact}"
