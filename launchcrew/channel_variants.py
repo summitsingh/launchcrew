@@ -36,14 +36,80 @@ SIZE_RE = re.compile(
     re.I,
 )
 
+ABBREVIATIONS = frozenset(
+    {
+        "mr",
+        "mrs",
+        "ms",
+        "dr",
+        "prof",
+        "sr",
+        "jr",
+        "st",
+        "vs",
+        "dept",
+        "inc",
+        "ltd",
+        "co",
+        "corp",
+        "ave",
+        "blvd",
+        "rd",
+        "ft",
+        "fig",
+        "no",
+        "nos",
+        "approx",
+        "appt",
+        "apt",
+        "etc",
+    }
+)
+
+
+def _is_abbreviation_period(chunk, idx):
+    """True when chunk[idx] is a period that does not end a sentence."""
+    if chunk[idx] != ".":
+        return False
+    if idx >= 3:
+        tail = chunk[idx - 3 : idx + 1].lower()
+        if tail in ("e.g.", "i.e."):
+            return True
+    k = idx - 1
+    while k >= 0 and chunk[k].isalpha():
+        k -= 1
+    token = chunk[k + 1 : idx]
+    if not token:
+        return False
+    if token.lower() in ABBREVIATIONS:
+        return True
+    if len(token) == 1 and token.isupper():
+        return True
+    return False
+
+
+def _looks_like_abbreviation_fragment(sentence):
+    """True for single-token fragments such as 'Dr.' that must not export."""
+    s = sentence.strip()
+    if " " in s or not s.endswith("."):
+        return False
+    core = s[:-1].strip().strip(".!?")
+    if not core or not core.isalpha():
+        return False
+    if core.lower() in ABBREVIATIONS:
+        return True
+    return len(core) == 1 and core.isupper()
+
 
 def split_sentences(text):
-    """Split text into sentences without breaking decimal numbers.
+    """Split text into sentences without breaking decimals or abbreviations.
 
     A period between two digits (as in $49.99 or 3.5) is never a
-    boundary. Otherwise a run of . ! ? followed by whitespace or the
-    end of the paragraph ends a sentence. Newlines also split
-    paragraphs. Terminators are preserved on each sentence.
+    boundary. A period ending a known abbreviation (as in Dr. Lee) or
+    a single capital initial is never a boundary either. Otherwise a
+    run of . ! ? followed by whitespace or the end of the paragraph
+    ends a sentence. Newlines also split paragraphs. Terminators are
+    preserved on each sentence.
     """
     if not isinstance(text, str):
         raise TypeError("draft_text must be a string")
@@ -71,6 +137,10 @@ def split_sentences(text):
                     buf += chunk[j]
                     j += 1
                 if j >= n or chunk[j].isspace():
+                    if j - 1 >= i and chunk[j - 1] == ".":
+                        if _is_abbreviation_period(chunk, j - 1):
+                            i = j
+                            continue
                     done = buf.strip()
                     if done:
                         sentences.append(done)
@@ -170,14 +240,49 @@ def _needs_revision(channel, confirmed_count, audience, campaign_angle, reason):
     return variant
 
 
+def _confirmed_token_set(confirmed):
+    tokens = set()
+    for fact in confirmed:
+        tokens.update(_measured_tokens(fact))
+    return tokens
+
+
+def _split_measured(text, confirmed):
+    confirmed_tokens = _confirmed_token_set(confirmed)
+    variant_tokens = _measured_tokens(text)
+    unconfirmed = sorted({t for t in variant_tokens if t not in confirmed_tokens})
+    return variant_tokens, unconfirmed
+
+
+def _needs_revision_with_claims(
+    channel, confirmed_count, audience, campaign_angle, reason, measured, unconfirmed, total
+):
+    variant = _needs_revision(channel, confirmed_count, audience, campaign_angle, reason)
+    variant["metadata"]["total_sentences"] = total
+    variant["metadata"]["omitted_sentences"] = total
+    variant["metadata"]["measured_claims"] = list(measured)
+    variant["metadata"]["unconfirmed_measured_claims"] = list(unconfirmed)
+    return variant
+
+
+def _abbreviation_fragment(sentences):
+    for sentence in sentences:
+        if _looks_like_abbreviation_fragment(sentence):
+            return sentence
+    return None
+
+
 def build_x_variant(draft_text, confirmed_facts, audience=None, campaign_angle=None):
     """Build the X variant, at most 280 characters.
 
     Keeps leading whole sentences that fit. Drops whole trailing
     sentences with a trim note when needed. Refuses with a
     non-exportable needs-revision result when the first sentence alone
-    exceeds the limit or when no sentence exists. Never emits a
-    shortened fragment.
+    exceeds the limit, when no sentence exists, when a sentence
+    boundary is an abbreviation fragment, or when the kept text
+    contains price, percent, or size tokens absent from confirmed
+    facts. Never emits a shortened fragment and never exports
+    unconfirmed measurable claims.
     """
     if not isinstance(draft_text, str):
         raise TypeError("draft_text must be a string")
@@ -202,6 +307,20 @@ def build_x_variant(draft_text, confirmed_facts, audience=None, campaign_angle=N
             "280 character X limit. Needs revision with a shorter "
             "opening sentence. No fragment was exported." % first_len,
         )
+    fragment = _abbreviation_fragment(sentences)
+    if fragment is not None:
+        return _needs_revision_with_claims(
+            "x",
+            len(confirmed),
+            audience,
+            campaign_angle,
+            "Non-exportable: sentence boundary ambiguity near '%s'. "
+            "Needs revision with an expanded abbreviation or rewritten "
+            "draft. No fragment was exported." % fragment,
+            [],
+            [],
+            len(sentences),
+        )
     kept = []
     for sentence in sentences:
         candidate = sentence if not kept else " ".join(kept + [sentence])
@@ -214,6 +333,34 @@ def build_x_variant(draft_text, confirmed_facts, audience=None, campaign_angle=N
     total = len(sentences)
     kept_count = len(kept)
     omitted = total - kept_count
+    if kept and _looks_like_abbreviation_fragment(kept[-1]):
+        return _needs_revision_with_claims(
+            "x",
+            len(confirmed),
+            audience,
+            campaign_angle,
+            "Non-exportable: trimmed text would end with abbreviation "
+            "fragment '%s'. Needs revision. No fragment was exported."
+            % kept[-1],
+            [],
+            [],
+            total,
+        )
+    variant_tokens, unconfirmed = _split_measured(text, confirmed)
+    if unconfirmed:
+        return _needs_revision_with_claims(
+            "x",
+            len(confirmed),
+            audience,
+            campaign_angle,
+            "Non-exportable: measured claims not in confirmed facts: "
+            + ", ".join(unconfirmed)
+            + ". Needs revision with exact confirmed facts. "
+            "No text exported.",
+            variant_tokens,
+            unconfirmed,
+            total,
+        )
     if omitted > 0:
         trim_note = (
             "Trimmed to %d of %d sentences (%d/280 chars) on a full "
@@ -222,11 +369,6 @@ def build_x_variant(draft_text, confirmed_facts, audience=None, campaign_angle=N
         )
     else:
         trim_note = None
-    confirmed_tokens = set()
-    for fact in confirmed:
-        confirmed_tokens.update(_measured_tokens(fact))
-    variant_tokens = _measured_tokens(text)
-    unconfirmed = sorted({t for t in variant_tokens if t not in confirmed_tokens})
     metadata = _base_metadata("x", len(confirmed), audience, campaign_angle)
     metadata.update(
         {
@@ -252,7 +394,12 @@ def build_x_variant(draft_text, confirmed_facts, audience=None, campaign_angle=N
 
 
 def build_linkedin_variant(draft_text, confirmed_facts, audience=None, campaign_angle=None):
-    """Build the LinkedIn variant with all sentences verbatim."""
+    """Build the LinkedIn variant with all sentences verbatim.
+
+    Fails closed with a non-exportable needs-revision result when the
+    rendered text contains price, percent, or size tokens absent from
+    confirmed facts, or when a sentence boundary is ambiguous.
+    """
     if not isinstance(draft_text, str):
         raise TypeError("draft_text must be a string")
     confirmed = _confirmed_list(confirmed_facts)
@@ -265,7 +412,36 @@ def build_linkedin_variant(draft_text, confirmed_facts, audience=None, campaign_
             campaign_angle,
             "No sentences found in draft text. Needs revision.",
         )
+    fragment = _abbreviation_fragment(sentences)
+    if fragment is not None:
+        return _needs_revision_with_claims(
+            "linkedin",
+            len(confirmed),
+            audience,
+            campaign_angle,
+            "Non-exportable: sentence boundary ambiguity near '%s'. "
+            "Needs revision with an expanded abbreviation or rewritten "
+            "draft. No fragment was exported." % fragment,
+            [],
+            [],
+            len(sentences),
+        )
     text = LINKEDIN_HEADER + "\n\n" + "\n\n".join(sentences)
+    variant_tokens, unconfirmed = _split_measured(text, confirmed)
+    if unconfirmed:
+        return _needs_revision_with_claims(
+            "linkedin",
+            len(confirmed),
+            audience,
+            campaign_angle,
+            "Non-exportable: measured claims not in confirmed facts: "
+            + ", ".join(unconfirmed)
+            + ". Needs revision with exact confirmed facts. "
+            "No text exported.",
+            variant_tokens,
+            unconfirmed,
+            len(sentences),
+        )
     metadata = _base_metadata("linkedin", len(confirmed), audience, campaign_angle)
     metadata.update(
         {
@@ -273,6 +449,8 @@ def build_linkedin_variant(draft_text, confirmed_facts, audience=None, campaign_
             "kept_sentences": len(sentences),
             "total_sentences": len(sentences),
             "omitted_sentences": 0,
+            "measured_claims": list(variant_tokens),
+            "unconfirmed_measured_claims": unconfirmed,
             "exportable": True,
             "status": "ready",
         }
@@ -289,7 +467,12 @@ def build_linkedin_variant(draft_text, confirmed_facts, audience=None, campaign_
 
 
 def build_instagram_variant(draft_text, confirmed_facts, audience=None, campaign_angle=None):
-    """Build the Instagram variant with all sentences verbatim."""
+    """Build the Instagram variant with all sentences verbatim.
+
+    Fails closed with a non-exportable needs-revision result when the
+    rendered text contains price, percent, or size tokens absent from
+    confirmed facts, or when a sentence boundary is ambiguous.
+    """
     if not isinstance(draft_text, str):
         raise TypeError("draft_text must be a string")
     confirmed = _confirmed_list(confirmed_facts)
@@ -302,7 +485,36 @@ def build_instagram_variant(draft_text, confirmed_facts, audience=None, campaign
             campaign_angle,
             "No sentences found in draft text. Needs revision.",
         )
+    fragment = _abbreviation_fragment(sentences)
+    if fragment is not None:
+        return _needs_revision_with_claims(
+            "instagram",
+            len(confirmed),
+            audience,
+            campaign_angle,
+            "Non-exportable: sentence boundary ambiguity near '%s'. "
+            "Needs revision with an expanded abbreviation or rewritten "
+            "draft. No fragment was exported." % fragment,
+            [],
+            [],
+            len(sentences),
+        )
     text = "\n\n".join(sentences) + "\n\n" + INSTAGRAM_CLOSER
+    variant_tokens, unconfirmed = _split_measured(text, confirmed)
+    if unconfirmed:
+        return _needs_revision_with_claims(
+            "instagram",
+            len(confirmed),
+            audience,
+            campaign_angle,
+            "Non-exportable: measured claims not in confirmed facts: "
+            + ", ".join(unconfirmed)
+            + ". Needs revision with exact confirmed facts. "
+            "No text exported.",
+            variant_tokens,
+            unconfirmed,
+            len(sentences),
+        )
     metadata = _base_metadata("instagram", len(confirmed), audience, campaign_angle)
     metadata.update(
         {
@@ -310,6 +522,8 @@ def build_instagram_variant(draft_text, confirmed_facts, audience=None, campaign
             "kept_sentences": len(sentences),
             "total_sentences": len(sentences),
             "omitted_sentences": 0,
+            "measured_claims": list(variant_tokens),
+            "unconfirmed_measured_claims": unconfirmed,
             "exportable": True,
             "status": "ready",
         }
@@ -326,7 +540,12 @@ def build_instagram_variant(draft_text, confirmed_facts, audience=None, campaign
 
 
 def build_email_variant(draft_text, confirmed_facts, audience=None, campaign_angle=None):
-    """Build the email variant with a fixed subject and verbatim body."""
+    """Build the email variant with a fixed subject and verbatim body.
+
+    Fails closed with a non-exportable needs-revision result when the
+    rendered body contains price, percent, or size tokens absent from
+    confirmed facts, or when a sentence boundary is ambiguous.
+    """
     if not isinstance(draft_text, str):
         raise TypeError("draft_text must be a string")
     confirmed = _confirmed_list(confirmed_facts)
@@ -339,7 +558,36 @@ def build_email_variant(draft_text, confirmed_facts, audience=None, campaign_ang
             campaign_angle,
             "No sentences found in draft text. Needs revision.",
         )
+    fragment = _abbreviation_fragment(sentences)
+    if fragment is not None:
+        return _needs_revision_with_claims(
+            "email",
+            len(confirmed),
+            audience,
+            campaign_angle,
+            "Non-exportable: sentence boundary ambiguity near '%s'. "
+            "Needs revision with an expanded abbreviation or rewritten "
+            "draft. No fragment was exported." % fragment,
+            [],
+            [],
+            len(sentences),
+        )
     body = EMAIL_GREETING + "\n\n" + " ".join(sentences) + "\n\n" + EMAIL_CLOSER
+    variant_tokens, unconfirmed = _split_measured(body, confirmed)
+    if unconfirmed:
+        return _needs_revision_with_claims(
+            "email",
+            len(confirmed),
+            audience,
+            campaign_angle,
+            "Non-exportable: measured claims not in confirmed facts: "
+            + ", ".join(unconfirmed)
+            + ". Needs revision with exact confirmed facts. "
+            "No text exported.",
+            variant_tokens,
+            unconfirmed,
+            len(sentences),
+        )
     metadata = _base_metadata("email", len(confirmed), audience, campaign_angle)
     metadata.update(
         {
@@ -347,6 +595,8 @@ def build_email_variant(draft_text, confirmed_facts, audience=None, campaign_ang
             "kept_sentences": len(sentences),
             "total_sentences": len(sentences),
             "omitted_sentences": 0,
+            "measured_claims": list(variant_tokens),
+            "unconfirmed_measured_claims": unconfirmed,
             "exportable": True,
             "status": "ready",
         }

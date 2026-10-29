@@ -8,6 +8,9 @@ import unittest
 from launchcrew.channel_variants import (
     X_MAX_CHARS,
     build_channel_variants,
+    build_email_variant,
+    build_instagram_variant,
+    build_linkedin_variant,
     build_x_variant,
     split_sentences,
     validate_x_variant,
@@ -165,6 +168,69 @@ class ChannelVariantTests(unittest.TestCase):
         self.assertEqual(confirmed, confirmed_copy)
         self.assertEqual(audience, audience_copy)
         self.assertEqual(angle, angle_copy)
+
+    def test_x_builder_fails_closed_on_wrong_confirmed_price(self):
+        draft = "Vegan leather wallet at $49.99. Designed in Texas."
+        wrong_price = ["Vegan leather wallet", "$49", "Designed in Texas"]
+        variant = build_x_variant(draft, wrong_price)
+        self.assertFalse(variant["exportable"])
+        self.assertEqual(variant["status"], "needs_revision")
+        self.assertEqual(variant["text"], "")
+        self.assertFalse(variant["metadata"]["exportable"])
+        self.assertEqual(variant["metadata"]["status"], "needs_revision")
+        self.assertIn("$49.99", variant["metadata"]["unconfirmed_measured_claims"])
+        self.assertIn("$49.99", variant["reason"])
+        self.assertIn("revision", variant["reason"].lower())
+
+    def test_x_builder_fails_closed_on_unconfirmed_percent_and_size(self):
+        draft = "Launch offer saves 20% today. Bottle holds 500 ml."
+        confirmed = ["Launch offer", "Bottle"]
+        variant = build_x_variant(draft, confirmed)
+        self.assertFalse(variant["exportable"])
+        self.assertEqual(variant["status"], "needs_revision")
+        self.assertEqual(variant["text"], "")
+        unconfirmed = variant["metadata"]["unconfirmed_measured_claims"]
+        self.assertIn("20%", unconfirmed)
+        self.assertTrue(any("500" in t and "ml" in t for t in unconfirmed))
+
+    def test_other_channels_fail_closed_on_unconfirmed_claims(self):
+        draft = "Vegan leather wallet at $99. Designed in Texas."
+        confirmed = ["Vegan leather wallet", "Designed in Texas"]
+        for builder in (
+            build_linkedin_variant,
+            build_instagram_variant,
+            build_email_variant,
+        ):
+            variant = builder(draft, confirmed)
+            self.assertFalse(variant["exportable"])
+            self.assertEqual(variant["status"], "needs_revision")
+            self.assertEqual(variant["text"], "")
+            self.assertFalse(variant["metadata"]["exportable"])
+            self.assertIn("$99", variant["metadata"]["unconfirmed_measured_claims"])
+            if builder is build_email_variant:
+                self.assertEqual(variant["body"], "")
+
+    def test_abbreviation_does_not_split_sentence(self):
+        draft = "Dr. Lee is here. Second sentence is here."
+        parts = split_sentences(draft)
+        self.assertEqual(len(parts), 2)
+        self.assertNotIn("Dr.", parts)
+        self.assertIn("Dr. Lee", parts[0])
+        other = split_sentences("Mr. Smith went home. He left.")
+        self.assertEqual(len(other), 2)
+        self.assertIn("Mr. Smith", other[0])
+
+    def test_x_trim_never_emits_abbreviation_fragment(self):
+        draft = "Dr. Lee " + "Y" * 275 + ". Second sentence here."
+        parts = split_sentences(draft)
+        self.assertNotIn("Dr.", parts)
+        self.assertTrue(parts[0].startswith("Dr. Lee"))
+        variant = build_x_variant(draft, [])
+        self.assertNotEqual(variant["text"], "Dr.")
+        self.assertFalse(variant["text"].endswith("Dr."))
+        self.assertFalse(variant["exportable"])
+        self.assertEqual(variant["status"], "needs_revision")
+        self.assertEqual(variant["text"], "")
 
 
 if __name__ == "__main__":

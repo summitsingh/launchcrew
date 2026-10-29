@@ -37,40 +37,67 @@ ADDITIONAL_ANGLES = (
     "Founder note",
 )
 
-ALLOWED_SLOTS = ("product", "material", "price", "design")
+ALLOWED_SLOTS = (
+    "product",
+    "material",
+    "price",
+    "design",
+    "gift_use",
+    "workday_use",
+    "weekend_use",
+    "repair_note",
+    "founder_note",
+)
 
 SLOT_RE = re.compile(r"\{(\w+)\}")
 
 ANGLE_TEMPLATES = {
     "Gift ready": {
-        "brief_template": "Gift pick: {product} at {price}.",
-        "hook_template": "Gift idea: {product} at {price}.",
-        "required_facts": ["product", "price"],
-        "description": "Gift positioning using only confirmed product and price.",
+        "brief_template": "Gift pick: {product} at {price}. {gift_use}.",
+        "hook_template": "Gift idea: {product} at {price}. {gift_use}.",
+        "required_facts": ["product", "price", "gift_use"],
+        "description": (
+            "Gift positioning using confirmed product, price, and "
+            "explicit gift-use confirmation."
+        ),
     },
     "Workday carry": {
-        "brief_template": "Workday carry: {product}, {design}.",
-        "hook_template": "For the workday: {product}, {design}.",
-        "required_facts": ["product", "design"],
-        "description": "Workday use using only confirmed product and design.",
+        "brief_template": "Workday carry: {product}, {design}. {workday_use}.",
+        "hook_template": "For the workday: {product}, {design}. {workday_use}.",
+        "required_facts": ["product", "design", "workday_use"],
+        "description": (
+            "Workday use using confirmed product, design, and explicit "
+            "workday-use confirmation."
+        ),
     },
     "Weekend carry": {
-        "brief_template": "Weekend carry in {material}: {product}.",
-        "hook_template": "Weekend carry: {product} in {material}.",
-        "required_facts": ["product", "material"],
-        "description": "Weekend use using only confirmed product and material.",
+        "brief_template": "Weekend carry in {material}: {product}. {weekend_use}.",
+        "hook_template": "Weekend carry: {product} in {material}. {weekend_use}.",
+        "required_facts": ["product", "material", "weekend_use"],
+        "description": (
+            "Weekend use using confirmed product, material, and explicit "
+            "weekend-use confirmation."
+        ),
     },
     "Repair and reuse": {
-        "brief_template": "Made to keep: {material}, {design}.",
-        "hook_template": "Built to keep: {material}, {design}.",
-        "required_facts": ["material", "design"],
-        "description": "Keep and reuse using only confirmed material and design.",
+        "brief_template": "Made to keep: {material}, {design}. {repair_note}.",
+        "hook_template": "Built to keep: {material}, {design}. {repair_note}.",
+        "required_facts": ["material", "design", "repair_note"],
+        "description": (
+            "Keep and reuse using confirmed material, design, and "
+            "explicit repair-note confirmation."
+        ),
     },
     "Founder note": {
-        "brief_template": "From the founder: {product}, {design}, {price}.",
-        "hook_template": "Founder note: {product}, {price}.",
-        "required_facts": ["product", "design", "price"],
-        "description": "Founder voice using only confirmed product, design, and price.",
+        "brief_template": (
+            "From the founder: {product}, {design}, {price}. {founder_note}."
+        ),
+        "hook_template": "Founder note: {product}, {price}. {founder_note}.",
+        "required_facts": ["product", "design", "price", "founder_note"],
+        "description": (
+            "Founder voice using confirmed product, design, price, and "
+            "explicit founder-note confirmation."
+        ),
     },
 }
 
@@ -152,10 +179,11 @@ def render_angle(angle_name, confirmed_facts):
     """Render one angle brief and hook from confirmed facts only.
 
     On success returns status ready with brief and hook strings. When
-    required facts are missing, when facts have the wrong shape, or
-    when a filled hook or brief would exceed its limit, returns status
-    needs_owner_confirmation with state suggestion and no brief or
-    hook. Never invents a fact value.
+    required facts are missing, when facts have the wrong shape, when
+    a filled hook or brief would exceed its limit, or when the filled
+    hook fails validation (multiline, empty, unfilled slot), returns
+    status needs_owner_confirmation with state suggestion and no brief
+    or hook. Never invents a fact value.
     """
     if not isinstance(angle_name, str):
         raise TypeError("angle_name must be a string")
@@ -222,6 +250,25 @@ def render_angle(angle_name, confirmed_facts):
             [],
             "Unfilled template slot remains. Needs owner confirmation. "
             "No brief or hook generated.",
+            used_facts=required,
+        )
+    if "\n" in brief or "\r" in brief:
+        return _needs_confirmation(
+            angle_name,
+            [],
+            "Brief must be a single line. Needs owner confirmation with "
+            "single-line confirmed facts. No brief or hook generated.",
+            used_facts=required,
+        )
+    hook_check = validate_hook(hook)
+    if not hook_check["ok"]:
+        return _needs_confirmation(
+            angle_name,
+            [],
+            "Hook invalid: "
+            + "; ".join(hook_check["reasons"])
+            + ". Needs owner confirmation with single-line confirmed "
+            "facts. No brief or hook generated.",
             used_facts=required,
         )
     return {

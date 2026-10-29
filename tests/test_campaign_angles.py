@@ -21,6 +21,11 @@ FULL_FACTS = {
     "material": "100% vegan PU leather",
     "price": "$49",
     "design": "Designed in Texas",
+    "gift_use": "Gift wrap available",
+    "workday_use": "Fits a laptop",
+    "weekend_use": "Fits weekend essentials",
+    "repair_note": "Repair kit included",
+    "founder_note": "Founder approved",
 }
 
 
@@ -140,6 +145,48 @@ class CampaignAngleTests(unittest.TestCase):
         render_angle("Gift ready", facts)
         render_all_angles(facts)
         self.assertEqual(facts, snapshot)
+
+    def test_use_claims_require_explicit_confirmation(self):
+        base = {
+            "product": "Vegan leather wallet",
+            "material": "100% vegan PU leather",
+            "price": "$49",
+            "design": "Designed in Texas",
+        }
+        expected_missing = {
+            "Gift ready": "gift_use",
+            "Workday carry": "workday_use",
+            "Weekend carry": "weekend_use",
+            "Repair and reuse": "repair_note",
+            "Founder note": "founder_note",
+        }
+        for name in ADDITIONAL_ANGLES:
+            rendered = render_angle(name, dict(base))
+            self.assertEqual(rendered["status"], "needs_owner_confirmation")
+            self.assertEqual(rendered["state"], "suggestion")
+            self.assertIsNone(rendered["brief"])
+            self.assertIsNone(rendered["hook"])
+            self.assertIn(expected_missing[name], rendered["missing_facts"])
+
+    def test_multiline_fact_is_rejected_before_ready(self):
+        facts = dict(FULL_FACTS)
+        facts["product"] = "Vegan wallet\nSecond line"
+        rendered = render_angle("Gift ready", facts)
+        self.assertEqual(rendered["status"], "needs_owner_confirmation")
+        self.assertIsNone(rendered["brief"])
+        self.assertIsNone(rendered["hook"])
+        self.assertIn("confirmation", rendered["suggestion"].lower())
+        direct = "Gift idea: Vegan wallet\nSecond line at $49."
+        self.assertLessEqual(len(direct), 140)
+        self.assertFalse(validate_hook(direct)["ok"])
+
+    def test_multiline_explicit_use_fact_is_rejected(self):
+        facts = dict(FULL_FACTS)
+        facts["gift_use"] = "Wrap\nNow"
+        rendered = render_angle("Gift ready", facts)
+        self.assertEqual(rendered["status"], "needs_owner_confirmation")
+        self.assertIsNone(rendered["brief"])
+        self.assertIsNone(rendered["hook"])
 
 
 if __name__ == "__main__":
