@@ -11,13 +11,13 @@ Scope: LaunchCrew public record only. Decisions, not completion claims.
 
 ## Cloud and model boundary
 
-- Only LaunchCrew-owned resources are in scope, within the approved account. No shared or production resources.
+- Only LaunchCrew-owned resources are in scope, within the approved account. Unrelated shared or production resources must not be modified.
 - See docs/aws-approval-pack.md for the current public approval pack and LaunchCrew-only boundary.
 - Public model paths stay keyless until a verified global spend guard exists.
 - Private bounded model or photo proofs do not imply public photo or video permission.
 
 ## Auth, recording, and schedule
 
-- OAuth provider setup needs exact app ownership, redirect, and security validation. It cannot be presumed ready.
+- Clerk or open-source OAuth fallback is approved for development use only. Production needs exact provider app ownership, redirect, and security validation, plus Central planning. The Nov 3 Central planning target carries schedule risk; development credentials do not imply production readiness.
 - Recording follows feature proof. Final publication and submission stay separately reviewed.
 - Nov 3 is a planning target. Nov 4 is the deadline.
