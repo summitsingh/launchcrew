@@ -631,11 +631,25 @@ class BindJobTests(unittest.TestCase):
         self.assertEqual(code, 0, msg=out)
         self.state.statements = []
         self.state.commits = 0
+        self.state.schema_owner = "someone_else"
+        self.state.database_owner = "launchcrew_master"
+        code, out = self.run_main("--bind")
+        self.assertNotEqual(code, 0)
+        self.assertIn("schema-safety", out)
+        mutating = [sql for sql in self.sql_texts()
+                    if sql.startswith(("CREATE ROLE", "ALTER ROLE",
+                                       "COMMENT ON ROLE", "GRANT",
+                                       "REVOKE"))]
+        self.assertEqual(mutating, [])
+        self.assertEqual(self.state.commits, 0)
+        self.state.statements = []
+        self.state.commits = 0
         self.state.schema_owner = "pg_database_owner"
         self.state.database_owner = "someone_else"
         code, out = self.run_main("--bind")
         self.assertNotEqual(code, 0)
-        self.assertIn("schema-safety", out)
+        self.assertIn("db-safety", out)
+        self.assertIn("foreign owner", out)
         mutating = [sql for sql in self.sql_texts()
                     if sql.startswith(("CREATE ROLE", "ALTER ROLE",
                                        "COMMENT ON ROLE", "GRANT",
