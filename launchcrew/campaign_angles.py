@@ -102,9 +102,9 @@ _HOOK_QUESTION = "What is one confirmed detail worth a closer look?"
 _BUYER_QUESTION = "What does the quoted material confirm, in its own words?"
 
 _BOUNDARY_STATEMENT = (
-    "Only the quoted facts above are asserted. No benefit, audience, "
+    "Only the quoted facts above are asserted. No additional benefit, audience, "
     "performance, comparison, price, origin, guarantee, inventory, "
-    "or source claim is made here."
+    "or source claim beyond those quoted facts is made here."
 )
 
 _DETAIL_NOTE = (

@@ -240,7 +240,20 @@ class CampaignAnglesTests(unittest.TestCase):
             self.assertIn("No additional facts are asserted here", brief["brief_text"])
         boundary = [b for b in briefs if b["label"] == "Claim Boundary"][0]
         self.assertIn("Only the quoted facts above are asserted", boundary["brief_text"])
-        self.assertIn("No benefit, audience", boundary["brief_text"])
+        self.assertIn("No additional benefit, audience", boundary["brief_text"])
+        self.assertIn("beyond those quoted facts", boundary["brief_text"])
+
+    def test_confirmed_price_fact_not_denied(self):
+        price_fact = "The Blue Harbor demo kit costs $49."
+        briefs = ca.generate_campaign_angles([FACT_A, price_fact])
+        for brief in briefs:
+            self.assertIn(price_fact, brief["facts_used"])
+            self.assertIn(price_fact, brief["brief_text"])
+        boundary = [b for b in briefs if b["label"] == "Claim Boundary"][0]
+        text = boundary["brief_text"]
+        self.assertIn("Only the quoted facts above are asserted", text)
+        self.assertIn("No additional benefit, audience", text)
+        self.assertIn("beyond those quoted facts", text)
 
     def test_determinism(self):
         facts = [FACT_A, FACT_B, FACT_C]
