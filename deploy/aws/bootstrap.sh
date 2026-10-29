@@ -818,8 +818,10 @@ esac
 cloudformation_deploy() {
   ENABLE_VALUE="$1"
   DEPLOY_LABEL="$2"
-  DEPLOY_TAGS=""
-  if [ "$STACK_EXISTS" -eq 0 ]; then DEPLOY_TAGS="yes"; fi
+  # Every deploy passes the exact demo tags. CloudFormation clears stack
+  # tags to [] on UPDATE when --tags is omitted, so updates must repeat
+  # the owned Project and Environment tags, not only fresh creates.
+  DEPLOY_TAGS="yes"
   if ! python3 - "$PARAMETERS_FILE" "$ENABLE_VALUE" "$AWS_BIN" "$STACK_NAME" \
       "$TEMPLATE_FILE" "$EXPECTED_REGION" "$DEPLOY_TAGS" <<'PYEOF'
 import json, subprocess, sys
@@ -2470,7 +2472,7 @@ verify_image() {
   IMAGE_REGION="$(printf '%s' "$IMAGE_BASE" | cut -d. -f4)"
   [ "$IMAGE_ACCOUNT" = "$EXPECTED_ACCOUNT" ] || { echo "refused: $IMAGE_LABEL image account does not match expected $EXPECTED_ACCOUNT: $REPO_NAME" >&2; phase_failed images; }
   [ "$IMAGE_REGION" = "$EXPECTED_REGION" ] || { echo "refused: $IMAGE_LABEL image region $IMAGE_REGION does not match expected $EXPECTED_REGION: $REPO_NAME" >&2; phase_failed images; }
-  if ! IMAGE_DIGEST="$("$AWS_BIN" ecr batch-get-image --repository-name "$REPO_NAME" --image-ids "imageTag=$IMAGE_TAG" --region "$EXPECTED_REGION" --query "images[0].imageDigest" --output text 2>"$TMP_ERR")"; then
+  if ! IMAGE_DIGEST="$("$AWS_BIN" ecr batch-get-image --repository-name "$REPO_NAME" --image-ids "imageTag=$IMAGE_TAG" --region "$EXPECTED_REGION" --query "images[0].imageId.imageDigest" --output text 2>"$TMP_ERR")"; then
     echo "$IMAGE_LABEL image $REPO_NAME:$IMAGE_TAG not found in ECR, app never starts on an unverified image." >&2
     phase_failed images
   fi

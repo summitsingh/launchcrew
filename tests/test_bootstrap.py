@@ -468,14 +468,16 @@ if [ "$1" = "ecr" ] && [ "$2" = "batch-get-image" ]; then
     exit 254
   fi
   case "$*" in
-    *"imageDigest"*)
+    *"imageId.imageDigest"*)
       if [ "$MODE" = "image_digest_none" ]; then printf 'None\\n'; exit 0; fi
       printf 'sha256:abc123\\n'; exit 0 ;;
+    *"imageDigest"*)
+      printf 'None\\n'; exit 0 ;;
     *"failures"*)
       if [ "$MODE" = "image_failures" ]; then printf '1\\n'; exit 0; fi
       printf '0\\n'; exit 0 ;;
   esac
-  printf '{"images":[{"imageDigest":"sha256:abc123"}],"failures":[]}\\n'
+  printf '{"images":[{"imageId":{"imageDigest":"sha256:abc123","imageTag":"abc123"}}],"failures":[]}\\n'
   exit 0
 fi
 if [ "$1" = "ecs" ] && [ "$2" = "run-task" ]; then
@@ -1851,6 +1853,134 @@ class OptionalThresholdTypeTests(BootstrapHarness):
                 self.assertIn("UNVERIFIED", combined, msg=mode)
                 self.assertFalse(any("EnableServices=true" in call for call in calls), msg=mode)
                 self.assertFalse(any("run-task" in call for call in calls), msg=mode)
+
+
+class CloudformationTagsTests(BootstrapHarness):
+    def test_infra_update_on_owned_stack_passes_demo_tags(self):
+        result, calls = self.run_bootstrap(
+            [*self.minimal_infra_args(), "--phase", "infra"],
+            extra_env={"FAKE_RT_ARN": SECRET_RT, "FAKE_MG_ARN": SECRET_MG,
+                       "FAKE_MASTER_ARN": SECRET_MASTER, "FAKE_TLS_ARN": SECRET_TLS},
+            params_overrides={"RuntimeDbUrlSecretArn": SECRET_RT,
+                              "MigrationDbUrlSecretArn": SECRET_MG,
+                              "MasterDbPasswordSecretArn": SECRET_MASTER,
+                              "TlsSecretArn": SECRET_TLS})
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        deploys = [call for call in calls if "deploy " in call]
+        self.assertTrue(deploys)
+        for call in deploys:
+            self.assertIn("--tags", call)
+            self.assertIn("Project=LaunchCrew", call)
+            self.assertIn("Environment=demo", call)
+
+    def test_enable_update_passes_demo_tags(self):
+        result, calls = self.run_bootstrap([*self.base_args(), "--phase", "enable"])
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        deploys = [call for call in calls if "deploy " in call]
+        self.assertTrue(deploys)
+        for call in deploys:
+            self.assertIn("--tags", call)
+            self.assertIn("Project=LaunchCrew", call)
+            self.assertIn("Environment=demo", call)
+
+    def test_full_run_all_deploys_pass_demo_tags(self):
+        result, calls = self.run_bootstrap(self.base_args())
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        deploys = [call for call in calls if "deploy " in call]
+        self.assertEqual(len(deploys), 2)
+        for call in deploys:
+            self.assertIn("--tags", call)
+            self.assertIn("Project=LaunchCrew", call)
+            self.assertIn("Environment=demo", call)
+
+
+class ImageDigestShapeTests(BootstrapHarness):
+    def test_images_phase_uses_actual_digest_shape_for_five_repos(self):
+        result, calls = self.run_bootstrap([*self.base_args(), "--phase", "images"])
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        batch_calls = [call for call in calls if "batch-get-image" in call]
+        self.assertTrue(batch_calls)
+        digest_calls = [call for call in batch_calls if "imageDigest" in call]
+        self.assertTrue(digest_calls)
+        for call in digest_calls:
+            self.assertIn("imageId.imageDigest", call)
+        for repo in ("launchcrew-api", "launchcrew-web", "launchcrew-web-proxy",
+                     "launchcrew-migration", "launchcrew-bootstrap"):
+            self.assertTrue(any(repo in call for call in batch_calls), msg=repo)
+        failures_calls = [call for call in batch_calls if "failures" in call]
+        self.assertTrue(failures_calls)
+
+    def test_pinned_digest_mismatch_refused_as_moved(self):
+        pinned = image("launchcrew-api") + "@sha256:" + "0" * 64
+        result, _ = self.run_bootstrap(
+            [*self.base_args(**{"--api-image": pinned}), "--phase", "images"])
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("pinned digest", combined)
+        self.assertIn("tag moved", combined)
+
+    def test_pinned_digest_match_passes(self):
+        pinned = image("launchcrew-api") + "@sha256:abc123"
+        result, _ = self.run_bootstrap(
+            [*self.base_args(**{"--api-image": pinned}), "--phase", "images"])
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+
+    def test_missing_image_refused_in_images_phase(self):
+        result, _ = self.run_bootstrap(
+            [*self.base_args(), "--phase", "images"], mode="image_missing")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not found", result.stdout + result.stderr)
+
+    def test_failures_rejected_in_images_phase(self):
+        result, _ = self.run_bootstrap(
+            [*self.base_args(), "--phase", "images"], mode="image_failures")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("failures", result.stdout + result.stderr)
+
+    def test_missing_digest_rejected_in_images_phase(self):
+        result, _ = self.run_bootstrap(
+            [*self.base_args(), "--phase", "images"], mode="image_digest_none")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no digest", result.stdout + result.stderr)
+
+    def test_fake_reflects_actual_batch_get_image_shape(self):
+        import json as _json
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = Path(tmp) / "fake-aws"
+            fake.write_text(FAKE_AWS, encoding="utf-8")
+            fake.chmod(fake.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            env = dict(os.environ)
+            env["FAKE_MODE"] = "success"
+            proc = subprocess.run(
+                [str(fake), "ecr", "batch-get-image",
+                 "--repository-name", "launchcrew-api",
+                 "--image-ids", "imageTag=abc123"],
+                capture_output=True, text=True, env=env, check=False)
+            self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+            doc = _json.loads(proc.stdout)
+            self.assertEqual(doc["failures"], [])
+            self.assertIn("imageId", doc["images"][0])
+            self.assertEqual(doc["images"][0]["imageId"]["imageDigest"],
+                             "sha256:abc123")
+            self.assertNotIn("imageDigest", doc["images"][0])
+            proc = subprocess.run(
+                [str(fake), "ecr", "batch-get-image",
+                 "--repository-name", "launchcrew-api",
+                 "--image-ids", "imageTag=abc123",
+                 "--query", "images[0].imageId.imageDigest",
+                 "--output", "text"],
+                capture_output=True, text=True, env=env, check=False)
+            self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+            self.assertEqual(proc.stdout.strip(), "sha256:abc123")
+            proc = subprocess.run(
+                [str(fake), "ecr", "batch-get-image",
+                 "--repository-name", "launchcrew-api",
+                 "--image-ids", "imageTag=abc123",
+                 "--query", "images[0].imageDigest",
+                 "--output", "text"],
+                capture_output=True, text=True, env=env, check=False)
+            self.assertEqual(proc.returncode, 0, msg=proc.stderr)
+            self.assertEqual(proc.stdout.strip(), "None")
 
 
 if __name__ == "__main__":
