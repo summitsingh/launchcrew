@@ -81,7 +81,7 @@ class _FakeDB:
             matched = [(run_id, receipt) for run_id, ws, receipt in self.runs
                        if ws == params.get('ws')]
             return _FakeResult(rows=matched)
-        if sql.strip().upper().startswith('UPDATE runs SET receipt'):
+        if sql.strip().upper().startswith('UPDATE RUNS SET RECEIPT'):
             updated = 0
             revised = json.loads(params.get('receipt', '{}'))
             for index, (run_id, ws, _receipt) in enumerate(list(self.runs)):
@@ -89,7 +89,7 @@ class _FakeDB:
                     self.runs[index] = (run_id, ws, revised)
                     updated = 1
             return _FakeResult(rowcount=updated)
-        if sql.strip().upper().startswith('DELETE FROM approvals'):
+        if sql.strip().upper().startswith('DELETE FROM APPROVALS'):
             return _FakeResult(rowcount=1)
         return _FakeResult(rowcount=1)
 
@@ -258,11 +258,11 @@ class VoiceInvalidationTests(unittest.TestCase):
         self.assertTrue(selects)
         self.assertEqual(selects[0][1]['ws'], 'synthetic_actor_a')
         self.assertEqual(selects[0][1]['vid'], 'mem_voice')
-        updates = [c for c in db.calls if c[0].strip().upper().startswith('UPDATE runs SET receipt')]
+        updates = [c for c in db.calls if c[0].strip().upper().startswith('UPDATE RUNS SET RECEIPT')]
         self.assertEqual(len(updates), 1)
         self.assertEqual(updates[0][1]['ws'], 'synthetic_actor_a')
         self.assertEqual(updates[0][1]['id'], 'run_owned')
-        deletes = [c for c in db.calls if c[0].strip().upper().startswith('DELETE FROM approvals')]
+        deletes = [c for c in db.calls if c[0].strip().upper().startswith('DELETE FROM APPROVALS')]
         self.assertEqual(len(deletes), 1)
         self.assertEqual(deletes[0][1]['id'], 'run_owned')
         audit.assert_called_once_with(db, 'run_owned', 'voice_invalidated',
@@ -284,7 +284,7 @@ class VoiceInvalidationTests(unittest.TestCase):
                                                                 'status': 'completed'}))
         with patch('backend.app.store.audit') as audit:
             app_mod._invalidate_voice_runs(db, 'synthetic_actor_a', 'mem_voice', 'synthetic_actor_a', 'edited')
-        updates = [c for c in db.calls if c[0].strip().upper().startswith('UPDATE runs SET receipt')]
+        updates = [c for c in db.calls if c[0].strip().upper().startswith('UPDATE RUNS SET RECEIPT')]
         self.assertEqual(updates, [])
         audit.assert_not_called()
 

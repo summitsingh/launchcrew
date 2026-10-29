@@ -529,21 +529,47 @@ def recheck_text(post, email, receipt):
                      if isinstance(c, str) and normalize(c)}
     seen_blocked = {b['claim'] for b in check.get('blocked_claims', [])
                     if isinstance(b, dict) and isinstance(b.get('claim'), str)}
+    originally_blocked = set(seen_blocked)
     extra = []
+
+    def _has_voice_reason(claim_text):
+        for prior in list(check.get('blocked_claims', [])) + extra:
+            if not isinstance(prior, dict):
+                continue
+            if prior.get('claim') != claim_text:
+                continue
+            reason = prior.get('reason')
+            if isinstance(reason, str) and 'Blocked by voice profile' in reason:
+                return True
+        return False
+
+    def _voice_hit_for(sentence_text):
+        if voice_snapshot is None:
+            return None
+        try:
+            return voice_single_block_for_text(voice_snapshot, sentence_text, voice_ref)
+        except (TypeError, ValueError):
+            return None
+
     for sentence in sentences:
         if sentence in seen_blocked:
+            # Voice veto stays explicit even when factual, memory, or policy
+            # logic already blocks this sentence. Add a second block entry
+            # with the voice reason instead of skipping.
+            voice_hit = _voice_hit_for(sentence)
+            if voice_hit is not None and not _has_voice_reason(sentence):
+                extra.append(voice_hit)
             continue
         if normalize(sentence) in blocked_names:
             extra.append({'claim': sentence,
                           'reason': 'Blocked by selected memory rule'})
             seen_blocked.add(sentence)
+            # Memory rule blocks, but a voice hit must still appear.
+            voice_hit = _voice_hit_for(sentence)
+            if voice_hit is not None and not _has_voice_reason(sentence):
+                extra.append(voice_hit)
             continue
-        voice_hit = None
-        if voice_snapshot is not None:
-            try:
-                voice_hit = voice_single_block_for_text(voice_snapshot, sentence, voice_ref)
-            except (TypeError, ValueError):
-                voice_hit = None
+        voice_hit = _voice_hit_for(sentence)
         if voice_hit is not None:
             extra.append(voice_hit)
             seen_blocked.add(sentence)
@@ -566,17 +592,42 @@ def recheck_text(post, email, receipt):
         if isinstance(entry, dict) and isinstance(entry.get('claim'), str):
             if entry['claim'] not in by_claim:
                 by_claim[entry['claim']] = index
+    reason_set_for = set()
+    appended_index = {}
     for entry in extra:
         index = by_claim.get(entry['claim'])
         if index is not None:
             claim_results[index]['verified'] = False
             claim_results[index]['blocked'] = True
-            claim_results[index]['reason'] = entry['reason']
+            existing = claim_results[index].get('reason')
+            incoming = entry.get('reason')
+            if entry['claim'] in originally_blocked:
+                # Keep the original factual or policy reason and append the
+                # additional voice veto so both stay visible.
+                if (isinstance(existing, str) and isinstance(incoming, str)
+                        and incoming not in existing):
+                    claim_results[index]['reason'] = existing + '; ' + incoming
+            else:
+                if entry['claim'] not in reason_set_for:
+                    claim_results[index]['reason'] = entry['reason']
+                    reason_set_for.add(entry['claim'])
+                elif (isinstance(existing, str) and isinstance(incoming, str)
+                        and incoming not in existing):
+                    claim_results[index]['reason'] = existing + '; ' + incoming
         else:
-            claim_results.append({'claim': entry['claim'], 'verified': False,
-                                  'verdict': 'unsupported', 'evidence': None,
-                                  'reason': entry['reason'], 'blocked': True,
-                                  'source': 'draft_text'})
+            if entry['claim'] in appended_index:
+                pos = appended_index[entry['claim']]
+                existing = claim_results[pos].get('reason')
+                incoming = entry.get('reason')
+                if (isinstance(existing, str) and isinstance(incoming, str)
+                        and incoming not in existing):
+                    claim_results[pos]['reason'] = existing + '; ' + incoming
+            else:
+                claim_results.append({'claim': entry['claim'], 'verified': False,
+                                      'verdict': 'unsupported', 'evidence': None,
+                                      'reason': entry['reason'], 'blocked': True,
+                                      'source': 'draft_text'})
+                appended_index[entry['claim']] = len(claim_results) - 1
     all_blocked = {b['claim'] for b in blocked_claims
                    if isinstance(b, dict) and isinstance(b.get('claim'), str)}
     merged = dict(check)
