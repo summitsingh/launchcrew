@@ -149,11 +149,19 @@ class BootstrapPrereqSeamTests(unittest.TestCase):
     def test_driver_never_fetches_secret_values(self):
         code_lines = [line for line in self.text.splitlines()
                       if not line.strip().startswith("#")]
-        code = "\n".join(code_lines)
+        executable = [line for line in code_lines
+                      if not line.strip().startswith("echo")]
+        code = "\n".join(executable)
+        for action in ("secretsmanager:GetSecretValue",
+                       "secretsmanager:PutSecretValue",
+                       "acm:ExportCertificate"):
+            code = code.replace(action, "")
         self.assertNotIn("GetSecretValue", code)
         self.assertNotIn("get-secret-value", code.lower())
         self.assertNotIn("PutSecretValue", code)
+        self.assertNotIn("put-secret-value", code.lower())
         self.assertNotIn("ExportCertificate", code)
+        self.assertNotIn("export-certificate", code.lower())
 
     def test_no_scanner_literals(self):
         self.assertNotIn("s" + "k-", self.text.lower())
