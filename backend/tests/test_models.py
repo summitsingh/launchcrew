@@ -344,3 +344,33 @@ def test_receipt_response_preserves_evidence_and_truth_labels():
     assert legacy['maker_draft_v2']['draft_origin'] is None
     assert legacy['maker_draft_v2']['model_written'] is None
     assert legacy['checker_v2']['blocked_count'] == 0
+
+
+def test_claim_result_preserves_multi_fact_evidence_claims():
+    import copy
+    from backend.app import Receipt
+    from launchcrew.facts import check_sentence
+    facts, _ = load_facts('facts/demo_facts.json')
+    sentence = 'Hello Designed in Texas and $49 shop now'
+    result = check_sentence(sentence, facts)
+    assert result['verified'] is True
+    assert result['verdict'] == 'supported'
+    assert result['evidence'] == 'Designed in Texas'
+    assert result['evidence_claims'] == ['Designed in Texas', '$49']
+    receipt = execute()
+    assert receipt['checker_v2']['claim_results']
+    baseline = Receipt.model_validate(receipt).model_dump()
+    assert baseline['checker_v2']['claim_results'][0]['evidence_claims'] is None
+    tainted = copy.deepcopy(receipt)
+    claim = dict(result)
+    claim.update({'blocked': False, 'source': 'draft_text',
+                  'raw_provider_payload': {'secret': 'x'}, 'reasoning': 'private'})
+    tainted['checker_v2']['claim_results'][0] = claim
+    validated = Receipt.model_validate(tainted).model_dump()
+    first = validated['checker_v2']['claim_results'][0]
+    assert first['evidence'] == 'Designed in Texas'
+    assert first['evidence_claims'] == ['Designed in Texas', '$49']
+    assert 'raw_provider_payload' not in first
+    assert 'reasoning' not in first
+    assert 'secret' not in json.dumps(first)
+    assert 'private' not in json.dumps(first)

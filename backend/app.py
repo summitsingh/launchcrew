@@ -89,6 +89,7 @@ class ClaimResult(BaseModel):
     verified: bool = False
     verdict: str = 'unsupported'
     evidence: str | None = None
+    evidence_claims: list[str] | None = None
     reason: str = ''
     blocked: bool = True
     source: str = ''
