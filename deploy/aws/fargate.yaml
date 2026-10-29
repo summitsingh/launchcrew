@@ -886,6 +886,7 @@ Resources:
           RedirectConfig: { Protocol: HTTPS, Port: '443', StatusCode: HTTP_301 }
   ApiService:
     Type: AWS::ECS::Service
+    DependsOn: ApiListenerRule
     Properties:
       Cluster: !Ref Cluster
       TaskDefinition: !Ref ApiTaskDefinition
@@ -906,6 +907,7 @@ Resources:
           TargetGroupArn: !Ref ApiTargetGroup
   WebService:
     Type: AWS::ECS::Service
+    DependsOn: HttpsListener
     Properties:
       Cluster: !Ref Cluster
       TaskDefinition: !Ref WebTaskDefinition

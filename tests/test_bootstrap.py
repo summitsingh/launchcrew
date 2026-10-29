@@ -10,6 +10,7 @@ tasks with schema proof before enabling fixed-count services, must refuse
 placeholder images, and must never call GetSecretValue.
 """
 import os
+import re
 import stat
 import subprocess
 import tempfile
@@ -1389,6 +1390,128 @@ class FixtureJsonTests(BootstrapHarness):
             self.assertIn("bootstrap-db-roles", names)
 
 
+def _fargate_resource_names(text):
+    start = text.index("\nResources:\n")
+    try:
+        end = text.index("\nOutputs:\n", start)
+        scope = text[start:end]
+    except ValueError:
+        scope = text[start:]
+    names = []
+    for line in scope.splitlines():
+        match = re.match(r"^  ([A-Za-z0-9]+):\s*$", line)
+        if match:
+            names.append(match.group(1))
+    return names
+
+
+def _fargate_resource_block(text, name):
+    start = text.index(f"\n  {name}:")
+    rest = text[start + 1:]
+    lines = rest.splitlines()
+    block = [lines[0]]
+    for line in lines[1:]:
+        if re.match(r"^  [A-Za-z0-9]", line):
+            break
+        if re.match(r"^[A-Za-z]", line):
+            break
+        block.append(line)
+    return "\n".join(block)
+
+
+def _fargate_depends_on(block):
+    deps = []
+    lines = block.splitlines()
+    for idx, line in enumerate(lines):
+        match = re.match(r"^\s*DependsOn:\s*(.*?)\s*$", line)
+        if not match:
+            continue
+        value = match.group(1).strip()
+        if value:
+            if value.startswith("["):
+                inner = value[1:value.index("]")] if "]" in value else value[1:]
+                for part in inner.split(","):
+                    part = part.strip()
+                    if part:
+                        deps.append(part)
+            else:
+                deps.append(value)
+        else:
+            for following in lines[idx + 1:]:
+                item = re.match(r"^\s*-\s*([A-Za-z0-9]+)\s*$", following)
+                if item:
+                    deps.append(item.group(1))
+                    continue
+                if re.match(r"^\s*$", following):
+                    continue
+                break
+    return deps
+
+
+def _fargate_ref_targets(block):
+    targets = set(re.findall(r"!Ref\s+([A-Za-z0-9:]+)", block))
+    for target in re.findall(r"!GetAtt\s+([A-Za-z0-9:\.\[\]]+)", block):
+        targets.add(target.split(".")[0].strip("[] "))
+    for target in re.findall(r"\$\{([A-Za-z0-9]+)", block):
+        targets.add(target)
+    return targets
+
+
+def _fargate_dependency_graph(text):
+    names = set(_fargate_resource_names(text))
+    graph = {}
+    for name in names:
+        block = _fargate_resource_block(text, name)
+        deps = {dep for dep in _fargate_depends_on(block) if dep in names}
+        for target in _fargate_ref_targets(block):
+            if target in names:
+                deps.add(target)
+        graph[name] = deps
+    return graph
+
+
+def _fargate_reachable(graph, start, goal):
+    seen = set()
+    stack = [start]
+    while stack:
+        node = stack.pop()
+        if node == goal:
+            return True
+        for nxt in graph.get(node, ()):
+            if nxt not in seen:
+                seen.add(nxt)
+                stack.append(nxt)
+    return False
+
+
+def _fargate_cycle_path(graph):
+    visiting = set()
+    done = set()
+    trail = []
+
+    def visit(node):
+        if node in done:
+            return None
+        if node in visiting:
+            return trail[trail.index(node):] + [node]
+        visiting.add(node)
+        trail.append(node)
+        for nxt in sorted(graph.get(node, ())):
+            hit = visit(nxt)
+            if hit:
+                return hit
+        trail.pop()
+        visiting.remove(node)
+        done.add(node)
+        return None
+
+    for node in sorted(graph):
+        hit = visit(node)
+        if hit:
+            return hit
+    return None
+
+
 class TemplateStagingTests(unittest.TestCase):
     def setUp(self):
         self.text = TEMPLATE.read_text(encoding="utf-8")
@@ -1402,6 +1525,39 @@ class TemplateStagingTests(unittest.TestCase):
         self.assertIn("Default: 'false'", self.text)
         self.assertIn("DesiredCount: !If [ServicesEnabled, 1, 0]", self.text)
         self.assertNotIn("DesiredCount: 1", self.text)
+
+    def test_services_wait_for_listener_association(self):
+        graph = _fargate_dependency_graph(self.text)
+        self.assertIn("HttpsListener", graph.get("WebService", set()))
+        self.assertIn("ApiListenerRule", graph.get("ApiService", set()))
+        self.assertTrue(_fargate_reachable(graph, "ApiService", "HttpsListener"))
+        self.assertTrue(_fargate_reachable(graph, "ApiService", "LoadBalancer"))
+        self.assertTrue(_fargate_reachable(graph, "WebService", "LoadBalancer"))
+        rule = _fargate_resource_block(self.text, "ApiListenerRule")
+        self.assertIn("!Ref HttpsListener", rule)
+        self.assertIn("!Ref ApiTargetGroup", rule)
+        listener = _fargate_resource_block(self.text, "HttpsListener")
+        self.assertIn("!Ref WebTargetGroup", listener)
+        self.assertIn("!Ref LoadBalancer", listener)
+        api = _fargate_resource_block(self.text, "ApiService")
+        for ref in ("!Ref Cluster", "!Ref ApiTaskDefinition",
+                    "!Ref ApiTargetGroup", "!Ref ApiSecurityGroup",
+                    "!Ref PublicSubnetA", "!Ref PublicSubnetB"):
+            self.assertIn(ref, api)
+        web = _fargate_resource_block(self.text, "WebService")
+        for ref in ("!Ref Cluster", "!Ref WebTaskDefinition",
+                    "!Ref WebTargetGroup", "!Ref WebSecurityGroup",
+                    "!Ref PublicSubnetA", "!Ref PublicSubnetB"):
+            self.assertIn(ref, web)
+        self.assertIn("DesiredCount: !If [ServicesEnabled, 1, 0]", api)
+        self.assertIn("DesiredCount: !If [ServicesEnabled, 1, 0]", web)
+
+    def test_service_listener_dependencies_add_no_cycle(self):
+        graph = _fargate_dependency_graph(self.text)
+        self.assertIsNone(_fargate_cycle_path(graph))
+        self.assertFalse(_fargate_reachable(graph, "HttpsListener", "WebService"))
+        self.assertFalse(_fargate_reachable(graph, "ApiListenerRule", "ApiService"))
+        self.assertFalse(_fargate_reachable(graph, "HttpsListener", "ApiService"))
 
     def test_no_autoscaling_controller(self):
         self.assertNotIn("ApplicationAutoScaling", self.text)
