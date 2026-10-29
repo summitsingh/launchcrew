@@ -135,6 +135,10 @@ if [ "$1" = "cloudformation" ] && [ "$2" = "describe-stacks" ]; then
     *"StackStatus"*) printf '%s\\n' "$STATUS"; exit 0 ;;
   esac
   ENABLE_VALUE="${FAKE_ENABLE:-false}"
+  if [ "${FAKE_QUIESCE_STACK:-}" = "full" ]; then
+    printf '{"Stacks":[{"StackId":"%s","StackStatus":"%s","Tags":[{"Key":"Project","Value":"%s"},{"Key":"Environment","Value":"demo"}],"Parameters":[{"ParameterKey":"AcmCertificateArn","ParameterValue":"%s"},{"ParameterKey":"ApiImageUri","ParameterValue":"%s"},{"ParameterKey":"BootstrapImageUri","ParameterValue":"%s"},{"ParameterKey":"DatabaseUsername","ParameterValue":"%s"},{"ParameterKey":"MasterDbPasswordSecretArn","ParameterValue":"%s"},{"ParameterKey":"MigrationDbUrlSecretArn","ParameterValue":"%s"},{"ParameterKey":"MigrationImageUri","ParameterValue":"%s"},{"ParameterKey":"RuntimeDbUrlSecretArn","ParameterValue":"%s"},{"ParameterKey":"TlsSecretArn","ParameterValue":"%s"},{"ParameterKey":"WebImageUri","ParameterValue":"%s"},{"ParameterKey":"WebProxyImageUri","ParameterValue":"%s"},{"ParameterKey":"EnableServices","ParameterValue":"%s"}]}]}\\n' "$STACKID" "$STATUS" "$PROJECT" "${FAKE_CERT_ARN:-arn:aws:acm:us-east-1:111122223333:certificate/12345678-90ab-cdef-1234-567890abcde1}" "${FAKE_API_IMAGE:-111122223333.dkr.ecr.us-east-1.amazonaws.com/launchcrew-api:abc123}" "${FAKE_BOOTSTRAP_IMAGE:-111122223333.dkr.ecr.us-east-1.amazonaws.com/launchcrew-bootstrap:abc123}" "${FAKE_DB_USER:-launchcrew_app}" "${FAKE_MASTER_ARN:-arn:aws:secretsmanager:us-east-1:111122223333:secret:launchcrew-master-MnOpQr}" "${FAKE_MG_ARN:-arn:aws:secretsmanager:us-east-1:111122223333:secret:launchcrew-migration-GhIjKl}" "${FAKE_MIGRATION_IMAGE:-111122223333.dkr.ecr.us-east-1.amazonaws.com/launchcrew-migration:abc123}" "${FAKE_RT_ARN:-arn:aws:secretsmanager:us-east-1:111122223333:secret:launchcrew-runtime-AbCdEf}" "${FAKE_TLS_ARN:-arn:aws:secretsmanager:us-east-1:111122223333:secret:launchcrew-tls-QrStUv}" "${FAKE_WEB_IMAGE:-111122223333.dkr.ecr.us-east-1.amazonaws.com/launchcrew-web:abc123}" "${FAKE_WEB_PROXY_IMAGE:-111122223333.dkr.ecr.us-east-1.amazonaws.com/launchcrew-web-proxy:abc123}" "$ENABLE_VALUE"
+    exit 0
+  fi
   printf '{"Stacks":[{"StackId":"%s","StackStatus":"%s","Tags":[{"Key":"Project","Value":"%s"},{"Key":"Environment","Value":"demo"}],"Parameters":[{"ParameterKey":"AcmCertificateArn","ParameterValue":"%s"},{"ParameterKey":"ApiImageUri","ParameterValue":"%s"},{"ParameterKey":"EnableServices","ParameterValue":"%s"}]}]}\\n' "$STACKID" "$STATUS" "$PROJECT" "${FAKE_CERT_ARN:-arn:aws:acm:us-east-1:111122223333:certificate/12345678-90ab-cdef-1234-567890abcde1}" "${FAKE_API_IMAGE:-111122223333.dkr.ecr.us-east-1.amazonaws.com/launchcrew-api:abc123}" "$ENABLE_VALUE"
   exit 0
 fi
@@ -383,13 +387,34 @@ PYEOF
     fi
   fi
   python3 - "$CS_NAME" "$CS_TOKEN" "$STACKID" "$CS_MODE" <<'PYEOF'
-import json, sys
+import json, os, sys
 name, token, stack_id, mode = sys.argv[1:5]
 CSID = "arn:aws:cloudformation:us-east-1:111122223333:changeSet/%s/aaaabbbbccccddddeeeeffff00001111" % name
 TAGS = [{"Key": "Project", "Value": "LaunchCrew"}, {"Key": "Environment", "Value": "demo"}]
 CAPS = ["CAPABILITY_NAMED_IAM"]
 API_SVC = "launchcrew-demo-ApiService-A1B2C3D4E5F6"
 WEB_SVC = "launchcrew-demo-WebService-G7H8I9J0K1L2"
+def qlive():
+    return {
+        "AcmCertificateArn": os.environ.get("FAKE_CERT_ARN", "arn:aws:acm:us-east-1:111122223333:certificate/12345678-90ab-cdef-1234-567890abcde1"),
+        "ApiImageUri": os.environ.get("FAKE_API_IMAGE", "111122223333.dkr.ecr.us-east-1.amazonaws.com/launchcrew-api:abc123"),
+        "BootstrapImageUri": os.environ.get("FAKE_BOOTSTRAP_IMAGE", "111122223333.dkr.ecr.us-east-1.amazonaws.com/launchcrew-bootstrap:abc123"),
+        "DatabaseUsername": os.environ.get("FAKE_DB_USER", "launchcrew_app"),
+        "MasterDbPasswordSecretArn": os.environ.get("FAKE_MASTER_ARN", "arn:aws:secretsmanager:us-east-1:111122223333:secret:launchcrew-master-MnOpQr"),
+        "MigrationDbUrlSecretArn": os.environ.get("FAKE_MG_ARN", "arn:aws:secretsmanager:us-east-1:111122223333:secret:launchcrew-migration-GhIjKl"),
+        "MigrationImageUri": os.environ.get("FAKE_MIGRATION_IMAGE", "111122223333.dkr.ecr.us-east-1.amazonaws.com/launchcrew-migration:abc123"),
+        "RuntimeDbUrlSecretArn": os.environ.get("FAKE_RT_ARN", "arn:aws:secretsmanager:us-east-1:111122223333:secret:launchcrew-runtime-AbCdEf"),
+        "TlsSecretArn": os.environ.get("FAKE_TLS_ARN", "arn:aws:secretsmanager:us-east-1:111122223333:secret:launchcrew-tls-QrStUv"),
+        "WebImageUri": os.environ.get("FAKE_WEB_IMAGE", "111122223333.dkr.ecr.us-east-1.amazonaws.com/launchcrew-web:abc123"),
+        "WebProxyImageUri": os.environ.get("FAKE_WEB_PROXY_IMAGE", "111122223333.dkr.ecr.us-east-1.amazonaws.com/launchcrew-web-proxy:abc123"),
+    }
+def qexplicit():
+    live = qlive()
+    out = []
+    for key in sorted(live):
+        out.append({"ParameterKey": key, "ParameterValue": live[key], "UsePreviousValue": False})
+    out.append({"ParameterKey": "EnableServices", "ParameterValue": "false", "UsePreviousValue": False})
+    return out
 def svc_change(logical, physical, detail_name="DesiredCount", replacement="False",
                scope=None, attr="Properties", recre="Never"):
     return {"Type": "Resource", "ResourceChange": {
@@ -460,6 +485,26 @@ elif mode == "paginated_extra":
         print(json.dumps(base([FOREIGN_DB], QPARAMS)))
 elif mode == "truncated":
     print(json.dumps(base([svc_change("ApiService", API_SVC)], QPARAMS, token_out="more")))
+elif mode == "explicit_ok":
+    print(json.dumps(base(QEXACT, qexplicit())))
+elif mode == "explicit_diff":
+    params = qexplicit()
+    for item in params:
+        if item["ParameterKey"] == "DatabaseUsername":
+            item["ParameterValue"] = "other_user"
+    print(json.dumps(base(QEXACT, params)))
+elif mode == "explicit_missing":
+    params = [item for item in qexplicit() if item["ParameterKey"] != "DatabaseUsername"]
+    print(json.dumps(base(QEXACT, params)))
+elif mode == "explicit_dup":
+    params = qexplicit()
+    for item in params:
+        if item["ParameterKey"] == "DatabaseUsername":
+            params.append({"ParameterKey": "DatabaseUsername", "ParameterValue": item["ParameterValue"], "UsePreviousValue": False})
+            break
+    print(json.dumps(base(QEXACT, params)))
+elif mode == "explicit_extra":
+    print(json.dumps(base(QEXACT + [FOREIGN_DB], qexplicit())))
 else:
     print(json.dumps(base(QEXACT, QPARAMS)))
 PYEOF
@@ -3368,6 +3413,112 @@ class QuiesceResumeTests(BootstrapHarness):
         self.assertIn("TAGS_MISMATCH", combined)
         self.assertFalse(any("execute-change-set" in call for call in calls))
         self.assertFalse(any("delete-change-set" in call for call in calls))
+
+
+class QuiesceExplicitValuesTests(BootstrapHarness):
+    STACK_ID = f"arn:aws:cloudformation:{REGION}:{ACCOUNT}:stack/{STACK}/abc123"
+
+    def quiesce_args(self, confirm=None):
+        args = self.base_args()
+        args += ["--phase", "quiesce"]
+        if confirm is None:
+            args += ["--quiesce-confirm", self.STACK_ID]
+        elif confirm != "":
+            args += ["--quiesce-confirm", confirm]
+        args += ["--release-generation", "head006-testabc"]
+        return args
+
+    def quiesce_env(self, changeset="explicit_ok", extra=None):
+        env = {"FAKE_ENABLE": "true",
+               "FAKE_STACK_STATUS": "UPDATE_COMPLETE",
+               "FAKE_SERVICE": "stopped",
+               "FAKE_CHANGESET": changeset,
+               "FAKE_TG_HEALTH": "drained",
+               "FAKE_QUIESCE_STACK": "full",
+               "FAKE_QUIESCE_CREATE": "exists"}
+        if extra:
+            env.update(extra)
+        return env
+
+    def test_quiesce_explicit_current_values_resume_succeeds_after_full_proof(self):
+        result, calls = self.run_bootstrap(
+            self.quiesce_args(), extra_env=self.quiesce_env("explicit_ok"))
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        combined = result.stdout + result.stderr
+        self.assertIn("BOOTSTRAP COMPLETE", result.stdout)
+        self.assertIn("already exists", combined)
+        self.assertIn("safe resume", combined)
+        self.assertIn("resuming existing exact", combined)
+        joined = " ".join(calls)
+        self.assertIn("create-change-set", joined)
+        self.assertIn("--use-previous-template", joined)
+        self.assertIn("ParameterKey=DatabaseUsername,UsePreviousValue=true", joined)
+        self.assertIn("ParameterKey=EnableServices,ParameterValue=false", joined)
+        self.assertIn("describe-change-set", joined)
+        executes = [call for call in calls if "execute-change-set" in call]
+        self.assertEqual(len(executes), 1)
+        self.assertIn("changeSet/quiesce-006/", executes[0])
+        describes = [call for call in calls if "describe-change-set" in call]
+        self.assertTrue(describes)
+        for call in describes:
+            self.assertIn("--no-paginate", call)
+            self.assertIn("--cli-input-json", call)
+            self.assertNotIn("--change-set-name", call)
+            self.assertNotIn("--stack-name", call)
+        self.assertFalse(any("delete-change-set" in call for call in calls))
+        self.assertFalse(any("run-task" in call for call in calls))
+        self.assertFalse(any("deploy " in call for call in calls))
+        self.assertIn("UPDATE_COMPLETE", result.stdout)
+        self.assertIn("0/0/0", combined)
+        self.assertIn("drained", combined)
+        self.assertIn("exact Project LaunchCrew plus Environment demo preserved", combined)
+        self.assertNotIn("launchcrew_app", combined)
+        self.assertNotIn("other_user", combined)
+
+    def test_quiesce_explicit_differs_refuses(self):
+        result, calls = self.run_bootstrap(
+            self.quiesce_args(), extra_env=self.quiesce_env("explicit_diff"))
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("PARAMS_VALUE_DatabaseUsername", combined)
+        self.assertIn("preserved for inspection", combined)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+        self.assertFalse(any("delete-change-set" in call for call in calls))
+        self.assertNotIn("launchcrew_app", combined)
+        self.assertNotIn("other_user", combined)
+
+    def test_quiesce_explicit_missing_refuses(self):
+        result, calls = self.run_bootstrap(
+            self.quiesce_args(), extra_env=self.quiesce_env("explicit_missing"))
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("PARAMS_INCOMPLETE", combined)
+        self.assertIn("preserved for inspection", combined)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+        self.assertFalse(any("delete-change-set" in call for call in calls))
+        self.assertNotIn("launchcrew_app", combined)
+
+    def test_quiesce_explicit_duplicate_refuses(self):
+        result, calls = self.run_bootstrap(
+            self.quiesce_args(), extra_env=self.quiesce_env("explicit_dup"))
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("PARAMS_DUP_DatabaseUsername", combined)
+        self.assertIn("preserved for inspection", combined)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+        self.assertFalse(any("delete-change-set" in call for call in calls))
+        self.assertNotIn("launchcrew_app", combined)
+
+    def test_quiesce_explicit_extra_resource_refuses(self):
+        result, calls = self.run_bootstrap(
+            self.quiesce_args(), extra_env=self.quiesce_env("explicit_extra"))
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("FOREIGN_Database", combined)
+        self.assertIn("preserved for inspection", combined)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+        self.assertFalse(any("delete-change-set" in call for call in calls))
+        self.assertNotIn("launchcrew_app", combined)
 
 
 class LegacyJournalTests(BootstrapHarness):
