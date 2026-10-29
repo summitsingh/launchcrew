@@ -87,11 +87,13 @@ def create_server(host='127.0.0.1', port=0, root=ROOT):
                 if post:
                     return self.respond(405, 'Method not allowed')
                 if action == 'export':
-                    # Reuse the CLI export gate, without creating another local output.
-                    if (receipt.get('status') == 'failed' or receipt.get('approval_state') != 'approved_for_export'
-                            or receipt.get('checker_v2', {}).get('blocked_count', 1) != 0):
-                        return self.respond(403, 'Export requires approval and a clean final check')
-                    return self.respond(200, json.dumps(receipt, indent=2), 'application/json', True)
+                    # Shared binding gate without mutation or local output.
+                    from .human_review import export_view
+                    try:
+                        view = export_view(receipt)
+                    except ValueError as error:
+                        return self.respond(403, str(error))
+                    return self.respond(200, json.dumps(view, indent=2), 'application/json', True)
                 if action == 'receipt.json':
                     return self.respond(200, json.dumps(receipt, indent=2), 'application/json')
                 if action:
