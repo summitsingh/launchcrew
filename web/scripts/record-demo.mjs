@@ -756,11 +756,24 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
   };
   const beginHold = (id) => takeElapsed();
   const endHold = async (page, id, sourceIn, note) => {
+    // Fixed slots include actual action elapsed time. SourceIn is placed
+    // before the narrated central actions, shows keep evidence after, and
+    // this wait covers only the remaining slot duration. If actions plus
+    // readable evidence already exceed the slot, fail honestly so the EDL
+    // cut never silently drops actual proof. Rebalance within the hard
+    // limit is a source change, not a silent trim.
     const slot = slotSecondsFor(id);
+    const elapsedAtEntry = takeElapsed() - sourceIn;
+    if (elapsedAtEntry > slot + 1.0) {
+      fail(`EDL hold ${id} actions already took ${elapsedAtEntry.toFixed(1)}s, over its ${slot}s slot. Essential actions plus readable evidence do not fit. Rebalance slots within ${HARD_LIMIT_SECONDS}s total or trim setup inside the hold. Refusing to cut actual proof.`);
+    }
     while (takeElapsed() - sourceIn < slot) {
       await page.waitForTimeout(500);
     }
     const sourceOut = takeElapsed();
+    if (sourceOut - sourceIn > slot + 2.0) {
+      fail(`EDL hold ${id} kept ${(sourceOut - sourceIn).toFixed(1)}s, over its ${slot}s slot. Refusing to cut actual proof or pad fake video.`);
+    }
     edl.push({ id, slot_seconds: slot, source_in: sourceIn, source_out: sourceOut, note });
     manifest.segments.push({ id, source_in_seconds: sourceIn, source_out_seconds: sourceOut, slot_seconds: slot, note });
     info(`hold ${id}: kept ${slot}s from take ${sourceIn.toFixed(1)}s to ${(sourceIn + slot).toFixed(1)}s (${note})`);
@@ -828,6 +841,9 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
     }
 
     // S2: create Scout and PriceGuard through the Agent builder UI.
+    // Scout is prerequisite setup and stays trimmed. PriceGuard creation
+    // plus dry-run preview are the narrated central actions, so the kept
+    // hold starts before PriceGuard creation and keeps evidence after.
     async function createAgent(fields) {
       await mustClick('button', 'Agent builder', false);
       await mustClick('button', 'New agent', true);
@@ -850,24 +866,24 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
       expertise: `Demo market notes ${suffix}`,
       rules: 'Use facts file first\nCite a source for every fact', veto: '',
     });
-    await createAgent({
-      name: checkerName, role: 'Strict Auditor',
-      personality: `Blocks price claims ${suffix}`,
-      expertise: `Demo approval rules ${suffix}`,
-      rules: 'Block price claims', veto: 'price_claims',
-    });
-    await page.getByRole('button', { name: `${checkerName} Strict Auditor`, exact: false }).first().click({ timeout: 20000 });
-    await mustClick('button', 'Dry-run preview', true);
-    try {
-      await page.getByText('Enforced policies: price_claims').waitFor({ timeout: 20000 });
-    } catch {
-      fail('PriceGuard dry-run preview did not show enforced price_claims. Refusing to claim the policy.');
-    }
-    await page.screenshot({ path: join(shotsDir, 's2-guard.png') });
     {
       const sourceIn = beginHold('s2-guard');
+      await createAgent({
+        name: checkerName, role: 'Strict Auditor',
+        personality: `Blocks price claims ${suffix}`,
+        expertise: `Demo approval rules ${suffix}`,
+        rules: 'Block price claims', veto: 'price_claims',
+      });
+      await page.getByRole('button', { name: `${checkerName} Strict Auditor`, exact: false }).first().click({ timeout: 20000 });
+      await mustClick('button', 'Dry-run preview', true);
+      try {
+        await page.getByText('Enforced policies: price_claims').waitFor({ timeout: 20000 });
+      } catch {
+        fail('PriceGuard dry-run preview did not show enforced price_claims. Refusing to claim the policy.');
+      }
+      await page.screenshot({ path: join(shotsDir, 's2-guard.png') });
       await showInViewport(page.getByText('Enforced policies: price_claims'), 's2 enforced policies');
-      await endHold(page, 's2-guard', sourceIn, `PriceGuard ${checkerName} enforced price_claims`);
+      await endHold(page, 's2-guard', sourceIn, `PriceGuard ${checkerName} created plus enforced price_claims`);
     }
 
     // Natural runs through the Launch brief UI. Observe responses, never replace them.
@@ -906,9 +922,12 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
         warn(`observed response run ${observedId.slice(0, 12)} differs from UI run ${uiId.slice(0, 12)}; using the UI value`);
       }
       try {
-        await page.getByRole('heading', { name: 'Unsupported claims stopped.' }).or(
-          page.getByRole('heading', { name: 'Ready for your review.' }),
-        ).waitFor({ timeout: 90000 });
+        // Completed review renders both headings. Disambiguate the union
+        // so strict mode never matches 2, while still requiring real
+        // completion. Missing UI still times out and fails below.
+        await page.getByRole('heading', { name: 'Unsupported claims stopped.', exact: true }).or(
+          page.getByRole('heading', { name: 'Ready for your review.', exact: true }),
+        ).first().waitFor({ timeout: 90000 });
       } catch {
         fail(`run ${uiId.slice(0, 12)} never reached review. Refusing to fake completion.`);
       }
@@ -919,48 +938,63 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
     }
 
     // S3: default checker, clean (seed off). Scout facts plus risks on screen.
-    // Run wait happens before the hold and is trimmed; the hold keeps only
-    // the asserted facts evidence in the viewport.
-    const runDefault = await runViaUi({ checker: 'Checker', seed: false }, 's3 default run');
-    manifest.runs.runDefault = runDefault;
-    try {
-      await page.locator('section[aria-label="Scout facts and sources"] .scout-fact').first().waitFor({ timeout: 20000 });
-      await page.getByText('No external research was run').waitFor({ timeout: 20000 });
-    } catch {
-      fail('Scout facts section did not render with demo source honesty copy. Refusing to narrate Scout.');
-    }
-    const factCount = await page.locator('section[aria-label="Scout facts and sources"] .scout-fact').count();
-    const riskCount = await page.locator('section[aria-label="Scout facts and sources"] .scout-risk').count();
-    if (factCount !== 5 || riskCount !== 3) {
-      fail(`Scout counts are ${factCount} facts and ${riskCount} risks, expected 5 and 3. Refusing to misstate counts.`);
-    }
-    await page.screenshot({ path: join(shotsDir, 's3-scout.png') });
+    // The Create draft tap plus actual run progress are the central
+    // behavior, so the kept hold starts before the run and keeps the
+    // facts evidence after. Fast stages are captured honestly with no
+    // fake pause; an already finished run shows its stored completed
+    // review and stored timestamps without invented waiting.
+    let runDefault = '';
     {
       const sourceIn = beginHold('s3-scout');
+      runDefault = await runViaUi({ checker: 'Checker', seed: false }, 's3 default run');
+      manifest.runs.runDefault = runDefault;
+      try {
+        await page.locator('section[aria-label="Scout facts and sources"] .scout-fact').first().waitFor({ timeout: 20000 });
+        await page.getByText('No external research was run').waitFor({ timeout: 20000 });
+      } catch {
+        fail('Scout facts section did not render with demo source honesty copy. Refusing to narrate Scout.');
+      }
+      const factCount = await page.locator('section[aria-label="Scout facts and sources"] .scout-fact').count();
+      const riskCount = await page.locator('section[aria-label="Scout facts and sources"] .scout-risk').count();
+      if (factCount !== 5 || riskCount !== 3) {
+        fail(`Scout counts are ${factCount} facts and ${riskCount} risks, expected 5 and 3. Refusing to misstate counts.`);
+      }
+      await page.screenshot({ path: join(shotsDir, 's3-scout.png') });
       await showInViewport(page.locator('section[aria-label="Scout facts and sources"]'), 's3 scout section');
       await showInViewport(page.locator('section[aria-label="Scout facts and sources"] .scout-fact').first(), 's3 first fact');
       await showInViewport(page.getByText('No external research was run'), 's3 honesty copy');
-      await endHold(page, 's3-scout', sourceIn, `default run ${runDefault.slice(0, 12)}, 5 facts 3 risks`);
+      await endHold(page, 's3-scout', sourceIn, `default run ${runDefault.slice(0, 12)} created plus 5 facts 3 risks`);
     }
 
     // PriceGuard clean run shows the genuine price veto without any seed.
+    // Trimmed setup for the replay baseline. S4 keeps the seeded run.
     const runGuarded = await runViaUi({ checker: checkerName, seed: false }, 's4 guarded run');
     manifest.runs.runGuarded = runGuarded;
     await page.screenshot({ path: join(shotsDir, 's4a-guarded.png') });
 
     // S4: seeded run with PriceGuard shows both the seed block and the price veto.
-    const runSeeded = await runViaUi({ checker: checkerName, seed: true }, 's4 seeded run');
-    manifest.runs.runSeeded = runSeeded;
-    try {
-      await page.getByText('best in Texas', { exact: true }).first().waitFor({ timeout: 20000 });
-    } catch {
-      fail('seeded claim text never appeared. The seed checkbox may not have applied. Refusing to fake the block.');
-    }
-    await page.screenshot({ path: join(shotsDir, 's4-seed.png') });
+    // The seed checkbox plus Create draft plus actual progress are central,
+    // so the kept hold starts before the seeded run and keeps the block
+    // plus the revised final draft and the zero-block final check after.
+    // Fast stages are captured honestly with no fake pause; an already
+    // finished run shows its stored completed review without invented waiting.
+    let runSeeded = '';
     {
       const sourceIn = beginHold('s4-seed');
+      runSeeded = await runViaUi({ checker: checkerName, seed: true }, 's4 seeded run');
+      manifest.runs.runSeeded = runSeeded;
+      try {
+        await page.getByText('best in Texas', { exact: true }).first().waitFor({ timeout: 20000 });
+        await page.getByText('Current Instagram draft').first().waitFor({ timeout: 20000 });
+        await page.getByText('Final blocked count: 0').first().waitFor({ timeout: 20000 });
+      } catch {
+        fail('seeded block, revised draft, or zero-block final check never appeared. Refusing to fake the revision.');
+      }
+      await page.screenshot({ path: join(shotsDir, 's4-seed.png') });
       await showInViewport(page.getByText('best in Texas', { exact: true }).first(), 's4 seeded block');
-      await endHold(page, 's4-seed', sourceIn, `seeded run ${runSeeded.slice(0, 12)}, best-in-Texas plus price veto`);
+      await showInViewport(page.getByText('Current Instagram draft').first(), 's4 revised draft');
+      await showInViewport(page.getByText('Final blocked count: 0').first(), 's4 zero-block final check');
+      await endHold(page, 's4-seed', sourceIn, `seeded run ${runSeeded.slice(0, 12)} created plus block plus revised plus zero`);
     }
 
     // S5: Replay the two actual run IDs.
@@ -1151,6 +1185,9 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
     }
 
     // S9: human approve plus export download on the seeded run, then receipt timeline.
+    // Queue navigation plus the pending check stay trimmed setup. The kept
+    // hold starts before the actual Approve tap and keeps the Export
+    // download, receipt navigation, and readable timeline after.
     await page.getByRole('navigation', { name: 'Workspace' }).getByRole('button', { name: 'Approval queue' }).click({ timeout: 20000 });
     const card = page.locator(`[data-run-id="${runSeeded}"]`);
     try {
@@ -1158,41 +1195,41 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
     } catch {
       fail('seeded run is not pending approval. Refusing to fake the approval tap.');
     }
-    await card.getByRole('button', { name: 'Approve for export', exact: true }).click({ timeout: 20000 });
-    try {
-      await card.getByText('Approved for export', { exact: true }).waitFor({ timeout: 20000 });
-    } catch {
-      fail('approval was not confirmed in the UI.');
-    }
-    const downloadWait = page.waitForEvent('download', { timeout: 30000 });
-    await card.getByRole('button', { name: 'Export pack', exact: true }).click({ timeout: 20000 });
-    const download = await downloadWait;
-    const exportPath = join(outDir, `export-${suffix}.json`);
-    await download.saveAs(exportPath);
-    const exported = JSON.parse(readFileSync(exportPath, 'utf8'));
-    if (exported.run_id !== runSeeded) fail('exported pack run ID does not match the approved run.');
-    if (exported.summary && exported.summary.submit_attempted !== false) {
-      fail('exported pack shows submit attempted. Refusing to claim no submission.');
-    }
-    await card.getByRole('button', { name: 'View receipt', exact: true }).click({ timeout: 20000 });
-    try {
-      await page.getByRole('heading', { name: 'Receipt', exact: true }).waitFor({ timeout: 20000 });
-      await page.getByText('Not attempted', { exact: true }).waitFor({ timeout: 20000 });
-      await page.getByRole('heading', { name: 'Recorded events' }).waitFor({ timeout: 20000 });
-    } catch {
-      fail('receipt timeline did not show stored events with no submission. Refusing to fake the record.');
-    }
-    {
-      const approvedReceipt = await fetchReceipt(clean, runSeeded, 's9 approved');
-      assertKeylessReceipt(approvedReceipt, 's9 approved');
-      await recheckKeyless(clean, 's9 approved');
-    }
-    await page.screenshot({ path: join(shotsDir, 's9-receipt.png') });
     {
       const sourceIn = beginHold('s9-approve');
+      await card.getByRole('button', { name: 'Approve for export', exact: true }).click({ timeout: 20000 });
+      try {
+        await card.getByText('Approved for export', { exact: true }).waitFor({ timeout: 20000 });
+      } catch {
+        fail('approval was not confirmed in the UI.');
+      }
+      const downloadWait = page.waitForEvent('download', { timeout: 30000 });
+      await card.getByRole('button', { name: 'Export pack', exact: true }).click({ timeout: 20000 });
+      const download = await downloadWait;
+      const exportPath = join(outDir, `export-${suffix}.json`);
+      await download.saveAs(exportPath);
+      const exported = JSON.parse(readFileSync(exportPath, 'utf8'));
+      if (exported.run_id !== runSeeded) fail('exported pack run ID does not match the approved run.');
+      if (exported.summary && exported.summary.submit_attempted !== false) {
+        fail('exported pack shows submit attempted. Refusing to claim no submission.');
+      }
+      await card.getByRole('button', { name: 'View receipt', exact: true }).click({ timeout: 20000 });
+      try {
+        await page.getByRole('heading', { name: 'Receipt', exact: true }).waitFor({ timeout: 20000 });
+        await page.getByText('Not attempted', { exact: true }).waitFor({ timeout: 20000 });
+        await page.getByRole('heading', { name: 'Recorded events' }).waitFor({ timeout: 20000 });
+      } catch {
+        fail('receipt timeline did not show stored events with no submission. Refusing to fake the record.');
+      }
+      {
+        const approvedReceipt = await fetchReceipt(clean, runSeeded, 's9 approved');
+        assertKeylessReceipt(approvedReceipt, 's9 approved');
+        await recheckKeyless(clean, 's9 approved');
+      }
+      await page.screenshot({ path: join(shotsDir, 's9-receipt.png') });
       await showInViewport(page.getByText('Not attempted', { exact: true }), 's9 not attempted');
       await showInViewport(page.getByRole('heading', { name: 'Recorded events' }), 's9 timeline');
-      await endHold(page, 's9-approve', sourceIn, 'approved, exported, timeline kept, not attempted');
+      await endHold(page, 's9-approve', sourceIn, 'actual approve tap plus export plus timeline, not attempted');
     }
 
     // S10: closing card with repo plus site addresses on screen in viewport.
@@ -1239,6 +1276,9 @@ async function recordFlow(opts, ffmpeg, ffprobe, sayExe) {
     const kept = entry.source_out - entry.source_in;
     if (kept + 0.5 < entry.slot_seconds) {
       fail(`EDL hold ${entry.id} kept only ${kept.toFixed(1)}s, expected ${entry.slot_seconds}s. Evidence too short, refusing to pad video.`);
+    }
+    if (kept > entry.slot_seconds + 2.0) {
+      fail(`EDL hold ${entry.id} kept ${kept.toFixed(1)}s, over its ${entry.slot_seconds}s slot. Actions plus evidence do not fit, refusing to cut actual proof.`);
     }
     entry.slot_start = slotCursor;
     entry.slot_end = slotCursor + entry.slot_seconds;
