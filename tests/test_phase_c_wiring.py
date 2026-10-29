@@ -460,7 +460,16 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-tasks" ]; then
     if [ "$WANT_PREV" = "--tasks" ]; then WANT="$WANT_ARG"; fi
     WANT_PREV="$WANT_ARG"
   done
-  if [ -n "$WANT" ]; then TASKARN="$WANT"; fi
+  if [ -n "$WANT" ]; then
+    TASKARN="$WANT"
+    if [ -n "${FAKE_TASKDEF_FILE:-}" ] && [ -f "$FAKE_TASKDEF_FILE" ]; then
+      MATCH="$(grep -F -m 1 -- "${WANT}|" "$FAKE_TASKDEF_FILE" 2>/dev/null || true)"
+      MATCH_ARN="${MATCH%%|*}"
+      if [ -n "$MATCH" ] && [ "$MATCH_ARN" = "$WANT" ]; then
+        TASKDEF="${MATCH#*|}"
+      fi
+    fi
+  fi
   if [ "${FAKE_RECOVER:-none}" = "wrong" ] || [ "${FAKE_RECOVER:-none}" = "stopped_wrong" ]; then
     TASKDEF='arn:aws:ecs:us-east-1:111122223333:task'"-definition"'/launchcrew-demo-other:9'
   fi
