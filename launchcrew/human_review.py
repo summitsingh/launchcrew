@@ -1,8 +1,9 @@
 """Deterministic human revision recheck against the SAME run snapshot.
 
 No model calls, no network, no trust in client claims. Rechecking uses only
-the verified facts, blocked rules, and Checker policies recorded on the
-receipt, so later profile or memory edits cannot rewrite past proof.
+the verified facts, blocked rules, Checker policies, and voice banned terms
+recorded on the receipt, so later profile or memory edits cannot rewrite
+past proof.
 
 Semantics: an edit that fails rechecking is rejected with HTTP 422 and is
 not stored. Only text that passes every deterministic claim check is saved
@@ -11,9 +12,11 @@ as a new human revision, and any saved change resets export approval.
 Approval binding: approval stores a versioned SHA-256 digest over the exact
 checked artifact (confirmed facts plus provenance, current post/email/claims,
 deterministic Checker result, effective Checker profile/policies/blocked
-rules, normalized photo state, shared revision). Export recomputes and
-compares that digest every time, including revision zero. Historical
-approvals without a binding are not exportable and require a new approval.
+rules, voice source/version/banned terms, normalized photo state, shared
+revision). Export recomputes and compares that digest every time, including
+revision zero. Historical approvals without a binding are not exportable and
+require a new approval. A voice edit or delete marks dependent receipts stale
+until a new human revision check passes.
 """
 import copy
 import hashlib
@@ -28,9 +31,9 @@ APPROVAL_BINDING_VERSION = 'approval-binding/v1'
 
 REVISION_EXPLAINER = (
     'Rechecking compares your edited post and email against the same '
-    'verified facts, blocked rules, and Checker policies saved on this run. '
-    'Unsupported text is rejected and not saved. Saved text clears the prior '
-    'export approval until you approve the latest revision.'
+    'verified facts, blocked rules, Checker policies, and voice banned terms '
+    'saved on this run. Unsupported text is rejected and not saved. Saved '
+    'text clears the prior export approval until you approve the latest revision.'
 )
 
 
@@ -118,6 +121,69 @@ def snapshot_profile_name(receipt, stage):
     return None
 
 
+def snapshot_voice(receipt):
+    raw = receipt.get('voice_profile') if isinstance(receipt, dict) else None
+    if raw is None:
+        return None, None
+    if not isinstance(raw, dict):
+        return None, None
+    terms = raw.get('banned_terms')
+    if not isinstance(terms, list) or not terms:
+        return None, None
+    cleaned = [t for t in terms if isinstance(t, str) and t.strip()]
+    if not cleaned:
+        return None, None
+    snapshot = {'banned_terms': cleaned}
+    ref = {'id': raw.get('id'), 'title': raw.get('title'),
+           'version': raw.get('version')}
+    return snapshot, ref
+
+
+def snapshot_voice_binding(receipt):
+    raw = receipt.get('voice_profile') if isinstance(receipt, dict) else None
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError('Voice profile binding must be an object or null')
+    voice_id = raw.get('id')
+    if voice_id is not None and not isinstance(voice_id, str):
+        raise ValueError('Voice profile id must be a string or null')
+    title = raw.get('title')
+    if title is not None and not isinstance(title, str):
+        raise ValueError('Voice profile title must be a string or null')
+    version = raw.get('version')
+    if version is not None and not isinstance(version, str):
+        raise ValueError('Voice profile version must be a string or null')
+    digest = raw.get('digest')
+    if digest is not None and not isinstance(digest, str):
+        raise ValueError('Voice profile digest must be a string or null')
+    terms_raw = raw.get('banned_terms', [])
+    if not isinstance(terms_raw, list):
+        raise ValueError('Voice banned_terms must be a list')
+    for term in terms_raw:
+        if not isinstance(term, str):
+            raise ValueError('Voice banned_terms must be strings')
+    example_count = raw.get('example_count', 0)
+    if isinstance(example_count, bool) or not isinstance(example_count, int):
+        raise ValueError('Voice example_count must be an integer')
+    banned_count = raw.get('banned_term_count', len(terms_raw))
+    if isinstance(banned_count, bool) or not isinstance(banned_count, int):
+        raise ValueError('Voice banned_term_count must be an integer')
+    return {'id': voice_id, 'title': title, 'version': version,
+            'digest': digest, 'banned_terms': list(terms_raw),
+            'example_count': example_count,
+            'banned_term_count': banned_count}
+
+
+def voice_stale_reason(receipt):
+    if not isinstance(receipt, dict):
+        return None
+    if receipt.get('voice_stale') is True:
+        return ('Voice profile is stale; it changed since approval, '
+                'a new human revision check is required before export')
+    return None
+
+
 def _canonical_binding_bytes(payload):
     # Fixed canonical JSON: sorted keys, compact separators, UTF-8.
     # Any non-serializable input raises and the caller fails closed.
@@ -200,11 +266,12 @@ def approval_binding_payload(receipt):
     Covers owner-confirmed facts plus provenance (or the labelled
     demo-template snapshot), current post/email/claims, the deterministic
     Checker result, effective Checker profile/policies/blocked rules,
-    normalized photo state, and the shared revision. Approval and export
-    event fields plus timestamps are excluded so post-approval audit
-    appends do not invalidate the digest. Photo bytes, digests, file IDs,
-    provider IDs, DB URLs, credentials, and operator data are never
-    included. Raises ValueError on malformed inputs; callers fail closed.
+    voice source/version/banned terms, normalized photo state, and the
+    shared revision. Approval and export event fields plus timestamps are
+    excluded so post-approval audit appends do not invalidate the digest.
+    Photo bytes, digests, file IDs, provider IDs, DB URLs, credentials,
+    operator data, and voice style samples are never included. Raises
+    ValueError on malformed inputs; callers fail closed.
     """
     if not isinstance(receipt, dict):
         raise ValueError('Receipt unavailable for approval binding')
@@ -306,6 +373,7 @@ def approval_binding_payload(receipt):
     photo_reason = _binding_str(photo.get('reason'), 'Photo reason')
     policy_version = _binding_str(photo.get('policy_version'), 'Photo policy version')
     photo_revision = _binding_nonneg_int(photo.get('revision'), 'Photo revision')
+    voice_binding = snapshot_voice_binding(receipt)
     return {'version': APPROVAL_BINDING_VERSION,
             'revision': revision,
             'facts': {'mode': mode, 'template': template,
@@ -329,6 +397,7 @@ def approval_binding_payload(receipt):
                        'checker_policies': checker_policies,
                        'blocked_claims': blocked_rules,
                        'checker_stage': checker_stage},
+            'voice': voice_binding,
             'photo': {'state': photo_state, 'label': label,
                       'reason': photo_reason,
                       'policy_version': policy_version,
@@ -376,7 +445,7 @@ def binding_status(receipt):
         except ValueError as error:
             return False, 'Approval binding cannot be recomputed: ' + str(error)
         if digest != expected:
-            return False, ('Approval binding mismatch; facts, copy, policy, photo, '
+            return False, ('Approval binding mismatch; facts, copy, policy, voice, photo, '
                            'or check changed since approval')
         approvals = receipt.get('approvals')
         if not isinstance(approvals, list) or not approvals:
@@ -428,6 +497,7 @@ def recheck_text(post, email, receipt):
     from .run import check_pack
     from .checker_policies import policy_blocks, policy_reason
     from .facts import normalize
+    from .voice_profile import voice_single_block_for_text
     ok, reason = valid_revision_context(receipt)
     if not ok:
         raise ValueError(reason)
@@ -444,14 +514,17 @@ def recheck_text(post, email, receipt):
     draft = {'claims': list(explicit), 'post': post, 'email': email}
     blocked = snapshot_blocked(receipt)
     policies = snapshot_policies(receipt)
+    voice_snapshot, voice_ref = snapshot_voice(receipt)
     check = check_pack(draft, facts, blocked,
                        checker_profile=receipt.get('checker_profile', 'standard'),
-                       checker_policies=policies)
+                       checker_policies=policies,
+                       voice_snapshot=voice_snapshot, voice_ref=voice_ref)
     # Every sentence still faces veto. Grammar-verified wrapper sentences
     # are recorded in claim_results but do not reach blocked_count through
-    # the draft-text path, so enforce blocked rules and policies here
-    # explicitly. Factuality is not weakened: unsupported sentences are
-    # already blocked through draft text, and this only adds blocks.
+    # the draft-text path, so enforce blocked rules, policies, and voice
+    # banned terms here explicitly. Factuality is not weakened: unsupported
+    # sentences are already blocked through draft text, and this only adds
+    # blocks.
     blocked_names = {normalize(c) for c in blocked
                      if isinstance(c, str) and normalize(c)}
     seen_blocked = {b['claim'] for b in check.get('blocked_claims', [])
@@ -463,6 +536,16 @@ def recheck_text(post, email, receipt):
         if normalize(sentence) in blocked_names:
             extra.append({'claim': sentence,
                           'reason': 'Blocked by selected memory rule'})
+            seen_blocked.add(sentence)
+            continue
+        voice_hit = None
+        if voice_snapshot is not None:
+            try:
+                voice_hit = voice_single_block_for_text(voice_snapshot, sentence, voice_ref)
+            except (TypeError, ValueError):
+                voice_hit = None
+        if voice_hit is not None:
+            extra.append(voice_hit)
             seen_blocked.add(sentence)
             continue
         for policy in policies:
@@ -535,6 +618,8 @@ def exportable(receipt):
         return False
     if receipt.get('approval_state') != 'approved_for_export':
         return False
+    if voice_stale_reason(receipt) is not None:
+        return False
     from backend.photo_review import photo_block_reason
     if photo_block_reason(receipt) is not None:
         return False
@@ -548,7 +633,7 @@ def exportable(receipt):
         return False
     # Binding is required for every revision including zero. A clean
     # blocked_count plus a matching approved_revision is not enough when
-    # facts, copy, policy, photo, or check changed after approval.
+    # facts, copy, policy, voice, photo, or check changed after approval.
     # Historical approvals without a binding stay non-exportable.
     bound, _ = binding_status(receipt)
     return bound
@@ -567,6 +652,8 @@ def _history_entry(receipt, previous, actor, now):
             'blocked_claims': copy.deepcopy(receipt.get('blocked_claims')),
             'stage_bindings': copy.deepcopy(receipt.get('stage_bindings')),
             'memory_used': copy.deepcopy(receipt.get('memory_used')),
+            'voice_profile': copy.deepcopy(receipt.get('voice_profile')),
+            'voice_stale': bool(receipt.get('voice_stale')),
             'revised_by': actor,
             'revised_at': now,
             'superseded_by': previous + 1, 'outcome': 'superseded_by_human_edit'}
@@ -601,6 +688,8 @@ def apply_revision(receipt, post, email, actor, base_revision):
     revised['approved_revision'] = None
     revised['approval_binding'] = None
     revised['approval_state'] = 'pending_approval'
+    if 'voice_stale' in revised:
+        revised.pop('voice_stale', None)
     events = list((revised.get('audit') or {}).get('event_log') or [])
     events.append({'step': 'human_revision', 'agent': 'human',
                    'profile': actor or 'human',
@@ -615,6 +704,9 @@ def approve_current(receipt, actor, expected_revision=None):
         raise ValueError('Approval requires a completed run')
     if receipt.get('status') != 'completed':
         raise ValueError('Approval requires a completed run')
+    stale = voice_stale_reason(receipt)
+    if stale is not None:
+        raise ValueError(stale)
     if receipt.get('approval_state') != 'pending_approval':
         raise ValueError('Run is not pending approval')
     current = current_revision(receipt)
@@ -660,6 +752,9 @@ def approve_current(receipt, actor, expected_revision=None):
 def record_export(receipt, actor):
     """Persist actual export revision/actor/time onto a receipt copy."""
     if not exportable(receipt):
+        stale = voice_stale_reason(receipt)
+        if stale is not None:
+            raise ValueError('Export refused: ' + stale)
         bound, reason = binding_status(receipt)
         if not bound and 'binding' in reason.lower():
             raise ValueError('Export refused: ' + reason)
@@ -685,6 +780,9 @@ def record_export(receipt, actor):
 
 def export_view(receipt):
     if not exportable(receipt):
+        stale = voice_stale_reason(receipt)
+        if stale is not None:
+            raise ValueError('Export refused: ' + stale)
         bound, reason = binding_status(receipt)
         if not bound and 'binding' in reason.lower():
             raise ValueError('Export refused: ' + reason)

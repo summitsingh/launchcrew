@@ -290,6 +290,18 @@ class ProductFactsSection(BaseModel):
     labels: dict[str, str] = {}
 
 
+class VoiceProfileSection(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    id: str | None = None
+    title: str | None = None
+    version: str | None = None
+    digest: str | None = None
+    example_count: int | None = None
+    banned_term_count: int | None = None
+    banned_terms: list[str] | None = None
+    notice: str | None = None
+
+
 class Receipt(BaseModel):
     model_config = ConfigDict(extra='allow')
     run_id: str
@@ -327,6 +339,8 @@ class Receipt(BaseModel):
     photo_status: PhotoStatus | None = None
     photo_transport: dict[str, Any] | None = None
     product_facts: ProductFactsSection | None = Field(default=None, description='Slice 1 confirmed product facts with provenance. Absent on historical or pending receipts.')
+    voice_profile: VoiceProfileSection | None = Field(default=None, description='Slice 3 selected voice source/version with banned terms. Style samples stay in Memory and never become facts.')
+    voice_stale: bool | None = Field(default=None, description='True when the selected voice was edited or deleted after this receipt; a new human revision check is required.')
 
 
 class Preview(BaseModel):
@@ -952,7 +966,7 @@ def photo_remove(run_id: str, body: PhotoRemoveIn, actor: str = Depends(auth.act
                           approval_state='pending_approval')
 
 
-MemoryKind = Literal['brand_fact', 'profile', 'approval_example', 'blocked_rule']
+MemoryKind = Literal['brand_fact', 'profile', 'approval_example', 'blocked_rule', 'voice_profile']
 
 
 class MemoryItemIn(Strict):
@@ -995,6 +1009,51 @@ def memory_item(db, item_id, workspace_id):
     return _public_memory_item(row)
 
 
+def _validate_voice_content(content):
+    from launchcrew import voice_profile as voice_mod
+    try:
+        return voice_mod.validate_profile(content)
+    except (TypeError, ValueError) as error:
+        raise HTTPException(422, 'Invalid voice profile: ' + str(error))
+
+
+def _invalidate_voice_runs(db, workspace_id, voice_id, actor, action):
+    import copy as copy_mod
+    from launchcrew import human_review
+    rows = db.execute(text("SELECT id, receipt FROM runs WHERE workspace_id=:ws AND receipt->'voice_profile'->>'id' = :vid"),
+                      {'ws': workspace_id, 'vid': voice_id}).all()
+    for run_id, receipt in rows:
+        if not isinstance(receipt, dict):
+            continue
+        if receipt.get('status') != 'completed':
+            continue
+        voice = receipt.get('voice_profile')
+        if not isinstance(voice, dict) or voice.get('id') != voice_id:
+            continue
+        revised = copy_mod.deepcopy(receipt)
+        revised['voice_stale'] = True
+        revised['approvals'] = []
+        revised['approved_revision'] = None
+        revised['approval_binding'] = None
+        revised['approval_state'] = 'pending_approval'
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            rev = human_review.current_revision(revised)
+        except Exception:
+            rev = 0
+        events = list((revised.get('audit') or {}).get('event_log') or [])
+        events.append({'step': 'voice_invalidated', 'agent': 'system',
+                       'profile': actor or 'system',
+                       'action': ('Voice profile %s; approval invalidated, '
+                                  'a new human revision check is required before export' % action),
+                       'timestamp': now, 'revision': rev, 'voice_id': voice_id})
+        revised.setdefault('audit', {})['event_log'] = events
+        db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id AND workspace_id=:ws'),
+                   {'receipt': json.dumps(revised), 'state': 'pending_approval', 'id': run_id, 'ws': workspace_id})
+        db.execute(text('DELETE FROM approvals WHERE run_id=:id'), {'id': run_id})
+        store.audit(db, run_id, 'voice_invalidated', actor, workspace_id)
+
+
 def insert_memory(db, body, actor, action, workspace_id, source_run_id=None):
     item_id = 'mem_' + uuid4().hex
     db.execute(text('INSERT INTO memory_items(id,kind,title,content,source_run_id,workspace_id) VALUES (:id,:kind,:title,CAST(:content AS jsonb),:source,:ws)'),
@@ -1013,6 +1072,8 @@ def list_memory(actor: str = Depends(auth.actor)):
 
 @app.post('/api/memory', response_model=MemoryItemOut, status_code=201)
 def create_memory(body: MemoryItemIn, actor: str = Depends(auth.actor)):
+    if body.kind == 'voice_profile':
+        _validate_voice_content(body.content)
     with store.connect() as db:
         workspace_id = store.ensure_workspace_seeded(db, actor)
         return insert_memory(db, body, actor, 'memory_item_created', workspace_id)
@@ -1032,11 +1093,15 @@ def edit_memory(item_id: str, body: MemoryItemEdit, actor: str = Depends(auth.ac
         item = memory_item(db, item_id, workspace_id)
         if 'kind' in body.model_fields_set and body.kind != item['kind']:
             raise HTTPException(422, 'Memory kind is immutable')
+        if item['kind'] == 'voice_profile':
+            _validate_voice_content(body.content)
         result = db.execute(text('UPDATE memory_items SET title=:title,content=CAST(:content AS jsonb),updated_at=now() WHERE id=:id AND workspace_id=:ws'),
                    {'id': item_id, 'title': body.title, 'content': json.dumps(body.content), 'ws': workspace_id})
         if result.rowcount == 0:
             raise HTTPException(404, 'Memory item not found')
         store.audit(db, None, 'memory_item_edited', actor, workspace_id)
+        if item['kind'] == 'voice_profile':
+            _invalidate_voice_runs(db, workspace_id, item_id, actor, 'edited')
         return memory_item(db, item_id, workspace_id)
 
 
@@ -1044,11 +1109,13 @@ def edit_memory(item_id: str, body: MemoryItemEdit, actor: str = Depends(auth.ac
 def delete_memory(item_id: str, actor: str = Depends(auth.actor)):
     with store.connect() as db:
         workspace_id = store.ensure_workspace_seeded(db, actor)
-        memory_item(db, item_id, workspace_id)
+        item = memory_item(db, item_id, workspace_id)
         result = db.execute(text('DELETE FROM memory_items WHERE id=:id AND workspace_id=:ws'), {'id': item_id, 'ws': workspace_id})
         if result.rowcount == 0:
             raise HTTPException(404, 'Memory item not found')
         store.audit(db, None, 'memory_item_deleted', actor, workspace_id)
+        if item['kind'] == 'voice_profile':
+            _invalidate_voice_runs(db, workspace_id, item_id, actor, 'deleted')
     return Response(status_code=204)
 
 
@@ -1100,6 +1167,13 @@ class RunDiff(Strict):
     stage_bindings_changed: bool = False
     memory_ids_a: list[str] = []
     memory_ids_b: list[str] = []
+    voice_id_a: str | None = None
+    voice_id_b: str | None = None
+    voice_title_a: str | None = None
+    voice_title_b: str | None = None
+    voice_version_a: str | None = None
+    voice_version_b: str | None = None
+    voice_changed: bool = False
     blocked_claims_only_in_a: list[dict[str, str]]
     blocked_claims_only_in_b: list[dict[str, str]]
     approval_state_a: str
@@ -1121,9 +1195,21 @@ def stage_binding(receipt, stage):
     return None
 
 
+def _voice_summary(receipt):
+    raw = receipt.get('voice_profile') if isinstance(receipt, dict) else None
+    if not isinstance(raw, dict):
+        return None, None, None
+    voice_id = raw.get('id') if isinstance(raw.get('id'), str) else None
+    title = raw.get('title') if isinstance(raw.get('title'), str) else None
+    version = raw.get('version') if isinstance(raw.get('version'), str) else None
+    return voice_id, title, version
+
+
 def diff_receipts(a, b):
     bindings_a = {stage: stage_binding(a, stage) for stage in ('scout', 'maker', 'checker')}
     bindings_b = {stage: stage_binding(b, stage) for stage in ('scout', 'maker', 'checker')}
+    voice_a = _voice_summary(a)
+    voice_b = _voice_summary(b)
     result = {'run_a_id': a['run_id'], 'run_b_id': b['run_id'],
               'same_idea': a.get('idea') == b.get('idea'), 'idea': a.get('idea', ''),
               'approval_state_changed': a['approval_state'] != b['approval_state'],
@@ -1134,7 +1220,11 @@ def diff_receipts(a, b):
               'checker_name_a': bindings_a['checker'], 'checker_name_b': bindings_b['checker'],
               'stage_bindings_changed': bindings_a != bindings_b,
               'memory_ids_a': [m.get('id') for m in a.get('memory_used', []) if isinstance(m, dict)],
-              'memory_ids_b': [m.get('id') for m in b.get('memory_used', []) if isinstance(m, dict)]}
+              'memory_ids_b': [m.get('id') for m in b.get('memory_used', []) if isinstance(m, dict)],
+              'voice_id_a': voice_a[0], 'voice_id_b': voice_b[0],
+              'voice_title_a': voice_a[1], 'voice_title_b': voice_b[1],
+              'voice_version_a': voice_a[2], 'voice_version_b': voice_b[2],
+              'voice_changed': voice_a != voice_b}
     for version in ('v1', 'v2'):
         for field in ('post', 'email'):
             left = (a.get(f'maker_draft_{version}') or {}).get(field)

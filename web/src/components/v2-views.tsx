@@ -34,7 +34,7 @@ export function SupportedPoliciesHint({ legacy }: { legacy?: boolean }) {
 }
 
 type MemoryItem = components['schemas']['MemoryItemOut'];
-const memoryKinds = ['brand_fact', 'profile', 'approval_example', 'blocked_rule'] as const;
+const memoryKinds = ['brand_fact', 'profile', 'approval_example', 'blocked_rule', 'voice_profile'] as const;
 
 export function MemoryView() {
   const client = useQueryClient();
@@ -60,11 +60,13 @@ export function MemoryView() {
   });
   return <section aria-label="Memory">
     <p className="boundary">No auto-learning, no auto-post, no auto-send, no publishing. Memory changes require your explicit action.</p>
+    <p className="hint">Voice profiles hold 3 to 5 synthetic style examples plus banned terms. Samples are style references only and never become confirmed facts. Editing or deleting a selected voice invalidates dependent approvals until a new revision check passes. Samples stay in your actor workspace.</p>
     <div className="two-column equal">
       <section className="panel"><h2>Create memory</h2><form onSubmit={e => { e.preventDefault(); setNotice(''); create.mutate(); }}>
         <label htmlFor="memory-kind">Kind</label><select id="memory-kind" value={kind} onChange={e => setKind(e.target.value as MemoryItem['kind'])}>{memoryKinds.map(value => <option key={value}>{value}</option>)}</select>
         <label htmlFor="memory-title">Title</label><input id="memory-title" required minLength={1} maxLength={200} value={title} onChange={e => setTitle(e.target.value)} />
         <label htmlFor="memory-content">Content JSON object</label><textarea id="memory-content" required rows={5} value={content} onChange={e => setContent(e.target.value)} />
+        {kind === 'voice_profile' && <p className="hint">Voice shape: {"{\"examples\": [{\"input\": \"...\", \"output\": \"...\"}], \"banned_terms\": [\"...\"]}"}. Use synthetic samples only, 3 to 5 pairs. Banned terms block drafts, revisions, and channel candidates with concrete reasons.</p>}
         {create.error && <p role="alert">{create.error.message}</p>}
         <Button type="submit" disabled={create.isPending}>Create memory</Button>
       </form></section>
@@ -119,6 +121,13 @@ export function MemoryItemCard({ item }: { item: MemoryItem }) {
 }
 
 export function DiffResult({ diff }: { diff: Diff }) {
+  const voiceA = (diff as unknown as { voice_id_a?: string | null; voice_title_a?: string | null; voice_version_a?: string | null }).voice_id_a;
+  const voiceB = (diff as unknown as { voice_id_b?: string | null; voice_title_b?: string | null; voice_version_b?: string | null }).voice_id_b;
+  const titleA = (diff as unknown as { voice_title_a?: string | null }).voice_title_a;
+  const titleB = (diff as unknown as { voice_title_b?: string | null }).voice_title_b;
+  const versionA = (diff as unknown as { voice_version_a?: string | null }).voice_version_a;
+  const versionB = (diff as unknown as { voice_version_b?: string | null }).voice_version_b;
+  const changed = (diff as unknown as { voice_changed?: boolean }).voice_changed;
   return <div>
     {!diff.same_idea && <p role="status" className="message">These runs have different ideas. The comparison still shows their recorded differences.</p>}
     <section className="panel"><h2>Draft changes</h2><p>Idea from run A: {diff.idea}</p>
@@ -128,9 +137,22 @@ export function DiffResult({ diff }: { diff: Diff }) {
     </section>
     <section className="panel"><h2>Checker verdict changes</h2><p>First blocked count: {diff.checker_v1_blocked_count_a ?? 'unavailable'} / {diff.checker_v1_blocked_count_b ?? 'unavailable'}</p><p>Final blocked count: {diff.checker_v2_blocked_count_a ?? 'unavailable'} / {diff.checker_v2_blocked_count_b ?? 'unavailable'}</p>{(['a', 'b'] as const).map(side => <div key={side}><h3>Blocked claims only in {side.toUpperCase()}</h3>{diff[`blocked_claims_only_in_${side}`].map((claim, i) => <p key={i}>{claim.claim}: {claim.reason}</p>)}</div>)}</section>
     <section className="panel"><h2>Checker profile changes</h2><p>Checker profile: {diff.checker_profile_a ?? 'unavailable'} / {diff.checker_profile_b ?? 'unavailable'}</p><p>Changed: {String(diff.checker_profile_changed)}</p><p>Scout: {diff.scout_name_a ?? 'unavailable'} / {diff.scout_name_b ?? 'unavailable'}</p><p>Maker: {diff.maker_name_a ?? 'unavailable'} / {diff.maker_name_b ?? 'unavailable'}</p><p>Checker: {diff.checker_name_a ?? 'unavailable'} / {diff.checker_name_b ?? 'unavailable'}</p><p>Stage bindings changed: {String(diff.stage_bindings_changed)}</p><p>Memory ids only in A: {diff.memory_ids_a.join(', ') || 'None'}</p><p>Memory ids only in B: {diff.memory_ids_b.join(', ') || 'None'}</p></section>
+    <section className="panel"><h2>Voice source changes</h2><p>Voice: {titleA || voiceA || 'none'} ({versionA || 'no version'}) / {titleB || voiceB || 'none'} ({versionB || 'no version'})</p><p>Changed: {String(changed ?? (voiceA !== voiceB || versionA !== versionB))}</p><p className="hint">Style references only. Samples never become confirmed facts. Banned terms block with concrete voice reasons.</p></section>
     <section className="panel"><h2>Approval state changes</h2><p>{diff.approval_state_a} / {diff.approval_state_b}</p><p>Changed: {String(diff.approval_state_changed)}</p><p>Status: {diff.status_a} / {diff.status_b}</p></section>
     <section className="panel"><h2>Receipt key diff</h2><p>Only in A: {diff.receipt_keys_only_in_a.join(', ') || 'None'}</p><p>Only in B: {diff.receipt_keys_only_in_b.join(', ') || 'None'}</p></section>
   </div>;
+}
+
+/** Voice source/version from receipt.voice_profile. Null when no voice was selected. */
+export function VoiceBlock({ receipt }: { receipt: Receipt }) {
+  const voice = (receipt as unknown as { voice_profile?: { id?: string | null; title?: string | null; version?: string | null; example_count?: number | null; banned_term_count?: number | null; notice?: string | null } | null }).voice_profile;
+  const stale = (receipt as unknown as { voice_stale?: boolean | null }).voice_stale;
+  if (!voice || typeof voice !== 'object') return null;
+  return <>
+    <h3>Voice profile</h3>
+    <p className="hint">Source: {voice.title || voice.id || 'voice'} · Version: {voice.version || 'unavailable'} · Examples: {voice.example_count ?? 'unavailable'} · Banned terms: {voice.banned_term_count ?? 'unavailable'}{stale ? ' · Stale: edited or deleted since this receipt, new revision check required' : ''}</p>
+    {typeof voice.notice === 'string' && voice.notice && <p className="hint">{voice.notice}</p>}
+  </>;
 }
 
 /** Product facts from receipt.product_facts with exact provenance. Returns null
@@ -230,7 +252,7 @@ export function ScoutFactsSection({ receipt }: { receipt: Receipt }) {
   const productMode = (receipt.product_facts as ProductFactsSection | null | undefined)?.mode;
   const isOwner = productMode === 'owner_input';
   if (!scout || !Array.isArray(scout.facts_used)) {
-    return <section className="panel" aria-label="Scout facts and sources"><p className="eyebrow">SCOUT FACTS AND RISKS</p><h2>Sourced facts unavailable for this receipt.</h2><p className="hint">Historical or failed runs predate stored Scout facts. No facts are invented here; inspect the complete receipt JSON in the record below.</p><ConfirmedFactsBlock receipt={receipt} /><ApprovalBindingBlock receipt={receipt} /></section>;
+    return <section className="panel" aria-label="Scout facts and sources"><p className="eyebrow">SCOUT FACTS AND RISKS</p><h2>Sourced facts unavailable for this receipt.</h2><p className="hint">Historical or failed runs predate stored Scout facts. No facts are invented here; inspect the complete receipt JSON in the record below.</p><ConfirmedFactsBlock receipt={receipt} /><VoiceBlock receipt={receipt} /><ApprovalBindingBlock receipt={receipt} /></section>;
   }
   const facts = scout.facts_used;
   const risks = Array.isArray(scout.risks) ? scout.risks : [];
@@ -246,6 +268,7 @@ export function ScoutFactsSection({ receipt }: { receipt: Receipt }) {
     {facts.length === 0 && <p className="hint">No stored facts on this receipt.</p>}
     <ul className="scout-list">{facts.map((fact, i) => <li key={i} className="scout-fact"><div className="scout-row"><strong>{fact.claim || 'Unlabeled fact'}</strong><span className={`badge ${fact.verified ? 'approved' : 'pending'}`}>{fact.verified ? 'Verified' : 'Unverified'}</span></div><p className="hint">Evidence: {fact.evidence || 'none stored'}{Array.isArray(fact.sources) && fact.sources.length > 0 ? ` · Sources: ${fact.sources.join(', ')}` : ' · No stored source: unverified model hypothesis, not external research.'}</p></li>)}</ul>
     <ConfirmedFactsBlock receipt={receipt} />
+    <VoiceBlock receipt={receipt} />
     <ClaimResultsBlock check={receipt.checker_v1} title="First check evidence" />
     <ClaimResultsBlock check={currentCheckOf(receipt)} title="Final check evidence" />
     <ApprovalBindingBlock receipt={receipt} />

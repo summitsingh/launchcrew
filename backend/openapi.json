@@ -858,7 +858,8 @@
                   "brand_fact",
                   "profile",
                   "approval_example",
-                  "blocked_rule"
+                  "blocked_rule",
+                  "voice_profile"
                 ],
                 "type": "string"
               },
@@ -895,7 +896,8 @@
               "brand_fact",
               "profile",
               "approval_example",
-              "blocked_rule"
+              "blocked_rule",
+              "voice_profile"
             ],
             "title": "Kind",
             "type": "string"
@@ -937,7 +939,8 @@
               "brand_fact",
               "profile",
               "approval_example",
-              "blocked_rule"
+              "blocked_rule",
+              "voice_profile"
             ],
             "title": "Kind",
             "type": "string"
@@ -2075,6 +2078,28 @@
             "additionalProperties": true,
             "title": "Summary",
             "type": "object"
+          },
+          "voice_profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VoiceProfileSection"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Slice 3 selected voice source/version with banned terms. Style samples stay in Memory and never become facts."
+          },
+          "voice_stale": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "True when the selected voice was edited or deleted after this receipt; a new human revision check is required."
           }
         },
         "required": [

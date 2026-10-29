@@ -742,14 +742,62 @@ def build_facebook_variant(draft_text, confirmed_facts, audience=None, campaign_
     )
 
 
-def build_channel_variants(draft_text, confirmed_facts, audience=None, campaign_angle=None):
+def _voice_block_for_candidate(text, voice_snapshot, voice_ref):
+    if not isinstance(voice_snapshot, dict):
+        return None
+    terms = voice_snapshot.get('banned_terms')
+    if not isinstance(terms, list) or not terms:
+        return None
+    if not isinstance(text, str) or not text.strip():
+        return None
+    try:
+        from .voice_profile import voice_single_block_for_text
+        return voice_single_block_for_text(voice_snapshot, text, voice_ref)
+    except (TypeError, ValueError):
+        return None
+
+
+def _apply_voice_to_variant(variant, voice_snapshot, voice_ref, confirmed_count, audience, campaign_angle):
+    if not isinstance(variant, dict) or variant.get('status') != STATUS_CANDIDATE:
+        return variant
+    texts = []
+    main = variant.get('text')
+    if isinstance(main, str) and main.strip():
+        texts.append(main)
+    subject = variant.get('subject')
+    if isinstance(subject, str) and subject.strip():
+        texts.append(subject)
+    for text in texts:
+        hit = _voice_block_for_candidate(text, voice_snapshot, voice_ref)
+        if hit is not None:
+            reason = (hit['reason'] + '. Needs revision without the banned term. '
+                      'No text exported.')
+            total = len(split_sentences(main)) if isinstance(main, str) else 0
+            blocked = _needs_revision(variant.get('channel', 'x'), confirmed_count,
+                                      audience, campaign_angle, reason)
+            blocked['metadata']['total_sentences'] = total
+            blocked['metadata']['omitted_sentences'] = total
+            blocked['metadata']['voice_blocked'] = True
+            blocked['metadata']['voice_reason'] = hit['reason']
+            if variant.get('channel') == 'email':
+                blocked['subject'] = EMAIL_SUBJECT
+                blocked['body'] = ''
+            return blocked
+    variant = copy.deepcopy(variant)
+    variant.setdefault('metadata', {})['voice_blocked'] = False
+    return variant
+
+
+def build_channel_variants(draft_text, confirmed_facts, audience=None, campaign_angle=None, voice_snapshot=None, voice_ref=None):
     """Build all five presentation candidates plus provenance.
 
     Candidate text comes only from verbatim draft sentences plus fixed
     non-factual framing. Audience and campaign angle inputs are kept in
     metadata as suggestions and never rendered as facts. Every
     candidate requires downstream current approved Checker/receipt
-    binding; none is independently exportable.
+    binding; none is independently exportable. When a voice snapshot is
+    supplied, candidates containing banned terms refuse with a concrete
+    voice reason and needs-revision status.
     """
     confirmed_copy = _confirmed_list(confirmed_facts)
     variants = {
@@ -759,6 +807,16 @@ def build_channel_variants(draft_text, confirmed_facts, audience=None, campaign_
         "email": build_email_variant(draft_text, confirmed_copy, audience, campaign_angle),
         "facebook": build_facebook_variant(draft_text, confirmed_copy, audience, campaign_angle),
     }
+    if isinstance(voice_snapshot, dict) and isinstance(voice_snapshot.get('banned_terms'), list) and voice_snapshot.get('banned_terms'):
+        for channel in list(variants.keys()):
+            variants[channel] = _apply_voice_to_variant(
+                variants[channel], voice_snapshot, voice_ref,
+                len(confirmed_copy), audience, campaign_angle)
+    voice_info = None
+    if isinstance(voice_snapshot, dict) and isinstance(voice_snapshot.get('banned_terms'), list) and voice_snapshot.get('banned_terms'):
+        ref = voice_ref if isinstance(voice_ref, dict) else {}
+        voice_info = {'title': ref.get('title'), 'version': ref.get('version'),
+                      'banned_term_count': len(voice_snapshot.get('banned_terms', []))}
     provenance = {
         "module": MODULE_VERSION,
         "source": SOURCE_LABEL,
@@ -779,6 +837,7 @@ def build_channel_variants(draft_text, confirmed_facts, audience=None, campaign_
         "checker_approval": None,
         "receipt_id": None,
         "approval_note": APPROVAL_NOTE,
+        "voice": voice_info,
         "note": (
             "Presentation candidates only; not independently exportable. "
             "No new factual assertions. Audience and angle are "

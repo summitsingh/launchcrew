@@ -51,6 +51,8 @@ Style boundary:
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 MIN_EXAMPLES = 3
@@ -300,3 +302,103 @@ def check_text(snapshot: Any, candidate: Any) -> dict[str, Any]:
         "match_count": total,
         "notice": STYLE_ONLY_NOTICE,
     }
+
+
+VOICE_SNAPSHOT_VERSION_PREFIX = "voice/v1"
+
+
+def snapshot_digest(snapshot: Any) -> str:
+    """Deterministic SHA-256 hex over examples plus banned terms."""
+    if not isinstance(snapshot, dict):
+        raise TypeError("snapshot must be a dict")
+    examples = snapshot.get("examples")
+    terms = snapshot.get("banned_terms")
+    if not isinstance(examples, list) or not isinstance(terms, (list, tuple)):
+        raise ValueError("snapshot must carry examples and banned_terms")
+    canonical_examples: list[dict[str, str]] = []
+    for index, item in enumerate(examples):
+        if not isinstance(item, dict):
+            raise ValueError(f"snapshot examples[{index}] must be a dict")
+        text_in = item.get("input")
+        text_out = item.get("output")
+        if not isinstance(text_in, str) or not isinstance(text_out, str):
+            raise ValueError(f"snapshot examples[{index}] must hold input/output strings")
+        canonical_examples.append({"input": text_in, "output": text_out})
+    canonical_terms: list[str] = []
+    for index, term in enumerate(terms):
+        if not isinstance(term, str):
+            raise TypeError(f"snapshot banned_terms[{index}] must be a string")
+        canonical_terms.append(term)
+    payload = {"examples": canonical_examples, "banned_terms": canonical_terms}
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"),
+                     ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def snapshot_version(snapshot: Any) -> str:
+    """Versioned snapshot label derived from the snapshot digest."""
+    digest = snapshot_digest(snapshot)
+    return f"{VOICE_SNAPSHOT_VERSION_PREFIX}:{digest[:16]}"
+
+
+def voice_block_reason(term: str, title: Any = None, version: Any = None) -> str:
+    """Concrete Checker block reason naming the voice source and term."""
+    safe_title = title if isinstance(title, str) and title.strip() else "voice"
+    safe_version = version if isinstance(version, str) and version.strip() else "voice/v1:unknown"
+    safe_term = term if isinstance(term, str) and term.strip() else "banned term"
+    return (
+        f"Blocked by voice profile '{safe_title}' ({safe_version}): "
+        f"banned term '{safe_term}'"
+    )
+
+
+def voice_blocks_for_text(snapshot: Any, text: Any, voice_ref: Any = None) -> list[dict[str, str]]:
+    """Return one block per banned term found in text, with concrete reasons."""
+    if not isinstance(text, str) or not text.strip():
+        return []
+    result = check_text(snapshot, text)
+    if not result.get("blocked"):
+        return []
+    ref = voice_ref if isinstance(voice_ref, dict) else {}
+    title = ref.get("title")
+    version = ref.get("version")
+    blocks: list[dict[str, str]] = []
+    matches = result.get("matches", [])
+    if not isinstance(matches, list):
+        return []
+    for match in matches:
+        if not isinstance(match, dict):
+            continue
+        term = match.get("term")
+        if not isinstance(term, str):
+            continue
+        blocks.append({"claim": text.strip(),
+                       "reason": voice_block_reason(term, title, version)})
+    blocks.sort(key=lambda b: (b["reason"].casefold(), b["reason"], b["claim"]))
+    return blocks
+
+
+def voice_single_block_for_text(snapshot: Any, text: Any, voice_ref: Any = None) -> dict[str, str] | None:
+    """Return one combined voice block for text, or None when clean."""
+    blocks = voice_blocks_for_text(snapshot, text, voice_ref)
+    if not blocks:
+        return None
+    if len(blocks) == 1:
+        return blocks[0]
+    ref = voice_ref if isinstance(voice_ref, dict) else {}
+    title = ref.get("title") if isinstance(ref.get("title"), str) and ref.get("title").strip() else "voice"
+    version = ref.get("version") if isinstance(ref.get("version"), str) and ref.get("version").strip() else "voice/v1:unknown"
+    terms: list[str] = []
+    for block in blocks:
+        reason = block.get("reason", "")
+        marker = "banned term '"
+        start = reason.find(marker)
+        if start >= 0:
+            term = reason[start + len(marker):].split("'", 1)[0]
+            if term and term not in terms:
+                terms.append(term)
+    terms.sort(key=lambda s: (s.casefold(), s))
+    quoted = ", ".join(f"'{t}'" for t in terms)
+    return {"claim": str(text).strip(),
+            "reason": (f"Blocked by voice profile '{title}' ({version}): "
+                       f"banned terms {quoted}")}

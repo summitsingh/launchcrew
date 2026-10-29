@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 from launchcrew import agents, run, receipts
 from launchcrew.checker_policies import FLOOR_NOTE, MATCHING_NOTE, describe_supported, parse_checker_agent
 from launchcrew.facts import parse_product_facts
+from launchcrew.voice_profile import STYLE_ONLY_NOTICE, snapshot_digest, snapshot_version, validate_profile
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -22,11 +23,38 @@ def preview(profile, idea):
             'supported_policies': describe_supported()}
 
 
+def _voice_selection(memory_items):
+    # First valid voice_profile in selection order wins. Examples are style
+    # context only and never become facts; banned terms become Checker vetoes.
+    # Malformed voice content is ignored, never facts, never vetoes.
+    for item in (memory_items or []):
+        if not isinstance(item, dict) or item.get('kind') != 'voice_profile':
+            continue
+        content = item.get('content')
+        if not isinstance(content, dict):
+            continue
+        try:
+            snapshot = validate_profile(content)
+        except (TypeError, ValueError):
+            continue
+        try:
+            version = snapshot_version(snapshot)
+            digest = snapshot_digest(snapshot)
+        except (TypeError, ValueError):
+            continue
+        ref = {'id': item.get('id'), 'title': item.get('title'),
+               'version': version, 'digest': digest}
+        maker_examples = [{'input': ex['input'], 'approved_output': ex['output']}
+                          for ex in snapshot.get('examples', [])]
+        return snapshot, ref, maker_examples
+    return None, None, []
+
+
 def _memory_effects(memory_items):
     # Only brand_fact content.claim may extend the authoritative allowlist.
-    # Approval examples are style context only and never become facts.
-    # Blocked rules accept the explicit string format and the learned
-    # list-of-dicts format; malformed values are ignored, never facts.
+    # Approval examples and voice profiles are style context only and never
+    # become facts. Blocked rules accept the explicit string format and the
+    # learned list-of-dicts format; malformed values are ignored, never facts.
     claims, blocked, blocked_rules, expertise, approval_examples, used = [], [], [], None, [], []
     seen_blocked = set()
 
@@ -84,6 +112,11 @@ def _memory_effects(memory_items):
             if isinstance(content.get('expertise'), str) and content['expertise'].strip():
                 expertise = content['expertise']
             # content.claim on a profile is intentionally ignored for the allowlist.
+        elif kind == 'voice_profile':
+            # Voice samples are style references only. Any content.claim,
+            # content.examples, or content.banned_terms here never enters the
+            # factual allowlist; banned terms are enforced separately as vetoes.
+            pass
     return claims, blocked, blocked_rules, expertise, approval_examples, used
 
 
@@ -94,6 +127,7 @@ def execute(run_id, idea, profile, seed, memory_items=None, checker_profile='sta
     captured = []
     (ROOT / '.local').mkdir(exist_ok=True)
     claims, blocked, blocked_rules, expertise, approval_examples, used = _memory_effects(memory_items)
+    voice_snapshot, voice_ref, voice_maker_examples = _voice_selection(memory_items)
     memory_sourced = list(claims)
     extras = []
     for claim in (extra_claims or []):
@@ -133,6 +167,13 @@ def execute(run_id, idea, profile, seed, memory_items=None, checker_profile='sta
         merged = {'input': example.get('idea', '') if example.get('idea', '').strip() else 'Approved example (style reference only)',
                   'approved_output': approved_output if approved_output.strip() else 'Approved example output (style reference only)'}
         effective_maker.setdefault('examples', []).append(merged)
+    for voice_example in voice_maker_examples:
+        # Versioned voice snapshot as Maker style context only. Samples never
+        # enter the factual allowlist; they only shape phrasing prompts.
+        effective_maker.setdefault('examples', []).append({
+            'input': voice_example.get('input', ''),
+            'approved_output': voice_example.get('approved_output', ''),
+        })
     agents.validate(effective_maker)
     with TemporaryDirectory(dir=ROOT / '.local') as directory:
         for stage, selected in (('Scout', effective_scout), ('Maker', effective_maker), ('Checker', effective_checker)):
@@ -149,7 +190,8 @@ def execute(run_id, idea, profile, seed, memory_items=None, checker_profile='sta
                              checker_profile=checker_profile, brief=brief, campaign_day=campaign_day,
                              progress=progress_sink, stage_gate=stage_gate,
                              product_facts=product_facts,
-                             model_admission_factory=model_admission_factory)
+                             model_admission_factory=model_admission_factory,
+                             voice_snapshot=voice_snapshot, voice_ref=voice_ref)
         except Exception:
             if not captured:
                 raise
@@ -157,6 +199,15 @@ def execute(run_id, idea, profile, seed, memory_items=None, checker_profile='sta
     receipt['memory_used'] = used
     receipt['checker_profile'] = checker_profile
     receipt['memory_claims'] = applied_memory
+    if receipt.get('voice_profile') is None and voice_ref is not None:
+        # Pipeline already stores the versioned snapshot; this fallback keeps
+        # the source/version visible if the pipeline path predates voice.
+        receipt['voice_profile'] = {'id': voice_ref.get('id'), 'title': voice_ref.get('title'),
+                                    'version': voice_ref.get('version'), 'digest': voice_ref.get('digest'),
+                                    'example_count': len(voice_maker_examples),
+                                    'banned_term_count': len((voice_snapshot or {}).get('banned_terms', [])),
+                                    'banned_terms': list((voice_snapshot or {}).get('banned_terms', [])),
+                                    'notice': STYLE_ONLY_NOTICE}
     if isinstance(receipt.get('product_facts'), dict):
         suggested = receipt['product_facts'].setdefault('suggested', [])
         for claim in withheld_memory:
