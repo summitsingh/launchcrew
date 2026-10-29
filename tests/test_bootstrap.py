@@ -3148,7 +3148,7 @@ class LegacyJournalTests(BootstrapHarness):
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
             self.assertIn("TASKDEF_OPERATION_MISMATCH", combined)
-            self.assertIn("no new launch", combined)
+            self.assertIn("no new head006-testabc launch", combined)
             self.assertFalse(any("run-task" in call for call in calls))
             self.assertTrue(legacy.exists())
             self.assertEqual(legacy.read_text(encoding="utf-8"), before)
