@@ -1269,5 +1269,97 @@ class AclSemanticsTests(unittest.TestCase):
         self.assertEqual("", _named_privs(missing, self.RT))
 
 
+def _input_arg_names(argnames, argmodes):
+    all_names = list(argnames or [])
+    if argmodes is None:
+        return all_names
+    modes = list(argmodes or [])
+    return [nm for nm, md in zip(all_names, modes)
+            if str(md).lower() in ("i", "b", "v")]
+
+
+def _has_forbidden_input(argnames, argmodes):
+    text = " ".join(str(v) for v in _input_arg_names(argnames, argmodes)).lower()
+    return any(key in text for key in ("amount", "micros", "debit",
+                                       "refill", "grant"))
+
+
+def _parse_search_path(entry):
+    text = str(entry)
+    if not text.startswith("search_path="):
+        return None
+    raw = text.split("=", 1)[1]
+    return [part.strip().strip('"').strip() for part in raw.split(",")]
+
+
+class VerifyDbRolesModelProofTests(unittest.TestCase):
+    def setUp(self):
+        self.text = VERIFY_SCRIPT.read_text(encoding="utf-8")
+
+    def test_input_filter_uses_proargmodes(self):
+        self.assertIn("p.proargnames, p.proargmodes", self.text)
+        self.assertIn("argmodes is None", self.text)
+        self.assertIn('("i", "b", "v")', self.text)
+        self.assertIn("in_names", self.text)
+        self.assertNotIn('args = " ".join(str(v) for v in (argnames or []))',
+                         self.text)
+        self.assertIn("function accepts a debit amount", self.text)
+
+    def test_search_path_is_per_function_exact(self):
+        self.assertIn('if proname == "model_no_direct"', self.text)
+        self.assertIn('elif proname in ("model_reserve_call", "model_finalize_call")',
+                      self.text)
+        self.assertIn('want_path = ["pg_catalog", "pg_temp"]', self.text)
+        self.assertIn('want_path = [schema, "pg_temp"]', self.text)
+        self.assertIn("got_paths[0] != want_path", self.text)
+        self.assertIn("len(got_paths) != 1", self.text)
+        self.assertNotIn('endswith("pg_temp")', self.text)
+        self.assertIn("search_path not pinned with pg_temp last", self.text)
+
+    def test_preserves_model_negatives(self):
+        for marker in ("function owner mismatch",
+                       "reserve and finalize must be SECURITY DEFINER",
+                       "trigger guard must not be SECURITY DEFINER",
+                       "refill function present",
+                       "function accepts a debit amount",
+                       "runtime EXECUTE missing"):
+            self.assertIn(marker, self.text)
+
+
+class ModelProofSemanticsTests(unittest.TestCase):
+    def test_out_table_column_does_not_trigger(self):
+        names = ["p_run_id", "p_stage", "id", "reservation_micros"]
+        modes = ["i", "i", "o", "o"]
+        self.assertEqual(_input_arg_names(names, modes),
+                         ["p_run_id", "p_stage"])
+        self.assertFalse(_has_forbidden_input(names, modes))
+
+    def test_null_modes_treats_all_as_input(self):
+        self.assertEqual(_input_arg_names(["p_debit_amount"], None),
+                         ["p_debit_amount"])
+        self.assertTrue(_has_forbidden_input(["p_debit_amount"], None))
+        self.assertTrue(_has_forbidden_input(["p_grant_micros"], None))
+
+    def test_inout_and_variadic_are_input(self):
+        names = ["p_refill_note", "p_extra", "reservation_micros"]
+        modes = ["b", "v", "o"]
+        self.assertEqual(_input_arg_names(names, modes),
+                         ["p_refill_note", "p_extra"])
+        self.assertTrue(_has_forbidden_input(names, modes))
+        self.assertFalse(_has_forbidden_input(["ok_in", "reservation_micros"],
+                                              ["i", "t"]))
+
+    def test_search_path_parsing_is_exact(self):
+        self.assertEqual(_parse_search_path("search_path=pg_catalog, pg_temp"),
+                         ["pg_catalog", "pg_temp"])
+        self.assertEqual(_parse_search_path('search_path="public", pg_temp'),
+                         ["public", "pg_temp"])
+        self.assertNotEqual(_parse_search_path("search_path=public, pg_temp, pg_extra"),
+                            ["public", "pg_temp"])
+        self.assertNotEqual(_parse_search_path("search_path=pg_temp, public"),
+                            ["public", "pg_temp"])
+        self.assertIsNone(_parse_search_path("work_mem=4096"))
+
+
 if __name__ == "__main__":
     unittest.main()

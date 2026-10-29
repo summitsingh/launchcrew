@@ -545,7 +545,7 @@ mg_url = os.environ["MG_URL"]
 cert = os.environ["CERT_FILE"]
 admin = psycopg.connect(host="127.0.0.1", port=port, dbname=db, user="postgres", autocommit=True)
 cur = admin.cursor()
-cur.execute("SELECT p.proname, pg_get_userbyid(p.proowner), p.prosecdef, p.proconfig, p.proargnames FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = %s AND p.proname LIKE %s ORDER BY p.proname", (schema, "model_%"))
+cur.execute("SELECT p.proname, pg_get_userbyid(p.proowner), p.prosecdef, p.proconfig, p.proargnames, p.proargmodes FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = %s AND p.proname LIKE %s ORDER BY p.proname", (schema, "model_%"))
 rows = cur.fetchall()
 names = sorted(r[0] for r in rows)
 if names != ["model_finalize_call", "model_no_direct", "model_reserve_call"]:
@@ -555,17 +555,36 @@ rt_row = cur.fetchone()
 if rt_row is None:
     raise SystemExit("runtime role missing")
 rt_oid = rt_row[0]
-for proname, owner, secdef, proconfig, argnames in rows:
+for proname, owner, secdef, proconfig, argnames, argmodes in rows:
     if owner != mg_name:
         raise SystemExit("function owner mismatch")
     cfg = list(proconfig or [])
-    if not any(str(v).startswith("search_path=") and str(v).rstrip().endswith("pg_temp") for v in cfg):
+    if proname == "model_no_direct":
+        want_path = ["pg_catalog", "pg_temp"]
+    elif proname in ("model_reserve_call", "model_finalize_call"):
+        want_path = [schema, "pg_temp"]
+    else:
+        raise SystemExit("unexpected model functions")
+    got_paths = []
+    for v in cfg:
+        s = str(v)
+        if s.startswith("search_path="):
+            raw = s.split("=", 1)[1]
+            parts = [p.strip().strip(chr(34)).strip() for p in raw.split(",")]
+            got_paths.append(parts)
+    if len(got_paths) != 1 or got_paths[0] != want_path:
         raise SystemExit("search_path not pinned with pg_temp last")
     cur.execute("SELECT e.grantee, e.privilege_type FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace, LATERAL aclexplode(coalesce(p.proacl, acldefault(%s, p.proowner))) AS e WHERE n.nspname = %s AND p.proname = %s", ("f", schema, proname))
     fprivs = cur.fetchall()
     if any(int(g) == 0 and str(pt).upper() == "EXECUTE" for g, pt in fprivs):
         raise SystemExit("PUBLIC execute present")
-    args = " ".join(str(v) for v in (argnames or [])).lower()
+    all_names = list(argnames or [])
+    if argmodes is None:
+        in_names = all_names
+    else:
+        modes = list(argmodes or [])
+        in_names = [nm for nm, md in zip(all_names, modes) if str(md).lower() in ("i", "b", "v")]
+    args = " ".join(str(v) for v in in_names).lower()
     if "amount" in args or "micros" in args or "debit" in args or "refill" in args or "grant" in args:
         raise SystemExit("function accepts a debit amount")
     if proname in ("model_reserve_call", "model_finalize_call"):
