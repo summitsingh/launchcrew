@@ -326,7 +326,7 @@ if [ "$1" = "ecs" ] && [ "$2" = "run-task" ]; then
   done
   if [ -n "$RUN_TOKEN" ]; then printf '%s' "$RUN_TOKEN" >"${FAKE_TOKEN_FILE:-/dev/null}" 2>/dev/null || true; fi
   TASKARN="$(printf 'arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/task%03d' "$n")"
-  printf '%s|%s\\n' "$TASKARN" "$TASKDEF" >>"${FAKE_TASKDEF_FILE:-/dev/null}" 2>/dev/null || true
+  printf '%s|%s|%s\\n' "$TASKARN" "$TASKDEF" "$RUN_TOKEN" >>"${FAKE_TASKDEF_FILE:-/dev/null}" 2>/dev/null || true
   if [ "${FAKE_RUN:-ok}" = "fail" ]; then
     echo "An error occurred (ClientException) when calling the RunTask operation: ambiguous transport failure" >&2
     exit 1
@@ -452,8 +452,9 @@ print(bad if bad else (s+"|"+w+"|"+n))' "$LIST_INPUT_PATH" 2>/dev/null || echo M
 fi
 if [ "$1" = "ecs" ] && [ "$2" = "describe-tasks" ]; then
   LAST="$(tail -n 1 "${FAKE_TASKDEF_FILE:-/dev/null}" 2>/dev/null || true)"
-  TASKARN="${LAST%%|*}"
-  TASKDEF="${LAST#*|}"
+  TASKARN="$(printf '%s' "$LAST" | cut -d'|' -f1)"
+  TASKDEF="$(printf '%s' "$LAST" | cut -d'|' -f2)"
+  LINE_TOKEN="$(printf '%s' "$LAST" | cut -s -d'|' -f3)"
   WANT=""
   WANT_PREV=""
   for WANT_ARG in "$@"; do
@@ -464,9 +465,10 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-tasks" ]; then
     TASKARN="$WANT"
     if [ -n "${FAKE_TASKDEF_FILE:-}" ] && [ -f "$FAKE_TASKDEF_FILE" ]; then
       MATCH="$(grep -F -m 1 -- "${WANT}|" "$FAKE_TASKDEF_FILE" 2>/dev/null || true)"
-      MATCH_ARN="${MATCH%%|*}"
+      MATCH_ARN="$(printf '%s' "$MATCH" | cut -d'|' -f1)"
       if [ -n "$MATCH" ] && [ "$MATCH_ARN" = "$WANT" ]; then
-        TASKDEF="${MATCH#*|}"
+        TASKDEF="$(printf '%s' "$MATCH" | cut -d'|' -f2)"
+        LINE_TOKEN="$(printf '%s' "$MATCH" | cut -s -d'|' -f3)"
       fi
     fi
   fi
@@ -480,8 +482,8 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-tasks" ]; then
     *launchcrew-demo-verify*|*launchcrew-demo-bootstrap*) NAMES="bootstrap-db-roles" ;;
     *) NAMES="bootstrap-db-roles" ;;
   esac
-  STARTED_BY=""
-  if [ -n "${FAKE_TOKEN_FILE:-}" ] && [ -f "$FAKE_TOKEN_FILE" ]; then
+  STARTED_BY="$LINE_TOKEN"
+  if [ -z "$STARTED_BY" ] && [ -n "${FAKE_TOKEN_FILE:-}" ] && [ -f "$FAKE_TOKEN_FILE" ]; then
     STARTED_BY="$(cat "$FAKE_TOKEN_FILE" 2>/dev/null || true)"
   fi
   CONTAINERS=""
