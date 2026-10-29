@@ -74,7 +74,7 @@ describe('per-stage role selections', () => {
 
   it('shows enforced versus advisory-only preview state in the agent builder', () => {
     const source = readFileSync('src/app/page.tsx', 'utf8');
-    for (const text of ['Enforced policies:', 'Advisory-only entries:', 'Supported Checker policies']) {
+    for (const text of ['Enforced policies:', 'Advisory-only entries:', '<SupportedPoliciesHint']) {
       expect(source).toContain(text);
     }
   });
