@@ -544,10 +544,10 @@ def test_budget_migration_defaults_zero_and_rejects_negative(test_engine):
 
 def test_failed_run_cannot_attach(client, monkeypatch):
     with store.connect() as db:
-        db.execute(text("INSERT INTO agents(name,profile) VALUES ('maker',CAST(:p AS jsonb)) ON CONFLICT DO NOTHING"),
+        db.execute(text("INSERT INTO agents(workspace_id,name,profile) VALUES ('demo','maker',CAST(:p AS jsonb)) ON CONFLICT DO NOTHING"),
                    {'p': json.dumps({'name': 'Maker'})})
         failed = {'status': 'failed', 'approval_state': 'pending_approval', 'revision': 0}
-        db.execute(text("INSERT INTO runs(id,receipt,agent_name,state) VALUES ('run_failed',CAST(:r AS jsonb),'maker','pending_approval')"),
+        db.execute(text("INSERT INTO runs(id,receipt,agent_name,state,workspace_id) VALUES ('run_failed',CAST(:r AS jsonb),'maker','pending_approval','demo')"),
                    {'r': json.dumps(failed)})
     raw = _png_bytes()
     _approve_bytes(monkeypatch, raw)

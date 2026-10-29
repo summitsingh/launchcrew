@@ -978,11 +978,21 @@ class LearnMemory(Strict):
     kind: Literal['approval_example', 'blocked_rule']
 
 
+_MEMORY_PUBLIC_FIELDS = ('id', 'kind', 'title', 'content', 'source_run_id', 'created_at', 'updated_at')
+_MEMORY_PUBLIC_SELECT = 'id, kind, title, content, source_run_id, created_at, updated_at'
+
+
+def _public_memory_item(row):
+    # Project only declared MemoryItemOut fields. workspace_id stays internal
+    # and Strict extra=forbid rejects any leak, so never return SELECT * dicts.
+    return {key: row[key] for key in _MEMORY_PUBLIC_FIELDS}
+
+
 def memory_item(db, item_id, workspace_id):
-    row = db.execute(text('SELECT * FROM memory_items WHERE id=:id AND workspace_id=:ws'), {'id': item_id, 'ws': workspace_id}).mappings().first()
+    row = db.execute(text('SELECT ' + _MEMORY_PUBLIC_SELECT + ' FROM memory_items WHERE id=:id AND workspace_id=:ws'), {'id': item_id, 'ws': workspace_id}).mappings().first()
     if row is None:
         raise HTTPException(404, 'Memory item not found')
-    return dict(row)
+    return _public_memory_item(row)
 
 
 def insert_memory(db, body, actor, action, workspace_id, source_run_id=None):
@@ -997,7 +1007,8 @@ def insert_memory(db, body, actor, action, workspace_id, source_run_id=None):
 def list_memory(actor: str = Depends(auth.actor)):
     with store.connect() as db:
         workspace_id = store.ensure_workspace_seeded(db, actor)
-        return db.execute(text('SELECT * FROM memory_items WHERE workspace_id=:ws ORDER BY created_at,id'), {'ws': workspace_id}).mappings().all()
+        rows = db.execute(text('SELECT ' + _MEMORY_PUBLIC_SELECT + ' FROM memory_items WHERE workspace_id=:ws ORDER BY created_at,id'), {'ws': workspace_id}).mappings().all()
+        return [_public_memory_item(row) for row in rows]
 
 
 @app.post('/api/memory', response_model=MemoryItemOut, status_code=201)
@@ -1186,13 +1197,18 @@ class CampaignOut(Strict):
     days: list[CampaignDay]
 
 
+_CAMPAIGN_PUBLIC_FIELDS = ('id', 'idea', 'agent_name', 'created_at')
+
+
 def campaign_detail(db, campaign_id, workspace_id):
-    row = db.execute(text('SELECT * FROM campaigns WHERE id=:id AND workspace_id=:ws'), {'id': campaign_id, 'ws': workspace_id}).mappings().first()
+    row = db.execute(text('SELECT id, idea, agent_name, created_at FROM campaigns WHERE id=:id AND workspace_id=:ws'), {'id': campaign_id, 'ws': workspace_id}).mappings().first()
     if row is None:
         raise HTTPException(404, 'Campaign not found')
-    result = dict(row)
+    # Project only declared CampaignOut fields. workspace_id stays internal
+    # and Strict extra=forbid rejects any leak, so never return SELECT * dicts.
+    result = {key: row[key] for key in _CAMPAIGN_PUBLIC_FIELDS}
     result['days'] = []
-    for day, receipt in db.execute(text('SELECT d.day,r.receipt FROM campaign_days d JOIN runs r ON r.id=d.run_id WHERE d.campaign_id=:id AND r.workspace_id=:ws ORDER BY d.day'), {'id': campaign_id, 'ws': workspace_id}):
+    for day, receipt in db.execute(text('SELECT d.day,r.receipt FROM campaign_days d JOIN runs r ON r.id=d.run_id WHERE d.campaign_id=:id AND d.workspace_id=:ws AND r.workspace_id=:ws ORDER BY d.day'), {'id': campaign_id, 'ws': workspace_id}):
         from launchcrew import human_review
         angle, brief, _claim = CAMPAIGN_BRIEF_BY_DAY.get(day, ('', '', ''))
         current = human_review.current_draft(receipt)
@@ -1234,8 +1250,8 @@ def create_campaign(body: RunInput, actor: str = Depends(auth.actor)):
                                       product_facts=product_facts_raw,
                                       model_admission_factory=factory)
             save_run(db, receipt, maker_name, actor, workspace_id)
-            db.execute(text('INSERT INTO campaign_days(campaign_id,day,run_id) VALUES (:id,:day,:run)'),
-                       {'id': campaign_id, 'day': day, 'run': run_id})
+            db.execute(text('INSERT INTO campaign_days(campaign_id,day,run_id,workspace_id) VALUES (:id,:day,:run,:ws)'),
+                       {'id': campaign_id, 'day': day, 'run': run_id, 'ws': workspace_id})
         return campaign_detail(db, campaign_id, workspace_id)
 
 
@@ -1256,7 +1272,7 @@ def get_campaign(campaign_id: str, actor: str = Depends(auth.actor)):
 
 def campaign_run(campaign_id, day, workspace_id):
     with store.connect() as db:
-        run_id = db.execute(text('SELECT d.run_id FROM campaign_days d JOIN campaigns c ON c.id=d.campaign_id JOIN runs r ON r.id=d.run_id WHERE d.campaign_id=:id AND d.day=:day AND c.workspace_id=:ws AND r.workspace_id=:ws'), {'id': campaign_id, 'day': day, 'ws': workspace_id}).scalar()
+        run_id = db.execute(text('SELECT d.run_id FROM campaign_days d JOIN campaigns c ON c.id=d.campaign_id JOIN runs r ON r.id=d.run_id WHERE d.campaign_id=:id AND d.day=:day AND d.workspace_id=:ws AND c.workspace_id=:ws AND r.workspace_id=:ws'), {'id': campaign_id, 'day': day, 'ws': workspace_id}).scalar()
         if run_id is None:
             raise HTTPException(404, 'Campaign day not found')
         return run_id

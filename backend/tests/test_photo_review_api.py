@@ -278,10 +278,10 @@ def test_check_rejects_client_geometry_budget_and_actor_fields(client):
 
 def test_failed_run_cannot_approve_or_export(client):
     with store.connect() as db:
-        db.execute(text("INSERT INTO agents(name,profile) VALUES ('maker',CAST(:p AS jsonb)) ON CONFLICT DO NOTHING"),
+        db.execute(text("INSERT INTO agents(workspace_id,name,profile) VALUES ('demo','maker',CAST(:p AS jsonb)) ON CONFLICT DO NOTHING"),
                    {'p': json.dumps({'name': 'Maker'})})
         failed = {'status': 'failed', 'approval_state': 'pending_approval', 'revision': 0}
-        db.execute(text("INSERT INTO runs(id,receipt,agent_name,state) VALUES ('run_bad',CAST(:r AS jsonb),'maker','pending_approval')"),
+        db.execute(text("INSERT INTO runs(id,receipt,agent_name,state,workspace_id) VALUES ('run_bad',CAST(:r AS jsonb),'maker','pending_approval','demo')"),
                    {'r': json.dumps(failed)})
     assert client.post('/api/runs/run_bad/approve', json={}).status_code == 422
     assert client.post('/api/runs/run_bad/export', json={}).status_code == 422

@@ -3,17 +3,27 @@
 Uses the existing disposable PG/API harness. Two distinct simulated
 authenticated actors prove independent same-name profiles, no cross-user
 list visibility, 404 for foreign objects, async worker scoping, demo
-quarantine, global budgets unchanged, and migration backfill. All
-input/session/provenance data is synthetic. No provider calls.
+quarantine, global budgets unchanged, and migration backfill. Public
+Memory and Campaign responses never expose internal workspace_id under
+Strict validation. Omitted-owner writes fail closed with no persistent
+demo default. Composite child links deny cross-workspace parents at the
+DB layer. All input/session/provenance data is synthetic. No provider
+calls.
 """
 import base64
 import io
+import json
+import os
 import time
 from unittest.mock import patch
+from uuid import uuid4
 
 import pytest
+from alembic import command
+from alembic.config import Config
 from fastapi.responses import Response
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
+from sqlalchemy.exc import IntegrityError
 
 from backend import auth, store
 from launchcrew import run
@@ -280,3 +290,216 @@ def test_migration_backfill_demo_ownership(client, monkeypatch):
         assert db.execute(text("SELECT count(*) FROM agents WHERE workspace_id='demo'")).scalar() >= 3
         assert db.execute(text('SELECT count(*) FROM agents WHERE workspace_id=:ws'),
                           {'ws': ACTOR_ONE}).scalar() >= 3
+
+
+_MEMORY_PUBLIC_KEYS = {'id', 'kind', 'title', 'content', 'source_run_id', 'created_at', 'updated_at'}
+_CAMPAIGN_PUBLIC_KEYS = {'id', 'idea', 'agent_name', 'created_at', 'days'}
+
+
+def _assert_no_workspace(obj):
+    if isinstance(obj, dict):
+        assert 'workspace_id' not in obj
+        for value in obj.values():
+            _assert_no_workspace(value)
+    elif isinstance(obj, list):
+        for value in obj:
+            _assert_no_workspace(value)
+
+
+def test_memory_create_read_hides_workspace_two_users(client, monkeypatch):
+    _sign_in(client, monkeypatch, ACTOR_ONE)
+    created = _new_memory(client, title='One fact')
+    assert set(created) == _MEMORY_PUBLIC_KEYS
+    _assert_no_workspace(created)
+    listed = client.get('/api/memory').json()
+    assert len(listed) == 1 and set(listed[0]) == _MEMORY_PUBLIC_KEYS
+    _assert_no_workspace(listed)
+    fetched = client.get('/api/memory/' + created['id']).json()
+    assert fetched == created
+    edited = client.put('/api/memory/' + created['id'],
+                        json={'title': 'One fact edited', 'content': {'claim': 'Iso claim'}}).json()
+    assert set(edited) == _MEMORY_PUBLIC_KEYS and edited['title'] == 'One fact edited'
+    _assert_no_workspace(edited)
+    _sign_in(client, monkeypatch, ACTOR_TWO)
+    assert client.get('/api/memory').json() == []
+    assert client.get('/api/memory/' + created['id']).status_code == 404
+    assert client.put('/api/memory/' + created['id'],
+                      json={'title': 'Hijack', 'content': {}}).status_code == 404
+    assert client.delete('/api/memory/' + created['id']).status_code == 404
+    other = _new_memory(client, title='One fact')
+    assert other['id'] != created['id'] and set(other) == _MEMORY_PUBLIC_KEYS
+    _assert_no_workspace(other)
+    assert [item['id'] for item in client.get('/api/memory').json()] == [other['id']]
+    _sign_in(client, monkeypatch, ACTOR_ONE)
+    assert [item['id'] for item in client.get('/api/memory').json()] == [created['id']]
+
+
+def test_campaign_create_read_hides_workspace_two_users(client, monkeypatch):
+    _sign_in(client, monkeypatch, ACTOR_ONE)
+    created = client.post('/api/campaigns', json={'idea': IDEA, 'agent_name': 'Maker'})
+    assert created.status_code == 201, created.text
+    week = created.json()
+    assert set(week) == _CAMPAIGN_PUBLIC_KEYS
+    _assert_no_workspace(week)
+    assert len(week['days']) == 7
+    listed = client.get('/api/campaigns').json()
+    assert listed == [week]
+    _assert_no_workspace(listed)
+    fetched = client.get('/api/campaigns/' + week['id']).json()
+    assert fetched == week
+    campaign_id = week['id']
+    day_run = week['days'][0]['run_id']
+    _sign_in(client, monkeypatch, ACTOR_TWO)
+    assert client.get('/api/campaigns').json() == []
+    assert client.get('/api/campaigns/' + campaign_id).status_code == 404
+    assert client.get(f'/api/runs/{day_run}').status_code == 404
+    assert client.post(f'/api/campaigns/{campaign_id}/days/1/approve', json={}).status_code == 404
+    assert client.post(f'/api/campaigns/{campaign_id}/days/1/export', json={}).status_code == 404
+    other = client.post('/api/campaigns', json={'idea': IDEA, 'agent_name': 'Maker'}).json()
+    assert other['id'] != campaign_id and set(other) == _CAMPAIGN_PUBLIC_KEYS
+    _assert_no_workspace(other)
+    assert [row['id'] for row in client.get('/api/campaigns').json()] == [other['id']]
+    _sign_in(client, monkeypatch, ACTOR_ONE)
+    assert [row['id'] for row in client.get('/api/campaigns').json()] == [campaign_id]
+
+
+def test_omitted_workspace_fails_closed_no_demo_default(client, monkeypatch):
+    _sign_in(client, monkeypatch, ACTOR_ONE)
+    owned_run = _new_run(client)['run_id']
+    with store.connect() as db:
+        db.execute(text("INSERT INTO campaigns(id,idea,agent_name,workspace_id) VALUES ('camp_empty_omit', :idea, 'Maker', :ws)"),
+                   {'idea': IDEA, 'ws': ACTOR_ONE})
+    with store.connect() as db:
+        defaults = db.execute(text(
+            "SELECT table_name FROM information_schema.columns "
+            "WHERE table_schema = current_schema() AND column_name = 'workspace_id' "
+            "AND column_default IS NOT NULL")).scalars().all()
+    assert defaults == []
+    profile = json.dumps(_base_profile('NoDefault', 'No default personality'))
+    with pytest.raises(IntegrityError):
+        with store.connect() as db:
+            db.execute(text("INSERT INTO agents(name,profile) VALUES ('nodefault', CAST(:p AS jsonb))"),
+                       {'p': profile})
+    with store.connect() as db:
+        assert db.execute(text("SELECT count(*) FROM agents WHERE name='nodefault'")).scalar() == 0
+    with pytest.raises(IntegrityError):
+        with store.connect() as db:
+            db.execute(text("INSERT INTO runs(id,receipt,agent_name,state) VALUES ('run_nodefault', CAST(:r AS jsonb), 'maker', 'pending_approval')"),
+                       {'r': json.dumps({'run_id': 'run_nodefault'})})
+    with store.connect() as db:
+        assert db.execute(text("SELECT count(*) FROM runs WHERE id='run_nodefault'")).scalar() == 0
+    with pytest.raises(IntegrityError):
+        with store.connect() as db:
+            db.execute(text("INSERT INTO memory_items(id,kind,title,content) VALUES ('mem_nodefault','brand_fact','No default',CAST(:c AS jsonb))"),
+                       {'c': json.dumps({'claim': 'No default'})})
+    with store.connect() as db:
+        assert db.execute(text("SELECT count(*) FROM memory_items WHERE id='mem_nodefault'")).scalar() == 0
+    with pytest.raises(IntegrityError):
+        with store.connect() as db:
+            db.execute(text("INSERT INTO campaigns(id,idea,agent_name) VALUES ('camp_nodefault', :idea, 'Maker')"),
+                       {'idea': IDEA})
+    with store.connect() as db:
+        assert db.execute(text("SELECT count(*) FROM campaigns WHERE id='camp_nodefault'")).scalar() == 0
+    with pytest.raises(IntegrityError):
+        with store.connect() as db:
+            db.execute(text("INSERT INTO audit(run_id,action,actor) VALUES (:run,'nodefault_probe',:actor)"),
+                       {'run': owned_run, 'actor': ACTOR_ONE})
+    with store.connect() as db:
+        assert db.execute(text("SELECT count(*) FROM audit WHERE action='nodefault_probe'")).scalar() == 0
+    with pytest.raises(IntegrityError):
+        with store.connect() as db:
+            db.execute(text("INSERT INTO campaign_days(campaign_id,day,run_id) VALUES ('camp_empty_omit',1,:run)"),
+                       {'run': owned_run})
+    with store.connect() as db:
+        assert db.execute(text("SELECT count(*) FROM campaign_days WHERE campaign_id='camp_empty_omit'")).scalar() == 0
+
+
+def test_composite_child_links_deny_cross_workspace(client, monkeypatch):
+    _sign_in(client, monkeypatch, ACTOR_ONE)
+    run_one = _new_run(client)['run_id']
+    _sign_in(client, monkeypatch, ACTOR_TWO)
+    run_two = _new_run(client)['run_id']
+    with store.connect() as db:
+        db.execute(text("INSERT INTO campaigns(id,idea,agent_name,workspace_id) VALUES ('camp_empty_cross', :idea, 'Maker', :ws)"),
+                   {'idea': IDEA, 'ws': ACTOR_TWO})
+    with pytest.raises(IntegrityError):
+        with store.connect() as db:
+            db.execute(text("INSERT INTO memory_items(id,kind,title,content,source_run_id,workspace_id) VALUES ('mem_cross','brand_fact','Cross',CAST(:c AS jsonb),:run,:ws)"),
+                       {'c': json.dumps({'claim': 'Cross'}), 'run': run_one, 'ws': ACTOR_TWO})
+    with store.connect() as db:
+        assert db.execute(text("SELECT count(*) FROM memory_items WHERE id='mem_cross'")).scalar() == 0
+    with pytest.raises(IntegrityError):
+        with store.connect() as db:
+            db.execute(text("INSERT INTO audit(run_id,action,actor,workspace_id) VALUES (:run,'cross_probe',:actor,:ws)"),
+                       {'run': run_one, 'actor': ACTOR_TWO, 'ws': ACTOR_TWO})
+    with store.connect() as db:
+        assert db.execute(text("SELECT count(*) FROM audit WHERE action='cross_probe'")).scalar() == 0
+    with pytest.raises(IntegrityError):
+        with store.connect() as db:
+            db.execute(text("INSERT INTO campaign_days(campaign_id,day,run_id,workspace_id) VALUES ('camp_empty_cross',1,:run,:ws)"),
+                       {'run': run_one, 'ws': ACTOR_TWO})
+    with store.connect() as db:
+        assert db.execute(text("SELECT count(*) FROM campaign_days WHERE campaign_id='camp_empty_cross'")).scalar() == 0
+    with store.connect() as db:
+        db.execute(text("INSERT INTO campaign_days(campaign_id,day,run_id,workspace_id) VALUES ('camp_empty_cross',1,:run,:ws)"),
+                   {'run': run_two, 'ws': ACTOR_TWO})
+        assert db.execute(text("SELECT workspace_id FROM campaign_days WHERE campaign_id='camp_empty_cross'")).scalar() == ACTOR_TWO
+    with store.connect() as db:
+        db.execute(text("INSERT INTO memory_items(id,kind,title,content,source_run_id,workspace_id) VALUES ('mem_nullok','brand_fact','Null ok',CAST(:c AS jsonb),NULL,:ws)"),
+                   {'c': json.dumps({'claim': 'Null ok'}), 'ws': ACTOR_TWO})
+        assert db.execute(text("SELECT workspace_id FROM memory_items WHERE id='mem_nullok'")).scalar() == ACTOR_TWO
+        db.execute(text("INSERT INTO audit(run_id,action,actor,workspace_id) VALUES (NULL,'null_ok',:actor,:ws)"),
+                   {'actor': ACTOR_TWO, 'ws': ACTOR_TWO})
+        assert db.execute(text("SELECT count(*) FROM audit WHERE action='null_ok'")).scalar() == 1
+
+
+def test_migration_005_to_006_backfill_transition():
+    url = os.environ['DATABASE_URL'].replace('postgresql://', 'postgresql+psycopg://', 1)
+    admin = create_engine(url)
+    schema = 'test_trans_' + uuid4().hex[:16]
+    with admin.begin() as connection:
+        connection.execute(text('CREATE SCHEMA ' + schema))
+    db = create_engine(url, connect_args={'options': '-csearch_path=' + schema})
+    original = store.engine
+    store.engine = lambda: db
+    try:
+        command.upgrade(Config('alembic.ini'), '005')
+        legacy_run = {'run_id': 'run_legacy', 'status': 'completed', 'approval_state': 'pending_approval'}
+        with db.begin() as connection:
+            connection.execute(text("INSERT INTO agents(name,profile) VALUES ('maker', CAST(:p AS jsonb))"),
+                               {'p': json.dumps({'name': 'Maker'})})
+            connection.execute(text("INSERT INTO runs(id,receipt,agent_name,state) VALUES ('run_legacy', CAST(:r AS jsonb), 'maker', 'pending_approval')"),
+                               {'r': json.dumps(legacy_run)})
+            connection.execute(text("INSERT INTO memory_items(id,kind,title,content,source_run_id) VALUES ('mem_legacy','brand_fact','Legacy',CAST(:c AS jsonb),'run_legacy')"),
+                               {'c': json.dumps({'claim': 'Legacy claim'})})
+            connection.execute(text("INSERT INTO campaigns(id,idea,agent_name) VALUES ('camp_legacy', :idea, 'Maker')"),
+                               {'idea': IDEA})
+            connection.execute(text("INSERT INTO campaign_days(campaign_id,day,run_id) VALUES ('camp_legacy',1,'run_legacy')"))
+            connection.execute(text("INSERT INTO audit(run_id,action,actor) VALUES ('run_legacy','legacy_probe','demo_placeholder')"))
+        command.upgrade(Config('alembic.ini'), 'head')
+        with db.begin() as connection:
+            assert connection.execute(text("SELECT id FROM workspaces WHERE id='demo'")).scalar() == 'demo'
+            assert connection.execute(text("SELECT workspace_id FROM agents WHERE name='maker'")).scalar() == 'demo'
+            assert connection.execute(text("SELECT workspace_id FROM runs WHERE id='run_legacy'")).scalar() == 'demo'
+            assert connection.execute(text("SELECT workspace_id FROM memory_items WHERE id='mem_legacy'")).scalar() == 'demo'
+            assert connection.execute(text("SELECT workspace_id FROM campaigns WHERE id='camp_legacy'")).scalar() == 'demo'
+            assert connection.execute(text("SELECT workspace_id FROM campaign_days WHERE campaign_id='camp_legacy'")).scalar() == 'demo'
+            assert connection.execute(text("SELECT workspace_id FROM audit WHERE action='legacy_probe'")).scalar() == 'demo'
+            assert connection.execute(text(
+                "SELECT count(*) FROM information_schema.columns "
+                "WHERE table_schema = current_schema() AND column_name = 'workspace_id' "
+                "AND column_default IS NOT NULL")).scalar() == 0
+            constraints = {row[0] for row in connection.execute(text(
+                "SELECT conname FROM pg_constraint WHERE conname IN "
+                "('memory_items_source_workspace_fkey','audit_run_workspace_fkey',"
+                "'campaign_days_campaign_workspace_fkey','campaign_days_run_workspace_fkey',"
+                "'runs_id_workspace_unique','campaigns_id_workspace_unique')")).all()}
+            assert constraints == {'memory_items_source_workspace_fkey', 'audit_run_workspace_fkey',
+                                   'campaign_days_campaign_workspace_fkey', 'campaign_days_run_workspace_fkey',
+                                   'runs_id_workspace_unique', 'campaigns_id_workspace_unique'}
+    finally:
+        store.engine = original
+        db.dispose()
+        with admin.begin() as connection:
+            connection.execute(text('DROP SCHEMA ' + schema + ' CASCADE'))
+        admin.dispose()
