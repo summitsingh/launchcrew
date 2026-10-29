@@ -1,4 +1,16 @@
-"""Optional demo-only SAM transport. Geometry stays in memory, never in receipts."""
+"""SAM Files plus Responses transport. Geometry stays in memory, never in receipts.
+
+Files uploads request a one hour expiry via expires_after anchor created_at
+plus 3600 seconds, sent before the final file part. The product path
+(upload_and_segment) validates integer created_at and expires_at with an
+exact 3600 difference plus a valid file id before any segmentation call.
+Missing or invalid upload metadata ends terminal with budget spent, no retry,
+and no third DELETE cleanup call. Published SAM price seen as 0.0025 per
+image; a Files upload or storage fee free statement was not found, so no
+all free claim is made. Limited operations plus one hour expiry are proof
+assumptions, not a verified hard provider cap. Root verifies current primary
+price and operation bound before any live call.
+"""
 import json
 import os
 from pathlib import Path
@@ -6,6 +18,9 @@ import re
 from time import monotonic
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 from uuid import uuid4
+
+SAM_FILE_EXPIRY_SECONDS = 3600
+SAM_FILE_EXPIRY_ANCHOR = 'created_at'
 
 
 class SamTransportError(RuntimeError):
@@ -43,6 +58,47 @@ def urlopen(request, timeout=None):
     an opener whose redirect handler raises before any resend.
     """
     return _photo_opener().open(request, timeout=timeout)
+
+
+def _files_body(boundary, filename, mime, raw_bytes):
+    """Multipart Files body with one hour expiry parts before the file part.
+
+    Part order is fixed: purpose, expires_after anchor, expires_after
+    seconds, then file. Callers keep original exact bytes unchanged.
+    """
+    head = (f'--{boundary}\r\nContent-Disposition: form-data; name="purpose"\r\n\r\nuser_data\r\n'
+            f'--{boundary}\r\nContent-Disposition: form-data; name="expires_after[anchor]"\r\n\r\n'
+            f'{SAM_FILE_EXPIRY_ANCHOR}\r\n'
+            f'--{boundary}\r\nContent-Disposition: form-data; name="expires_after[seconds]"\r\n\r\n'
+            f'{SAM_FILE_EXPIRY_SECONDS}\r\n'
+            f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+            f'Content-Type: {mime}\r\n\r\n').encode()
+    return head + raw_bytes + f'\r\n--{boundary}--\r\n'.encode()
+
+
+def _validate_files_upload(payload, progress):
+    """Strict product validation for a Files upload response.
+
+    Requires a non-empty string id plus integer (not bool) created_at and
+    expires_at with an exact 3600 difference. Returns the file id.
+    Raises SamTransportError on any missing or invalid field. No DELETE
+    cleanup is attempted; the caller treats this as terminal with budget
+    already spent.
+    """
+    try:
+        file_id = payload.get('id') if isinstance(payload, dict) else None
+        created = payload.get('created_at') if isinstance(payload, dict) else None
+        expires = payload.get('expires_at') if isinstance(payload, dict) else None
+    except Exception:
+        raise SamTransportError('Invalid files upload response', **progress)
+    if not isinstance(file_id, str) or not file_id:
+        raise SamTransportError('Missing file id', **progress)
+    if type(created) is not int or type(expires) is not int:
+        raise SamTransportError('Invalid files expiry metadata', **progress)
+    if expires - created != SAM_FILE_EXPIRY_SECONDS:
+        raise SamTransportError('Invalid files expiry window', **progress)
+    return file_id
+
 
 DEMO_PHOTOS = Path(__file__).resolve().parents[1] / 'facts' / 'demo_photos'
 # Concept prompts return paired boxes and lossless masks, documented by Meta.
@@ -140,9 +196,7 @@ def verify_demo_photo(photo=None, *, enabled=False):
 
         boundary = 'launchcrew' + uuid4().hex
         mime = 'image/png' if path.suffix.lower() == '.png' else 'image/jpeg'
-        body = (f'--{boundary}\r\nContent-Disposition: form-data; name="purpose"\r\n\r\nuser_data\r\n'
-                f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="demo{path.suffix.lower()}"\r\n'
-                f'Content-Type: {mime}\r\n\r\n').encode() + path.read_bytes() + f'\r\n--{boundary}--\r\n'.encode()
+        body = _files_body(boundary, 'demo' + path.suffix.lower(), mime, path.read_bytes())
         with send('/files', body, 'multipart/form-data; boundary=' + boundary, 'application/json') as response:
             file_id = json.load(response)['id']
         if not isinstance(file_id, str) or not file_id:
@@ -179,9 +233,11 @@ def photo_sam_operable():
 def upload_and_segment(raw_bytes, mime, concept='product', timeout_s=30.0):
     """One Files upload plus one Responses segmentation, no retries.
 
-    The Responses call happens only after a valid upload ID held in
+    The Responses call happens only after a valid upload id plus integer
+    created_at and expires_at with an exact 3600 difference, all held in
     memory. A redirect that would resend the body is refused instead.
     Raises SamTransportError on any failure. Returns parsed records.
+    No DELETE cleanup is attempted after a failed upload validation.
     """
     key = os.environ.get('META_API_KEY', '').strip()
     if not key:
@@ -211,13 +267,10 @@ def upload_and_segment(raw_bytes, mime, concept='product', timeout_s=30.0):
     try:
         boundary = 'launchcrew' + uuid4().hex
         suffix = '.png' if mime == 'image/png' else '.jpg'
-        body = (f'--{boundary}\r\nContent-Disposition: form-data; name="purpose"\r\n\r\nuser_data\r\n'
-                f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="photo{suffix}"\r\n'
-                f'Content-Type: {mime}\r\n\r\n').encode() + raw_bytes + f'\r\n--{boundary}--\r\n'.encode()
+        body = _files_body(boundary, 'photo' + suffix, mime, raw_bytes)
         with send('/files', body, 'multipart/form-data; boundary=' + boundary, 'application/json') as response:
-            file_id = json.load(response)['id']
-        if not isinstance(file_id, str) or not file_id:
-            raise SamTransportError('Missing file id', **progress)
+            payload = json.load(response)
+        file_id = _validate_files_upload(payload, progress)
         payload = {'model': 'sam-3.1', 'input': [{'type': 'message', 'role': 'user', 'content': [
             {'type': 'input_text', 'text': concept}, {'type': 'input_image', 'file_id': file_id}]}],
             'stream': True, 'metadata': {'mask_encoding': 'lossless'}}

@@ -82,7 +82,7 @@ def _transport(payload, calls, stream=None):
     def send(request, timeout):
         calls.append(request.full_url)
         if request.full_url.endswith('/files'):
-            return io.BytesIO(b'{"id":"file-live"}')
+            return io.BytesIO(b'{"id":"file-live","created_at":1700000000,"expires_at":1700003600}')
         return stream() if stream else _stream_text(payload)
     return send
 

@@ -1,0 +1,30 @@
+[
+  {
+    "ParameterKey": "ApiImageUri",
+    "ParameterValue": "REPLACE_WITH_ECR_API_IMAGE_URI_DIGEST_PIN"
+  },
+  {
+    "ParameterKey": "RuntimeDbUrlSecretArn",
+    "ParameterValue": "REPLACE_WITH_RUNTIME_DB_URL_SECRET_ARN"
+  },
+  {
+    "ParameterKey": "MetaSecretArn",
+    "ParameterValue": "REPLACE_WITH_META_KEY_SECRET_ARN"
+  },
+  {
+    "ParameterKey": "ClusterName",
+    "ParameterValue": "REPLACE_WITH_OWNED_CLUSTER_NAME"
+  },
+  {
+    "ParameterKey": "SubnetA",
+    "ParameterValue": "REPLACE_WITH_OWNED_PUBLIC_SUBNET_A"
+  },
+  {
+    "ParameterKey": "SubnetB",
+    "ParameterValue": "REPLACE_WITH_OWNED_PUBLIC_SUBNET_B"
+  },
+  {
+    "ParameterKey": "JobSecurityGroupId",
+    "ParameterValue": "REPLACE_WITH_OWNED_JOB_SG_ID"
+  }
+]

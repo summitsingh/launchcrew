@@ -81,7 +81,7 @@ def _transport(payload_text, calls):
         calls.append(request.full_url)
         if request.full_url.endswith('/files'):
             assert request.get_header('Accept') == 'application/json'
-            return io.BytesIO(b'{"id":"file-live"}')
+            return io.BytesIO(b'{"id":"file-live","created_at":1700000000,"expires_at":1700003600}')
         assert request.full_url.endswith('/responses')
         assert request.get_header('Accept') == 'text/event-stream'
         body = json.loads(request.data)
@@ -257,7 +257,7 @@ def test_parallel_different_image_returns_single_sequence(client, monkeypatch):
         if request.full_url.endswith('/files'):
             import time
             time.sleep(0.2)
-            return io.BytesIO(b'{"id":"file-live"}')
+            return io.BytesIO(b'{"id":"file-live","created_at":1700000000,"expires_at":1700003600}')
         return _stream_text(CLEAR_TAG)
 
     bodies = [{'image_data_uri': _data_uri(raw), 'expected_revision': 0} for raw in (first_raw, second_raw)]
@@ -291,7 +291,7 @@ def test_concurrent_duplicate_admits_one_paid_sequence(client, monkeypatch):
         if request.full_url.endswith('/files'):
             import time
             time.sleep(0.2)
-            return io.BytesIO(b'{"id":"file-live"}')
+            return io.BytesIO(b'{"id":"file-live","created_at":1700000000,"expires_at":1700003600}')
         return _stream_text(CLEAR_TAG)
 
     body = {'image_data_uri': _data_uri(raw), 'expected_revision': 0}
