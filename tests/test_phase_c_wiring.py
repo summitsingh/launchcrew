@@ -102,6 +102,135 @@ if [ "$1" = "cloudformation" ] && [ "$2" = "describe-stacks" ]; then
   printf '{"Stacks":[{"StackId":"arn:aws:cloudformation:us-east-1:111122223333:stack/launchcrew-demo/abc123","StackStatus":"CREATE_COMPLETE","Tags":[{"Key":"Project","Value":"LaunchCrew"},{"Key":"Environment","Value":"demo"}],"Parameters":[{"ParameterKey":"EnableServices","ParameterValue":"false"}]}]}\\n'
   exit 0
 fi
+if [ "$1" = "cloudformation" ] && [ "$2" = "create-change-set" ]; then
+  case "$*" in
+    *"--use-previous-template"*|*"--template-file"*) ;;
+    *) echo "fake-aws: change set must use previous template or template file" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"ParameterKey=EnableServices,ParameterValue=false"*) ;;
+    *) echo "fake-aws: change set must set EnableServices=false" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"--template-file"*)
+      if [ "${FAKE_INFRA_CREATE:-ok}" = "exists" ]; then
+        echo "An error occurred (AlreadyExistsException) when calling the CreateChangeSet operation: change set infra-006 exists" >&2
+        exit 254
+      fi ;;
+  esac
+  printf '{"Id":"arn:aws:cloudformation:us-east-1:111122223333:changeSet/changeset/abc123","StackId":"arn:aws:cloudformation:us-east-1:111122223333:stack/launchcrew-demo/abc123"}\\n'
+  exit 0
+fi
+if [ "$1" = "cloudformation" ] && [ "$2" = "describe-change-set" ]; then
+  case "$*" in
+    *"--next-token"*) echo "fake-aws: unsupported --next-token rejected, use --cli-input-json NextToken" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"--starting-token"*|*"--max-items"*) echo "fake-aws: high level pagination args rejected with --no-paginate" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"--no-paginate"*) ;;
+    *) echo "fake-aws: unbounded autopagination rejected, --no-paginate required" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"--cli-input-json"*) ;;
+    *) echo "fake-aws: --cli-input-json required" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"--stack-name "*|*"--stack-name="*|*"--change-set-name "*|*"--change-set-name="*) echo "fake-aws: raw JSON required, flag filters refused" >&2; exit 2 ;;
+  esac
+  CS_INPUT_PATH=""
+  CS_INPUT_PREV=""
+  for CS_ARG in "$@"; do
+    if [ "$CS_INPUT_PREV" = "--cli-input-json" ]; then CS_INPUT_PATH="$CS_ARG"; fi
+    CS_INPUT_PREV="$CS_ARG"
+  done
+  case "$CS_INPUT_PATH" in
+    file://*) CS_INPUT_PATH="${CS_INPUT_PATH#file://}" ;;
+    *) echo "fake-aws: --cli-input-json must be file:// path" >&2; exit 2 ;;
+  esac
+  echo "INPUT_JSON_CHANGESET $(cat "$CS_INPUT_PATH" 2>/dev/null || echo MALFORMED)" >>"$LOG" 2>/dev/null || true
+  CS_DECODED="$(python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); s=d.get("StackName",""); c=d.get("ChangeSetName",""); n=d.get("NextToken",""); nn=d.get("nextToken","__absent__"); bad="";
+if s!="launchcrew-demo": bad="BAD_STACK";
+elif not isinstance(c,str) or not c: bad="BAD_NAME";
+elif nn!="__absent__": bad="BAD_CASE";
+elif n is None: n="";
+elif not isinstance(n,str): bad="MALFORMED_INPUT";
+print(bad if bad else (c+"|"+n))' "$CS_INPUT_PATH" 2>/dev/null || echo MALFORMED_INPUT)"
+  case "$CS_DECODED" in
+    MALFORMED_INPUT|BAD_STACK|BAD_NAME|BAD_CASE) echo "fake-aws: invalid cli-input-json $CS_DECODED" >&2; exit 2 ;;
+  esac
+  CS_NAME="${CS_DECODED%%|*}"
+  CS_TOKEN="${CS_DECODED#*|}"
+  STACKID="arn:aws:cloudformation:us-east-1:111122223333:stack/launchcrew-demo/abc123"
+  case "$CS_NAME" in
+    *infra*)
+      CS_MODE="${FAKE_INFRA_CHANGESET:-exact}"
+      if [ "$CS_MODE" != "exact" ]; then echo "fake-aws: unsupported FAKE_INFRA_CHANGESET $CS_MODE" >&2; exit 2; fi
+      if [ -n "$CS_TOKEN" ]; then printf '{"Changes":[],"Parameters":[],"Tags":[],"Capabilities":[]}\\n'; exit 0; fi
+      python3 - "$CS_NAME" "$STACKID" "${FAKE_PARAMS_FILE:-}" <<'PYEOF'
+import json, sys
+name, stack_id, params_file = sys.argv[1:4]
+TD = "tas" + "k-definition"
+CSID = "arn:aws:cloudformation:us-east-1:111122223333:changeSet/%s/aaaabbbbccccddddeeeeffff00001111" % name
+TAGS = [{"Key": "Project", "Value": "LaunchCrew"}, {"Key": "Environment", "Value": "demo"}]
+CAPS = ["CAPABILITY_NAMED_IAM"]
+API_SVC = "launchcrew-demo-ApiService-A1B2C3D4E5F6"
+WEB_SVC = "launchcrew-demo-WebService-G7H8I9J0K1L2"
+TASKDEFS = [("ApiTaskDefinition", "api"), ("WebTaskDefinition", "web"),
+            ("MigrationTaskDefinition", "migration"), ("BootstrapTaskDefinition", "bootstrap"),
+            ("VerifyTaskDefinition", "verify"), ("SdkInitTaskDefinition", "sdkinit"),
+            ("SdkMaterialTaskDefinition", "sdkmaterial")]
+def taskdef_change(logical, repo):
+    return {"Type": "Resource", "ResourceChange": {
+        "Action": "Modify", "LogicalResourceId": logical,
+        "PhysicalResourceId": "arn:aws:ecs:us-east-1:111122223333:%s/launchcrew-demo-%s:1" % (TD, repo),
+        "ResourceType": "AWS::ECS::TaskDefinition", "Replacement": "True",
+        "Scope": ["Properties"],
+        "Details": [{"Target": {"Attribute": "Properties", "Name": "ContainerDefinitions",
+                                "RequiresRecreation": "Always"},
+                     "Evaluation": "Static", "ChangeSource": "DirectModification"}]}}
+def svc_change(logical, physical):
+    return {"Type": "Resource", "ResourceChange": {
+        "Action": "Modify", "LogicalResourceId": logical,
+        "PhysicalResourceId": physical, "ResourceType": "AWS::ECS::Service",
+        "Replacement": "False", "Scope": ["Properties"],
+        "Details": [{"Target": {"Attribute": "Properties", "Name": "TaskDefinition",
+                                "RequiresRecreation": "Never"},
+                     "Evaluation": "Static", "ChangeSource": "DirectModification"}]}}
+with open(params_file) as handle:
+    doc = json.load(handle)
+if isinstance(doc, dict) and "Parameters" in doc:
+    doc = doc["Parameters"]
+out = []
+for item in doc:
+    if item.get("ParameterKey") == "EnableServices":
+        continue
+    out.append({"ParameterKey": item["ParameterKey"],
+                "ParameterValue": item["ParameterValue"], "UsePreviousValue": False})
+out.append({"ParameterKey": "EnableServices", "ParameterValue": "false",
+            "UsePreviousValue": False})
+changes = [taskdef_change(logical, repo) for logical, repo in TASKDEFS]
+changes += [svc_change("ApiService", API_SVC), svc_change("WebService", WEB_SVC)]
+print(json.dumps({"ChangeSetName": name, "ChangeSetId": CSID, "StackName": "launchcrew-demo",
+           "StackId": stack_id, "Status": "CREATE_COMPLETE", "ExecutionStatus": "AVAILABLE",
+           "Changes": changes, "Parameters": out, "Tags": TAGS,
+           "Capabilities": CAPS}))
+PYEOF
+      exit 0 ;;
+  esac
+  echo "fake-aws: unexpected change set $CS_NAME" >&2; exit 2
+fi
+if [ "$1" = "cloudformation" ] && [ "$2" = "execute-change-set" ]; then
+  case "$*" in
+    *"changeSet/"*) ;;
+    *) echo "fake-aws: execute must name the reviewed change set ID" >&2; exit 2 ;;
+  esac
+  exit 0
+fi
+if [ "$1" = "cloudformation" ] && [ "$2" = "delete-change-set" ]; then
+  exit 0
+fi
 if [ "$1" = "cloudformation" ] && [ "$2" = "describe-stack-resource" ]; then
   RESOURCE_STACK=""
   RESOURCE_LOGICAL=""
@@ -425,11 +554,40 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-services" ]; then
   done
   OWNED_API="${FAKE_API_SERVICE:-launchcrew-demo-ApiService-A1B2C3D4E5F6}"
   OWNED_WEB="${FAKE_WEB_SERVICE:-launchcrew-demo-WebService-G7H8I9J0K1L2}"
+  SVC_MODE="${FAKE_SERVICE:-auto}"
+  if [ "$SVC_MODE" = "auto" ]; then
+    if grep -q "EnableServices=true" "$LOG" 2>/dev/null; then SVC_MODE="ok"; else SVC_MODE="stopped"; fi
+  fi
+  if [ "$MODE" = "enable_wrong" ]; then
+    if grep -q "EnableServices=true" "$LOG" 2>/dev/null; then SVC_MODE="desired2"; else SVC_MODE="stopped"; fi
+  fi
   case "$SVC_ARG" in
     "$OWNED_API"|"$OWNED_WEB") ;;
     *) printf '{"services":[],"failures":[{"arn":"arn:aws:ecs:us-east-1:111122223333:service/launchcrew-demo/%s","reason":"MISSING"}]}\\n' "$SVC_ARG"; exit 0 ;;
   esac
-  printf '{"services":[{"serviceArn":"arn:aws:ecs:us-east-1:111122223333:service/launchcrew-demo/%s","serviceName":"%s","clusterArn":"arn:aws:ecs:us-east-1:111122223333:cluster/launchcrew-demo","status":"ACTIVE","desiredCount":1,"runningCount":1,"pendingCount":0}],"failures":[]}\\n' "$SVC_ARG" "$SVC_ARG"
+  SVC_NAME="$SVC_ARG"
+  SVC_ARN="arn:aws:ecs:us-east-1:111122223333:service/launchcrew-demo/$SVC_NAME"
+  SVC_CLUSTER="arn:aws:ecs:us-east-1:111122223333:cluster/launchcrew-demo"
+  SVC_STATUS="ACTIVE"
+  SVC_DESIRED=1
+  SVC_RUNNING=1
+  SVC_PENDING=0
+  if [ "$SVC_MODE" = "malformed" ]; then printf 'not-json{{{\\n'; exit 0; fi
+  if [ "$SVC_MODE" = "empty" ]; then printf '{"services":[],"failures":[]}\\n'; exit 0; fi
+  if [ "$SVC_MODE" = "duplicate" ]; then printf '{"services":[{"serviceArn":"%s","serviceName":"%s","clusterArn":"%s","status":"ACTIVE","desiredCount":1,"runningCount":1,"pendingCount":0},{"serviceArn":"%s","serviceName":"%s","clusterArn":"%s","status":"ACTIVE","desiredCount":1,"runningCount":1,"pendingCount":0}],"failures":[]}\\n' "$SVC_ARN" "$SVC_NAME" "$SVC_CLUSTER" "$SVC_ARN" "$SVC_NAME" "$SVC_CLUSTER"; exit 0; fi
+  if [ "$SVC_MODE" = "wrong" ]; then SVC_NAME="other-service"; SVC_ARN="arn:aws:ecs:us-east-1:111122223333:service/launchcrew-demo/other-service"; fi
+  if [ "$SVC_MODE" = "wrong_cluster" ]; then SVC_CLUSTER="arn:aws:ecs:us-east-1:111122223333:cluster/other-cluster"; fi
+  if [ "$SVC_MODE" = "inactive" ]; then SVC_STATUS="DRAINING"; fi
+  if [ "$SVC_MODE" = "desired" ]; then SVC_DESIRED=0; fi
+  if [ "$SVC_MODE" = "desired2" ]; then SVC_DESIRED=2; SVC_RUNNING=0; fi
+  if [ "$SVC_MODE" = "running" ]; then SVC_RUNNING=0; fi
+  if [ "$SVC_MODE" = "pending" ]; then SVC_PENDING=1; fi
+  if [ "$SVC_MODE" = "stopped" ]; then SVC_DESIRED=0; SVC_RUNNING=0; SVC_PENDING=0; fi
+  if [ "$SVC_MODE" = "live_desired" ]; then SVC_DESIRED=1; SVC_RUNNING=0; SVC_PENDING=0; fi
+  if [ "$SVC_MODE" = "live_running" ]; then SVC_DESIRED=0; SVC_RUNNING=1; SVC_PENDING=0; fi
+  if [ "$SVC_MODE" = "live_pending" ]; then SVC_DESIRED=0; SVC_RUNNING=0; SVC_PENDING=1; fi
+  if [ "$SVC_MODE" = "failures" ]; then printf '{"services":[{"serviceArn":"%s","serviceName":"%s","clusterArn":"%s","status":"%s","desiredCount":%s,"runningCount":%s,"pendingCount":%s}],"failures":[{"arn":"%s","reason":"FAIL"}]}\\n' "$SVC_ARN" "$SVC_NAME" "$SVC_CLUSTER" "$SVC_STATUS" "$SVC_DESIRED" "$SVC_RUNNING" "$SVC_PENDING" "$SVC_ARN"; exit 0; fi
+  printf '{"services":[{"serviceArn":"%s","serviceName":"%s","clusterArn":"%s","status":"%s","desiredCount":%s,"runningCount":%s,"pendingCount":%s}],"failures":[]}\\n' "$SVC_ARN" "$SVC_NAME" "$SVC_CLUSTER" "$SVC_STATUS" "$SVC_DESIRED" "$SVC_RUNNING" "$SVC_PENDING"
   exit 0
 fi
 if [ "$1" = "budgets" ] && [ "$2" = "describe-budget" ]; then
@@ -683,22 +841,42 @@ class PhaseCHarness(unittest.TestCase):
         "--tls-secret-arn": "FAKE_TLS_ARN",
     }
 
-    def run_phase(self, args, extra_env=None, params_overrides=None):
+    def run_phase(self, args, extra_env=None, params_overrides=None, shared_dir=None):
         with tempfile.TemporaryDirectory() as tmp:
             fake = Path(tmp) / "fake-aws"
             fake.write_text(FAKE_AWS, encoding="utf-8")
             fake.chmod(fake.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
             log = Path(tmp) / "calls.log"
             log.write_text("", encoding="utf-8")
-            count = Path(tmp) / "count"
-            count.write_text("0", encoding="utf-8")
-            taskdefs = Path(tmp) / "taskdefs"
-            taskdefs.write_text("", encoding="utf-8")
-            token_file = Path(tmp) / "token"
-            adopt_file = Path(tmp) / "adopt"
-            journals = Path(tmp) / "journals"
-            journals.mkdir(mode=0o700)
-            journals.chmod(0o700)
+            if shared_dir is None:
+                count = Path(tmp) / "count"
+                count.write_text("0", encoding="utf-8")
+                taskdefs = Path(tmp) / "taskdefs"
+                taskdefs.write_text("", encoding="utf-8")
+                token_file = Path(tmp) / "token"
+                adopt_file = Path(tmp) / "adopt"
+                journals = Path(tmp) / "journals"
+                journals.mkdir(mode=0o700)
+                journals.chmod(0o700)
+            else:
+                shared = Path(shared_dir)
+                shared.mkdir(parents=True, exist_ok=True)
+                count = shared / "count"
+                if not count.exists():
+                    count.write_text("0", encoding="utf-8")
+                taskdefs = shared / "taskdefs"
+                if not taskdefs.exists():
+                    taskdefs.write_text("", encoding="utf-8")
+                token_file = shared / "token"
+                if not token_file.exists():
+                    token_file.write_text("", encoding="utf-8")
+                adopt_file = shared / "adopt"
+                if not adopt_file.exists():
+                    adopt_file.write_text("", encoding="utf-8")
+                journals = shared / "journals"
+                if not journals.exists():
+                    journals.mkdir(mode=0o700)
+                journals.chmod(0o700)
             given = {"AcmCertificateArn": CERT_ARN}
             items = list(args)
             index = 0
@@ -735,6 +913,7 @@ class PhaseCHarness(unittest.TestCase):
             env["FAKE_DB_HOST"] = DB_HOST
             env["FAKE_TOPIC_ARN"] = TOPIC_ARN
             env["FAKE_NOTIFY_EMAIL"] = NOTIFY_EMAIL
+            env["FAKE_PARAMS_FILE"] = str(params)
             for table in (self.IMAGE_ENV, self.SECRET_ENV):
                 for flag, name in table.items():
                     for pos, item in enumerate(items):
@@ -786,6 +965,27 @@ class PhaseCHarness(unittest.TestCase):
 
     def run_calls(self, calls):
         return [call for call in calls if "run-task" in call]
+
+    def run_enable_with_priors(self, shared_tmp, enable_extra_env=None,
+                               release="head006-testabc"):
+        base = self.base_args()
+        result_mat, _, _ = self.run_phase(
+            [*base, "--phase", "material",
+             "--release-generation", release],
+            shared_dir=shared_tmp)
+        self.assertEqual(result_mat.returncode, 0,
+                         msg=result_mat.stdout + result_mat.stderr)
+        result_mig, _, _ = self.run_phase(
+            [*base, "--phase", "migrate",
+             "--release-generation", release],
+            shared_dir=shared_tmp)
+        self.assertEqual(result_mig.returncode, 0,
+                         msg=result_mig.stdout + result_mig.stderr)
+        return self.run_phase(
+            [*base, "--phase", "enable",
+             "--release-generation", release],
+            extra_env=enable_extra_env,
+            shared_dir=shared_tmp)
 
 
 class SdkTaskShapeTests(PhaseCHarness):
@@ -890,6 +1090,17 @@ class ControllerOrderTests(PhaseCHarness):
                          msg=result.stdout + result.stderr)
         self.assertIn("Prereqs ready", result.stdout)
         self.assertIn("Paid gates verified", result.stdout)
+        self.assertIn("desiredCount 0", result.stdout)
+        self.assertIn("desiredCount 1", result.stdout)
+        infra_exec = next(i for i, call in enumerate(calls)
+                          if "execute-change-set" in call and "infra-006" in call)
+        first_run = next(i for i, call in enumerate(calls) if "run-task" in call)
+        deploy_true = next(i for i, call in enumerate(calls)
+                           if "deploy " in call and "EnableServices=true" in call)
+        self.assertLess(infra_exec, first_run)
+        self.assertLess(first_run, deploy_true)
+        self.assertFalse(any("deploy " in call and "EnableServices=false" in call
+                             for call in calls))
         runs = self.run_calls(calls)
         order = []
         for call in runs:
@@ -911,21 +1122,45 @@ class ControllerOrderTests(PhaseCHarness):
                 self.assertEqual(len(self.run_calls(calls)), 1)
 
     def test_standalone_enable_runs_only_readonly_verifies(self):
-        result, calls, _ = self.run_phase(
-            [*self.base_args(), "--phase", "enable"])
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            result, calls, _ = self.run_enable_with_priors(shared_tmp)
         self.assertEqual(result.returncode, 0,
                          msg=result.stdout + result.stderr)
+        self.assertIn("Enable precheck", result.stdout)
+        self.assertIn("no new run-task", result.stdout + result.stderr)
+        self.assertIn("desiredCount 1", result.stdout)
+        self.assertIn("Phase enable complete", result.stdout)
         runs = self.run_calls(calls)
-        self.assertEqual(len(runs), 2)
-        self.assertIn("launchcrew-demo-sdkmaterial", runs[0])
-        self.assertIn("launchcrew-demo-verify", runs[1])
+        self.assertEqual(len(runs), 0)
         joined = " ".join(calls)
-        self.assertNotIn("launchcrew-demo-sdkinit:1 --launch-type", joined)
-        self.assertNotIn("launchcrew-demo-migration:1 --launch-type", joined)
-        self.assertNotIn("launchcrew-demo-bootstrap:1 --launch-type", joined)
+        self.assertIn("EnableServices=true", joined)
+        self.assertTrue(any("describe-services" in call for call in calls))
         self.assertNotIn("put-secret-value", joined)
         self.assertNotIn("export-certificate", joined)
         self.assertNotIn("GetSecretValue", joined)
+
+    def test_standalone_enable_refuses_without_priors_and_launches_nothing(self):
+        result, calls, _ = self.run_phase(
+            [*self.base_args(), "--phase", "enable"])
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("needs prior", combined)
+        self.assertIn("No new launch", combined)
+        self.assertNotIn("BOOTSTRAP COMPLETE", result.stdout)
+        self.assertEqual(self.run_calls(calls), [])
+        self.assertFalse(any("EnableServices=true" in call for call in calls))
+
+    def test_enable_refuses_quiesced_counts(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            result, calls, _ = self.run_enable_with_priors(
+                shared_tmp, enable_extra_env={"FAKE_SERVICE": "stopped"})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("DESIRED_0", combined)
+        self.assertIn("expected ACTIVE fixed 1/1/0", combined)
+        self.assertNotIn("BOOTSTRAP COMPLETE", result.stdout)
+        self.assertTrue(any("describe-services" in call for call in calls))
+        self.assertEqual(self.run_calls(calls), [])
 
     def test_pending_cert_stops_all_without_ready_claim(self):
         result, calls, _ = self.run_phase(
@@ -1380,7 +1615,37 @@ class StandalonePrereqTests(PhaseCHarness):
         result, calls, _ = self.run_phase([*self.base_args(), "--phase", "infra"])
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
         self.assertIn("Prereqs ready", result.stdout)
-        self.assertTrue(any("deploy " in call and "EnableServices=false" in call for call in calls))
+        self.assertIn("desiredCount 0", result.stdout)
+        self.assertIn("services at 0", result.stdout)
+        self.assertTrue(any("describe-services" in call for call in calls))
+        self.assertTrue(any("create-change-set" in call and "infra-006" in call
+                            for call in calls))
+        self.assertTrue(any("describe-change-set" in call for call in calls))
+        self.assertTrue(any("execute-change-set" in call and "changeSet/infra-006/" in call
+                            for call in calls))
+        self.assertFalse(any("deploy " in call for call in calls))
+        self.assertEqual(self.run_calls(calls), [])
+
+    def test_standalone_infra_refuses_live_services(self):
+        for mode, token in (("ok", "DESIRED_1"),
+                            ("live_desired", "DESIRED_1"),
+                            ("live_running", "RUNNING_1"),
+                            ("live_pending", "PENDING_1"),
+                            ("desired2", "DESIRED_2")):
+            with self.subTest(mode=mode):
+                result, calls, _ = self.run_phase(
+                    [*self.base_args(), "--phase", "infra"],
+                    extra_env={"FAKE_SERVICE": mode})
+                self.assertNotEqual(result.returncode, 0, msg=mode)
+                combined = result.stdout + result.stderr
+                self.assertIn(token, combined, msg=mode)
+                self.assertIn("expected ACTIVE fixed 0/0/0", combined, msg=mode)
+                self.assertFalse(any("create-change-set" in call for call in calls),
+                                 msg=mode)
+                self.assertFalse(any("execute-change-set" in call for call in calls),
+                                 msg=mode)
+                self.assertFalse(any("deploy " in call for call in calls), msg=mode)
+                self.assertEqual(self.run_calls(calls), [], msg=mode)
 
 
 class ConcurrentOperationLockTests(PhaseCHarness):
