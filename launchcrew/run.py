@@ -7,7 +7,7 @@ from pathlib import Path
 
 from . import agents
 from .checker_policies import effective_policies, parse_checker_agent, policy_blocks, policy_reason
-from .facts import (OWNER_SOURCE_LABEL, check_sentence, check_claims, check_draft,
+from .facts import (OWNER_SOURCE_LABEL, check_claim, check_sentence, check_claims, check_draft,
                      founder_variant, load_facts, normalize, parse_product_facts,
                      product_section, split_sentences)
 from .receipts import create_receipt, save_receipt, timestamp, failed_receipt
@@ -139,8 +139,9 @@ def check_pack(draft, facts, blocked_claims=None, checker_profile='standard', ch
 def make_draft(claims):
     # Deterministic keyless fallback: safe, labelled, never model-written.
     # Separate sentences keep the draft and explicit claims auditable together.
-    # Post and email stay identical here for legacy fallback compatibility;
-    # model-safe drafts use make_distinct_draft for channel structure.
+    # Post and email stay identical here for legacy fallback compatibility.
+    # Model-safe drafts preserve verbatim accepted model lines; deterministic
+    # reordering of model-selected facts is never labelled model-written.
     text = '. '.join(claims) + '.'
     return {'post': text, 'email': text, 'claims': list(claims),
             'draft_origin': 'deterministic_fallback', 'model_written': False,
@@ -148,12 +149,12 @@ def make_draft(claims):
 
 
 def _distinct_post_email(claims):
-    # Format-specific structure from safe claims only, no extra factual
+    # Legacy deterministic formatter from safe claims only, no extra factual
     # wording. Post is a single paragraph in order; email is one claim per
-    # line in reverse order when that stays distinct. Both split into the
-    # same verified sentences, so Checker still passes. Distinctness is
-    # formatting and order only, not new copy. Honest limit: single-claim
-    # drafts differ only by trailing period vs bare line.
+    # line in reverse order when that stays distinct. Distinctness is
+    # formatting and order only, not model copy, so callers must never label
+    # its output model-written. Model-safe paths preserve verbatim model
+    # lines instead of calling this helper.
     if not claims:
         return '.', '.'
     post = '. '.join(claims) + '.'
@@ -165,13 +166,14 @@ def _distinct_post_email(claims):
 
 
 def make_distinct_draft(claims, model_used=None, maker_schema='structured_post_email'):
-    # Model-safe draft: distinct post/email built only from independently
-    # verified safe claims. Caller must have rejected every unsafe sentence
-    # via check_pack before calling. Model metadata is measured, not claimed.
+    # Deterministic distinct formatter only. Distinctness is code formatting
+    # of caller-supplied claims, never model authorship, so this helper is
+    # always labelled fallback with model_written False. Model-safe drafts
+    # preserve verbatim accepted model lines and do not call this helper.
     post, email = _distinct_post_email(list(claims))
     return {'post': post, 'email': email, 'claims': list(claims),
-            'draft_origin': 'model_safe', 'model_written': True,
-            'maker_schema': maker_schema, 'model_used': model_used or 'unknown'}
+            'draft_origin': 'deterministic_fallback', 'model_written': False,
+            'maker_schema': maker_schema, 'model_used': 'none'}
 
 
 def _clean_model_lines(lines):
@@ -183,6 +185,29 @@ def _clean_model_lines(lines):
         if text:
             cleaned.append(text)
     return cleaned
+
+
+def _model_line_evidence(lines, facts, channel):
+    # Per-line quoted evidence for accepted model copy. Each model line is
+    # split into sentences and each sentence must already have passed
+    # check_sentence via check_pack. Evidence quotes confirmed facts.
+    items = []
+    for line in lines or []:
+        sents = split_sentences(line) or [line]
+        evid = []
+        reasons = []
+        for sent in sents:
+            result = check_sentence(sent, facts)
+            if isinstance(result.get('evidence'), str) and result['evidence'] not in evid:
+                evid.append(result['evidence'])
+            for extra in (result.get('evidence_claims') or []):
+                if isinstance(extra, str) and extra not in evid:
+                    evid.append(extra)
+            if isinstance(result.get('reason'), str):
+                reasons.append(result['reason'])
+        items.append({'channel': channel, 'line': line,
+                      'evidence': list(evid), 'reasons': list(reasons)})
+    return items
 
 
 SEED_CLAIM = 'best in Texas'
@@ -455,25 +480,32 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
         maker = maker_result.get('raw_json') if maker_result else None
         maker_model = maker_result.get('model_used') if maker_result else 'none'
         v1 = None
+        v1_safe_post_lines = None
+        v1_safe_email_lines = None
+        v1_safe_claims = None
+        v1_safe_model = 'none'
+        v1_safe_schema = 'structured_post_email'
         if maker:
             # Every model string is untrusted. Founder note text is not in the
             # allowlist unless separately confirmed as allowed_claim, so raw
-            # founder notes cannot pass check_sentence. No model output
-            # bypasses Checker; unsafe candidates fall back deterministically.
+            # founder notes cannot pass checks. No model output bypasses
+            # Checker; unsafe candidates fall back deterministically.
             raw_claims = _clean_model_lines(maker.get('claims'))
             raw_post = _clean_model_lines(maker.get('post_lines'))
             raw_email = _clean_model_lines(maker.get('email_lines'))
-            # Only exact, independently verified sentences can reach Maker.
-            safe = [c for c in raw_claims if check_sentence(c, facts)['verified']]
+            # Explicit claims require exact confirmed sentences.
+            safe = [c for c in raw_claims if check_claim(c, facts)['verified']]
             if (raw_post or raw_email) and safe:
                 # Structured post/email candidate path. Both channels must be
-                # present, distinct, and fully clean including policy and
-                # blocked rules. Any failure rejects to fallback below.
+                # present, model-distinct, and fully clean including policy
+                # and blocked rules. Verbatim model lines are preserved;
+                # deterministic reformatting is never labelled model-written.
+                # Any failure rejects to fallback below.
                 if raw_post and raw_email:
-                    post_text = '. '.join(l.strip().rstrip('.!?') for l in raw_post) + '.'
-                    email_text = '\n'.join(l.strip().rstrip('.!?') for l in raw_email)
+                    post_text = ' '.join(raw_post)
+                    email_text = '\n'.join(raw_email)
                     proposed = {'post': post_text, 'email': email_text, 'claims': list(safe)}
-                    if (post_text != email_text
+                    if (raw_post != raw_email and post_text != email_text
                             and not check_pack(proposed, facts, blocked_claims,
                                                checker_profile, effective)['blocked_count']):
                         v1_claims = safe + (['best in Texas'] if seed_unverified_claim else [])
@@ -482,25 +514,32 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
                             email_final = email_text.rstrip() + '\nbest in Texas'
                         else:
                             post_final, email_final = post_text, email_text
+                        line_evidence = (_model_line_evidence(raw_post, facts, 'post')
+                                         + _model_line_evidence(raw_email, facts, 'email'))
                         v1 = {'post': post_final, 'email': email_final, 'claims': list(v1_claims),
                               'draft_origin': 'model_safe', 'model_written': True,
                               'maker_schema': 'structured_post_email',
-                              'model_used': _sanitized_model_name(maker_model)}
+                              'model_used': _sanitized_model_name(maker_model),
+                              'line_evidence': line_evidence}
+                        v1_safe_post_lines = list(raw_post)
+                        v1_safe_email_lines = list(raw_email)
+                        v1_safe_claims = list(safe)
+                        v1_safe_model = _sanitized_model_name(maker_model)
+                        v1_safe_schema = 'structured_post_email'
             if v1 is None and safe:
-                # Legacy claims-only path (or structured rejection with safe
-                # claims): distinct post/email from safe claims only.
-                # Single-claim drafts differ by trailing period vs bare line;
-                # multi-claim drafts differ by order and separators.
-                proposed_post, proposed_email = _distinct_post_email(safe)
-                proposed = {'post': proposed_post, 'email': proposed_email, 'claims': list(safe)}
-                if proposed_post != proposed_email and not check_pack(
-                        proposed, facts, blocked_claims, checker_profile, effective)['blocked_count']:
+                # Claims-only safe subset without verbatim model channels.
+                # Deterministic identical formatting of model-selected facts.
+                # Never labelled model-written: no model text survives.
+                schema = ('legacy_claims_only' if not (raw_post or raw_email)
+                          else 'structured_post_email_fallback')
+                proposed = make_draft(list(safe))
+                if not check_pack(proposed, facts, blocked_claims,
+                                  checker_profile, effective)['blocked_count']:
                     v1_claims = safe + (['best in Texas'] if seed_unverified_claim else [])
-                    final_post, final_email = _distinct_post_email(v1_claims)
-                    v1 = {'post': final_post, 'email': final_email, 'claims': list(v1_claims),
-                          'draft_origin': 'model_safe', 'model_written': True,
-                          'maker_schema': 'legacy_claims_only' if not (raw_post or raw_email) else 'structured_post_email_fallback',
-                          'model_used': _sanitized_model_name(maker_model)}
+                    text = '. '.join(v1_claims) + '.'
+                    v1 = {'post': text, 'email': text, 'claims': list(v1_claims),
+                          'draft_origin': 'deterministic_fallback', 'model_written': False,
+                          'maker_schema': schema, 'model_used': 'none'}
         if v1 is None:
             # Deterministic fallback: keyless or rejected model. Safe,
             # labelled, never model-written. v1_claims keeps original claims
@@ -522,16 +561,37 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
         reached('checker_v1', 'Checker', 'Checked explicit claims and draft text; blocked_count=' + str(c1['blocked_count']),
                 profiles['Checker']['name'],
                 {'blocked_count': c1.get('blocked_count'), 'verified_count': c1.get('verified_count')})
-        # Rebuild from verified allowlist sentences, removing every blocked sentence.
-        # Blocked and policy-blocked claims are excluded here, so the final draft
-        # stays clean while v1 still records the verdict difference.
+        # Final draft preserves verbatim accepted model text when v1 was
+        # model-safe; otherwise rebuild from the verified allowlist. Blocked,
+        # policy-blocked, and seeded claims are excluded here, so the final
+        # draft stays clean while v1 still records the verdict difference.
+        # Checker v2 rechecks the exact v2 text below.
         step = 'maker_draft_v2'
         gate('maker_draft_v2')
         note('maker_draft_v2', 'started', profiles['Maker']['name'])
-        v2_claims = [c for c in claims
-                     if normalize(c) not in blocked_names
-                     and _policy_block_for_claim(c, effective) is None]
-        v2 = make_draft(v2_claims)
+        v2 = None
+        v2_claims = []
+        if (v1_safe_post_lines is not None and v1_safe_email_lines is not None
+                and v1_safe_claims is not None):
+            safe_filtered = [c for c in v1_safe_claims
+                             if normalize(c) not in blocked_names
+                             and _policy_block_for_claim(c, effective) is None]
+            post_v2 = ' '.join(v1_safe_post_lines)
+            email_v2 = '\n'.join(v1_safe_email_lines)
+            proposed_v2 = {'post': post_v2, 'email': email_v2, 'claims': list(safe_filtered)}
+            if (v1_safe_post_lines != v1_safe_email_lines and post_v2 != email_v2
+                    and not check_pack(proposed_v2, facts, blocked_claims,
+                                       checker_profile, effective)['blocked_count']):
+                v2_claims = list(safe_filtered)
+                v2 = {'post': post_v2, 'email': email_v2, 'claims': list(v2_claims),
+                      'draft_origin': 'model_safe', 'model_written': True,
+                      'maker_schema': v1_safe_schema, 'model_used': v1_safe_model,
+                      'line_evidence': list(v1.get('line_evidence') or [])}
+        if v2 is None:
+            v2_claims = [c for c in claims
+                         if normalize(c) not in blocked_names
+                         and _policy_block_for_claim(c, effective) is None]
+            v2 = make_draft(v2_claims)
         reached('maker_draft_v2', 'Maker', 'Revised using approved facts file claims', profiles['Maker']['name'],
                 {'claims': len(v2_claims), 'draft_chars': len(v2['post'])})
         step = 'checker_v2'
