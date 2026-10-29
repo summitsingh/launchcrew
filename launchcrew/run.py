@@ -9,7 +9,7 @@ from . import agents
 from .checker_policies import effective_policies, parse_checker_agent, policy_blocks, policy_reason
 from .facts import (OWNER_SOURCE_LABEL, check_sentence, check_claims, check_draft,
                      founder_variant, load_facts, normalize, parse_product_facts,
-                     product_section)
+                     product_section, split_sentences)
 from .receipts import create_receipt, save_receipt, timestamp, failed_receipt
 from .model_meta import (DATA_BASIS_V2, data_mode_for_attempts, sanitize_model_name,
                          variant_for_attempt)
@@ -41,19 +41,46 @@ def _policy_block_for_claim(claim, policies):
 def check_pack(draft, facts, blocked_claims=None, checker_profile='standard', checker_policies=None, checker_agent=None):
     # Deterministic claim safety is never skipped: blocked_claims and the
     # supported policies only add blocks, they never verify an unverified claim.
+    # Legacy keys verified_count, blocked_count, blocked_claims, and
+    # revision_instructions keep their exact shapes. New claim_results adds
+    # per-claim verdict (supported/unsupported/conflicts) with quoted fact
+    # evidence, while retaining legacy verified booleans. Verdict is factual;
+    # verified is final (factual plus blocked rules and policy).
     policies = _effective_policies(checker_profile, checker_policies, checker_agent)
     blocked_names = _blocked_names(blocked_claims)
     results = check_claims(draft['claims'], facts)
     blocked = []
+    claim_results = []
+    seen_texts = set()
     for r in results['results']:
         if normalize(r['claim']) in blocked_names:
             blocked.append({'claim': r['claim'], 'reason': 'Blocked by selected memory rule'})
+            claim_results.append({'claim': r['claim'], 'verified': False,
+                                  'verdict': r.get('verdict', 'unsupported'),
+                                  'evidence': r.get('evidence'),
+                                  'reason': 'Blocked by selected memory rule',
+                                  'blocked': True, 'source': 'explicit_claim'})
         elif not r['verified']:
             blocked.append(r)
+            claim_results.append({'claim': r['claim'], 'verified': False,
+                                  'verdict': r.get('verdict', 'unsupported'),
+                                  'evidence': r.get('evidence'), 'reason': r['reason'],
+                                  'blocked': True, 'source': 'explicit_claim'})
         else:
             hit = _policy_block_for_claim(r['claim'], policies)
             if hit is not None:
                 blocked.append(hit)
+                claim_results.append({'claim': r['claim'], 'verified': False,
+                                      'verdict': r.get('verdict', 'supported'),
+                                      'evidence': r.get('evidence'),
+                                      'reason': hit['reason'],
+                                      'blocked': True, 'source': 'explicit_claim'})
+            else:
+                claim_results.append({'claim': r['claim'], 'verified': True,
+                                      'verdict': r.get('verdict', 'supported'),
+                                      'evidence': r.get('evidence'), 'reason': r['reason'],
+                                      'blocked': False, 'source': 'explicit_claim'})
+        seen_texts.add(r['claim'])
     for result in check_draft(draft['post'] + '\n' + draft['email'], facts):
         if result['claim'] not in [r['claim'] for r in blocked]:
             if normalize(result['claim']) in blocked_names:
@@ -64,10 +91,49 @@ def check_pack(draft, facts, blocked_claims=None, checker_profile='standard', ch
                     blocked.append(hit)
                 else:
                     blocked.append(result)
+    # Draft-text verdicts for every unique sentence, including supported ones
+    # that check_draft omits. Explicit-claim texts are not duplicated.
+    for sentence_result in (check_sentence(s, facts) for s in split_sentences(
+            (draft.get('post') or '') + '\n' + (draft.get('email') or ''))):
+        text = sentence_result['claim']
+        if text in seen_texts:
+            continue
+        seen_texts.add(text)
+        if normalize(text) in blocked_names:
+            claim_results.append({'claim': text, 'verified': False,
+                                  'verdict': sentence_result.get('verdict', 'unsupported'),
+                                  'evidence': sentence_result.get('evidence'),
+                                  'reason': 'Blocked by selected memory rule',
+                                  'blocked': True, 'source': 'draft_text'})
+        elif not sentence_result['verified']:
+            claim_results.append({'claim': text, 'verified': False,
+                                  'verdict': sentence_result.get('verdict', 'unsupported'),
+                                  'evidence': sentence_result.get('evidence'),
+                                  'reason': sentence_result['reason'],
+                                  'blocked': True, 'source': 'draft_text'})
+        else:
+            hit = _policy_block_for_claim(text, policies)
+            if hit is not None:
+                claim_results.append({'claim': text, 'verified': False,
+                                      'verdict': sentence_result.get('verdict', 'supported'),
+                                      'evidence': sentence_result.get('evidence'),
+                                      'reason': hit['reason'],
+                                      'blocked': True, 'source': 'draft_text'})
+            else:
+                claim_results.append({'claim': text, 'verified': True,
+                                      'verdict': sentence_result.get('verdict', 'supported'),
+                                      'evidence': sentence_result.get('evidence'),
+                                      'reason': sentence_result['reason'],
+                                      'blocked': False, 'source': 'draft_text'})
     verified = sum(1 for c in draft['claims'] if c not in [b['claim'] for b in blocked])
+    supported = sum(1 for r in claim_results if r['verdict'] == 'supported')
+    unsupported = sum(1 for r in claim_results if r['verdict'] == 'unsupported')
+    conflicts = sum(1 for r in claim_results if r['verdict'] == 'conflicts')
     return {'verified_count': verified, 'blocked_count': len(blocked),
             'blocked_claims': [{'claim': r['claim'], 'reason': r['reason']} for r in blocked],
-            'revision_instructions': ['Remove ' + r['claim'] + '; replace with an approved facts file claim.' for r in blocked]}
+            'revision_instructions': ['Remove ' + r['claim'] + '; replace with an approved facts file claim.' for r in blocked],
+            'claim_results': claim_results, 'supported_count': supported,
+            'unsupported_count': unsupported, 'conflicts_count': conflicts}
 
 
 def make_draft(claims):
@@ -215,10 +281,17 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
             # Only explicitly confirmed owner claims authorize drafts.
             # Memory and brief inputs stay as suggestions or planning
             # context handled by the caller. Suggestions stay out.
+            # Safety: rebuild the facts object from confirmed claims only,
+            # dropping every bundled demo field (material, price, product,
+            # audience, channel, brand_voice, design) so check_claim and
+            # check_sentence cannot match unconfirmed demo values even via
+            # blob containment. Verdicts also ignore non-allowlist values.
             claims = list(parsed_product['confirmed_claims'])
-            facts['sources'] = [OWNER_SOURCE_LABEL]
-        facts['approved_claims'] = list(claims)
-        facts['memory_claims'] = list(memory_claims or [])
+            facts = {'approved_claims': list(claims), 'sources': [OWNER_SOURCE_LABEL],
+                     'memory_claims': list(memory_claims or [])}
+        if parsed_product is None:
+            facts['approved_claims'] = list(claims)
+            facts['memory_claims'] = list(memory_claims or [])
         product_allowlist = list(claims)
         blocked_names = _blocked_names(blocked_claims)
 
@@ -277,7 +350,8 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
             attempts.append(('spark', result))
             return result.get('raw_json') if result['mode'] == 'spark' else None
 
-        scout = {'facts_used': [{'claim': c, 'verified': True, 'evidence': c, 'sources': facts['sources']} for c in claims],
+        scout = {'facts_used': [{'claim': c, 'verified': True, 'verdict': 'supported',
+                                        'evidence': c, 'sources': facts['sources']} for c in claims],
                  'risks': ['Risk 1: Unsupported product claims require revision.',
                            'Risk 2: Channel suitability is unverified by this facts file.',
                            'Risk 3: Price and availability need human review before export.'],

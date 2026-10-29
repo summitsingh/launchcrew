@@ -18,6 +18,30 @@ def _values(value):
     return [str(value)]
 
 
+# Deterministic claim verdicts: supported means the text matches confirmed
+# facts, conflicts means it contradicts a confirmed fact on a checked value
+# or type, unsupported means no match and no proven contradiction. Verdicts
+# are deterministic keyword and value checks only, not model proof. They
+# never weaken the Checker veto: verified stays False unless the legacy
+# allowlist rule also passes. Conservative false blocks are expected.
+SUPPORTED = 'supported'
+UNSUPPORTED = 'unsupported'
+CONFLICTS = 'conflicts'
+
+
+def _approved_claims(facts):
+    raw = facts.get('approved_claims') if isinstance(facts, dict) else []
+    return [c for c in (raw or []) if isinstance(c, str)]
+
+
+def _approved_blob(facts):
+    return normalize(' '.join(_approved_claims(facts)))
+
+
+def _approved_blob_raw(facts):
+    return ' '.join(_approved_claims(facts)).lower()
+
+
 def load_facts(path):
     facts = json.loads(Path(path).read_text(encoding='utf-8'))
     if not isinstance(facts, dict) or not isinstance(facts.get('approved_claims'), list) or not facts['approved_claims']:
@@ -30,23 +54,46 @@ def load_facts(path):
 
 
 def check_claim(claim, facts):
-    value = normalize(claim)
+    # Safety: verdicts derive only from explicitly confirmed approved_claims,
+    # never from demo template fields, memory suggestions, briefs, idea text,
+    # or founder notes that may share the facts object. Owner mode strips the
+    # base object in run.py, and this check ignores every non-allowlist value.
+    approved = _approved_claims(facts)
+    value = normalize(claim) if isinstance(claim, str) else ''
+    # Exact allowlist equality is supported without conflict screening: the
+    # text cannot contradict the fact it equals.
+    exact = next((c for c in approved if value and value == normalize(c)), None)
+    if exact is not None and 'best in texas' not in (claim or '').lower():
+        return {'claim': claim, 'verified': True, 'verdict': SUPPORTED,
+                'evidence': exact, 'reason': 'Matched approved claim'}
+    conflict = _find_conflict(claim, approved)
+    if conflict is not None:
+        evidence, reason = conflict
+        return {'claim': claim, 'verified': False, 'verdict': CONFLICTS,
+                'evidence': evidence, 'reason': reason}
     # Match a full fact or an approved claim contained in the submitted claim.
-    blob = normalize(' '.join(_values(facts)))
-    evidence = next((c for c in facts['approved_claims']
+    blob = _approved_blob(facts)
+    evidence = next((c for c in approved
                      if value and normalize(c) in value and normalize(c) in blob), None)
     if evidence is None and value and value in blob:
-        evidence = next((c for c in _values(facts) if value in normalize(c)), None)
-    if 'best in texas' in claim.lower():
+        evidence = next((c for c in approved if value in normalize(c)), None)
+    if 'best in texas' in (claim or '').lower():
         evidence = None
-    return {'claim': claim, 'verified': evidence is not None, 'evidence': evidence,
-            'reason': 'Matched approved claim' if evidence is not None else 'Claim not found in facts file'}
+    if evidence is not None:
+        return {'claim': claim, 'verified': True, 'verdict': SUPPORTED,
+                'evidence': evidence, 'reason': 'Matched approved claim'}
+    return {'claim': claim, 'verified': False, 'verdict': UNSUPPORTED,
+            'evidence': None, 'reason': 'Claim not found in facts file'}
 
 
 def check_claims(claims_list, facts):
     results = [check_claim(c, facts) for c in claims_list]
     verified = sum(r['verified'] for r in results)
-    return {'results': results, 'verified_count': verified, 'blocked_count': len(results) - verified}
+    supported = sum(1 for r in results if r.get('verdict') == SUPPORTED)
+    unsupported = sum(1 for r in results if r.get('verdict') == UNSUPPORTED)
+    conflicts = sum(1 for r in results if r.get('verdict') == CONFLICTS)
+    return {'results': results, 'verified_count': verified, 'blocked_count': len(results) - verified,
+            'supported_count': supported, 'unsupported_count': unsupported, 'conflicts_count': conflicts}
 
 
 # Values keep punctuation: $49, 49%, and 49 are different assertions.
@@ -60,31 +107,152 @@ VALUE_PATTERN = re.compile(
 SUPERLATIVES = re.compile(r'\b(?:best|number\s+1|only|guaranteed|perfect|unbeatable|'
                           r'greatest|fastest|cheapest|always|never|100\s*percent)\b', re.I)
 
+# Deterministic conflict vocabularies. Small fixed word lists only; they
+# catch clear swaps like wallet vs tote or leather vs canvas, but miss
+# synonyms and paraphrases. That incompleteness is honest: unknown wording
+# stays unsupported (blocked), never silently supported. Never treat these
+# lists as proof of meaning.
+PRODUCT_TYPE_WORDS = frozenset({
+    'wallet', 'wallets', 'tote', 'totes', 'backpack', 'backpacks', 'bag',
+    'bags', 'purse', 'purses', 'cardholder', 'cardholders', 'briefcase',
+    'briefcases', 'clutch', 'satchel',
+})
+MATERIAL_WORDS = frozenset({
+    'leather', 'vegan', 'canvas', 'nylon', 'cotton', 'polyester', 'suede',
+    'pu', 'faux', 'full', 'grain',
+})
+_WORD_RE = re.compile(r'[a-z0-9]+')
+
+
+def _word_tokens(text):
+    return set(_WORD_RE.findall((text or '').lower()))
+
+
+def _values_by_type(text):
+    found = []
+    for match in VALUE_PATTERN.finditer(text or ''):
+        found.append((match.lastgroup, match.group().lower()))
+    return found
+
+
+def _find_value_conflict(text, approved):
+    # A value conflicts when the same type (price, percentage, date, number)
+    # appears in confirmed facts with a different exact string. Types differ
+    # by punctuation: $49 vs 49 vs 49% are different types, not conflicts.
+    claim_values = _values_by_type(text)
+    if not claim_values:
+        return None
+    approved_values = {}
+    approved_example = {}
+    for fact in approved:
+        for group, val in _values_by_type(fact):
+            approved_values.setdefault(group, set()).add(val)
+            approved_example.setdefault(group, fact)
+    for group, val in claim_values:
+        if group in approved_values and val not in approved_values[group]:
+            return (approved_example[group], 'Conflicting ' + group + ' value')
+    return None
+
+
+def _find_word_conflict(text, approved, vocabulary, reason):
+    claim_words = _word_tokens(text) & vocabulary
+    if not claim_words:
+        return None
+    approved_words = set()
+    for fact in approved:
+        approved_words |= (_word_tokens(fact) & vocabulary)
+    if not approved_words:
+        return None
+    # Conflict only when both sides name a checked word and neither side
+    # contains the other's word. Shared words (leather in both) do not
+    # conflict by themselves; the differing words (vegan vs full/grain) do.
+    if claim_words & approved_words:
+        # If every claim word is already confirmed, no type conflict.
+        if claim_words <= approved_words:
+            return None
+        # If confirmed words are a subset of claim words, the claim adds new
+        # words but does not contradict the confirmed type; leave unsupported.
+        # Only flag when confirmed has a word the claim lacks and the claim
+        # has a word confirmed lacks.
+        if not (approved_words - claim_words and claim_words - approved_words):
+            return None
+    else:
+        # Disjoint checked words with both sides nonempty is a swap.
+        pass
+    for fact in approved:
+        fact_words = _word_tokens(fact) & vocabulary
+        if fact_words and fact_words.isdisjoint(claim_words):
+            return (fact, reason)
+    # Fallback to first fact carrying any checked word.
+    for fact in approved:
+        if _word_tokens(fact) & vocabulary:
+            return (fact, reason)
+    return None
+
+
+def _find_conflict(text, approved):
+    if not isinstance(text, str) or not text.strip() or not approved:
+        return None
+    # Exact matches never conflict; check_claim handles them first, but
+    # check_sentence also calls here, so guard again.
+    if any(normalize(text) == normalize(c) for c in approved):
+        return None
+    hit = _find_value_conflict(text, approved)
+    if hit is not None:
+        return hit
+    hit = _find_word_conflict(text, approved, PRODUCT_TYPE_WORDS, 'Conflicting product type')
+    if hit is not None:
+        return hit
+    return _find_word_conflict(text, approved, MATERIAL_WORDS, 'Conflicting material')
+
+
+def split_sentences(draft_text):
+    # Shared decimal-safe split: prices, percentages, and numbered dates do
+    # not split at their dots. Newlines always split.
+    return [s.strip() for s in re.split(r'(?<!\d)[.!?]+|[.!?]+(?!\d)|\n+', draft_text or '') if s.strip()]
+
 
 def check_sentence(sentence, facts):
+    # Safety: only confirmed approved_claims are evidence. Demo fields,
+    # memory, briefs, idea text, and founder notes never authorize.
+    approved = _approved_claims(facts)
+    text = sentence if isinstance(sentence, str) else ''
+    # Exact allowlist equality is the only supported sentence. It implies
+    # value and superlative checks already pass, since the blob is built
+    # from the same allowlist.
+    exact = next((c for c in approved if text and normalize(text) == normalize(c)), None)
+    if exact is not None and 'best in texas' not in text.lower():
+        return {'claim': sentence, 'verified': True, 'verdict': SUPPORTED,
+                'evidence': exact, 'reason': 'Matched approved claim'}
+    conflict = _find_conflict(text, approved)
+    if conflict is not None:
+        evidence, reason = conflict
+        return {'claim': sentence, 'verified': False, 'verdict': CONFLICTS,
+                'evidence': evidence, 'reason': reason}
     result = check_claim(sentence, facts)
-    blob = ' '.join(_values(facts)).lower()
-    for match in VALUE_PATTERN.finditer(sentence):
+    blob = _approved_blob_raw(facts)
+    for match in VALUE_PATTERN.finditer(text):
         if not any(m.group().lower() == match.group().lower() and m.lastgroup == match.lastgroup
                    for m in VALUE_PATTERN.finditer(blob)):
-            return {**result, 'verified': False, 'evidence': None,
-                    'reason': 'Unmatched ' + match.lastgroup + ' value'}
-    if 'best in texas' in sentence.lower():
-        return {**result, 'verified': False, 'evidence': None, 'reason': 'Claim not found in facts file'}
+            return {'claim': sentence, 'verified': False, 'verdict': UNSUPPORTED,
+                    'evidence': None, 'reason': 'Unmatched ' + match.lastgroup + ' value'}
+    if 'best in texas' in text.lower():
+        return {'claim': sentence, 'verified': False, 'verdict': UNSUPPORTED,
+                'evidence': None, 'reason': 'Claim not found in facts file'}
     if any(not re.search(r'\b' + re.escape(m.group()) + r'\b', blob, re.I)
-           for m in SUPERLATIVES.finditer(sentence)):
-        return {**result, 'verified': False, 'evidence': None, 'reason': 'Unapproved superlative or absolute'}
+           for m in SUPERLATIVES.finditer(text)):
+        return {'claim': sentence, 'verified': False, 'verdict': UNSUPPORTED,
+                'evidence': None, 'reason': 'Unapproved superlative or absolute'}
     # Full allowlist sentence equality blocks mixed claims and unrecognized paraphrases.
     # Preserve price, percentage, and date punctuation before normalization.
-    approved = any(normalize(sentence) == normalize(c) for c in facts['approved_claims'])
-    return {**result, 'verified': approved, 'evidence': result['evidence'] if approved else None,
-            'reason': 'Matched approved claim' if approved else 'Sentence not in approved claims'}
+    return {'claim': sentence, 'verified': False, 'verdict': result.get('verdict', UNSUPPORTED)
+            if result.get('verdict') == CONFLICTS else UNSUPPORTED,
+            'evidence': result.get('evidence') if result.get('verdict') == CONFLICTS else None,
+            'reason': result.get('reason') if result.get('verdict') == CONFLICTS else 'Sentence not in approved claims'}
 
 
 def check_draft(draft_text, facts):
-    # Do not split decimal prices, percentages, or numbered dates at their dots.
-    sentences = [s.strip() for s in re.split(r'(?<!\d)[.!?]+|[.!?]+(?!\d)|\n+', draft_text) if s.strip()]
-    return [r for r in (check_sentence(s, facts) for s in sentences) if not r['verified']]
+    return [r for r in (check_sentence(s, facts) for s in split_sentences(draft_text)) if not r['verified']]
 
 
 # Slice 1: explicitly confirmed owner product facts with provenance.
