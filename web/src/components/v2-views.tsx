@@ -30,7 +30,7 @@ export const SUPPORTED_CHECKER_POLICIES = [
 
 /** Readable policy summary that keeps every exact ID inspectable. */
 export function SupportedPoliciesHint({ legacy }: { legacy?: boolean }) {
-  return <p className="hint">Supported Checker policies{legacy ? ' (legacy strictness: strict adds the superlatives policy)' : ''}: {SUPPORTED_CHECKER_POLICIES.map(policy => <span key={policy.veto}>{policy.label} (<code title={policy.veto}>veto_scope {policy.veto}</code>, <code title={policy.rule}>rule {policy.rule}</code>)</span>).reduce<ReactNode[]>((parts, part, i) => (i === 0 ? [part] : [...parts, ' or ', part]), [])}, exact match. Other free-text rules are advisory only. Deterministic claim safety cannot be relaxed. See /api/checker-policies.</p>;
+  return <p className="hint">Supported Checker policies{legacy ? ' (Legacy strictness: strict adds the superlatives policy)' : ''}: {SUPPORTED_CHECKER_POLICIES.map(policy => <span key={policy.veto}>{policy.label} (<code title={policy.veto}>veto_scope {policy.veto}</code>, <code title={policy.rule}>rule {policy.rule}</code>)</span>).reduce<ReactNode[]>((parts, part, i) => (i === 0 ? [part] : [...parts, ' or ', part]), [])}, exact match. Other free-text rules are advisory only. Deterministic claim safety cannot be relaxed. See /api/checker-policies.</p>;
 }
 
 type MemoryItem = components['schemas']['MemoryItemOut'];
