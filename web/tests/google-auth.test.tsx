@@ -44,6 +44,7 @@ describe('google-only auth UI', () => {
     expect(source).toContain("queryKey: ['agents', authUser]");
     expect(source).toContain("queryKey: ['queue', authUser]");
     expect(source).toContain("queryKey: ['run', active, authUser]");
+    expect(source).toContain('applyAcknowledgedReceipt(client, active, next, authUser)');
     expect(source).toContain('enabled: authed');
     expect(source).toContain('authUserRef');
     expect(source).toContain("client.removeQueries({ queryKey: ['agents'] })");

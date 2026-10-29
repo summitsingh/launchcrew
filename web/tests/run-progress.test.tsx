@@ -8,6 +8,9 @@ import {
 } from '../src/components/v2-views';
 import {
   applyAcknowledgedReceipt,
+  photoStatusCopy,
+  readStoredPhoto,
+  selectionPhotoCopy,
   shouldApplyReceipt,
 } from '../src/components/photo-check';
 import type { components } from '../src/lib/schema';
@@ -16,6 +19,21 @@ type Receipt = components['schemas']['Receipt'];
 
 function receiptAt(revision: number): Receipt {
   return { run_id: 'run_demo', revision } as unknown as Receipt;
+}
+
+function detectedReceiptAt(revision: number): Receipt {
+  return {
+    run_id: 'run_demo',
+    revision,
+    photo_status: {
+      state: 'checked',
+      label: 'detected',
+      reason: 'clear_single',
+      revision,
+      actor: 'alice@example.com',
+      checked_at: '2026-01-01T00:00:00Z',
+    },
+  } as unknown as Receipt;
 }
 
 describe('incremental run progress', () => {
@@ -71,32 +89,58 @@ describe('incremental run progress', () => {
     expect(shouldApplyReceipt(2, 1)).toBe(false);
     expect(shouldApplyReceipt(2, 3)).toBe(true);
     const client = new QueryClient();
+    const actor = 'alice@example.com';
+    const key = ['run', 'run_demo', actor];
     // Deferred older GET arrives after the mutation was acknowledged: dropped.
-    await applyAcknowledgedReceipt(client, 'run_demo', receiptAt(2));
-    expect((client.getQueryData(['run', 'run_demo']) as Receipt).revision).toBe(2);
-    await applyAcknowledgedReceipt(client, 'run_demo', receiptAt(1));
-    expect((client.getQueryData(['run', 'run_demo']) as Receipt).revision).toBe(2);
+    await applyAcknowledgedReceipt(client, 'run_demo', receiptAt(2), actor);
+    expect((client.getQueryData(key) as Receipt).revision).toBe(2);
+    expect(client.getQueryData(['run', 'run_demo'])).toBeUndefined();
+    await applyAcknowledgedReceipt(client, 'run_demo', receiptAt(1), actor);
+    expect((client.getQueryData(key) as Receipt).revision).toBe(2);
     // Final mutation receipt at the newer revision still applies.
-    await applyAcknowledgedReceipt(client, 'run_demo', receiptAt(3));
-    expect((client.getQueryData(['run', 'run_demo']) as Receipt).revision).toBe(3);
+    await applyAcknowledgedReceipt(client, 'run_demo', receiptAt(3), actor);
+    expect((client.getQueryData(key) as Receipt).revision).toBe(3);
   });
 
   it('a deferred GET resolving after the ack cannot regress the cached receipt', async () => {
     const client = new QueryClient();
-    client.setQueryData(['run', 'run_demo'], receiptAt(2));
+    const actor = 'alice@example.com';
+    const key = ['run', 'run_demo', actor];
+    client.setQueryData(key, receiptAt(2));
     // The poll started before the mutation and resolves late with the
     // older acknowledged revision.
     let resolveLate!: (value: Receipt) => void;
     const lateGet = new Promise<Receipt>(resolve => {
       resolveLate = resolve;
     });
-    await applyAcknowledgedReceipt(client, 'run_demo', receiptAt(3));
+    await applyAcknowledgedReceipt(client, 'run_demo', receiptAt(3), actor);
     resolveLate(receiptAt(2));
     const late = await lateGet;
-    const cached = client.getQueryData(['run', 'run_demo']) as Receipt;
+    const cached = client.getQueryData(key) as Receipt;
     if (shouldApplyReceipt(cached.revision, late.revision)) {
-      client.setQueryData(['run', 'run_demo'], late);
+      client.setQueryData(key, late);
     }
-    expect((client.getQueryData(['run', 'run_demo']) as Receipt).revision).toBe(3);
+    expect((client.getQueryData(key) as Receipt).revision).toBe(3);
+  });
+
+  it('advances only the acknowledging actor revision and caption without a server poll', async () => {
+    const client = new QueryClient();
+    const actorA = 'alice@example.com';
+    const actorB = 'bob@example.com';
+    const keyA = ['run', 'run_demo', actorA];
+    const keyB = ['run', 'run_demo', actorB];
+    client.setQueryData(keyA, receiptAt(0));
+    client.setQueryData(keyB, receiptAt(0));
+    await applyAcknowledgedReceipt(client, 'run_demo', detectedReceiptAt(1), actorA);
+    const cachedA = client.getQueryData(keyA) as Receipt;
+    const cachedB = client.getQueryData(keyB) as Receipt;
+    expect(cachedA.revision).toBe(1);
+    expect(cachedB.revision).toBe(0);
+    expect(client.getQueryData(['run', 'run_demo'])).toBeUndefined();
+    const stored = readStoredPhoto(cachedA);
+    expect(stored?.state).toBe('checked');
+    expect(stored?.label).toBe('detected');
+    expect(photoStatusCopy(stored, 1)).toContain('passed on this revision');
+    expect(selectionPhotoCopy(stored, 1, true).caption).toContain('Checked: these current pixels passed');
   });
 });

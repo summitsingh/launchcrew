@@ -284,16 +284,19 @@ function receiptRevision(receipt: unknown): number | null {
  * GET poll overwrite it afterwards. Cancels the in-flight receipt poll,
  * then applies only when the acknowledged revision is not older than the
  * cached one. The caller still invalidates the queue separately; receipt
- * polling stays on its regular interval and is never disabled. */
+ * polling stays on its regular interval and is never disabled. The Desk
+ * supplies the exact actor; the write targets only that actor's key. */
 export async function applyAcknowledgedReceipt(
   client: QueryClient,
   runId: string,
   next: components['schemas']['Receipt'],
+  actor: string,
 ): Promise<void> {
-  await client.cancelQueries({ queryKey: ['run', runId] });
-  const cached = client.getQueryData<unknown>(['run', runId]);
+  const key = ['run', runId, actor];
+  await client.cancelQueries({ queryKey: key });
+  const cached = client.getQueryData<unknown>(key);
   if (cached !== undefined && !shouldApplyReceipt(receiptRevision(cached), receiptRevision(next) ?? 0)) return;
-  client.setQueryData(['run', runId], next);
+  client.setQueryData(key, next);
 }
 
 export type PhotoPanelProps = {
