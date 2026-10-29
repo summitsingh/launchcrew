@@ -602,15 +602,12 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
                 {'blocked_count': c2.get('blocked_count'), 'verified_count': c2.get('verified_count')})
         if c2['blocked_count']:
             raise ValueError('Final draft has blocked claims')
-        step = 'approval'
-        if approve:
-            event('approval', 'demo_human', 'Simulated approval for local export', 'demo_human')
         event('receipt', 'LaunchCrew', 'Prepared receipt for storage; no submission attempted', 'LaunchCrew')
         usage = model_usage(attempts)
         step = 'receipt'
         gate('receipt')
         note('receipt', 'started', 'LaunchCrew')
-        receipt = create_receipt(Path(out).stem, idea, scout, v1, c1, v2, c2, events, usage, approve)
+        receipt = create_receipt(Path(out).stem, idea, scout, v1, c1, v2, c2, events, usage, False)
         receipt['checker_profile'] = checker_profile
         founder_note = parsed_product['founder_note'] if parsed_product else None
         receipt['product_facts'] = product_section(
@@ -632,6 +629,11 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
             receipt['campaign_day'] = campaign_day
         if visual_verifier is not None:
             receipt['visual_verification'] = visual_verifier()
+        if approve:
+            step = 'approval'
+            from .human_review import approve_current
+            receipt = approve_current(receipt, 'demo_human')
+            step = 'receipt'
         receipt_writer(receipt, out)
         note('receipt', 'completed', 'LaunchCrew', {'blocked_count': c2.get('blocked_count')})
         return receipt
