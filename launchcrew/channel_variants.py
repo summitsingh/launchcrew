@@ -1,16 +1,21 @@
-"""Channel presentation variants for later integration.
+"""Channel presentation candidates for later integration.
 
 Pure standard library helpers. No model calls, no fetching, no
 publishing, no photo behavior.
 
-Inputs are caller supplied: checked draft text, confirmed fact strings,
-and audience or angle context. Outputs are presentation variants only.
-Every draft sentence in every variant is copied verbatim from the
-checked draft. No sentence is reworded, shortened, or split. Trimming
-for X drops whole trailing sentences only, on a full sentence boundary,
-with an explicit trim note. Audience suggestions and campaign angles
-are recorded as unverified context in metadata and are never rendered
-as product facts.
+Inputs are caller supplied: draft text, confirmed fact strings, and
+audience or angle context. Outputs are presentation candidates only,
+never independently exportable. Every candidate requires downstream
+current approved Checker/receipt binding before any export. No
+Checker approval or receipt is claimed here and no approval ID is
+invented.
+
+Every draft sentence in every candidate is copied verbatim from the
+draft. No sentence is reworded, shortened, or split. Trimming for X
+and Facebook drops whole trailing sentences only, on a full sentence
+boundary, with an explicit trim note. Audience suggestions and
+campaign angles are recorded as unverified context in metadata and
+are never rendered as product facts.
 """
 
 import copy
@@ -18,7 +23,8 @@ import re
 
 MODULE_VERSION = "channel-variants/v1"
 X_MAX_CHARS = 280
-CHANNELS = ("x", "linkedin", "instagram", "email")
+FACEBOOK_MAX_CHARS = 2000
+CHANNELS = ("x", "linkedin", "instagram", "email", "facebook")
 
 LINKEDIN_HEADER = "Update:"
 INSTAGRAM_CLOSER = "More soon."
@@ -27,7 +33,21 @@ EMAIL_GREETING = "Hello,"
 EMAIL_CLOSER = "Thanks,"
 
 SOURCE_LABEL = "caller_checked_draft"
+SOURCE_NOTE = (
+    "Caller-supplied draft; does not imply current Checker approval "
+    "or receipt binding."
+)
 CONTEXT_NOTE = "Suggestion only. Not a verified product fact."
+
+VARIANT_KIND = "presentation_candidate"
+BUNDLE_KIND = "presentation_candidates"
+STATUS_CANDIDATE = "candidate_pending_checker"
+STATUS_NEEDS_REVISION = "needs_revision"
+APPROVAL_NOTE = (
+    "Presentation candidate only; not independently exportable. No "
+    "Checker approval or receipt binding claimed. Requires downstream "
+    "current approved Checker/receipt binding before any export."
+)
 
 PRICE_RE = re.compile(r"[$\u00a3\u20ac]\s*\d+(?:[,.]\d+)*")
 PERCENT_RE = re.compile(r"\d+(?:\.\d+)?%")
@@ -200,8 +220,13 @@ def _base_metadata(channel, confirmed_count, audience, campaign_angle):
     return {
         "module": MODULE_VERSION,
         "source": SOURCE_LABEL,
+        "source_note": SOURCE_NOTE,
+        "variant_kind": VARIANT_KIND,
         "channel": channel,
-        "limits": {"x_max_chars": X_MAX_CHARS},
+        "limits": {
+            "x_max_chars": X_MAX_CHARS,
+            "facebook_max_chars": FACEBOOK_MAX_CHARS,
+        },
         "confirmed_facts_count": confirmed_count,
         "audience_context": _context_entry(audience),
         "angle_context": _context_entry(campaign_angle),
@@ -210,6 +235,12 @@ def _base_metadata(channel, confirmed_count, audience, campaign_angle):
             "treated as confirmed product facts and are never rendered "
             "into variant text."
         ),
+        "independently_exportable": False,
+        "exportable": False,
+        "requires_checker_binding": True,
+        "checker_approval": None,
+        "receipt_id": None,
+        "approval_note": APPROVAL_NOTE,
     }
 
 
@@ -221,15 +252,24 @@ def _needs_revision(channel, confirmed_count, audience, campaign_angle, reason):
             "kept_sentences": 0,
             "total_sentences": 0,
             "omitted_sentences": 0,
+            "content_valid": False,
             "exportable": False,
-            "status": "needs_revision",
+            "independently_exportable": False,
+            "status": STATUS_NEEDS_REVISION,
         }
     )
     variant = {
         "channel": channel,
+        "variant_kind": VARIANT_KIND,
         "text": "",
+        "content_valid": False,
         "exportable": False,
-        "status": "needs_revision",
+        "independently_exportable": False,
+        "requires_checker_binding": True,
+        "checker_approval": None,
+        "receipt_id": None,
+        "approval_note": APPROVAL_NOTE,
+        "status": STATUS_NEEDS_REVISION,
         "reason": reason,
         "trim_note": None,
         "metadata": metadata,
@@ -272,8 +312,47 @@ def _abbreviation_fragment(sentences):
     return None
 
 
+def _candidate_success(channel, text, kept_count, total, omitted, char_count,
+                       variant_tokens, unconfirmed, confirmed_count,
+                       audience, campaign_angle, trim_note, extra=None):
+    metadata = _base_metadata(channel, confirmed_count, audience, campaign_angle)
+    metadata.update(
+        {
+            "char_count": char_count,
+            "kept_sentences": kept_count,
+            "total_sentences": total,
+            "omitted_sentences": omitted,
+            "measured_claims": list(variant_tokens),
+            "unconfirmed_measured_claims": list(unconfirmed),
+            "content_valid": True,
+            "exportable": False,
+            "independently_exportable": False,
+            "status": STATUS_CANDIDATE,
+        }
+    )
+    variant = {
+        "channel": channel,
+        "variant_kind": VARIANT_KIND,
+        "text": text,
+        "content_valid": True,
+        "exportable": False,
+        "independently_exportable": False,
+        "requires_checker_binding": True,
+        "checker_approval": None,
+        "receipt_id": None,
+        "approval_note": APPROVAL_NOTE,
+        "status": STATUS_CANDIDATE,
+        "reason": None,
+        "trim_note": trim_note,
+        "metadata": metadata,
+    }
+    if extra:
+        variant.update(extra)
+    return variant
+
+
 def build_x_variant(draft_text, confirmed_facts, audience=None, campaign_angle=None):
-    """Build the X variant, at most 280 characters.
+    """Build the X presentation candidate, at most 280 characters.
 
     Keeps leading whole sentences that fit. Drops whole trailing
     sentences with a trim note when needed. Refuses with a
@@ -282,7 +361,9 @@ def build_x_variant(draft_text, confirmed_facts, audience=None, campaign_angle=N
     boundary is an abbreviation fragment, or when the kept text
     contains price, percent, or size tokens absent from confirmed
     facts. Never emits a shortened fragment and never exports
-    unconfirmed measurable claims.
+    unconfirmed measurable claims. Success is a presentation
+    candidate requiring downstream current approved Checker/receipt
+    binding; never independently exportable.
     """
     if not isinstance(draft_text, str):
         raise TypeError("draft_text must be a string")
@@ -369,36 +450,21 @@ def build_x_variant(draft_text, confirmed_facts, audience=None, campaign_angle=N
         )
     else:
         trim_note = None
-    metadata = _base_metadata("x", len(confirmed), audience, campaign_angle)
-    metadata.update(
-        {
-            "char_count": char_count,
-            "kept_sentences": kept_count,
-            "total_sentences": total,
-            "omitted_sentences": omitted,
-            "measured_claims": list(variant_tokens),
-            "unconfirmed_measured_claims": unconfirmed,
-            "exportable": True,
-            "status": "ready",
-        }
+    return _candidate_success(
+        "x", text, kept_count, total, omitted, char_count,
+        variant_tokens, unconfirmed, len(confirmed),
+        audience, campaign_angle, trim_note,
     )
-    return {
-        "channel": "x",
-        "text": text,
-        "exportable": True,
-        "status": "ready",
-        "reason": None,
-        "trim_note": trim_note,
-        "metadata": metadata,
-    }
 
 
 def build_linkedin_variant(draft_text, confirmed_facts, audience=None, campaign_angle=None):
-    """Build the LinkedIn variant with all sentences verbatim.
+    """Build the LinkedIn presentation candidate with all sentences verbatim.
 
     Fails closed with a non-exportable needs-revision result when the
     rendered text contains price, percent, or size tokens absent from
     confirmed facts, or when a sentence boundary is ambiguous.
+    Success is a presentation candidate requiring downstream current
+    approved Checker/receipt binding; never independently exportable.
     """
     if not isinstance(draft_text, str):
         raise TypeError("draft_text must be a string")
@@ -442,36 +508,21 @@ def build_linkedin_variant(draft_text, confirmed_facts, audience=None, campaign_
             unconfirmed,
             len(sentences),
         )
-    metadata = _base_metadata("linkedin", len(confirmed), audience, campaign_angle)
-    metadata.update(
-        {
-            "char_count": len(text),
-            "kept_sentences": len(sentences),
-            "total_sentences": len(sentences),
-            "omitted_sentences": 0,
-            "measured_claims": list(variant_tokens),
-            "unconfirmed_measured_claims": unconfirmed,
-            "exportable": True,
-            "status": "ready",
-        }
+    return _candidate_success(
+        "linkedin", text, len(sentences), len(sentences), 0, len(text),
+        variant_tokens, unconfirmed, len(confirmed),
+        audience, campaign_angle, None,
     )
-    return {
-        "channel": "linkedin",
-        "text": text,
-        "exportable": True,
-        "status": "ready",
-        "reason": None,
-        "trim_note": None,
-        "metadata": metadata,
-    }
 
 
 def build_instagram_variant(draft_text, confirmed_facts, audience=None, campaign_angle=None):
-    """Build the Instagram variant with all sentences verbatim.
+    """Build the Instagram presentation candidate with all sentences verbatim.
 
     Fails closed with a non-exportable needs-revision result when the
     rendered text contains price, percent, or size tokens absent from
     confirmed facts, or when a sentence boundary is ambiguous.
+    Success is a presentation candidate requiring downstream current
+    approved Checker/receipt binding; never independently exportable.
     """
     if not isinstance(draft_text, str):
         raise TypeError("draft_text must be a string")
@@ -515,36 +566,21 @@ def build_instagram_variant(draft_text, confirmed_facts, audience=None, campaign
             unconfirmed,
             len(sentences),
         )
-    metadata = _base_metadata("instagram", len(confirmed), audience, campaign_angle)
-    metadata.update(
-        {
-            "char_count": len(text),
-            "kept_sentences": len(sentences),
-            "total_sentences": len(sentences),
-            "omitted_sentences": 0,
-            "measured_claims": list(variant_tokens),
-            "unconfirmed_measured_claims": unconfirmed,
-            "exportable": True,
-            "status": "ready",
-        }
+    return _candidate_success(
+        "instagram", text, len(sentences), len(sentences), 0, len(text),
+        variant_tokens, unconfirmed, len(confirmed),
+        audience, campaign_angle, None,
     )
-    return {
-        "channel": "instagram",
-        "text": text,
-        "exportable": True,
-        "status": "ready",
-        "reason": None,
-        "trim_note": None,
-        "metadata": metadata,
-    }
 
 
 def build_email_variant(draft_text, confirmed_facts, audience=None, campaign_angle=None):
-    """Build the email variant with a fixed subject and verbatim body.
+    """Build the email presentation candidate with a fixed subject and verbatim body.
 
     Fails closed with a non-exportable needs-revision result when the
     rendered body contains price, percent, or size tokens absent from
     confirmed facts, or when a sentence boundary is ambiguous.
+    Success is a presentation candidate requiring downstream current
+    approved Checker/receipt binding; never independently exportable.
     """
     if not isinstance(draft_text, str):
         raise TypeError("draft_text must be a string")
@@ -588,38 +624,132 @@ def build_email_variant(draft_text, confirmed_facts, audience=None, campaign_ang
             unconfirmed,
             len(sentences),
         )
-    metadata = _base_metadata("email", len(confirmed), audience, campaign_angle)
-    metadata.update(
-        {
-            "char_count": len(body),
-            "kept_sentences": len(sentences),
-            "total_sentences": len(sentences),
-            "omitted_sentences": 0,
-            "measured_claims": list(variant_tokens),
-            "unconfirmed_measured_claims": unconfirmed,
-            "exportable": True,
-            "status": "ready",
-        }
+    return _candidate_success(
+        "email", body, len(sentences), len(sentences), 0, len(body),
+        variant_tokens, unconfirmed, len(confirmed),
+        audience, campaign_angle, None,
+        extra={"subject": EMAIL_SUBJECT, "body": body},
     )
-    return {
-        "channel": "email",
-        "subject": EMAIL_SUBJECT,
-        "body": body,
-        "text": body,
-        "exportable": True,
-        "status": "ready",
-        "reason": None,
-        "trim_note": None,
-        "metadata": metadata,
-    }
+
+
+def build_facebook_variant(draft_text, confirmed_facts, audience=None, campaign_angle=None):
+    """Build the Facebook presentation candidate, at most 2000 characters.
+
+    FACEBOOK_MAX_CHARS is an explicit conservative bound, well under
+    the platform maximum, chosen so long drafts still trim. Keeps
+    leading whole sentences joined with blank lines. Drops whole
+    trailing sentences with a trim note when needed. Refuses with a
+    non-exportable needs-revision result when the first sentence alone
+    exceeds the limit, when no sentence exists, when a sentence
+    boundary is an abbreviation fragment, or when the kept text
+    contains price, percent, or size tokens absent from confirmed
+    facts. Never emits a shortened fragment and never exports
+    unconfirmed measurable claims. Success is a presentation
+    candidate requiring downstream current approved Checker/receipt
+    binding; never independently exportable.
+    """
+    if not isinstance(draft_text, str):
+        raise TypeError("draft_text must be a string")
+    confirmed = _confirmed_list(confirmed_facts)
+    sentences = split_sentences(draft_text)
+    if not sentences:
+        return _needs_revision(
+            "facebook",
+            len(confirmed),
+            audience,
+            campaign_angle,
+            "No sentences found in draft text. Needs revision.",
+        )
+    first_len = len(sentences[0])
+    if first_len > FACEBOOK_MAX_CHARS:
+        return _needs_revision(
+            "facebook",
+            len(confirmed),
+            audience,
+            campaign_angle,
+            "Non-exportable: first sentence is %d characters, over the "
+            "%d character Facebook limit. Needs revision with a shorter "
+            "opening sentence. No fragment was exported."
+            % (first_len, FACEBOOK_MAX_CHARS),
+        )
+    fragment = _abbreviation_fragment(sentences)
+    if fragment is not None:
+        return _needs_revision_with_claims(
+            "facebook",
+            len(confirmed),
+            audience,
+            campaign_angle,
+            "Non-exportable: sentence boundary ambiguity near '%s'. "
+            "Needs revision with an expanded abbreviation or rewritten "
+            "draft. No fragment was exported." % fragment,
+            [],
+            [],
+            len(sentences),
+        )
+    kept = []
+    for sentence in sentences:
+        candidate = sentence if not kept else "\n\n".join(kept + [sentence])
+        if len(candidate) <= FACEBOOK_MAX_CHARS:
+            kept.append(sentence)
+        else:
+            break
+    text = "\n\n".join(kept)
+    char_count = len(text)
+    total = len(sentences)
+    kept_count = len(kept)
+    omitted = total - kept_count
+    if kept and _looks_like_abbreviation_fragment(kept[-1]):
+        return _needs_revision_with_claims(
+            "facebook",
+            len(confirmed),
+            audience,
+            campaign_angle,
+            "Non-exportable: trimmed text would end with abbreviation "
+            "fragment '%s'. Needs revision. No fragment was exported."
+            % kept[-1],
+            [],
+            [],
+            total,
+        )
+    variant_tokens, unconfirmed = _split_measured(text, confirmed)
+    if unconfirmed:
+        return _needs_revision_with_claims(
+            "facebook",
+            len(confirmed),
+            audience,
+            campaign_angle,
+            "Non-exportable: measured claims not in confirmed facts: "
+            + ", ".join(unconfirmed)
+            + ". Needs revision with exact confirmed facts. "
+            "No text exported.",
+            variant_tokens,
+            unconfirmed,
+            total,
+        )
+    if omitted > 0:
+        trim_note = (
+            "Trimmed to %d of %d sentences (%d/%d chars) on a full "
+            "sentence boundary; %d trailing sentence(s) omitted; no "
+            "sentence shortened."
+            % (kept_count, total, char_count, FACEBOOK_MAX_CHARS, omitted)
+        )
+    else:
+        trim_note = None
+    return _candidate_success(
+        "facebook", text, kept_count, total, omitted, char_count,
+        variant_tokens, unconfirmed, len(confirmed),
+        audience, campaign_angle, trim_note,
+    )
 
 
 def build_channel_variants(draft_text, confirmed_facts, audience=None, campaign_angle=None):
-    """Build all four presentation variants plus provenance.
+    """Build all five presentation candidates plus provenance.
 
-    Variant text comes only from verbatim draft sentences plus fixed
+    Candidate text comes only from verbatim draft sentences plus fixed
     non-factual framing. Audience and campaign angle inputs are kept in
-    metadata as suggestions and never rendered as facts.
+    metadata as suggestions and never rendered as facts. Every
+    candidate requires downstream current approved Checker/receipt
+    binding; none is independently exportable.
     """
     confirmed_copy = _confirmed_list(confirmed_facts)
     variants = {
@@ -627,20 +757,36 @@ def build_channel_variants(draft_text, confirmed_facts, audience=None, campaign_
         "linkedin": build_linkedin_variant(draft_text, confirmed_copy, audience, campaign_angle),
         "instagram": build_instagram_variant(draft_text, confirmed_copy, audience, campaign_angle),
         "email": build_email_variant(draft_text, confirmed_copy, audience, campaign_angle),
+        "facebook": build_facebook_variant(draft_text, confirmed_copy, audience, campaign_angle),
     }
     provenance = {
         "module": MODULE_VERSION,
         "source": SOURCE_LABEL,
+        "source_note": SOURCE_NOTE,
+        "bundle_kind": BUNDLE_KIND,
+        "variant_kind": VARIANT_KIND,
         "channels": list(CHANNELS),
         "confirmed_facts_count": len(confirmed_copy),
         "audience_context": _context_entry(audience),
         "angle_context": _context_entry(campaign_angle),
-        "limits": {"x_max_chars": X_MAX_CHARS},
+        "limits": {
+            "x_max_chars": X_MAX_CHARS,
+            "facebook_max_chars": FACEBOOK_MAX_CHARS,
+        },
+        "independently_exportable": False,
+        "exportable": False,
+        "requires_checker_binding": True,
+        "checker_approval": None,
+        "receipt_id": None,
+        "approval_note": APPROVAL_NOTE,
         "note": (
-            "Presentation only. No new factual assertions. Audience and "
-            "angle are suggestions, not verified facts. Price, material, "
-            "contents, and size wording is copied verbatim or the "
-            "variant refuses."
+            "Presentation candidates only; not independently exportable. "
+            "No new factual assertions. Audience and angle are "
+            "suggestions, not verified facts. Price, material, contents, "
+            "and size wording is copied verbatim or the candidate "
+            "refuses. No Checker approval or receipt binding claimed. "
+            "Requires downstream current approved Checker/receipt "
+            "binding before any export."
         ),
     }
     return {
@@ -648,98 +794,117 @@ def build_channel_variants(draft_text, confirmed_facts, audience=None, campaign_
         "linkedin": variants["linkedin"],
         "instagram": variants["instagram"],
         "email": variants["email"],
+        "facebook": variants["facebook"],
         "provenance": provenance,
     }
 
 
-def validate_x_variant(x_text, confirmed_facts, draft_text):
-    """Deterministically validate an X variant candidate.
+def _validate_leading_prefix_candidate(candidate_text, confirmed_facts,
+                                       draft_text, limit, label):
+    """Shared content-validity check for X and Facebook candidates.
 
-    Checks the 280 character limit, verbatim sentence relationship to
-    the draft, and exact measured-claim relationship to confirmed
-    facts. The candidate must be a sequence of complete draft
-    sentences in source order with exact boundaries and terminal
-    punctuation, except a conservative trailing fragment that exactly
-    matches the full draft end. Partial prefixes and substrings fail.
-    Returns a dict with ok, exportable, char_count, limit, and
-    reasons. Never raises on content; type errors fail closed.
+    Requires the candidate sentences to equal the exact leading
+    prefix of split_sentences(draft_text), in order. The only
+    sanctioned shortening is trailing whole-sentence trim. Skipping
+    first or middle source sentences fails. Reports pure content
+    validity only; never product-level export authority.
     """
-    limit = X_MAX_CHARS
-    if not isinstance(x_text, str) or not isinstance(draft_text, str):
-        return {
-            "ok": False,
-            "exportable": False,
-            "char_count": 0,
-            "limit": limit,
-            "reasons": ["Invalid input types."],
-            "checks": {"limit_ok": False, "nonempty_ok": False},
-        }
+    base_invalid = {
+        "content_valid": False,
+        "ok": False,
+        "exportable": False,
+        "independently_exportable": False,
+        "requires_checker_binding": True,
+        "checker_approval": None,
+        "receipt_id": None,
+        "approval_note": APPROVAL_NOTE,
+        "limit": limit,
+    }
+    if not isinstance(candidate_text, str) or not isinstance(draft_text, str):
+        result = dict(base_invalid)
+        result.update(
+            {
+                "char_count": 0,
+                "reasons": ["Invalid input types."],
+                "checks": {"limit_ok": False, "nonempty_ok": False},
+            }
+        )
+        return result
     try:
         confirmed = _confirmed_list(confirmed_facts)
     except (TypeError, ValueError):
-        return {
-            "ok": False,
-            "exportable": False,
-            "char_count": len(x_text),
-            "limit": limit,
-            "reasons": ["Invalid confirmed facts."],
-            "checks": {"limit_ok": len(x_text) <= limit, "nonempty_ok": bool(x_text.strip())},
-        }
+        result = dict(base_invalid)
+        result.update(
+            {
+                "char_count": len(candidate_text),
+                "reasons": ["Invalid confirmed facts."],
+                "checks": {
+                    "limit_ok": len(candidate_text) <= limit,
+                    "nonempty_ok": bool(candidate_text.strip()),
+                },
+            }
+        )
+        return result
     reasons = []
-    char_count = len(x_text)
+    char_count = len(candidate_text)
     limit_ok = char_count <= limit
     if not limit_ok:
         reasons.append("Exceeds %d characters (%d chars)." % (limit, char_count))
-    nonempty_ok = bool(x_text.strip())
+    nonempty_ok = bool(candidate_text.strip())
     if not nonempty_ok:
-        reasons.append("Empty X text.")
-        return {
-            "ok": False,
-            "exportable": False,
-            "char_count": char_count,
-            "limit": limit,
-            "reasons": reasons,
-            "checks": {"limit_ok": limit_ok, "nonempty_ok": False},
-        }
+        reasons.append("Empty %s text." % label)
+        result = dict(base_invalid)
+        result.update(
+            {
+                "char_count": char_count,
+                "reasons": reasons,
+                "checks": {"limit_ok": limit_ok, "nonempty_ok": False},
+            }
+        )
+        return result
     try:
-        x_sentences = split_sentences(x_text)
+        candidate_sentences = split_sentences(candidate_text)
     except TypeError:
-        x_sentences = []
+        candidate_sentences = []
     try:
         draft_sentences = split_sentences(draft_text)
     except TypeError:
         draft_sentences = []
     verbatim_ok = True
-    if not x_sentences:
+    if not candidate_sentences:
         verbatim_ok = False
-        reasons.append("No complete sentence found in X text.")
+        reasons.append("No complete sentence found in %s text." % label)
     elif not draft_sentences:
         verbatim_ok = False
-        preview = x_sentences[0][:40]
+        preview = candidate_sentences[0][:40]
         reasons.append("Sentence not verbatim in draft: %s" % preview)
-    else:
-        draft_index = 0
-        for sentence in x_sentences:
-            found_at = -1
-            for k in range(draft_index, len(draft_sentences)):
-                if draft_sentences[k] == sentence:
-                    found_at = k
-                    break
-            if found_at == -1:
-                verbatim_ok = False
-                preview = sentence[:40]
-                if sentence in draft_sentences:
+    elif len(candidate_sentences) > len(draft_sentences):
+        verbatim_ok = False
+        reasons.append(
+            "Candidate has more sentences than draft; must equal the "
+            "exact leading prefix verbatim."
+        )
+    elif candidate_sentences != draft_sentences[: len(candidate_sentences)]:
+        verbatim_ok = False
+        for idx, cand in enumerate(candidate_sentences):
+            expected = draft_sentences[idx]
+            if cand != expected:
+                preview = cand[:40]
+                if cand in draft_sentences:
                     reasons.append(
-                        "Sentence not verbatim in draft order: %s" % preview
+                        "Sentence skips earlier draft sentence(s); "
+                        "candidate must equal the exact leading prefix "
+                        "verbatim in order: %s" % preview
                     )
                 else:
-                    reasons.append("Sentence not verbatim in draft: %s" % preview)
-            else:
-                draft_index = found_at + 1
+                    reasons.append(
+                        "Sentence not verbatim in draft: %s" % preview
+                    )
+                break
     confirmed_tokens = set()
     for fact in confirmed:
         confirmed_tokens.update(_measured_tokens(fact))
-    variant_tokens = _measured_tokens(x_text)
+    variant_tokens = _measured_tokens(candidate_text)
     measured_ok = True
     for token in variant_tokens:
         if token not in confirmed_tokens:
@@ -748,7 +913,13 @@ def validate_x_variant(x_text, confirmed_facts, draft_text):
     ok = limit_ok and nonempty_ok and verbatim_ok and measured_ok
     return {
         "ok": ok,
-        "exportable": ok,
+        "content_valid": ok,
+        "exportable": False,
+        "independently_exportable": False,
+        "requires_checker_binding": True,
+        "checker_approval": None,
+        "receipt_id": None,
+        "approval_note": APPROVAL_NOTE,
         "char_count": char_count,
         "limit": limit,
         "reasons": reasons,
@@ -759,3 +930,38 @@ def validate_x_variant(x_text, confirmed_facts, draft_text):
             "measured_ok": measured_ok,
         },
     }
+
+
+def validate_x_variant(x_text, confirmed_facts, draft_text):
+    """Deterministically validate an X candidate for content validity.
+
+    Checks the 280 character limit, exact leading-prefix sentence
+    relationship to the draft, and exact measured-claim relationship
+    to confirmed facts. The candidate sentences must equal the exact
+    leading prefix of split_sentences(draft_text), in order. The only
+    sanctioned shortening is trailing whole-sentence trim. Skipping
+    first or middle source sentences, reordering, and partial or cut
+    sentences fail. Reports pure content validity only (ok and
+    content_valid); never product-level export authority. Export
+    fields are always False and require downstream current approved
+    Checker/receipt binding. Never raises on content; type errors
+    fail closed.
+    """
+    return _validate_leading_prefix_candidate(
+        x_text, confirmed_facts, draft_text, X_MAX_CHARS, "X"
+    )
+
+
+def validate_facebook_variant(facebook_text, confirmed_facts, draft_text):
+    """Deterministically validate a Facebook candidate for content validity.
+
+    Checks the conservative Facebook character bound, exact
+    leading-prefix sentence relationship to the draft, and exact
+    measured-claim relationship to confirmed facts. Whole-sentence
+    leading-prefix behavior mirrors the X validator. Reports pure
+    content validity only; never product-level export authority.
+    Never raises on content; type errors fail closed.
+    """
+    return _validate_leading_prefix_candidate(
+        facebook_text, confirmed_facts, draft_text, FACEBOOK_MAX_CHARS, "Facebook"
+    )
