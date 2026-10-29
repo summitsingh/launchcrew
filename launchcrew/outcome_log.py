@@ -6,6 +6,9 @@ networking, and no provider verification.
 
 Bounds (conservative and documented):
   - channel: exact, case-sensitive member of KNOWN_CHANNELS.
+    Per-platform channels use canonical lowercase spellings: "x" for
+    X, "linkedin" for LinkedIn, "instagram" for Instagram, and
+    "facebook" for Facebook. Generic "social" is not accepted.
   - date: string in YYYY-MM-DD format that is a real calendar date.
   - count: type-exact int (booleans rejected), 0 <= count <= MAX_COUNT.
   - note: non-empty (after stripping whitespace), single line,
@@ -34,14 +37,21 @@ __all__ = [
 
 # Finite closed set of owner-reportable channels. Exact match only:
 # case-sensitive, no stripping, no coercion, no additions at runtime.
+# Per-platform channels use canonical lowercase spellings: "x" (X),
+# "linkedin" (LinkedIn), "instagram" (Instagram), "facebook" (Facebook).
+# Generic "social" is intentionally absent: it must not substitute for
+# a per-platform channel when a per-platform comparison is required.
 KNOWN_CHANNELS = frozenset({
     "email",
+    "web",
     "sms",
     "phone",
     "in_person",
-    "web",
-    "social",
     "other",
+    "x",
+    "linkedin",
+    "instagram",
+    "facebook",
 })
 
 MIN_COUNT = 0

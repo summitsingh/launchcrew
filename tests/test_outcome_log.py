@@ -147,10 +147,48 @@ class RejectedInputTests(unittest.TestCase):
         self.assertEqual(set(result["errors"].keys()), {"date"})
 
 
+class PlatformChannelTests(unittest.TestCase):
+    PLATFORM_CHANNELS = ("x", "linkedin", "instagram", "facebook")
+
+    def test_accepted_all_four_platform_channels(self):
+        for channel in self.PLATFORM_CHANNELS:
+            with self.subTest(channel=channel):
+                result = log_outcome(channel, "2026-06-01", 1, "owner note")
+                self.assertTrue(result["accepted"])
+                self.assertEqual(result["errors"], {})
+                self.assertEqual(result["entry"]["channel"], channel)
+
+    def test_rejected_generic_social(self):
+        result = log_outcome("social", "2026-06-01", 1, "owner note")
+        self.assertFalse(result["accepted"])
+        self.assertIsNone(result["entry"])
+        self.assertIn("channel", result["errors"])
+
+    def test_rejected_unknown_platforms(self):
+        for bad in ("tiktok", "youtube", "twitter", "threads",
+                    "snapchat", "bluesky", "pinterest"):
+            with self.subTest(channel=bad):
+                result = log_outcome(bad, "2026-06-01", 1, "owner note")
+                self.assertFalse(result["accepted"])
+                self.assertIsNone(result["entry"])
+                self.assertIn("channel", result["errors"])
+
+    def test_rejected_platform_near_misses(self):
+        for bad in ("X", "LinkedIn", "LINKEDIN", "Instagram", "INSTAGRAM",
+                    "Facebook", "FACEBOOK", "fb", "FB", "ig", "IG",
+                    "insta", "linked_in", "face_book", " x", "x ",
+                    "linkedin ", " instagram", "x.com"):
+            with self.subTest(channel=bad):
+                result = log_outcome(bad, "2026-06-01", 1, "owner note")
+                self.assertFalse(result["accepted"])
+                self.assertIsNone(result["entry"])
+                self.assertIn("channel", result["errors"])
+
+
 class DeterminismAndProvenanceTests(unittest.TestCase):
     def test_deterministic_equal_inputs_equal_outputs(self):
-        first = log_outcome("social", "2026-05-20", 42, "owner count for the day")
-        second = log_outcome("social", "2026-05-20", 42, "owner count for the day")
+        first = log_outcome("x", "2026-05-20", 42, "owner count for the day")
+        second = log_outcome("x", "2026-05-20", 42, "owner count for the day")
         self.assertEqual(first, second)
 
     def test_provenance_explicit_owner_entered(self):
