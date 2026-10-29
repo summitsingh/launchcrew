@@ -1,333 +1,335 @@
-"""Additional campaign angles beyond the existing seven.
+"""Campaign angle briefs from owner-confirmed facts.
 
-Pure standard library helpers. No model calls, no fetching, no
-publishing, no photo behavior.
+This module is a pure standard-library helper. It takes a small nonempty
+list of owner-confirmed fact strings and returns exactly five structured
+draft briefs for later human review.
 
-The existing seven angles live in the campaign week setup. This module
-supplies five more named angles, each with a distinct brief template
-and one hook template. Factual slots are filled only from
-caller-supplied explicitly confirmed facts. Templates never invent
-values and never auto-confirm. When required facts are missing or a
-filled hook would exceed its limit, rendering returns a
-suggestion and needs-owner-confirmation state with no brief or hook.
+Not wired into any live campaign UI. Core or backend code may import
+:func:`generate_campaign_angles` later; this module performs no wiring,
+no model call, and no network, database, file, or other external action.
+
+Interface (stable):
+    from launchcrew.campaign_angles import generate_campaign_angles
+
+    briefs = generate_campaign_angles([
+        "The Blue Harbor demo notebook has 96 pages.",
+        "The Blue Harbor demo notebook cover is blue.",
+    ])
+
+Each brief is a plain dict with these keys:
+
+    label: short distinct editorial approach name (str).
+    editorial_approach: one-line description of the approach (str).
+    editorial_instruction: presentational instruction, clearly marked
+        as not a fact (str).
+    facts_used: exact fact strings quoted in this brief (list of str).
+    fact_indexes: positions of facts_used in the input list (list of int).
+    brief_text: readable draft containing the approval banner, the
+        editorial instruction under its own heading, and the exact
+        facts under their own heading (str).
+    status: always "pending_owner_approval" (str).
+    approved: always False (bool).
+
+The five labels are distinct editorial purposes, not reorderings:
+
+    Discovery Hook: open with an editorial hook question answered
+        only by the quoted facts.
+    Concrete Detail: present the quoted facts with exact wording
+        preserved.
+    Buyer Question: frame the quoted facts as material for one
+        buyer question, without answering beyond them.
+    Claim Boundary: state the evidence boundary: only quoted facts
+        are asserted, nothing more.
+    Concise Recap: recap the quoted facts in a compact draft
+        without adding claims.
+
+All five briefs quote the same supplied facts in input order. They
+differ in editorial purpose, instruction, questions, and rendered
+sections, not in ordering tricks. When only one fact is supplied,
+every brief carries an explicit note that the same single fact
+supports all five editorial frames, not five independent stories.
+
+Bounds:
+    MIN_FACTS = 1, MAX_FACTS = 8, MAX_FACT_CHARS = 500,
+    MAX_BRIEF_CHARS = 6000, NUM_ANGLES = 5.
+
+Rules:
+    - Input must be a list or tuple of 1 to MAX_FACTS strings.
+    - Each string must be nonblank and at most MAX_FACT_CHARS chars.
+    - Exact duplicate strings are rejected.
+    - Output keeps each supplied fact string byte-for-byte exact.
+    - Output never invents facts and never turns the absence of
+      facts into a claim about the product.
+    - Editorial instructions and questions live under their own
+      headings marked "(not a fact)" and must not be read as
+      factual claims. They add no benefit, audience, price,
+      origin, guarantee, performance, comparison, inventory, or
+      source assertion.
+    - Every brief requires individual owner approval. This helper
+      never approves anything.
+    - Pure function: no input mutation, no randomness, no time,
+      no global state, deterministic for the same input order.
 """
 
-import copy
-import re
+NUM_ANGLES = 5
+MIN_FACTS = 1
+MAX_FACTS = 8
+MAX_FACT_CHARS = 500
+MAX_BRIEF_CHARS = 6000
+APPROVAL_STATUS = "pending_owner_approval"
 
-MODULE_VERSION = "campaign-angles/v1"
-HOOK_MAX_CHARS = 140
-BRIEF_MAX_CHARS = 280
-
-EXISTING_ANGLES = (
-    "Origin story",
-    "Material and craft",
-    "Commuter use",
-    "Styling",
-    "Care and durability",
-    "Social proof",
-    "Launch offer",
+ANGLE_LABELS = (
+    "Discovery Hook",
+    "Concrete Detail",
+    "Buyer Question",
+    "Claim Boundary",
+    "Concise Recap",
 )
 
-ADDITIONAL_ANGLES = (
-    "Gift ready",
-    "Workday carry",
-    "Weekend carry",
-    "Repair and reuse",
-    "Founder note",
+_APPROVAL_BANNER = (
+    "STATUS: PENDING INDIVIDUAL OWNER APPROVAL -- "
+    "DRAFT FOR REVIEW, NOT APPROVED."
 )
 
-ALLOWED_SLOTS = (
-    "product",
-    "material",
-    "price",
-    "design",
-    "gift_use",
-    "workday_use",
-    "weekend_use",
-    "repair_note",
-    "founder_note",
+_REVIEW_NOTE = (
+    "REVIEW NOTE: This draft re-presents the quoted facts above. "
+    "It requires individual owner approval before any use. "
+    "No additional facts are asserted here."
 )
 
-SLOT_RE = re.compile(r"\{(\w+)\}")
+_HOOK_QUESTION = "What is one confirmed detail worth a closer look?"
 
-ANGLE_TEMPLATES = {
-    "Gift ready": {
-        "brief_template": "Gift pick: {product} at {price}. {gift_use}.",
-        "hook_template": "Gift idea: {product} at {price}. {gift_use}.",
-        "required_facts": ["product", "price", "gift_use"],
-        "description": (
-            "Gift positioning using confirmed product, price, and "
-            "explicit gift-use confirmation."
-        ),
-    },
-    "Workday carry": {
-        "brief_template": "Workday carry: {product}, {design}. {workday_use}.",
-        "hook_template": "For the workday: {product}, {design}. {workday_use}.",
-        "required_facts": ["product", "design", "workday_use"],
-        "description": (
-            "Workday use using confirmed product, design, and explicit "
-            "workday-use confirmation."
-        ),
-    },
-    "Weekend carry": {
-        "brief_template": "Weekend carry in {material}: {product}. {weekend_use}.",
-        "hook_template": "Weekend carry: {product} in {material}. {weekend_use}.",
-        "required_facts": ["product", "material", "weekend_use"],
-        "description": (
-            "Weekend use using confirmed product, material, and explicit "
-            "weekend-use confirmation."
-        ),
-    },
-    "Repair and reuse": {
-        "brief_template": "Made to keep: {material}, {design}. {repair_note}.",
-        "hook_template": "Built to keep: {material}, {design}. {repair_note}.",
-        "required_facts": ["material", "design", "repair_note"],
-        "description": (
-            "Keep and reuse using confirmed material, design, and "
-            "explicit repair-note confirmation."
-        ),
-    },
-    "Founder note": {
-        "brief_template": (
-            "From the founder: {product}, {design}, {price}. {founder_note}."
-        ),
-        "hook_template": "Founder note: {product}, {price}. {founder_note}.",
-        "required_facts": ["product", "design", "price", "founder_note"],
-        "description": (
-            "Founder voice using confirmed product, design, price, and "
-            "explicit founder-note confirmation."
-        ),
-    },
-}
+_BUYER_QUESTION = "What does the quoted material confirm, in its own words?"
+
+_BOUNDARY_STATEMENT = (
+    "Only the quoted facts above are asserted. No additional benefit, audience, "
+    "performance, comparison, price, origin, guarantee, inventory, "
+    "or source claim beyond those quoted facts is made here."
+)
+
+_DETAIL_NOTE = (
+    "PRESENTATION NOTE (not a fact): Keep every quoted word exactly "
+    "as written; do not paraphrase or explain beyond the quotes."
+)
+
+_RECAP_NOTE = (
+    "RECAP NOTE (not a fact): This recap repeats the quotes above "
+    "with no new wording."
+)
+
+__all__ = [
+    "NUM_ANGLES",
+    "MIN_FACTS",
+    "MAX_FACTS",
+    "MAX_FACT_CHARS",
+    "MAX_BRIEF_CHARS",
+    "APPROVAL_STATUS",
+    "ANGLE_LABELS",
+    "generate_campaign_angles",
+    "generate_angles",
+]
 
 
-def list_existing_angles():
-    """Return the existing seven angle names in order."""
-    return list(EXISTING_ANGLES)
+def _validate_facts(confirmed_facts):
+    """Validate input and return a copied list of facts."""
+    if isinstance(confirmed_facts, (str, bytes)):
+        raise TypeError("confirmed_facts must be a list or tuple of strings")
+    if not isinstance(confirmed_facts, (list, tuple)):
+        raise TypeError("confirmed_facts must be a list or tuple of strings")
+    facts = list(confirmed_facts)
+    if len(facts) < MIN_FACTS:
+        raise ValueError("At least one confirmed fact is required")
+    if len(facts) > MAX_FACTS:
+        raise ValueError("Too many facts: got %d, maximum is %d" % (len(facts), MAX_FACTS))
+    for fact in facts:
+        if not isinstance(fact, str):
+            raise TypeError("Each confirmed fact must be a string")
+        if not fact.strip():
+            raise ValueError("Confirmed facts must not be blank")
+        if len(fact) > MAX_FACT_CHARS:
+            raise ValueError(
+                "Fact too long: got %d chars, maximum is %d" % (len(fact), MAX_FACT_CHARS)
+            )
+    if len(set(facts)) != len(facts):
+        raise ValueError("Duplicate facts are not allowed")
+    return facts
 
 
-def list_additional_angles():
-    """Return the five additional angle names in order."""
-    return list(ADDITIONAL_ANGLES)
+def _numbered_block(facts, heading):
+    lines = []
+    for i, fact in enumerate(facts, start=1):
+        lines.append("%d. %s" % (i, fact))
+    return "%s\n%s" % (heading, "\n".join(lines))
 
 
-def get_angle_detail(angle_name):
-    """Return a copy of one angle template detail.
+def _bullet_block(facts, heading):
+    return "%s\n%s" % (heading, "\n".join("- %s" % fact for fact in facts))
 
-    Raises ValueError for unknown names. The returned dict is a copy;
-    editing it never changes the module templates.
+
+def _source_scope_note(total):
+    if total == 1:
+        return (
+            "SOURCE SCOPE (not a fact): Only one owner-confirmed fact "
+            "was supplied. All five briefs quote this same single fact "
+            "as five editorial frames, not as five independent factual stories."
+        )
+    return (
+        "SOURCE SCOPE (not a fact): All five briefs quote from the same "
+        "%d supplied facts as five editorial frames, not as five "
+        "independent factual stories." % total
+    )
+
+
+def _build_brief(label, approach, instruction, facts, indexes, total):
+    facts_used = [facts[i] for i in indexes]
+    header = "[%s] DRAFT FOR REVIEW -- %s" % (label, _APPROVAL_BANNER)
+    instruction_block = "EDITORIAL INSTRUCTION (not a fact): %s" % instruction
+    scope_note = _source_scope_note(total)
+    if label == "Discovery Hook":
+        question_block = (
+            "EDITORIAL HOOK QUESTION (not a fact, do not treat as a claim):\n%s"
+            % _HOOK_QUESTION
+        )
+        facts_block = _numbered_block(
+            facts_used, "QUOTED FACTS (verbatim, hook support):"
+        )
+        facts_heading = (
+            "OWNER-CONFIRMED FACTS USED (%d of %d supplied, verbatim):\n%s"
+            % (len(facts_used), total, facts_block)
+        )
+        parts = [header, question_block, instruction_block, facts_heading, scope_note, _REVIEW_NOTE]
+    elif label == "Concrete Detail":
+        facts_block = _numbered_block(
+            facts_used, "QUOTED FACTS (verbatim, exact wording):"
+        )
+        facts_heading = (
+            "OWNER-CONFIRMED FACTS USED (%d of %d supplied, verbatim):\n%s"
+            % (len(facts_used), total, facts_block)
+        )
+        parts = [header, instruction_block, facts_heading, _DETAIL_NOTE, scope_note, _REVIEW_NOTE]
+    elif label == "Buyer Question":
+        question_block = (
+            "EDITORIAL BUYER QUESTION (not a fact, do not treat as a claim):\n%s"
+            % _BUYER_QUESTION
+        )
+        facts_block = _bullet_block(
+            facts_used, "QUOTED FACTS (verbatim, answer material only):"
+        )
+        facts_heading = (
+            "OWNER-CONFIRMED FACTS USED (%d of %d supplied, verbatim):\n%s"
+            % (len(facts_used), total, facts_block)
+        )
+        parts = [header, question_block, instruction_block, facts_heading, scope_note, _REVIEW_NOTE]
+    elif label == "Claim Boundary":
+        facts_block = _numbered_block(facts_used, "QUOTED FACTS (verbatim):")
+        facts_heading = (
+            "OWNER-CONFIRMED FACTS USED (%d of %d supplied, verbatim):\n%s"
+            % (len(facts_used), total, facts_block)
+        )
+        boundary_block = (
+            "EVIDENCE / CLAIM BOUNDARY (not a fact, scope note):\n%s"
+            % _BOUNDARY_STATEMENT
+        )
+        parts = [header, instruction_block, facts_heading, boundary_block, scope_note, _REVIEW_NOTE]
+    else:
+        facts_block = _numbered_block(
+            facts_used, "QUOTED FACTS (verbatim, recap set):"
+        )
+        facts_heading = (
+            "OWNER-CONFIRMED FACTS USED (%d of %d supplied, verbatim):\n%s"
+            % (len(facts_used), total, facts_block)
+        )
+        parts = [header, instruction_block, facts_heading, _RECAP_NOTE, scope_note, _REVIEW_NOTE]
+    brief_text = "\n\n".join(parts)
+    if len(brief_text) > MAX_BRIEF_CHARS:
+        raise ValueError("Generated brief exceeds maximum length")
+    return {
+        "label": label,
+        "editorial_approach": approach,
+        "editorial_instruction": instruction,
+        "facts_used": list(facts_used),
+        "fact_indexes": list(indexes),
+        "brief_text": brief_text,
+        "status": APPROVAL_STATUS,
+        "approved": False,
+    }
+
+
+def generate_campaign_angles(confirmed_facts):
+    """Build exactly five draft campaign angle briefs.
+
+    Args:
+        confirmed_facts: nonempty list or tuple of 1 to MAX_FACTS
+            owner-confirmed fact strings. Each must be nonblank,
+            at most MAX_FACT_CHARS chars, with no exact duplicates.
+            Order is preserved and selections are deterministic.
+
+    Returns:
+        A new list of exactly NUM_ANGLES dicts (see module docstring
+        for keys). Labels are the five distinct editorial purposes.
+        All five briefs quote the same supplied facts in input
+        order; differentiation is editorial purpose and framing,
+        not reordering. When one fact is supplied, every brief
+        carries an explicit note that the same single fact supports
+        all five editorial frames, not five independent stories.
+
+    Raises:
+        TypeError: if the input is not a list or tuple of strings.
+        ValueError: if count, blank, duplicate, fact-length, or
+            output-length bounds are violated.
+
+    Purity:
+        No input mutation, no model, network, database, file, or
+        external action. Deterministic for the same input.
     """
-    if not isinstance(angle_name, str):
-        raise TypeError("angle_name must be a string")
-    detail = ANGLE_TEMPLATES.get(angle_name)
-    if detail is None:
-        raise ValueError("Unknown campaign angle: " + angle_name)
-    result = copy.deepcopy(detail)
-    result["angle"] = angle_name
-    return result
-
-
-def _cleaned_facts(confirmed_facts):
-    """Return (cleaned dict, error). Never mutates the caller input."""
-    if not isinstance(confirmed_facts, dict):
-        return {}, "Confirmed facts must be a dict of slot to verified string."
-    cleaned = {}
-    for key, value in confirmed_facts.items():
-        if not isinstance(key, str):
-            continue
-        if not isinstance(value, str):
-            continue
-        text = value.strip()
-        if not text:
-            continue
-        cleaned[key] = text
-    return cleaned, None
-
-
-def _metadata(angle_name, used_facts, brief_chars, hook_chars):
-    return {
-        "module": MODULE_VERSION,
-        "source": "caller_confirmed_facts",
-        "angle": angle_name,
-        "limits": {"hook_max_chars": HOOK_MAX_CHARS, "brief_max_chars": BRIEF_MAX_CHARS},
-        "used_facts": list(used_facts),
-        "brief_chars": brief_chars,
-        "hook_chars": hook_chars,
-        "note": (
-            "Factual slots use only caller confirmed facts. Templates "
-            "never invent values and never auto-confirm."
+    facts = _validate_facts(confirmed_facts)
+    total = len(facts)
+    shared_indexes = list(range(total))
+    specs = (
+        (
+            ANGLE_LABELS[0],
+            "Open with an editorial hook question answered only by the quoted facts.",
+            "Start from the editorial hook question, then show the quoted "
+            "facts as the only supporting material. Do not reword the facts "
+            "and do not add surrounding factual sentences.",
+            list(shared_indexes),
         ),
-    }
-
-
-def _needs_confirmation(angle_name, missing, suggestion, used_facts=()):
-    ordered_missing = list(missing)
-    return {
-        "angle": angle_name,
-        "status": "needs_owner_confirmation",
-        "state": "suggestion",
-        "brief": None,
-        "hook": None,
-        "missing_facts": ordered_missing,
-        "suggestion": suggestion,
-        "metadata": _metadata(angle_name, list(used_facts), 0, 0),
-    }
-
-
-def render_angle(angle_name, confirmed_facts):
-    """Render one angle brief and hook from confirmed facts only.
-
-    On success returns status ready with brief and hook strings. When
-    required facts are missing, when facts have the wrong shape, when
-    a filled hook or brief would exceed its limit, or when the filled
-    hook fails validation (multiline, empty, unfilled slot), returns
-    status needs_owner_confirmation with state suggestion and no brief
-    or hook. Never invents a fact value.
-    """
-    if not isinstance(angle_name, str):
-        raise TypeError("angle_name must be a string")
-    detail = ANGLE_TEMPLATES.get(angle_name)
-    if detail is None:
-        raise ValueError("Unknown campaign angle: " + angle_name)
-    required = list(detail["required_facts"])
-    cleaned, shape_error = _cleaned_facts(confirmed_facts)
-    if shape_error is not None:
-        return _needs_confirmation(
-            angle_name,
-            required,
-            "Needs owner confirmation for: "
-            + ", ".join(required)
-            + ". Provide confirmed facts as a dict of slot to verified string. "
-            "No brief or hook generated.",
-        )
-    missing = [slot for slot in required if slot not in cleaned]
-    if missing:
-        return _needs_confirmation(
-            angle_name,
-            missing,
-            "Needs owner confirmation for: "
-            + ", ".join(missing)
-            + ". No brief or hook generated.",
-            used_facts=[s for s in required if s in cleaned],
-        )
-    slots_needed = set(SLOT_RE.findall(detail["brief_template"]))
-    slots_needed.update(SLOT_RE.findall(detail["hook_template"]))
-    unfilled = sorted(s for s in slots_needed if s not in cleaned)
-    if unfilled:
-        return _needs_confirmation(
-            angle_name,
-            unfilled,
-            "Needs owner confirmation for: "
-            + ", ".join(unfilled)
-            + ". No brief or hook generated.",
-            used_facts=[s for s in required if s in cleaned],
-        )
-    values = {slot: cleaned[slot] for slot in slots_needed}
-    brief = detail["brief_template"].format(**values)
-    hook = detail["hook_template"].format(**values)
-    if len(hook) > HOOK_MAX_CHARS:
-        return _needs_confirmation(
-            angle_name,
-            [],
-            "Hook is %d characters, over the 140 character limit. "
-            "Needs owner confirmation with shorter confirmed facts. "
-            "No brief or hook generated." % len(hook),
-            used_facts=required,
-        )
-    if len(brief) > BRIEF_MAX_CHARS:
-        return _needs_confirmation(
-            angle_name,
-            [],
-            "Brief is %d characters, over the 280 character limit. "
-            "Needs owner confirmation with shorter confirmed facts. "
-            "No brief or hook generated." % len(brief),
-            used_facts=required,
-        )
-    if SLOT_RE.search(brief) or SLOT_RE.search(hook):
-        return _needs_confirmation(
-            angle_name,
-            [],
-            "Unfilled template slot remains. Needs owner confirmation. "
-            "No brief or hook generated.",
-            used_facts=required,
-        )
-    if "\n" in brief or "\r" in brief:
-        return _needs_confirmation(
-            angle_name,
-            [],
-            "Brief must be a single line. Needs owner confirmation with "
-            "single-line confirmed facts. No brief or hook generated.",
-            used_facts=required,
-        )
-    hook_check = validate_hook(hook)
-    if not hook_check["ok"]:
-        return _needs_confirmation(
-            angle_name,
-            [],
-            "Hook invalid: "
-            + "; ".join(hook_check["reasons"])
-            + ". Needs owner confirmation with single-line confirmed "
-            "facts. No brief or hook generated.",
-            used_facts=required,
-        )
-    return {
-        "angle": angle_name,
-        "status": "ready",
-        "state": "ready",
-        "brief": brief,
-        "hook": hook,
-        "missing_facts": [],
-        "suggestion": None,
-        "metadata": _metadata(angle_name, required, len(brief), len(hook)),
-    }
-
-
-def render_all_angles(confirmed_facts):
-    """Render all five additional angles in deterministic order."""
-    cleaned, _ = _cleaned_facts(confirmed_facts)
-    angles = {}
-    for name in ADDITIONAL_ANGLES:
-        angles[name] = render_angle(name, confirmed_facts)
-    provenance = {
-        "module": MODULE_VERSION,
-        "source": "caller_confirmed_facts",
-        "existing_angles": list(EXISTING_ANGLES),
-        "additional_angles": list(ADDITIONAL_ANGLES),
-        "confirmed_keys": sorted(cleaned),
-        "limits": {"hook_max_chars": HOOK_MAX_CHARS, "brief_max_chars": BRIEF_MAX_CHARS},
-        "note": (
-            "Five angles beyond the existing seven. Factual slots use "
-            "only caller confirmed facts. Missing facts yield a "
-            "suggestion state, never invented text."
+        (
+            ANGLE_LABELS[1],
+            "Present the quoted facts with exact wording preserved.",
+            "Show each quoted fact exactly as written, preserving every word. "
+            "Do not paraphrase, combine, or add explanatory sentences.",
+            list(shared_indexes),
         ),
-    }
-    return {"angles": angles, "provenance": provenance}
+        (
+            ANGLE_LABELS[2],
+            "Frame the quoted facts as material for one buyer question, without answering beyond them.",
+            "Present the editorial buyer question first, then list the quoted "
+            "facts as the only permitted answer material. Do not answer beyond "
+            "the quoted wording and do not add recommendations.",
+            list(shared_indexes),
+        ),
+        (
+            ANGLE_LABELS[3],
+            "State the evidence boundary: only quoted facts are asserted, nothing more.",
+            "Quote the facts first, then restate the boundary that no other "
+            "benefit, audience, performance, comparison, price, origin, "
+            "guarantee, inventory, or source claim is made. Do not add new claims.",
+            list(shared_indexes),
+        ),
+        (
+            ANGLE_LABELS[4],
+            "Recap the quoted facts in a compact draft without adding claims.",
+            "Repeat the quoted facts together as a short recap draft. Do not "
+            "shorten their wording and do not add summary claims beyond the quotes.",
+            list(shared_indexes),
+        ),
+    )
+    briefs = [_build_brief(label, approach, instruction, facts, indexes, total) for label, approach, instruction, indexes in specs]
+    if len(briefs) != NUM_ANGLES:
+        raise ValueError("Internal error: expected exactly five briefs")
+    return briefs
 
 
-def validate_hook(hook_text):
-    """Validate one hook: single line, no slots, at most 140 chars."""
-    limit = HOOK_MAX_CHARS
-    if not isinstance(hook_text, str):
-        return {
-            "ok": False,
-            "char_count": 0,
-            "limit": limit,
-            "reasons": ["Hook must be a string."],
-        }
-    reasons = []
-    char_count = len(hook_text)
-    if not hook_text.strip():
-        reasons.append("Empty hook.")
-    if char_count > limit:
-        reasons.append("Exceeds %d characters (%d chars)." % (limit, char_count))
-    if "\n" in hook_text or "\r" in hook_text:
-        reasons.append("Hook must be a single line.")
-    if SLOT_RE.search(hook_text):
-        reasons.append("Hook contains an unfilled slot.")
-    return {
-        "ok": not reasons,
-        "char_count": char_count,
-        "limit": limit,
-        "reasons": reasons,
-    }
+# Short alias for the same stable helper.
+generate_angles = generate_campaign_angles
