@@ -2167,14 +2167,12 @@
           "check": {
             "anyOf": [
               {
-                "additionalProperties": true,
-                "type": "object"
+                "$ref": "#/components/schemas/Check"
               },
               {
                 "type": "null"
               }
-            ],
-            "title": "Check"
+            ]
           },
           "checker_policies": {
             "anyOf": [

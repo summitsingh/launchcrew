@@ -157,7 +157,7 @@ class RevisionHistoryEntry(BaseModel):
     model_config = ConfigDict(extra='allow')
     revision: int | None = None
     draft: dict[str, Any] | None = None
-    check: dict[str, Any] | None = None
+    check: Check | None = None
     approval_state: str | None = None
     approvals: list[Approval] = []
     approved_revision: int | None = None
@@ -801,7 +801,7 @@ def approve(run_id: str, body: ApproveIn, actor: str = Depends(auth.actor)):
 
 
 @app.post('/api/runs/{run_id}/export', response_model=Receipt)
-def export(run_id: str, body: ExportIn, actor: str = Depends(auth.actor)):
+def export(run_id: str, body: ExportIn, response: Response, actor: str = Depends(auth.actor)):
     with store.connect() as db:
         from backend.photo_review import photo_block_reason
         from launchcrew import human_review
@@ -821,7 +821,8 @@ def export(run_id: str, body: ExportIn, actor: str = Depends(auth.actor)):
             raise HTTPException(422, str(error))
         db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id'), {'receipt': json.dumps(exported), 'state': exported['approval_state'], 'id': run_id})
         store.audit(db, run_id, 'exported', actor)
-    return JSONResponse(exported, headers={'Content-Disposition': 'attachment; filename="launchcrew-pack.json"'})
+    response.headers['Content-Disposition'] = 'attachment; filename="launchcrew-pack.json"'
+    return exported
 
 
 
@@ -1210,5 +1211,5 @@ def approve_campaign_day(campaign_id: str, day: int, body: ApproveIn, actor: str
 
 
 @app.post('/api/campaigns/{campaign_id}/days/{day}/export', response_model=Receipt)
-def export_campaign_day(campaign_id: str, day: int, body: ExportIn, actor: str = Depends(auth.actor)):
-    return export(campaign_run(campaign_id, day), body, actor)
+def export_campaign_day(campaign_id: str, day: int, body: ExportIn, response: Response, actor: str = Depends(auth.actor)):
+    return export(campaign_run(campaign_id, day), body, response, actor)

@@ -468,3 +468,45 @@ def test_export_without_approval_is_refused(client):
     receipt = new_run(client)
     run_id = receipt['run_id']
     assert client.post(f'/api/runs/{run_id}/export', json={}).status_code == 422
+
+
+def test_serialization_consistency_across_history_and_export(client):
+    receipt = new_run(client)
+    run_id = receipt['run_id']
+    assert client.post(f'/api/runs/{run_id}/approve', json={}).status_code == 200
+    edit = valid_edit(client.get(f'/api/runs/{run_id}').json())
+    revised = client.post(f'/api/runs/{run_id}/revise', json=edit)
+    assert revised.status_code == 200, revised.text
+    body = revised.json()
+    prior = body['revision_history'][0]
+    assert prior['check'] == receipt['checker_v2']
+    assert prior['draft']['post'] == receipt['maker_draft_v2']['post']
+    assert prior['draft'].get('line_evidence') == receipt['maker_draft_v2'].get('line_evidence')
+    orig_results = receipt['checker_v2'].get('claim_results')
+    hist_results = prior['check'].get('claim_results')
+    assert hist_results == orig_results
+    if orig_results is not None:
+        for orig, hist in zip(orig_results, hist_results):
+            assert hist.get('evidence') == orig.get('evidence')
+            assert hist.get('evidence_claims') == orig.get('evidence_claims')
+    assert body['maker_draft_v2'] == receipt['maker_draft_v2']
+    assert body['checker_v2'] == receipt['checker_v2']
+    fresh = client.get(f'/api/runs/{run_id}').json()
+    assert client.post(f'/api/runs/{run_id}/approve', json={'expected_revision': fresh['revision']}).status_code == 200
+    exported = client.post(f'/api/runs/{run_id}/export', json={'expected_revision': fresh['revision']})
+    assert exported.status_code == 200, exported.text
+    disposition = exported.headers.get('content-disposition', '')
+    assert 'attachment' in disposition
+    assert 'launchcrew-pack.json' in disposition
+    payload = exported.json()
+    assert payload['maker_draft_v2'] == receipt['maker_draft_v2']
+    assert payload['checker_v2'] == receipt['checker_v2']
+    assert payload['maker_draft_v2'].get('line_evidence') == receipt['maker_draft_v2'].get('line_evidence')
+    assert payload['checker_v2'].get('claim_results') == orig_results
+    if orig_results is not None:
+        for orig, exp in zip(orig_results, payload['checker_v2'].get('claim_results') or []):
+            assert exp.get('evidence_claims') == orig.get('evidence_claims')
+    from backend.app import Receipt
+    legacy = dict(receipt)
+    legacy['revision_history'] = [{'revision': 0, 'superseded_by': 1}]
+    assert Receipt(**legacy).revision_history[0].check is None
