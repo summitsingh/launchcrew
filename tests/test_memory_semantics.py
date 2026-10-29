@@ -52,6 +52,32 @@ def capture_stub(captured):
     return fake
 
 
+class _FakeAdmission:
+    """Explicit safe fake admission: one owned admitted operation per reserve."""
+
+    def __init__(self, stage='test'):
+        self.stage = stage
+        self.finalizes = []
+
+    def reserve(self, *, request_digest, model, max_completion_tokens, n,
+                request_bytes_len):
+        assert model == 'muse-spark-1.3'
+        assert max_completion_tokens == 2048 and n == 1
+        assert request_bytes_len <= 32 * 1024
+        return {'id': 'fake_' + str(self.stage), 'status': 'admitted', 'is_owner': True}
+
+    def finalize(self, call_id, *, status, outcome=None, prompt_tokens=None,
+                 completion_tokens=None, total_tokens=None):
+        self.finalizes.append(status)
+        return {'id': call_id, 'status': status, 'is_owner': False}
+
+
+def _fake_factory():
+    def factory(stage, attempt_id='1'):
+        return _FakeAdmission(stage=str(stage))
+    return factory
+
+
 class MemoryEffectsTests(unittest.TestCase):
     def test_only_brand_fact_extends_allowlist(self):
         items = [
@@ -169,7 +195,8 @@ class MemoryEffectsTests(unittest.TestCase):
         with patch.dict(os.environ, {'META_API_KEY': 'test-key', 'META_WONDER_MODEL': ''}):
             captured = []
             with patch('launchcrew.spark.urlopen', side_effect=capture_stub(captured)):
-                adapter.execute('run_ex1', IDEA, profile, False, memory_items=[example])
+                adapter.execute('run_ex1', IDEA, profile, False, memory_items=[example],
+                                model_admission_factory=_fake_factory())
             maker_calls = [p for p in captured if 'WordSmith' in p['messages'][0]['content'] or 'Maker' in p['messages'][0]['content']]
             self.assertTrue(captured)
             joined = json.dumps(captured)
@@ -181,12 +208,14 @@ class MemoryEffectsTests(unittest.TestCase):
             edited['content']['email'] = 'Designed in Texas wallet email UNIQUE-STYLE-2'
             captured2 = []
             with patch('launchcrew.spark.urlopen', side_effect=capture_stub(captured2)):
-                adapter.execute('run_ex2', IDEA, profile, False, memory_items=[edited])
+                adapter.execute('run_ex2', IDEA, profile, False, memory_items=[edited],
+                                model_admission_factory=_fake_factory())
             self.assertIn('UNIQUE-STYLE-2', json.dumps(captured2))
             self.assertNotIn('UNIQUE-STYLE-1', json.dumps(captured2))
             captured3 = []
             with patch('launchcrew.spark.urlopen', side_effect=capture_stub(captured3)):
-                adapter.execute('run_ex3', IDEA, profile, False, memory_items=[])
+                adapter.execute('run_ex3', IDEA, profile, False, memory_items=[],
+                                model_admission_factory=_fake_factory())
             self.assertNotIn('UNIQUE-STYLE', json.dumps(captured3))
         with patch.dict(os.environ, {'META_API_KEY': '', 'META_WONDER_MODEL': ''}):
             with patch('launchcrew.run.spark_for_agent', side_effect=AssertionError('no transport')), \
@@ -234,7 +263,8 @@ class MemoryEffectsTests(unittest.TestCase):
                 with patch('launchcrew.spark.urlopen', side_effect=capture_stub(captured)):
                     run_pipeline(IDEA, ROOT / 'facts/demo_facts.json', directory, out,
                                  maker_profile=cloned, scout_profile=base_profile('ScoutX'),
-                                 checker_agent=base_profile('CheckX'))
+                                 checker_agent=base_profile('CheckX'),
+                                 model_admission_factory=_fake_factory())
             maker_payloads = [p for p in captured if 'Edited one' in json.dumps(p)]
             self.assertTrue(maker_payloads)
             self.assertIn('Edited two', json.dumps(maker_payloads[0]))
@@ -250,7 +280,8 @@ class MemoryEffectsTests(unittest.TestCase):
             with patch.dict(os.environ, {'META_API_KEY': 'test-key', 'META_WONDER_MODEL': ''}):
                 captured = []
                 with patch('launchcrew.spark.urlopen', side_effect=capture_stub(captured)):
-                    run_pipeline(IDEA, ROOT / 'facts/demo_facts.json', directory, out)
+                    run_pipeline(IDEA, ROOT / 'facts/demo_facts.json', directory, out,
+                                 model_admission_factory=_fake_factory())
         joined = json.dumps(captured)
         self.assertIn('EXAMPLE-OUTPUT-9', joined)
         self.assertIn('Untrusted example output', joined)

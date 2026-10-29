@@ -60,7 +60,7 @@ def _count(db):
         return connection.execute(text('SELECT COUNT(*) FROM model_calls')).scalar()
 
 
-def _stage_completion(request):
+def _stage_completion(request, timeout=None):
     body = json.loads(request.data)
     required = set(body['response_format']['json_schema']['schema']['required'])
     if required == {'facts_used', 'risks'}:
@@ -378,3 +378,154 @@ def test_usage_accounting_sanitized_no_secrets(test_engine, monkeypatch):
     assert 'user-prompt-private' not in serialized
     assert 'must-not-persist' not in serialized
     assert 'postgresql' not in serialized.lower()
+
+
+def test_finalize_failure_after_success_fails_closed_no_spark_claim(test_engine, monkeypatch):
+    """Muse-authored: finalize commit failure after valid provider content fails closed.
+
+    Fake transport returns a valid staged completion; fake admission finalize
+    raises. Proves the result is not spark, carries no raw copy or numeric
+    stored usage, attempted stays True, ledger stays admitted nonterminal,
+    replay never resends, budget stays debited, and no secret leaks.
+    """
+    monkeypatch.setenv('META_API_KEY', 'offline-fixture')
+    _grant(test_engine, FIXED)
+    run_id = 'run_finalize_fail'
+    stage = 'Maker'
+    admission = _admission_for(test_engine, run_id, stage)
+
+    def failing_finalize(*args, **kwargs):
+        raise RuntimeError('simulated finalize commit failure')
+
+    admission.finalize = failing_finalize
+    with patch('launchcrew.spark.urlopen', side_effect=_stage_completion) as transport:
+        result = spark_module.call_spark_strict_json('s', 'u', {'claims': []}, admission=admission)
+    assert transport.call_count == 1
+    assert result['attempted'] is True
+    assert result['mode'] == 'deterministic_fallback'
+    assert result['mode'] != 'spark'
+    assert result['model_used'] == 'none'
+    assert 'raw_json' not in result
+    assert result['usage'] == {}
+    assert result['error_type'] == 'FinalizeError'
+    assert result['finalize_committed'] is False
+    assert result['request_provider'] == 'meta'
+    assert result['attempted_model'] == 'muse-spark-1.3'
+    row = ma.get_call_by_identity(test_engine, run_id, stage, '1')
+    assert row is not None
+    assert row['status'] == 'admitted'
+    assert row['status'] not in ma.TERMINAL_STATUSES
+    assert _budget(test_engine) == 0
+    assert _count(test_engine) == 1
+    usage = run_module.model_usage([('spark', result)])
+    assert usage['spark_calls'] == 1
+    assert usage['spark_mode'] == 'deterministic_fallback'
+    assert usage['mode'] == 'FinalizeError'
+    assert usage['model_used'] == 'none'
+    assert usage['models_used'] == []
+    assert usage['token_counts'] == {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0}
+    assert usage['tokens_known'] is False
+    assert usage['error_types'] == ['FinalizeError']
+    serialized = json.dumps(result) + json.dumps(row) + json.dumps(usage)
+    assert 'offline-fixture' not in serialized
+    assert 'postgresql' not in serialized.lower()
+    replay = _admission_for(test_engine, run_id, stage)
+    with patch('launchcrew.spark.urlopen', side_effect=AssertionError('resend refused')) as transport:
+        second = spark_module.call_spark_strict_json('s', 'u', {'claims': []}, admission=replay)
+    assert transport.call_count == 0
+    assert second['attempted'] is False
+    assert second['mode'] == 'deterministic_fallback'
+    assert _budget(test_engine) == 0
+    assert _count(test_engine) == 1
+
+
+def test_finalize_failure_after_ambiguous_preserves_transport_truth(test_engine, monkeypatch):
+    """Muse-authored: ambiguous transport plus finalize failure stays truthful fallback.
+
+    Fake TimeoutError plus failing finalize. Proves the original transport
+    error is preserved, usage stays empty, ledger stays admitted nonterminal,
+    replay never resends, and no success or stored usage is claimed.
+    """
+    monkeypatch.setenv('META_API_KEY', 'offline-fixture')
+    _grant(test_engine, FIXED)
+    run_id = 'run_finalize_ambiguous'
+    stage = 'Scout:Spark'
+    admission = _admission_for(test_engine, run_id, stage)
+
+    def failing_finalize(*args, **kwargs):
+        raise RuntimeError('simulated finalize commit failure')
+
+    admission.finalize = failing_finalize
+    with patch('launchcrew.spark.urlopen', side_effect=TimeoutError('private')) as transport:
+        result = spark_module.call_spark_strict_json('s', 'u', {'claims': []}, admission=admission)
+    assert transport.call_count == 1
+    assert result['attempted'] is True
+    assert result['mode'] == 'deterministic_fallback'
+    assert result['error_type'] == 'TimeoutError'
+    assert result['usage'] == {}
+    assert result['finalize_committed'] is False
+    assert result['request_provider'] == 'meta'
+    assert 'raw_json' not in result
+    row = ma.get_call_by_identity(test_engine, run_id, stage, '1')
+    assert row is not None
+    assert row['status'] == 'admitted'
+    assert row['status'] not in ma.TERMINAL_STATUSES
+    assert _budget(test_engine) == 0
+    usage = run_module.model_usage([('spark', result)])
+    assert usage['spark_calls'] == 1
+    assert usage['spark_mode'] == 'deterministic_fallback'
+    assert usage['mode'] == 'TimeoutError'
+    assert usage['tokens_known'] is False
+    assert usage['token_counts'] == {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0}
+    replay = _admission_for(test_engine, run_id, stage)
+    with patch('launchcrew.spark.urlopen', side_effect=AssertionError('resend refused')) as transport:
+        second = spark_module.call_spark_strict_json('s', 'u', {'claims': []}, admission=replay)
+    assert transport.call_count == 0
+    assert second['attempted'] is False
+
+
+def test_finalize_failure_after_invalid_response_empties_unstored_usage(test_engine, monkeypatch):
+    """Muse-authored: invalid provider content plus finalize failure claims no stored usage.
+
+    Fake transport returns an invalid shape with numeric usage; fake finalize
+    raises. Proves ValueError is preserved, usage is emptied because nothing
+    committed, ledger stays admitted, and replay never resends.
+    """
+    monkeypatch.setenv('META_API_KEY', 'offline-fixture')
+    _grant(test_engine, FIXED)
+    run_id = 'run_finalize_invalid'
+    stage = 'Checker'
+    admission = _admission_for(test_engine, run_id, stage)
+
+    def failing_finalize(*args, **kwargs):
+        raise RuntimeError('simulated finalize commit failure')
+
+    admission.finalize = failing_finalize
+
+    def opener(request, timeout=None):
+        return io.BytesIO(json.dumps(
+            {'choices': [{'message': {'content': json.dumps({'wrong': []})}, 'finish_reason': 'stop'}],
+             'usage': {'prompt_tokens': 4, 'completion_tokens': 2, 'total_tokens': 6}}).encode())
+
+    with patch('launchcrew.spark.urlopen', side_effect=opener) as transport:
+        result = spark_module.call_spark_strict_json('s', 'u', {'claims': []}, admission=admission)
+    assert transport.call_count == 1
+    assert result['attempted'] is True
+    assert result['mode'] == 'deterministic_fallback'
+    assert result['error_type'] == 'ValueError'
+    assert result['usage'] == {}
+    assert result['finalize_committed'] is False
+    assert 'raw_json' not in result
+    row = ma.get_call_by_identity(test_engine, run_id, stage, '1')
+    assert row is not None
+    assert row['status'] == 'admitted'
+    assert row['status'] not in ma.TERMINAL_STATUSES
+    assert _budget(test_engine) == 0
+    usage = run_module.model_usage([('spark', result)])
+    assert usage['tokens_known'] is False
+    assert usage['token_counts'] == {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0}
+    replay = _admission_for(test_engine, run_id, stage)
+    with patch('launchcrew.spark.urlopen', side_effect=AssertionError('resend refused')) as transport:
+        second = spark_module.call_spark_strict_json('s', 'u', {'claims': []}, admission=replay)
+    assert transport.call_count == 0
+    assert second['attempted'] is False

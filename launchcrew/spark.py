@@ -284,6 +284,11 @@ def _usage_int(value):
 
 
 def _safe_finalize(admission, call_id, status, outcome, usage):
+    """Attempt one durable finalize; True only when the commit succeeds.
+
+    Never retries, never refunds, never leaks details. Callers must fail
+    closed when False is returned, even after valid provider content.
+    """
     try:
         prompt_tokens = _usage_int((usage or {}).get('prompt_tokens'))
         completion_tokens = _usage_int((usage or {}).get('completion_tokens'))
@@ -292,8 +297,9 @@ def _safe_finalize(admission, call_id, status, outcome, usage):
                            prompt_tokens=prompt_tokens,
                            completion_tokens=completion_tokens,
                            total_tokens=total_tokens)
+        return True
     except Exception:
-        pass
+        return False
 
 
 def _call(system_prompt, user_prompt, schema_hint, model, *, admission=None):
@@ -375,11 +381,15 @@ def _call(system_prompt, user_prompt, schema_hint, model, *, admission=None):
             except Exception as read_error:
                 name = type(read_error).__name__
                 if name in _PROOF_AMBIGUOUS_ERRORS:
-                    _safe_finalize(admission, call_id, 'ambiguous_terminal',
-                                   'ambiguous:read_failed', usage)
+                    committed = _safe_finalize(admission, call_id, 'ambiguous_terminal',
+                                               'ambiguous:read_failed', usage)
                 else:
-                    _safe_finalize(admission, call_id, 'failed_terminal',
-                                   'invalid_response', usage)
+                    committed = _safe_finalize(admission, call_id, 'failed_terminal',
+                                               'invalid_response', usage)
+                if not committed:
+                    return {'mode': 'deterministic_fallback', 'model_used': 'none', 'attempted': True,
+                            'attempted_model': model, 'error_type': name, 'usage': {},
+                            'request_provider': provider, 'finalize_committed': False}
                 return {'mode': 'deterministic_fallback', 'model_used': 'none', 'attempted': True,
                         'attempted_model': model, 'error_type': name, 'usage': dict(usage),
                         'request_provider': provider}
@@ -425,7 +435,12 @@ def _call(system_prompt, user_prompt, schema_hint, model, *, admission=None):
             raw = {'claims': list(raw['claims']), 'post_lines': [], 'email_lines': []}
         else:
             raise ValueError('Invalid candidate schema')
-        _safe_finalize(admission, call_id, 'succeeded', 'ok', usage)
+        committed = _safe_finalize(admission, call_id, 'succeeded', 'ok', usage)
+        if not committed:
+            return {'mode': 'deterministic_fallback', 'model_used': 'none', 'attempted': True,
+                    'attempted_model': PROOF_MODEL, 'error_type': 'FinalizeError',
+                    'usage': {}, 'request_provider': provider,
+                    'finalize_committed': False}
         return {'mode': 'spark', 'model_used': PROOF_MODEL, 'attempted': True,
                 'attempted_model': PROOF_MODEL,
                 'raw_json': raw, 'usage': dict(usage), 'request_provider': provider}
@@ -433,12 +448,16 @@ def _call(system_prompt, user_prompt, schema_hint, model, *, admission=None):
         # Never include exception text, response bodies, or authorization headers.
         name = type(error).__name__
         if name in _PROOF_AMBIGUOUS_ERRORS:
-            _safe_finalize(admission, call_id, 'ambiguous_terminal',
-                           'ambiguous:send_failed', usage)
+            committed = _safe_finalize(admission, call_id, 'ambiguous_terminal',
+                                       'ambiguous:send_failed', usage)
         else:
-            _safe_finalize(admission, call_id, 'failed_terminal',
-                           'invalid_response' if name == 'ValueError' else 'transport_error',
-                           usage)
+            committed = _safe_finalize(admission, call_id, 'failed_terminal',
+                                       'invalid_response' if name == 'ValueError' else 'transport_error',
+                                       usage)
+        if not committed:
+            return {'mode': 'deterministic_fallback', 'model_used': 'none', 'attempted': True,
+                    'attempted_model': model, 'error_type': name, 'usage': {},
+                    'request_provider': provider, 'finalize_committed': False}
         return {'mode': 'deterministic_fallback', 'model_used': 'none', 'attempted': True,
                 'attempted_model': model, 'error_type': name, 'usage': dict(usage),
                 'request_provider': provider}

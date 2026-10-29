@@ -15,6 +15,26 @@ from launchcrew.wonder import wonder_synthesize_for_scout
 ROOT = Path(__file__).resolve().parents[1]
 
 
+class _FakeAdmission:
+    """Explicit safe fake admission: one owned admitted operation per reserve."""
+
+    def __init__(self, stage='test'):
+        self.stage = stage
+        self.finalizes = []
+
+    def reserve(self, *, request_digest, model, max_completion_tokens, n,
+                request_bytes_len):
+        assert model == 'muse-spark-1.3'
+        assert max_completion_tokens == 2048 and n == 1
+        assert request_bytes_len <= 32 * 1024
+        return {'id': 'fake_' + str(self.stage), 'status': 'admitted', 'is_owner': True}
+
+    def finalize(self, call_id, *, status, outcome=None, prompt_tokens=None,
+                 completion_tokens=None, total_tokens=None):
+        self.finalizes.append(status)
+        return {'id': call_id, 'status': status, 'is_owner': False}
+
+
 class ReceiptTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -123,7 +143,8 @@ class ReceiptTests(unittest.TestCase):
         with patch.dict(os.environ, {'META_API_KEY': 'ENV_PLACEHOLDER'}):
             response = io.StringIO(json.dumps({'choices': [{'message': {'content': '{"facts_used": []}'}}]}))
             with patch.object(spark, 'urlopen', return_value=contextlib.closing(response)) as network:
-                result = spark.call_spark_strict_json('system', 'demo', {'facts_used': []})
+                result = spark.call_spark_strict_json('system', 'demo', {'facts_used': []},
+                                                      admission=_FakeAdmission())
                 self.assertEqual(result['mode'], 'spark')
                 self.assertEqual(network.call_args.kwargs['timeout'], 30)
                 payload = json.loads(network.call_args.args[0].data)
@@ -131,7 +152,8 @@ class ReceiptTests(unittest.TestCase):
                 self.assertTrue(payload['response_format']['json_schema']['strict'])
                 self.assertEqual(payload['response_format']['json_schema']['schema']['required'], ['facts_used'])
             with patch.object(spark, 'urlopen', side_effect=ValueError('ENV_PLACEHOLDER')):
-                result = spark.call_spark_strict_json('system', 'demo', {'facts_used': []})
+                result = spark.call_spark_strict_json('system', 'demo', {'facts_used': []},
+                                                      admission=_FakeAdmission())
                 self.assertEqual(result['error_type'], 'ValueError')
                 self.assertNotIn('ENV_PLACEHOLDER', json.dumps(result))
 
