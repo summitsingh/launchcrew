@@ -9,9 +9,11 @@
 #                 updates prove both services live 0/0/0, review every page of
 #                 a bounded change set allowing only owned task definition
 #                 image or service taskdef Modify with replacement only on the
-#                 seven task definitions, then execute the same reviewed change
-#                 set ID and re-prove 0/0/0, never deleting a same-name pending
-#                 set), so VPC, ECR repositories, RDS, and task definitions
+#                 seven task definitions plus optional exact ApiGoogleAuthPolicy
+#                 Add only when Google explicitly enabled with least privilege
+#                 proof, then execute the same reviewed change set ID and
+#                 re-prove 0/0/0, never deleting a same-name pending set),
+#                 so VPC, ECR repositories, RDS, and task definitions
 #                 exist with both ECS services at DesiredCount 0 and no app running
 #   phase quiesce safe maintenance to stop the owned app before an update:
 #                 verify exact stack ownership, identity, and tags, review every
@@ -19,13 +21,18 @@
 #                 template and all existing parameter values except
 #                 EnableServices=false whose only accepted effect is ApiService
 #                 and WebService DesiredCount to 0 with no other property, tag,
-#                 or resource change, execute the same reviewed change set ID
-#                 only on explicit operator confirm, then require UPDATE_COMPLETE
-#                 plus both services 0/0/0 with unchanged old task definition
-#                 and image identity, preserved exact stack tags, and both owned
-#                 ALB target groups drained. Fail closed on drift, empty or
-#                 ambiguous data, or any other resource change. Never part of
-#                 phase all; run explicitly before infra on a live stack.
+#                 or resource change, with bounded wait for CREATE_COMPLETE and
+#                 safe resume of an existing exact same-name set after read-only
+#                 identity, status, stack, parameter, tag, and diff proof, never
+#                 deleting or recreating blindly and never executing when state
+#                 is ambiguous, malformed, foreign, or mismatched, then execute
+#                 the same reviewed change set ID only on explicit operator
+#                 confirm, then require UPDATE_COMPLETE plus both services 0/0/0
+#                 with unchanged old task definition and image identity,
+#                 preserved exact stack tags, and both owned ALB target groups
+#                 drained. Fail closed on drift, empty or ambiguous data, or any
+#                 other resource change. Never part of phase all; run explicitly
+#                 before infra on a live stack.
 #   phase images  verify each of the five published image URIs exists in its
 #                 owned ECR repository with an image digest and no failures,
 #                 and equals the image referenced by its owned stack task
@@ -232,14 +239,16 @@ phase_plan() {
   echo "  2. infra: deploy stack with EnableServices false; owned updates refuse while"
   echo "     EnableServices is true so images are never updated under running services;"
   echo "     run explicit phase quiesce first, prove live 0/0/0, review every page of a"
-  echo "     bounded diff with taskdef-only replacement, execute the same reviewed ID,"
+  echo "     bounded diff with taskdef-only replacement plus optional exact Google policy"
+  echo "     Add only when enabled with least privilege proof, execute the same reviewed ID,"
   echo "     re-prove 0/0/0, then require CREATE_COMPLETE or UPDATE_COMPLETE"
   echo "  2a. quiesce: explicit safe maintenance only, never part of all; verify exact owned"
-  echo "     stack identity and tags, review every page of a bounded change set from the"
-  echo "     existing template with only ApiService and WebService DesiredCount to 0,"
-  echo "     execute the same reviewed ID only on explicit --quiesce-confirm StackId,"
-  echo "     then require UPDATE_COMPLETE plus 0/0/0 with unchanged images, exact tags,"
-  echo "     and drained target groups"
+  echo "     stack identity and tags, bounded wait for CREATE_COMPLETE, review every page"
+  echo "     of a bounded change set from the existing template with only ApiService and"
+  echo "     WebService DesiredCount to 0, safe resume of an existing exact same-name set"
+  echo "     after read-only proof with no blind delete, execute the same reviewed ID only"
+  echo "     on explicit --quiesce-confirm StackId, then require UPDATE_COMPLETE plus 0/0/0"
+  echo "     with unchanged images, exact tags, and drained target groups"
   echo "  3. images: all five ECR image URIs verified by digest with no failures, each equal"
   echo "     to its owned stack task definition image, explicit tag required, no latest fallback;"
   echo "     task definitions must inject exactly the validated secrets under the owned roles"
@@ -823,6 +832,78 @@ check_google_auth_gate() {
     fi
     echo "Verified Google auth gate: EnableGoogleAuth false, keyless three secret path"
   fi
+}
+
+# Least privilege proof for the conditional Google IAM policy, fail-closed
+# before any infra mutation when Google is enabled. Reads the deployed
+# template file and proves ApiGoogleAuthPolicy carries exactly one Allow
+# for secretsmanager:GetSecretValue on only the exact Google secret ref,
+# attached to only the exact ApiExecutionRole ref, with no wildcard, no
+# extra action, no extra resource, and no KMS grant. Secret ownership plus
+# CLI and file equality is already proven by the Google gate before this
+# runs. Any other shape refuses with no mutation.
+verify_google_policy_least_privilege() {
+  POLICY_LABEL="${1:-infra}"
+  POLICY_PROOF="$(python3 - "$TEMPLATE_FILE" 2>/dev/null <<'PYEOF'
+import sys
+path = sys.argv[1]
+try:
+    text = open(path, encoding="utf-8").read()
+except Exception:
+    print("TEMPLATE_UNREADABLE")
+    sys.exit(0)
+marker = "ApiGoogleAuthPolicy:"
+start = text.find(marker)
+if start < 0:
+    print("POLICY_ABSENT")
+    sys.exit(0)
+end = text.find("\n  ApiTaskDefinition:", start)
+if end < 0:
+    end = len(text)
+block = text[start:end]
+def has(piece):
+    return piece in block
+required = [
+    "Type: AWS::IAM::Policy",
+    "Condition: GoogleAuthEnabled",
+    "PolicyName: api-google-auth-secret-only",
+    "Action: [secretsmanager:GetSecretValue]",
+    "Resource: [!Ref GoogleOAuthSecretArn]",
+    "Roles: [!Ref ApiExecutionRole]",
+    "Effect: Allow",
+]
+for piece in required:
+    if not has(piece):
+        print("POLICY_MISSING")
+        sys.exit(0)
+if "*" in block:
+    print("POLICY_WILDCARD")
+    sys.exit(0)
+lowered = block.lower()
+if "putsecretvalue" in lowered or "kms:" in lowered:
+    print("POLICY_EXTRA_ACTION")
+    sys.exit(0)
+if block.count("Resource:") != 1:
+    print("POLICY_EXTRA_RESOURCE")
+    sys.exit(0)
+if block.count("Action:") != 1:
+    print("POLICY_EXTRA_ACTION")
+    sys.exit(0)
+if "Effect: Deny" in block:
+    print("POLICY_DENY")
+    sys.exit(0)
+if "Facebook" in block or "FACEBOOK" in block:
+    print("POLICY_FOREIGN_AUTH")
+    sys.exit(0)
+print("OK")
+PYEOF
+)" || POLICY_PROOF="UNREADABLE"
+  POLICY_PROOF="$(printf '%s' "$POLICY_PROOF" | tr -d '[:space:]')"
+  if [ "$POLICY_PROOF" != "OK" ]; then
+    echo "refused: Google policy least privilege proof is $POLICY_PROOF, expected only GetSecretValue on the exact Google secret for the exact API execution role with no wildcard, no change made." >&2
+    phase_failed "$POLICY_LABEL"
+  fi
+  echo "Verified Google policy least privilege: ApiGoogleAuthPolicy allows only GetSecretValue on the exact owned secret for the exact API execution role"
 }
 
 # Cost allocation tag admission, read-only and fail-closed. It runs before
@@ -2422,6 +2503,25 @@ if wants_phase infra; then
   fi
   TARGET_SERVICES="false"
   WAS_NEW="$STACK_EXISTS"
+  INFRA_GOOGLE_ENABLE="$(params_file_value EnableGoogleAuth 2>/dev/null || true)"
+  INFRA_GOOGLE_ENABLE="$(printf '%s' "$INFRA_GOOGLE_ENABLE" | tr -d '[:space:]')"
+  [ -n "$INFRA_GOOGLE_ENABLE" ] || INFRA_GOOGLE_ENABLE="false"
+  INFRA_GOOGLE_ARN="$(params_file_value GoogleOAuthSecretArn 2>/dev/null || true)"
+  INFRA_GOOGLE_ARN="$(printf '%s' "$INFRA_GOOGLE_ARN" | tr -d '[:space:]')"
+  case "$INFRA_GOOGLE_ENABLE" in
+    true|false) ;;
+    *) echo "refused: EnableGoogleAuth is $INFRA_GOOGLE_ENABLE, expected true or false, no change made" >&2; phase_failed infra ;;
+  esac
+  if [ "$INFRA_GOOGLE_ENABLE" = "true" ]; then
+    [ -n "$GOOGLE_SECRET_ARN" ] || { echo "refused: EnableGoogleAuth true requires exact --google-secret-arn for infra staging, no change made" >&2; phase_failed infra; }
+    [ "$INFRA_GOOGLE_ARN" = "$GOOGLE_SECRET_ARN" ] || { echo "refused: infra GoogleOAuthSecretArn does not equal the validated CLI value, no change made" >&2; phase_failed infra; }
+    verify_google_policy_least_privilege infra
+  else
+    if [ -n "$GOOGLE_SECRET_ARN" ]; then
+      echo "refused: --google-secret-arn requires EnableGoogleAuth true for infra staging, no change made" >&2
+      phase_failed infra
+    fi
+  fi
   if [ "$WAS_NEW" -eq 1 ]; then
     echo "Infra: proving both owned services stopped before any task definition update."
     verify_ecs_service_stopped ApiService api infra
@@ -2539,10 +2639,12 @@ PYEOF
       echo "refused: infra change set has unreviewed pages after 3, no change made. Pending change set $INFRA_CHANGESET preserved for inspection." >&2
       phase_failed infra
     fi
-    INFRA_RAW="$(python3 - "$INFRA_PAGES_DIR" "$STACK_NAME" "$STACK_ID" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$INFRA_CHANGESET" "$PARAMETERS_FILE" 2>/dev/null <<'PYEOF'
+    INFRA_RAW="$(python3 - "$INFRA_PAGES_DIR" "$STACK_NAME" "$STACK_ID" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$INFRA_CHANGESET" "$PARAMETERS_FILE" "$INFRA_GOOGLE_ENABLE" "$INFRA_GOOGLE_ARN" 2>/dev/null <<'PYEOF'
 import glob, json, os, sys
 pages_dir, want_stack, want_id = sys.argv[1:4]
 want_account, want_region, want_name, params_file = sys.argv[4:8]
+google_enable = sys.argv[8] if len(sys.argv) > 8 else "false"
+google_arn = sys.argv[9] if len(sys.argv) > 9 else ""
 pages = sorted(glob.glob(os.path.join(pages_dir, "page-*.json")))
 if not pages:
     print("MALFORMED")
@@ -2623,6 +2725,59 @@ for entry in changes:
     action = rc.get("Action", "") or ""
     rtype = rc.get("ResourceType", "") or ""
     replacement = rc.get("Replacement", "False")
+    if logical == "ApiGoogleAuthPolicy":
+        if google_enable != "true":
+            print("GOOGLE_DISABLED")
+            sys.exit(0)
+        if not google_arn or "REPLACE_WITH" in google_arn or "PLACEHOLDER" in google_arn:
+            print("GOOGLE_ARN_EMPTY")
+            sys.exit(0)
+        if not google_arn.startswith(
+                "arn:aws:secretsmanager:%s:%s:secret:" % (want_region, want_account)):
+            print("GOOGLE_ARN_FOREIGN")
+            sys.exit(0)
+        if logical in seen:
+            print("DUPLICATE_%s" % logical)
+            sys.exit(0)
+        seen.add(logical)
+        if action != "Add":
+            print("ACTION_%s_%s" % (logical, action or "EMPTY"))
+            sys.exit(0)
+        if rtype != "AWS::IAM::Policy":
+            print("TYPE_%s_%s" % (logical, rtype or "EMPTY"))
+            sys.exit(0)
+        if str(replacement) != "False":
+            print("REPLACEMENT_%s_%s" % (logical, str(replacement)))
+            sys.exit(0)
+        scope = rc.get("Scope", None)
+        if scope is not None:
+            if not isinstance(scope, list):
+                print("SCOPE_%s" % logical)
+                sys.exit(0)
+            if len(scope) == 0:
+                pass
+            elif scope != ["Properties"]:
+                for item in scope:
+                    if item != "Properties":
+                        print("SCOPE_%s_%s" % (logical, str(item)))
+                        sys.exit(0)
+                print("SCOPE_%s" % logical)
+                sys.exit(0)
+        details = rc.get("Details", None)
+        if not isinstance(details, list):
+            print("DETAILS_%s_MALFORMED" % logical)
+            sys.exit(0)
+        if len(details) != 0:
+            try:
+                blob = json.dumps(details)
+            except Exception:
+                blob = ""
+            if "*" in blob:
+                print("WILDCARD_%s" % logical)
+                sys.exit(0)
+            print("DETAILS_%s_UNEXPECTED" % logical)
+            sys.exit(0)
+        continue
     if logical in TASKDEFS:
         want_type = "AWS::ECS::TaskDefinition"
     elif logical in SERVICES:
@@ -2722,6 +2877,13 @@ for item in doc:
         sys.exit(0)
     expected[key] = value
 expected["EnableServices"] = "false"
+if google_enable == "true":
+    if expected.get("EnableGoogleAuth", "") != "true":
+        print("PARAMS_GOOGLE_ENABLE")
+        sys.exit(0)
+    if expected.get("GoogleOAuthSecretArn", "") != google_arn:
+        print("PARAMS_GOOGLE_ARN")
+        sys.exit(0)
 if len(expected) > 20:
     print("PARAMS_MANY")
     sys.exit(0)
@@ -2783,7 +2945,7 @@ PYEOF
       fi
     elif [ "$INFRA_REVIEW" != "OK" ]; then
       rm -rf "$INFRA_PAGES_DIR"
-      echo "refused: infra review proof is $INFRA_REVIEW, expected only owned task definition image or service taskdef Modify with taskdef-only replacement and no DB, network, cert, or secrets change. Pending change set $INFRA_CHANGESET preserved for inspection, no execute made, no delete made." >&2
+      echo "refused: infra review proof is $INFRA_REVIEW, expected only owned task definition image or service taskdef Modify with taskdef-only replacement plus optional exact ApiGoogleAuthPolicy Add only when Google explicitly enabled with least privilege proof, and no DB, network, cert, or other secrets change. Pending change set $INFRA_CHANGESET preserved for inspection, no execute made, no delete made." >&2
       phase_failed infra
     else
       INFRA_CHANGESET_ID="$(printf '%s\n' "$INFRA_RAW" | awk -F'\t' '$1=="ID"{print $2}')"
@@ -2807,6 +2969,24 @@ PYEOF
     echo "Infra: proving both owned services still stopped after the update."
     verify_ecs_service_stopped ApiService api infra
     verify_ecs_service_stopped WebService web infra
+    if [ "$INFRA_GOOGLE_ENABLE" = "true" ]; then
+      INFRA_POLICY_PHYSICAL=""
+      if ! INFRA_POLICY_PHYSICAL="$(stack_resource ApiGoogleAuthPolicy 2>"$TMP_ERR")"; then
+        echo "refused: infra Google policy missing after update, expected exact ApiGoogleAuthPolicy, no later phase started." >&2
+        phase_failed infra
+      fi
+      INFRA_POLICY_PHYSICAL="$(printf '%s' "$INFRA_POLICY_PHYSICAL" | tr -d '[:space:]')"
+      [ -n "$INFRA_POLICY_PHYSICAL" ] && [ "$INFRA_POLICY_PHYSICAL" != "None" ] || { echo "refused: infra Google policy physical ID missing after update, no later phase started." >&2; phase_failed infra; }
+      echo "Verified infra Google policy present: ApiGoogleAuthPolicy"
+    else
+      if INFRA_POLICY_PHYSICAL="$(stack_resource ApiGoogleAuthPolicy 2>/dev/null)"; then
+        INFRA_POLICY_PHYSICAL="$(printf '%s' "$INFRA_POLICY_PHYSICAL" | tr -d '[:space:]')"
+        if [ -n "$INFRA_POLICY_PHYSICAL" ] && [ "$INFRA_POLICY_PHYSICAL" != "None" ]; then
+          echo "refused: infra Google policy present while EnableGoogleAuth false, expected absent, no later phase started." >&2
+          phase_failed infra
+        fi
+      fi
+    fi
   fi
   if [ "$WAS_NEW" -eq 0 ]; then
     if ! cloudformation_deploy "$TARGET_SERVICES" infra; then
@@ -2817,6 +2997,24 @@ PYEOF
       echo "infra create wait reported, verifying stack status before any claim." >&2
     fi
     require_stack_complete infra
+    if [ "$INFRA_GOOGLE_ENABLE" = "true" ]; then
+      INFRA_POLICY_PHYSICAL=""
+      if ! INFRA_POLICY_PHYSICAL="$(stack_resource ApiGoogleAuthPolicy 2>"$TMP_ERR")"; then
+        echo "refused: infra Google policy missing after create, expected exact ApiGoogleAuthPolicy, no later phase started." >&2
+        phase_failed infra
+      fi
+      INFRA_POLICY_PHYSICAL="$(printf '%s' "$INFRA_POLICY_PHYSICAL" | tr -d '[:space:]')"
+      [ -n "$INFRA_POLICY_PHYSICAL" ] && [ "$INFRA_POLICY_PHYSICAL" != "None" ] || { echo "refused: infra Google policy physical ID missing after create, no later phase started." >&2; phase_failed infra; }
+      echo "Verified infra Google policy present: ApiGoogleAuthPolicy"
+    else
+      if INFRA_POLICY_PHYSICAL="$(stack_resource ApiGoogleAuthPolicy 2>/dev/null)"; then
+        INFRA_POLICY_PHYSICAL="$(printf '%s' "$INFRA_POLICY_PHYSICAL" | tr -d '[:space:]')"
+        if [ -n "$INFRA_POLICY_PHYSICAL" ] && [ "$INFRA_POLICY_PHYSICAL" != "None" ]; then
+          echo "refused: infra Google policy present while EnableGoogleAuth false, expected absent, no later phase started." >&2
+          phase_failed infra
+        fi
+      fi
+    fi
   fi
   mark_done infra
   echo "Phase infra complete: stack $STACK_STATUS, services at 0 for safe update"
@@ -5361,7 +5559,28 @@ PYEOF
   [ -n "$ENABLE_OLD_API_IMAGE" ] || { rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON"; echo "refused: enable old api image missing, no change made" >&2; phase_failed enable; }
   [ -n "$ENABLE_OLD_WEB_IMAGE" ] || { rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON"; echo "refused: enable old web image missing, no change made" >&2; phase_failed enable; }
   [ -n "$ENABLE_OLD_PROXY_IMAGE" ] || { rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON"; echo "refused: enable old proxy image missing, no change made" >&2; phase_failed enable; }
-  echo "Enable identity pinned: ApiTaskDefinition and WebTaskDefinition plus three images must be unchanged by this deploy"
+  ENABLE_GOOGLE_ENABLE="$(params_file_value EnableGoogleAuth 2>/dev/null || true)"
+  ENABLE_GOOGLE_ENABLE="$(printf '%s' "$ENABLE_GOOGLE_ENABLE" | tr -d '[:space:]')"
+  [ -n "$ENABLE_GOOGLE_ENABLE" ] || ENABLE_GOOGLE_ENABLE="false"
+  ENABLE_OLD_POLICY=""
+  if [ "$ENABLE_GOOGLE_ENABLE" = "true" ]; then
+    if ! ENABLE_OLD_POLICY="$(stack_resource ApiGoogleAuthPolicy 2>"$TMP_ERR")"; then
+      rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON"
+      echo "refused: enable old ApiGoogleAuthPolicy unreadable, no change made" >&2; phase_failed enable
+    fi
+    ENABLE_OLD_POLICY="$(printf '%s' "$ENABLE_OLD_POLICY" | tr -d '[:space:]')"
+    [ -n "$ENABLE_OLD_POLICY" ] && [ "$ENABLE_OLD_POLICY" != "None" ] || { rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON"; echo "refused: enable old ApiGoogleAuthPolicy missing, no change made" >&2; phase_failed enable; }
+  else
+    if ENABLE_OLD_POLICY="$(stack_resource ApiGoogleAuthPolicy 2>/dev/null)"; then
+      ENABLE_OLD_POLICY="$(printf '%s' "$ENABLE_OLD_POLICY" | tr -d '[:space:]')"
+      if [ -n "$ENABLE_OLD_POLICY" ] && [ "$ENABLE_OLD_POLICY" != "None" ]; then
+        rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON"
+        echo "refused: enable old ApiGoogleAuthPolicy present while EnableGoogleAuth false, no change made" >&2; phase_failed enable
+      fi
+    fi
+    ENABLE_OLD_POLICY=""
+  fi
+  echo "Enable identity pinned: ApiTaskDefinition and WebTaskDefinition plus three images plus Google policy must be unchanged by this deploy"
   if ! cloudformation_deploy "true" enable; then
     rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON"
     echo "enable deploy failed, services unchanged." >&2
@@ -5392,6 +5611,26 @@ PYEOF
   if [ "$ENABLE_NEW_WEB_TASKDEF" != "$ENABLE_OLD_WEB_TASKDEF" ]; then
     rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON"
     echo "refused: WebTaskDefinition changed during enable, task definition and image updates under services are blocked. Run explicit quiesce plus infra first." >&2; phase_failed enable
+  fi
+  ENABLE_NEW_POLICY=""
+  if [ "$ENABLE_GOOGLE_ENABLE" = "true" ]; then
+    if ! ENABLE_NEW_POLICY="$(stack_resource ApiGoogleAuthPolicy 2>"$TMP_ERR")"; then
+      rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON"
+      echo "refused: enable new ApiGoogleAuthPolicy unreadable after deploy" >&2; phase_failed enable
+    fi
+    ENABLE_NEW_POLICY="$(printf '%s' "$ENABLE_NEW_POLICY" | tr -d '[:space:]')"
+    if [ "$ENABLE_NEW_POLICY" != "$ENABLE_OLD_POLICY" ]; then
+      rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON"
+      echo "refused: ApiGoogleAuthPolicy changed during enable, task definition and policy updates under services are blocked. Run explicit quiesce plus infra first." >&2; phase_failed enable
+    fi
+  else
+    if ENABLE_NEW_POLICY="$(stack_resource ApiGoogleAuthPolicy 2>/dev/null)"; then
+      ENABLE_NEW_POLICY="$(printf '%s' "$ENABLE_NEW_POLICY" | tr -d '[:space:]')"
+      if [ -n "$ENABLE_NEW_POLICY" ] && [ "$ENABLE_NEW_POLICY" != "None" ]; then
+        rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON"
+        echo "refused: ApiGoogleAuthPolicy appeared during enable while disabled, task definition and policy updates under services are blocked. Run explicit quiesce plus infra first." >&2; phase_failed enable
+      fi
+    fi
   fi
   ENABLE_NEW_API_JSON="$(mktemp /tmp/launchcrew-enable-new-api-XXXXXX)"
   ENABLE_NEW_WEB_JSON="$(mktemp /tmp/launchcrew-enable-new-web-XXXXXX)"
@@ -5428,7 +5667,7 @@ PYEOF
   [ "$ENABLE_NEW_API_IMAGE" = "$ENABLE_OLD_API_IMAGE" ] || { echo "refused: api image changed during enable, task definition and image updates under services are blocked. Run explicit quiesce plus infra first." >&2; phase_failed enable; }
   [ "$ENABLE_NEW_WEB_IMAGE" = "$ENABLE_OLD_WEB_IMAGE" ] || { echo "refused: web image changed during enable, task definition and image updates under services are blocked. Run explicit quiesce plus infra first." >&2; phase_failed enable; }
   [ "$ENABLE_NEW_PROXY_IMAGE" = "$ENABLE_OLD_PROXY_IMAGE" ] || { echo "refused: proxy image changed during enable, task definition and image updates under services are blocked. Run explicit quiesce plus infra first." >&2; phase_failed enable; }
-  echo "Verified enable identity: task definitions and images unchanged by this deploy"
+  echo "Verified enable identity: task definitions, images, and Google policy unchanged by this deploy"
   mark_done enable
   echo "Phase enable complete: both services fixed count 1 each, no autoscaling"
 fi
@@ -5559,14 +5798,25 @@ PYEOF
     rm -f "$QUIESCE_ARGS_FILE" "$QUIESCE_STACK_JSON"
     [ -n "$QUIESCE_PARAM_ARGS" ] || { rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON"; echo "refused: quiesce parameters empty, no change made" >&2; phase_failed quiesce; }
     echo "Quiesce change set uses the existing deployed template with all existing values except EnableServices=false"
+    QUIESCE_RESUMED=0
     # shellcheck disable=SC2086
     if ! "$AWS_BIN" cloudformation create-change-set --stack-name "$STACK_NAME" --change-set-name "$QUIESCE_CHANGESET" --change-set-type UPDATE --use-previous-template --parameters $QUIESCE_PARAM_ARGS --capabilities CAPABILITY_NAMED_IAM --tags Key=Project,Value=LaunchCrew Key=Environment,Value=demo --region "$EXPECTED_REGION" --output json >"$TMP_JSON" 2>"$TMP_ERR"; then
-      rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON"
-      echo "refused: quiesce change set create failed; an existing same-name change set is never deleted or replaced, inspect $QUIESCE_CHANGESET manually after review. No change made." >&2; phase_failed quiesce
+      QUIESCE_CREATE_ERR="$(cat "$TMP_ERR" 2>/dev/null || true)"
+      case "$QUIESCE_CREATE_ERR" in
+        *AlreadyExists*)
+          QUIESCE_RESUMED=1
+          echo "Quiesce: same-name change set $QUIESCE_CHANGESET already exists, attempting safe resume with read-only proof, never deleting or recreating."
+          ;;
+        *)
+          rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON"
+          echo "refused: quiesce change set create failed; an existing same-name change set is never deleted or replaced, inspect $QUIESCE_CHANGESET manually after review. No change made." >&2; phase_failed quiesce
+          ;;
+      esac
     fi
     QUIESCE_PAGES_DIR="$(mktemp -d /tmp/launchcrew-quiesce-pages-XXXXXX)"
     QUIESCE_NEXT=""
     QUIESCE_PAGE_NUM=0
+    QUIESCE_WAIT_TRY=0
     while [ "$QUIESCE_PAGE_NUM" -lt 3 ]; do
       QUIESCE_PAGE_NUM=$((QUIESCE_PAGE_NUM + 1))
       QUIESCE_PAGE_FILE="$QUIESCE_PAGES_DIR/page-$QUIESCE_PAGE_NUM.json"
@@ -5595,6 +5845,38 @@ PYEOF
         phase_failed quiesce
       fi
       rm -f "$QUIESCE_INPUT"
+      if [ "$QUIESCE_PAGE_NUM" -eq 1 ]; then
+        QUIESCE_WAIT_STATUS="$(python3 - "$QUIESCE_PAGE_FILE" 2>/dev/null <<'PYEOF'
+import json, sys
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    print("MALFORMED")
+    sys.exit(0)
+if not isinstance(doc, dict):
+    print("MALFORMED")
+    sys.exit(0)
+print("%s" % (doc.get("Status", "") or "EMPTY"))
+PYEOF
+)" || QUIESCE_WAIT_STATUS="MALFORMED"
+        QUIESCE_WAIT_STATUS="$(printf '%s' "$QUIESCE_WAIT_STATUS" | tr -d '[:space:]')"
+        if [ "$QUIESCE_WAIT_STATUS" = "CREATE_IN_PROGRESS" ] || [ "$QUIESCE_WAIT_STATUS" = "CREATE_PENDING" ]; then
+          if [ "$QUIESCE_WAIT_TRY" -lt 5 ]; then
+            QUIESCE_WAIT_TRY=$((QUIESCE_WAIT_TRY + 1))
+            echo "Quiesce: change set $QUIESCE_CHANGESET status $QUIESCE_WAIT_STATUS, waiting bounded ($QUIESCE_WAIT_TRY/5) before review."
+            sleep 2 2>/dev/null || true
+            QUIESCE_PAGE_NUM=0
+            rm -f "$QUIESCE_PAGE_FILE"
+            QUIESCE_NEXT=""
+            continue
+          else
+            rm -rf "$QUIESCE_PAGES_DIR"
+            rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON"
+            echo "refused: quiesce change set $QUIESCE_CHANGESET still $QUIESCE_WAIT_STATUS after bounded wait, no execute made. Pending change set preserved for inspection." >&2
+            phase_failed quiesce
+          fi
+        fi
+      fi
       QUIESCE_NEXT="$(python3 - "$QUIESCE_PAGE_FILE" 2>/dev/null <<'PYEOF'
 import json, sys
 try:
@@ -5833,6 +6115,9 @@ PYEOF
     QUIESCE_CHANGESET_ID="$(printf '%s' "$QUIESCE_CHANGESET_ID" | tr -d '[:space:]')"
     rm -rf "$QUIESCE_PAGES_DIR"
     [ -n "$QUIESCE_CHANGESET_ID" ] || { rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON"; echo "refused: quiesce reviewed change set ID missing, no execute made." >&2; phase_failed quiesce; }
+    if [ "$QUIESCE_RESUMED" -eq 1 ]; then
+      echo "Quiesce: resuming existing exact same-name change set $QUIESCE_CHANGESET with reviewed ID after read-only identity, status, stack, parameter, tag, and diff proof."
+    fi
     echo "Quiesce change set reviewed: only ApiService and WebService DesiredCount to 0 with no replacement, same change set ID executes next."
     if ! "$AWS_BIN" cloudformation execute-change-set --stack-name "$STACK_NAME" --change-set-name "$QUIESCE_CHANGESET_ID" --region "$EXPECTED_REGION" >/dev/null 2>"$TMP_ERR"; then
       rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON"
