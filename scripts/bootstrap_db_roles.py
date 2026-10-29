@@ -774,9 +774,13 @@ def do_bind():
         # Phase 4: later migration-created tables keep the runtime split.
         # Executed as migration for its own role, which a NOSUPERUSER
         # master could never set for another role. Function defaults deny
-        # PUBLIC globally, then grant the exact runtime role in the app
-        # schema only, so first-migration functions are safe without the
-        # migration task knowing the runtime name.
+        # PUBLIC globally only, with no blanket future runtime EXECUTE
+        # grant, so a later SECURITY DEFINER function stays owner-only by
+        # default. Explicit exact runtime EXECUTE grants on
+        # model_reserve_call and model_finalize_call in the runtime-grants
+        # phase plus migration 005 discovery keep fresh migration and
+        # post-bind correct without needing the runtime role for default
+        # function grants.
         try:
             mcur.execute("ALTER DEFAULT PRIVILEGES FOR ROLE %s IN SCHEMA %s "
                          "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %s"
@@ -787,9 +791,6 @@ def do_bind():
             mcur.execute("ALTER DEFAULT PRIVILEGES FOR ROLE %s "
                          "REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC"
                          % qi_migration)
-            mcur.execute("ALTER DEFAULT PRIVILEGES FOR ROLE %s IN SCHEMA %s "
-                         "GRANT EXECUTE ON FUNCTIONS TO %s"
-                         % (qi_migration, qi_schema, qi_runtime))
         except Exception:
             try:
                 mconn.rollback()

@@ -107,14 +107,18 @@ static_checks() {
   grep -q -E 'ALTER[[:space:]]+DEFAULT[[:space:]]+PRIVILEGES[[:space:]]+FOR[[:space:]]+ROLE[[:space:]]+:migration_user.*GRANT[[:space:]]+USAGE,[[:space:]]*SELECT[[:space:]]+ON[[:space:]]+SEQUENCES' "$SQL_FILE" || { echo "static: missing default sequence grant" >&2; rm -f "$tmp_grants"; return 1; }
   log "static: default privileges pass"
 
-  # Model function defaults: global PUBLIC revoke, then per-schema runtime grant.
+  # Model function defaults: global PUBLIC revoke only, no blanket runtime grant.
   grep -q -E 'ALTER[[:space:]]+DEFAULT[[:space:]]+PRIVILEGES[[:space:]]+FOR[[:space:]]+ROLE[[:space:]]+:migration_user[[:space:]]+REVOKE[[:space:]]+EXECUTE[[:space:]]+ON[[:space:]]+FUNCTIONS[[:space:]]+FROM[[:space:]]+PUBLIC' "$SQL_FILE" || { echo "static: missing global function PUBLIC revoke" >&2; rm -f "$tmp_grants"; return 1; }
   if grep -E 'ALTER[[:space:]]+DEFAULT[[:space:]]+PRIVILEGES[[:space:]]+FOR[[:space:]]+ROLE[[:space:]]+:migration_user[[:space:]]+REVOKE[[:space:]]+EXECUTE' "$SQL_FILE" | grep -q 'IN[[:space:]]\+SCHEMA'; then
     echo "static: per-schema PUBLIC function revoke cannot cancel global defaults" >&2
     rm -f "$tmp_grants"
     return 1
   fi
-  grep -q -E 'ALTER[[:space:]]+DEFAULT[[:space:]]+PRIVILEGES[[:space:]]+FOR[[:space:]]+ROLE[[:space:]]+:migration_user[[:space:]]+IN[[:space:]]+SCHEMA[[:space:]]+:app_schema[[:space:]]+GRANT[[:space:]]+EXECUTE[[:space:]]+ON[[:space:]]+FUNCTIONS[[:space:]]+TO[[:space:]]+:runtime_user' "$SQL_FILE" || { echo "static: missing per-schema function runtime grant" >&2; rm -f "$tmp_grants"; return 1; }
+  if grep -E 'ALTER[[:space:]]+DEFAULT[[:space:]]+PRIVILEGES[[:space:]]+FOR[[:space:]]+ROLE[[:space:]]+:migration_user.*GRANT[[:space:]]+EXECUTE[[:space:]]+ON[[:space:]]+FUNCTIONS' "$SQL_FILE" >/dev/null; then
+    echo "static: blanket future function runtime grant must be absent" >&2
+    rm -f "$tmp_grants"
+    return 1
+  fi
   log "static: model function defaults pass"
 
   # No password assignment in non-comment SQL.
@@ -714,7 +718,7 @@ mc.execute("SELECT e.grantee, e.privilege_type FROM pg_proc p JOIN pg_namespace 
 ffprivs = mc.fetchall()
 ff_public = any(int(g) == 0 and str(pt).upper() == "EXECUTE" for g, pt in ffprivs)
 ff_runtime = any(int(g) == int(rt_oid) and str(pt).upper() == "EXECUTE" for g, pt in ffprivs)
-if ff_public or not ff_runtime:
+if ff_public or ff_runtime:
     mc.execute("DROP FUNCTION public.%s()" % fname)
     raise SystemExit("future function scope wrong")
 mc.execute("DROP FUNCTION public.%s()" % fname)
@@ -779,7 +783,8 @@ print("model ok")
   VERIFY_CODE=$?
   set -e
   [ "$VERIFY_CODE" -eq 0 ] || { printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify failed at head 005"; }
-  case "$VERIFY_OUT" in *"VERIFY COMPLETE"*|*"revision=005"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed proof markers" ;; esac
+  case "$VERIFY_OUT" in *"VERIFY COMPLETE"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed VERIFY COMPLETE" ;; esac
+  case "$VERIFY_OUT" in *"revision=005"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed revision=005" ;; esac
   case "$VERIFY_OUT" in *"$BIND_RT_PW"*|*"$RT_URL"*) fail "verify output leaked a synthetic secret" ;; esac
   log "pass: actual --verify proves 005, identity, rolled-back write, DDL refusal"
 

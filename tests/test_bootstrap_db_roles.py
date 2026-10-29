@@ -562,17 +562,15 @@ class BindJobTests(unittest.TestCase):
         self.assertEqual(code, 0, msg=out)
         joined = "\n".join(self.sql_texts())
         self.assertIn("REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC", joined)
-        self.assertIn("GRANT EXECUTE ON FUNCTIONS TO", joined)
+        self.assertNotIn("GRANT EXECUTE ON FUNCTIONS", joined)
         revokes = [sql for sql in self.sql_texts()
                    if "REVOKE EXECUTE ON FUNCTIONS" in sql]
         self.assertTrue(revokes)
         for sql in revokes:
             self.assertNotIn("IN SCHEMA", sql)
-        grants = [sql for sql in self.sql_texts()
-                  if "GRANT EXECUTE ON FUNCTIONS" in sql]
-        self.assertTrue(grants)
-        for sql in grants:
-            self.assertIn("IN SCHEMA", sql)
+        self.assertIn("GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO",
+                      joined)
+        self.assertIn("GRANT USAGE, SELECT ON SEQUENCES TO", joined)
 
     def test_bind_applies_model_narrow_revokes_when_tables_exist(self):
         self.state.inventory = [("model_budget", "r",
@@ -622,6 +620,20 @@ class BindJobTests(unittest.TestCase):
         for sql in self.sql_texts():
             if "GRANT EXECUTE ON FUNCTION" in sql:
                 self.assertNotIn("PUBLIC", sql)
+
+    def test_bind_explicit_model_grants_without_blanket_default(self):
+        self.state.function_inventory = [
+            ("model_reserve_call", "launchcrew_migration"),
+            ("model_finalize_call", "launchcrew_migration"),
+        ]
+        code, out = self.run_main("--bind")
+        self.assertEqual(code, 0, msg=out)
+        joined = "\n".join(self.sql_texts())
+        self.assertIn("GRANT EXECUTE ON FUNCTION", joined)
+        self.assertIn("model_reserve_call", joined)
+        self.assertIn("model_finalize_call", joined)
+        self.assertNotIn("GRANT EXECUTE ON FUNCTIONS", joined)
+        self.assertIn("REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC", joined)
 
     def test_bind_revokes_trigger_function_from_runtime(self):
         self.state.function_inventory = [("model_no_direct",
@@ -1147,7 +1159,8 @@ class StaticBoundaryTests(unittest.TestCase):
         self.assertIn("MODEL_FINALIZE_FUNC", self.text)
         self.assertIn("MODEL_TRIGGER_FUNC", self.text)
         self.assertIn("REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC", self.text)
-        self.assertIn("GRANT EXECUTE ON FUNCTIONS TO", self.text)
+        self.assertNotIn("GRANT EXECUTE ON FUNCTIONS TO", self.text)
+        self.assertIn("GRANT EXECUTE ON FUNCTION", self.text)
         self.assertIn("_function_owners", self.text)
         self.assertIn("pg_proc", self.text)
 
@@ -1258,15 +1271,15 @@ class AclSemanticsTests(unittest.TestCase):
         self.assertIn(self.RT, " ".join(entries))
         self.assertEqual("", _named_privs(entries, self.RT))
 
-    def test_future_scope_needs_runtime_execute_without_public(self):
-        ok = ["lc_bind_runtime=X/lc_bind_migration"]
-        public = ["=X/lc_bind_migration",
-                  "lc_bind_runtime=X/lc_bind_migration"]
-        missing = ["postgres=X/postgres"]
-        self.assertFalse(_has_public_priv(ok, ("X",)))
-        self.assertIn("X", _named_privs(ok, self.RT))
+    def test_future_scope_denies_public_and_runtime_execute(self):
+        owner_only = ["postgres=X/postgres"]
+        runtime_grant = ["lc_bind_runtime=X/lc_bind_migration"]
+        public = ["=X/lc_bind_migration"]
+        self.assertFalse(_has_public_priv(owner_only, ("X",)))
+        self.assertEqual("", _named_privs(owner_only, self.RT))
+        self.assertIn("X", _named_privs(runtime_grant, self.RT))
+        self.assertFalse(_has_public_priv(runtime_grant, ("X",)))
         self.assertTrue(_has_public_priv(public, ("X",)))
-        self.assertEqual("", _named_privs(missing, self.RT))
 
 
 def _input_arg_names(argnames, argmodes):
@@ -1359,6 +1372,50 @@ class ModelProofSemanticsTests(unittest.TestCase):
         self.assertNotEqual(_parse_search_path("search_path=pg_temp, public"),
                             ["public", "pg_temp"])
         self.assertIsNone(_parse_search_path("work_mem=4096"))
+
+
+class SqlFileFunctionDefaultTests(unittest.TestCase):
+    def setUp(self):
+        self.text = SQL_FILE.read_text(encoding="utf-8")
+
+    def test_global_public_revoke_without_blanket_runtime_grant(self):
+        self.assertIn(
+            "ALTER DEFAULT PRIVILEGES FOR ROLE :migration_user "
+            "REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC", self.text)
+        self.assertNotIn("GRANT EXECUTE ON FUNCTIONS", self.text)
+
+    def test_table_sequence_defaults_retained(self):
+        self.assertIn(
+            "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES", self.text)
+        self.assertIn(
+            "GRANT USAGE, SELECT ON ALL SEQUENCES", self.text)
+        self.assertIn("ALTER DEFAULT PRIVILEGES FOR ROLE :migration_user",
+                      self.text)
+
+
+class VerifyFutureFunctionProofTests(unittest.TestCase):
+    def setUp(self):
+        self.text = VERIFY_SCRIPT.read_text(encoding="utf-8")
+
+    def test_future_proof_denies_public_and_runtime(self):
+        self.assertIn("SECURITY DEFINER", self.text)
+        self.assertIn("if ff_public or ff_runtime:", self.text)
+        self.assertNotIn("or not ff_runtime", self.text)
+        self.assertIn("future function scope wrong", self.text)
+
+    def test_static_forbids_blanket_function_grant(self):
+        self.assertIn("missing global function PUBLIC revoke", self.text)
+        self.assertIn("blanket future function runtime grant must be absent",
+                      self.text)
+        self.assertNotIn("missing per-schema function runtime grant",
+                         self.text)
+
+    def test_verify_completion_requires_both_signals(self):
+        self.assertIn('*"VERIFY COMPLETE"*', self.text)
+        self.assertIn('*"revision=005"*', self.text)
+        self.assertIn("missed VERIFY COMPLETE", self.text)
+        self.assertIn("missed revision=005", self.text)
+        self.assertNotIn('*"VERIFY COMPLETE"*|*"revision=005"*', self.text)
 
 
 if __name__ == "__main__":
