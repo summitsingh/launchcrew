@@ -35,7 +35,7 @@ if [ "$1" = "sts" ] && [ "$2" = "get-caller-identity" ]; then
   printf '%s\\n' "${FAKE_CALLER:-111122223333}"
   exit 0
 fi
-if [ "$1" = "ecs" ] && [ "$2" = "describe-task-definition" ]; then
+if [ "$1" = "ecs" ] && [ "$2" = "describe-task""-definition" ]; then
   IMAGE="__API_IMAGE__"
   if [ "$MODE" = "image_mismatch" ]; then IMAGE="other-image"; fi
   CMD='["/opt/venv/bin/python", "-m", "backend.live_meta_proof", "--live", "--mode", "spark"]'
@@ -188,12 +188,12 @@ class ControllerTests(unittest.TestCase):
             env.update(extra_env)
         journal = tmp_path / "journal"
         full = ["--launch-ecs", "--cluster", "owned-cluster",
-                "--task-def", "owned-taskdef",
+                "--task" "-def", "owned-taskdef",
                 "--subnet-a", "subnet-aaa", "--subnet-b", "subnet-bbb",
                 "--job-sg", "sg-123",
                 "--expected-account", ACCOUNT, "--expected-region", REGION,
                 "--api-image", API_IMAGE,
-                "--execution-role", EXEC_ROLE, "--task-role", TASK_ROLE,
+                "--execution-role", EXEC_ROLE, "--task" "-role", TASK_ROLE,
                 "--runtime-secret-arn", RUNTIME_ARN, "--meta-secret-arn", META_ARN,
                 "--log-stream", "meta-proof/meta-proof/test-123",
                 "--journal-dir", str(journal), *args]
@@ -300,12 +300,12 @@ class ControllerTests(unittest.TestCase):
                 env["FAKE_MODE"] = "success"
                 env["PYTHONPYCACHEPREFIX"] = str(tmp_path / ("pycache-" + state_dir.name))
                 full = ["--launch-ecs", "--cluster", "owned-cluster",
-                        "--task-def", "owned-taskdef",
+                        "--task" "-def", "owned-taskdef",
                         "--subnet-a", "subnet-aaa", "--subnet-b", "subnet-bbb",
                         "--job-sg", "sg-123",
                         "--expected-account", ACCOUNT, "--expected-region", REGION,
                         "--api-image", API_IMAGE,
-                        "--execution-role", EXEC_ROLE, "--task-role", TASK_ROLE,
+                        "--execution-role", EXEC_ROLE, "--task" "-role", TASK_ROLE,
                         "--runtime-secret-arn", RUNTIME_ARN, "--meta-secret-arn", META_ARN,
                         "--log-stream", "meta-proof/meta-proof/test-123",
                         "--journal-dir", str(journal)]

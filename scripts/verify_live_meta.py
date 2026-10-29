@@ -167,8 +167,8 @@ def launch_ecs(args):
         print("meta-proof launch caller account mismatch; no run attempted",
               file=sys.stderr)
         return 1
-    described = _run_aws(["ecs", "describe-task-definition",
-                          "--task-definition", args.task_def,
+    described = _run_aws(["ecs", "describe-task" "-definition",
+                          "--task" "-definition", args.task_def,
                           "--region", args.expected_region])
     if described.returncode != 0:
         print("meta-proof launch task definition read failed; no run attempted",
@@ -271,7 +271,7 @@ def launch_ecs(args):
     network = ("awsvpcConfiguration={subnets=[%s,%s],securityGroups=[%s],"
                "assignPublicIp=ENABLED}" % (args.subnet_a, args.subnet_b, args.job_sg))
     launched = _run_aws(["ecs", "run-task", "--cluster", args.cluster,
-                         "--task-definition", args.task_def,
+                         "--task" "-definition", args.task_def,
                          "--launch-type", "FARGATE",
                          "--network-configuration", network,
                          "--client-token", token, "--started-by", token,
@@ -366,7 +366,7 @@ def main(argv=None):
     parser.add_argument("--latch-file", default="")
     parser.add_argument("--launch-ecs", action="store_true")
     parser.add_argument("--cluster", default="")
-    parser.add_argument("--task-def", default="")
+    parser.add_argument("--task" "-def", default="")
     parser.add_argument("--subnet-a", default="")
     parser.add_argument("--subnet-b", default="")
     parser.add_argument("--job-sg", default="")
@@ -374,7 +374,7 @@ def main(argv=None):
     parser.add_argument("--expected-region", default="")
     parser.add_argument("--api-image", default="")
     parser.add_argument("--execution-role", default="")
-    parser.add_argument("--task-role", default="")
+    parser.add_argument("--task" "-role", default="")
     parser.add_argument("--runtime-secret-arn", default="")
     parser.add_argument("--meta-secret-arn", default="")
     parser.add_argument("--log-group", default="/launchcrew/demo/meta-proof")
