@@ -349,53 +349,47 @@ bind_verify_live() {
   BIND_ADMIN="lc_bind_admin"
   BIND_RT="lc_bind_runtime"
   BIND_MG="lc_bind_migration"
-  log "create RDS-like fixture admin plus isolated database $BIND_DB"
+  log "create RDS-like fixture admin NOSUPERUSER CREATEDB CREATEROLE, leave $BIND_DB absent"
   log "local admin logic proof only, NOT RDS identity proof"
-  "$PG_BIN_DIR/createdb" -h 127.0.0.1 -p "$PORT" -U "$SUPERUSER" "$BIND_DB"
+  log "fresh-path proof: actual --bind must create the exact DB via maintenance postgres"
 
-  # Fresh bind identities stay absent here on purpose. The actual
-  # scripts/bootstrap_db_roles.py --bind below creates each role, stamps
-  # the ownership marker, binds its password, and applies the privilege
-  # split. Precreating the roles with db-roles.sql would leave them
-  # without the ownership marker, and the hardened bind correctly
-  # refuses such unowned roles, so no precreate or blind takeover
-  # happens in this stage. Stage 1 above already proves db-roles.sql.
+  # Fresh bind identities and the bind database stay absent here on purpose.
+  # The actual scripts/bootstrap_db_roles.py --bind below connects strict
+  # verify-full TLS to the built-in postgres maintenance database as the
+  # fixture admin, creates exactly BIND_DB if absent, then creates each
+  # role, stamps the ownership marker, binds its password, and applies the
+  # privilege split. Precreating the database with createdb would skip the
+  # fresh db-ensure path, and precreating the roles with db-roles.sql would
+  # leave them without the ownership marker, and the hardened bind correctly
+  # refuses such unowned roles, so no precreate or blind takeover happens
+  # in this stage. Stage 1 above already proves db-roles.sql.
 
   ADMIN_PW="$(python3 -c 'import secrets; print(secrets.token_hex(18))')"
   [ "${#ADMIN_PW}" -ge 32 ] || fail "synthetic admin password failed"
   BIND_ADMIN_NAME="$BIND_ADMIN" BIND_ADMIN_PW="$ADMIN_PW" \
-  BIND_PORT="$PORT" BIND_DBNAME="$BIND_DB" python3 -c '
+  BIND_PORT="$PORT" python3 -c '
 import os
 import psycopg
 admin = os.environ["BIND_ADMIN_NAME"]
 pw = os.environ["BIND_ADMIN_PW"]
 port = int(os.environ["BIND_PORT"])
-dbname = os.environ["BIND_DBNAME"]
 if admin != "lc_bind_admin":
     raise SystemExit("unexpected admin name")
 conn = psycopg.connect(host="127.0.0.1", port=port, dbname="postgres",
                        user="postgres", autocommit=True)
 cur = conn.cursor()
 cur.execute("CREATE ROLE lc_bind_admin WITH LOGIN NOSUPERUSER "
-            "CREATEROLE NOCREATEDB NOREPLICATION NOBYPASSRLS")
+            "CREATEROLE CREATEDB NOREPLICATION NOBYPASSRLS")
 cc = psycopg.ClientCursor(conn)
 cc.execute("ALTER ROLE lc_bind_admin WITH PASSWORD %s", (pw,))
-cur.execute("ALTER DATABASE lc_bind_db OWNER TO lc_bind_admin")
 conn.close()
-admin_conn = psycopg.connect(host="127.0.0.1", port=port, dbname=dbname,
-                             user="postgres", autocommit=True)
-admin_cur = admin_conn.cursor()
-admin_cur.execute("ALTER SCHEMA public OWNER TO lc_bind_admin")
-admin_conn.close()
 ' || fail "fixture admin creation failed"
-  log "fixture admin is LOGIN NOSUPERUSER CREATEROLE and owns DB and schema"
-  admin_flags="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=postgres user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT rolsuper::text || ',' || rolcreaterole::text || ',' || rolcanlogin::text FROM pg_roles WHERE rolname='"$BIND_ADMIN"';" | tr -d '[:space:]')" || true
-  [ "$admin_flags" = "false,true,true" ] || fail "fixture admin flags are $admin_flags, expected false,true,true"
-  db_owner="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=postgres user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname='"$BIND_DB"';" | tr -d '[:space:]')" || true
-  [ "$db_owner" = "$BIND_ADMIN" ] || fail "bind DB owner is $db_owner, expected $BIND_ADMIN"
-  schema_owner="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname='public';" | tr -d '[:space:]')" || true
-  [ "$schema_owner" = "$BIND_ADMIN" ] || fail "bind schema owner is $schema_owner, expected $BIND_ADMIN"
-  log "pass: admin owns the isolated DB and schema"
+  log "fixture admin is LOGIN NOSUPERUSER CREATEROLE CREATEDB"
+  admin_flags="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=postgres user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT rolsuper::text || ',' || rolcreaterole::text || ',' || rolcreatedb::text || ',' || rolcanlogin::text FROM pg_roles WHERE rolname='"$BIND_ADMIN"';" | tr -d '[:space:]')" || true
+  [ "$admin_flags" = "false,true,true,true" ] || fail "fixture admin flags are $admin_flags, expected false,true,true,true"
+  db_absent="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=postgres user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT count(*) FROM pg_database WHERE datname='"$BIND_DB"';" | tr -d '[:space:]')" || true
+  [ "$db_absent" = "0" ] || fail "bind DB $BIND_DB must be absent before fresh bind"
+  log "pass: admin is NOSUPERUSER CREATEDB CREATEROLE and $BIND_DB is absent"
 
   CERTDIR="$PGDATA/certs"
   mkdir -p "$CERTDIR"
@@ -417,8 +411,12 @@ admin_conn.close()
   [ "$ssl_on" = "on" ] || fail "disposable server has no SSL support, cannot exercise verify-full, no invented pass"
   log "disposable server SSL is on with a fresh self-signed CA"
 
+  # Maintenance postgres requires the admin password so the fresh db-ensure
+  # path proves password-auth plus verify-full TLS. BIND_DB lines cover the
+  # fresh DB once actual --bind creates it. Loopback disposable only.
   HBA="$PGDATA/pg_hba.conf"
   {
+    echo "host postgres $BIND_ADMIN 127.0.0.1/32 scram-sha-256"
     echo "host $BIND_DB $BIND_ADMIN 127.0.0.1/32 scram-sha-256"
     echo "host $BIND_DB $BIND_RT 127.0.0.1/32 scram-sha-256"
     echo "host $BIND_DB $BIND_MG 127.0.0.1/32 scram-sha-256"
@@ -461,18 +459,30 @@ sys.stdout.write(text[:2000])
       python3 "$REPO_ROOT/scripts/bootstrap_db_roles.py" --bind 2>&1
   }
 
-  log "run actual scripts/bootstrap_db_roles.py --bind as the admin"
+  db_pre="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=postgres user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT count(*) FROM pg_database WHERE datname='"$BIND_DB"';" | tr -d '[:space:]')" || true
+  [ "$db_pre" = "0" ] || fail "bind DB $BIND_DB must still be absent before fresh bind"
+  log "run actual scripts/bootstrap_db_roles.py --bind as the admin to create $BIND_DB"
   set +e
   BIND_OUT="$(bind_job "$BIND_RT")"
   BIND_CODE=$?
   set -e
   [ "$BIND_CODE" -eq 0 ] || { printf '%s' "$BIND_OUT" | safe_emit >&2; fail "actual --bind failed"; }
   case "$BIND_OUT" in *"BIND COMPLETE"*) ;; *) printf '%s' "$BIND_OUT" | safe_emit >&2; fail "actual --bind missed BIND COMPLETE" ;; esac
+  case "$BIND_OUT" in *"db-ensure"*) ;; *) printf '%s' "$BIND_OUT" | safe_emit >&2; fail "actual --bind missed db-ensure" ;; esac
   case "$BIND_OUT" in *"password-binding"*|*"schema-acls"*|*"runtime-grants"*|*"default-privileges"*) ;; *) printf '%s' "$BIND_OUT" | safe_emit >&2; fail "actual --bind missed phase markers" ;; esac
   case "$BIND_OUT" in *"$BIND_RT_PW"*|*"$BIND_MG_PW"*|*"$ADMIN_PW"*) fail "bind output leaked a synthetic password" ;; esac
   log "pass: actual --bind complete with no password in output"
+  fresh_db_owner="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=postgres user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname='"$BIND_DB"';" | tr -d '[:space:]')" || true
+  [ "$fresh_db_owner" = "$BIND_ADMIN" ] || fail "fresh bind DB owner is $fresh_db_owner, expected $BIND_ADMIN"
+  fresh_schema_owner="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname='public';" | tr -d '[:space:]')" || true
+  case "$fresh_schema_owner" in
+    "$BIND_ADMIN"|"pg_database_owner") ;;
+    *) fail "fresh bind schema owner is $fresh_schema_owner, expected $BIND_ADMIN or pg_database_owner" ;;
+  esac
+  log "pass: actual --bind created exact $BIND_DB owned by $BIND_ADMIN with schema owner $fresh_schema_owner"
+  unset db_pre fresh_db_owner fresh_schema_owner
 
-  log "repeat actual --bind for idempotence proof"
+  log "repeat actual --bind for idempotence proof (existing-DB path after fresh create)"
   set +e
   REBIND_OUT="$(bind_job "$BIND_RT")"
   REBIND_CODE=$?
