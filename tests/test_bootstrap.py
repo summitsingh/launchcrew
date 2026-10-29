@@ -154,6 +154,13 @@ if [ "$1" = "cloudformation" ] && [ "$2" = "create-change-set" ]; then
         exit 254
       fi ;;
   esac
+  case "$*" in
+    *"--use-previous-template"*)
+      if [ "${FAKE_QUIESCE_CREATE:-ok}" = "exists" ]; then
+        echo "An error occurred (AlreadyExistsException) when calling the CreateChangeSet operation: change set quiesce-006 exists" >&2
+        exit 254
+      fi ;;
+  esac
   printf '{"Id":"arn:aws:cloudformation:us-east-1:111122223333:changeSet/changeset/abc123","StackId":"arn:aws:cloudformation:us-east-1:111122223333:stack/launchcrew-demo/abc123"}\\n'
   exit 0
 fi
@@ -264,6 +271,42 @@ FOREIGN_DB = {"Type": "Resource", "ResourceChange": {
 FULL = [taskdef_change(logical, repo, "True", "ContainerDefinitions", "Always")
         for logical, repo in TASKDEFS]
 FULL += [svc_change("ApiService", API_SVC), svc_change("WebService", WEB_SVC)]
+def policy_exact():
+    return {"Type": "Resource", "ResourceChange": {
+        "Action": "Add", "LogicalResourceId": "ApiGoogleAuthPolicy",
+        "PhysicalResourceId": "", "ResourceType": "AWS::IAM::Policy",
+        "Replacement": "False", "Scope": ["Properties"], "Details": []}}
+def policy_foreign():
+    return {"Type": "Resource", "ResourceChange": {
+        "Action": "Add", "LogicalResourceId": "OtherPolicy",
+        "PhysicalResourceId": "", "ResourceType": "AWS::IAM::Policy",
+        "Replacement": "False", "Scope": ["Properties"], "Details": []}}
+def policy_wildcard():
+    return {"Type": "Resource", "ResourceChange": {
+        "Action": "Add", "LogicalResourceId": "ApiGoogleAuthPolicy",
+        "PhysicalResourceId": "", "ResourceType": "AWS::IAM::Policy",
+        "Replacement": "False", "Scope": ["Properties"],
+        "Details": [{"Target": {"Attribute": "Properties", "Name": "PolicyDocument",
+                                "RequiresRecreation": "Never"},
+                     "Evaluation": "Static", "ChangeSource": "DirectModification",
+                     "Resource": "*"}]}}
+def policy_details():
+    return {"Type": "Resource", "ResourceChange": {
+        "Action": "Add", "LogicalResourceId": "ApiGoogleAuthPolicy",
+        "PhysicalResourceId": "", "ResourceType": "AWS::IAM::Policy",
+        "Replacement": "False", "Scope": ["Properties"],
+        "Details": [{"Target": {"Attribute": "Properties", "Name": "PolicyDocument",
+                                "RequiresRecreation": "Never"},
+                     "Evaluation": "Static", "ChangeSource": "DirectModification"}]}}
+def policy_tags_scope():
+    return {"Type": "Resource", "ResourceChange": {
+        "Action": "Add", "LogicalResourceId": "ApiGoogleAuthPolicy",
+        "PhysicalResourceId": "", "ResourceType": "AWS::IAM::Policy",
+        "Replacement": "False", "Scope": ["Tags"], "Details": []}}
+def policy_bad_replacement():
+    entry = policy_exact()
+    entry["ResourceChange"] = dict(entry["ResourceChange"], Replacement="True")
+    return entry
 if mode == "malformed":
     print("not-json{{{")
 elif mode == "empty":
@@ -310,12 +353,35 @@ elif mode == "paginated_extra":
         print(json.dumps(base([FOREIGN_DB], iparams())))
 elif mode == "truncated":
     print(json.dumps(base(FULL[:1], iparams(), token_out="more")))
+elif mode == "google_exact":
+    print(json.dumps(base(FULL + [policy_exact()], iparams())))
+elif mode == "google_foreign":
+    print(json.dumps(base(FULL + [policy_foreign()], iparams())))
+elif mode == "google_wildcard":
+    print(json.dumps(base(FULL + [policy_wildcard()], iparams())))
+elif mode == "google_details":
+    print(json.dumps(base(FULL + [policy_details()], iparams())))
+elif mode == "google_tags_scope":
+    print(json.dumps(base(FULL + [policy_tags_scope()], iparams())))
+elif mode == "google_bad_replacement":
+    print(json.dumps(base(FULL + [policy_bad_replacement()], iparams())))
+elif mode == "google_extra":
+    print(json.dumps(base(FULL[:8] + [policy_exact(), FOREIGN_DB], iparams())))
 else:
     print(json.dumps(base(FULL, iparams())))
 PYEOF
       exit 0 ;;
   esac
   CS_MODE="${FAKE_CHANGESET:-exact}"
+  if [ "$CS_MODE" = "delayed" ]; then
+    DELAY_MARKER="${FAKE_AWS_LOG}.delay"
+    if [ -f "$DELAY_MARKER" ]; then
+      CS_MODE="exact"
+    else
+      : >"$DELAY_MARKER" 2>/dev/null || true
+      CS_MODE="pending"
+    fi
+  fi
   python3 - "$CS_NAME" "$CS_TOKEN" "$STACKID" "$CS_MODE" <<'PYEOF'
 import json, sys
 name, token, stack_id, mode = sys.argv[1:5]
@@ -365,6 +431,9 @@ elif mode == "replacement":
 elif mode == "status_failed":
     print(json.dumps(base([], QPARAMS, status="FAILED", exec_status="UNAVAILABLE",
                              reason="No updates are to be performed")))
+elif mode == "pending":
+    print(json.dumps(base(QEXACT, QPARAMS, status="CREATE_IN_PROGRESS",
+                             exec_status="UNAVAILABLE")))
 elif mode == "wrong_detail":
     print(json.dumps(base([svc_change("ApiService", API_SVC, detail_name="TaskDefinition"),
                            svc_change("WebService", WEB_SVC)], QPARAMS)))
@@ -444,6 +513,22 @@ if [ "$1" = "cloudformation" ] && [ "$2" = "describe-stack-resource" ]; then
     WebService) printf '%s\\n' "${FAKE_WEB_SERVICE:-launchcrew-demo-WebService-G7H8I9J0K1L2}"; exit 0 ;;
     ApiTargetGroup) printf '%s\\n' "${FAKE_API_TG:-arn:aws:elasticloadbalancing:us-east-1:111122223333:targetgroup/api-abcdef0123456789/0123456789abcdef}"; exit 0 ;;
     WebTargetGroup) printf '%s\\n' "${FAKE_WEB_TG:-arn:aws:elasticloadbalancing:us-east-1:111122223333:targetgroup/web-abcdef0123456789/0123456789abcdef}"; exit 0 ;;
+    ApiGoogleAuthPolicy)
+      if [ "${FAKE_POLICY_ABSENT:-no}" = "yes" ]; then
+        echo "An error occurred (ValidationError) when calling the DescribeStackResource operation: resource does not exist" >&2
+        exit 254
+      fi
+      if [ "${FAKE_POLICY_PRESENT:-no}" = "yes" ]; then
+        printf 'launchcrew-demo-ApiGoogleAuthPolicy-UNEXPECTED\\n'; exit 0
+      fi
+      if [ -z "${FAKE_GOOGLE_ARN:-}" ]; then
+        echo "An error occurred (ValidationError) when calling the DescribeStackResource operation: resource does not exist" >&2
+        exit 254
+      fi
+      if [ "${FAKE_POLICY_FLIP:-no}" = "yes" ] && grep -q "EnableServices=true" "$LOG" 2>/dev/null; then
+        printf 'launchcrew-demo-ApiGoogleAuthPolicy-FLIPPED\\n'; exit 0
+      fi
+      printf 'launchcrew-demo-ApiGoogleAuthPolicy-ABC123\\n'; exit 0 ;;
     ApiExecutionRole|WebExecutionRole|MigrationExecutionRole|BootstrapExecutionRole|VerifyExecutionRole|SdkInitExecutionRole|SdkMaterialExecutionRole|ApiTaskRole|WebTaskRole|MigrationTaskRole|BootstrapTaskRole|VerifyTaskRole|SdkInitTaskRole|SdkMaterialTaskRole) printf '%s-physical\\n' "$RESOURCE_LOGICAL"; exit 0 ;;
   esac
   echo "fake-aws: unexpected resource lookup: $*" >&2
@@ -2988,6 +3073,303 @@ class InfraDiffGuardTests(BootstrapHarness):
         self.assertFalse(any("run-task" in call for call in calls))
 
 
+class InfraGooglePolicyTests(BootstrapHarness):
+    def google_infra_args(self):
+        return [*self.base_args(**{"--google-secret-arn": SECRET_GOOGLE}),
+                "--phase", "infra"]
+
+    def google_params(self):
+        return {"EnableGoogleAuth": "true",
+                "GoogleOAuthSecretArn": SECRET_GOOGLE}
+
+    def test_infra_google_exact_policy_add_succeeds(self):
+        result, calls = self.run_bootstrap(
+            self.google_infra_args(),
+            extra_env={"FAKE_INFRA_CHANGESET": "google_exact"},
+            params_overrides=self.google_params())
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        combined = result.stdout + result.stderr
+        self.assertIn("Verified Google policy least privilege", combined)
+        self.assertIn("ApiGoogleAuthPolicy", combined)
+        self.assertNotIn("apps.googleusercontent.com", combined)
+        executes = [call for call in calls if "execute-change-set" in call]
+        self.assertEqual(len(executes), 1)
+        self.assertIn("changeSet/infra-006/", executes[0])
+        self.assertFalse(any("deploy " in call for call in calls))
+        self.assertFalse(any("delete-change-set" in call for call in calls))
+        self.assertFalse(any("run-task" in call for call in calls))
+        self.assertIn("BOOTSTRAP COMPLETE", result.stdout)
+
+    def test_infra_google_policy_rejected_when_disabled(self):
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "infra"],
+            extra_env={"FAKE_INFRA_CHANGESET": "google_exact"},
+            params_overrides={"EnableGoogleAuth": "false"})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("GOOGLE_DISABLED", combined)
+        self.assertIn("preserved for inspection", combined)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+        self.assertFalse(any("delete-change-set" in call for call in calls))
+        self.assertFalse(any("deploy " in call for call in calls))
+
+    def test_infra_rejects_unrelated_iam_add(self):
+        result, calls = self.run_bootstrap(
+            self.google_infra_args(),
+            extra_env={"FAKE_INFRA_CHANGESET": "google_foreign"},
+            params_overrides=self.google_params())
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("FOREIGN_OtherPolicy", combined)
+        self.assertIn("preserved for inspection", combined)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+        self.assertFalse(any("delete-change-set" in call for call in calls))
+
+    def test_infra_rejects_policy_wildcard(self):
+        result, calls = self.run_bootstrap(
+            self.google_infra_args(),
+            extra_env={"FAKE_INFRA_CHANGESET": "google_wildcard"},
+            params_overrides=self.google_params())
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("WILDCARD_ApiGoogleAuthPolicy", combined)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+        self.assertFalse(any("delete-change-set" in call for call in calls))
+
+    def test_infra_rejects_policy_extra_details(self):
+        result, calls = self.run_bootstrap(
+            self.google_infra_args(),
+            extra_env={"FAKE_INFRA_CHANGESET": "google_details"},
+            params_overrides=self.google_params())
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("DETAILS_ApiGoogleAuthPolicy_UNEXPECTED", combined)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+
+    def test_infra_rejects_policy_tags_scope(self):
+        result, calls = self.run_bootstrap(
+            self.google_infra_args(),
+            extra_env={"FAKE_INFRA_CHANGESET": "google_tags_scope"},
+            params_overrides=self.google_params())
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("SCOPE_ApiGoogleAuthPolicy_Tags", combined)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+
+    def test_infra_rejects_policy_bad_replacement(self):
+        result, calls = self.run_bootstrap(
+            self.google_infra_args(),
+            extra_env={"FAKE_INFRA_CHANGESET": "google_bad_replacement"},
+            params_overrides=self.google_params())
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("REPLACEMENT_ApiGoogleAuthPolicy_True", combined)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+
+    def test_infra_rejects_policy_plus_extra_resource(self):
+        result, calls = self.run_bootstrap(
+            self.google_infra_args(),
+            extra_env={"FAKE_INFRA_CHANGESET": "google_extra"},
+            params_overrides=self.google_params())
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("FOREIGN_Database", combined)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+
+    def test_infra_google_missing_policy_after_execute_refused(self):
+        result, calls = self.run_bootstrap(
+            self.google_infra_args(),
+            extra_env={"FAKE_INFRA_CHANGESET": "google_exact",
+                       "FAKE_POLICY_ABSENT": "yes"},
+            params_overrides=self.google_params())
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("Google policy missing after update", combined)
+        self.assertTrue(any("execute-change-set" in call for call in calls))
+        self.assertNotIn("BOOTSTRAP COMPLETE", result.stdout)
+
+    def test_infra_unexpected_policy_while_disabled_refused(self):
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "infra"],
+            extra_env={"FAKE_POLICY_PRESENT": "yes"},
+            params_overrides={"EnableGoogleAuth": "false"})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("present while EnableGoogleAuth false", combined)
+        self.assertNotIn("BOOTSTRAP COMPLETE", result.stdout)
+
+    def test_enable_google_policy_stable_succeeds(self):
+        import tempfile as _tmp
+        with _tmp.TemporaryDirectory() as shared_tmp:
+            base = self.base_args(**{"--google-secret-arn": SECRET_GOOGLE})
+            release = "head006-testabc"
+            params = {"EnableGoogleAuth": "true",
+                      "GoogleOAuthSecretArn": SECRET_GOOGLE}
+            result_mat, _ = self.run_bootstrap(
+                [*base, "--phase", "material",
+                 "--release-generation", release],
+                params_overrides=params, shared_dir=shared_tmp)
+            self.assertEqual(result_mat.returncode, 0,
+                             msg=result_mat.stdout + result_mat.stderr)
+            result_mig, _ = self.run_bootstrap(
+                [*base, "--phase", "migrate",
+                 "--release-generation", release],
+                params_overrides=params, shared_dir=shared_tmp)
+            self.assertEqual(result_mig.returncode, 0,
+                             msg=result_mig.stdout + result_mig.stderr)
+            result, calls = self.run_bootstrap(
+                [*base, "--phase", "enable",
+                 "--release-generation", release],
+                params_overrides=params, shared_dir=shared_tmp)
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        combined = result.stdout + result.stderr
+        self.assertIn("Google policy unchanged", combined)
+        self.assertIn("BOOTSTRAP COMPLETE", result.stdout)
+        self.assertTrue(any("EnableServices=true" in call for call in calls))
+        self.assertFalse(any("run-task" in call for call in calls))
+
+    def test_enable_refuses_when_own_deploy_moves_policy(self):
+        import tempfile as _tmp
+        with _tmp.TemporaryDirectory() as shared_tmp:
+            base = self.base_args(**{"--google-secret-arn": SECRET_GOOGLE})
+            release = "head006-testabc"
+            params = {"EnableGoogleAuth": "true",
+                      "GoogleOAuthSecretArn": SECRET_GOOGLE}
+            result_mat, _ = self.run_bootstrap(
+                [*base, "--phase", "material",
+                 "--release-generation", release],
+                params_overrides=params, shared_dir=shared_tmp)
+            self.assertEqual(result_mat.returncode, 0,
+                             msg=result_mat.stdout + result_mat.stderr)
+            result_mig, _ = self.run_bootstrap(
+                [*base, "--phase", "migrate",
+                 "--release-generation", release],
+                params_overrides=params, shared_dir=shared_tmp)
+            self.assertEqual(result_mig.returncode, 0,
+                             msg=result_mig.stdout + result_mig.stderr)
+            result, calls = self.run_bootstrap(
+                [*base, "--phase", "enable",
+                 "--release-generation", release],
+                params_overrides=params,
+                extra_env={"FAKE_POLICY_FLIP": "yes"},
+                shared_dir=shared_tmp)
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("changed during enable", combined)
+        self.assertIn("ApiGoogleAuthPolicy", combined)
+        self.assertTrue(any("EnableServices=true" in call for call in calls))
+        self.assertFalse(any("run-task" in call for call in calls))
+        self.assertNotIn("BOOTSTRAP COMPLETE", result.stdout)
+
+
+class QuiesceResumeTests(BootstrapHarness):
+    STACK_ID = f"arn:aws:cloudformation:{REGION}:{ACCOUNT}:stack/{STACK}/abc123"
+
+    def quiesce_args(self, confirm=None):
+        args = self.base_args()
+        args += ["--phase", "quiesce"]
+        if confirm is None:
+            args += ["--quiesce-confirm", self.STACK_ID]
+        elif confirm != "":
+            args += ["--quiesce-confirm", confirm]
+        args += ["--release-generation", "head006-testabc"]
+        return args
+
+    def quiesce_env(self, changeset="exact", tg="drained", extra=None):
+        env = {"FAKE_ENABLE": "true",
+               "FAKE_STACK_STATUS": "UPDATE_COMPLETE",
+               "FAKE_SERVICE": "stopped",
+               "FAKE_CHANGESET": changeset,
+               "FAKE_TG_HEALTH": tg}
+        if extra:
+            env.update(extra)
+        return env
+
+    def test_quiesce_delayed_create_succeeds_after_bounded_wait(self):
+        result, calls = self.run_bootstrap(
+            self.quiesce_args(), extra_env=self.quiesce_env("delayed"))
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        combined = result.stdout + result.stderr
+        self.assertIn("waiting bounded", combined)
+        self.assertIn("BOOTSTRAP COMPLETE", result.stdout)
+        executes = [call for call in calls if "execute-change-set" in call]
+        self.assertEqual(len(executes), 1)
+        self.assertIn("changeSet/quiesce-006/", executes[0])
+        describes = [call for call in calls if "describe-change-set" in call]
+        self.assertGreaterEqual(len(describes), 2)
+        self.assertFalse(any("delete-change-set" in call for call in calls))
+        self.assertFalse(any("run-task" in call for call in calls))
+
+    def test_quiesce_existing_exact_resumes_and_executes(self):
+        result, calls = self.run_bootstrap(
+            self.quiesce_args(),
+            extra_env=self.quiesce_env("exact", extra={"FAKE_QUIESCE_CREATE": "exists"}))
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        combined = result.stdout + result.stderr
+        self.assertIn("already exists", combined)
+        self.assertIn("safe resume", combined)
+        self.assertIn("resuming existing exact", combined)
+        executes = [call for call in calls if "execute-change-set" in call]
+        self.assertEqual(len(executes), 1)
+        self.assertIn("changeSet/quiesce-006/", executes[0])
+        self.assertFalse(any("delete-change-set" in call for call in calls))
+        self.assertFalse(any("run-task" in call for call in calls))
+        self.assertIn("BOOTSTRAP COMPLETE", result.stdout)
+
+    def test_quiesce_existing_pending_refuses_after_bounded_wait(self):
+        result, calls = self.run_bootstrap(
+            self.quiesce_args(),
+            extra_env=self.quiesce_env("pending", extra={"FAKE_QUIESCE_CREATE": "exists"}))
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("still CREATE_IN_PROGRESS after bounded wait", combined)
+        self.assertIn("preserved for inspection", combined)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+        self.assertFalse(any("delete-change-set" in call for call in calls))
+
+    def test_quiesce_existing_failed_refuses(self):
+        result, calls = self.run_bootstrap(
+            self.quiesce_args(),
+            extra_env=self.quiesce_env("status_failed", extra={"FAKE_QUIESCE_CREATE": "exists"}))
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("STATUS_FAILED", combined)
+        self.assertIn("preserved for inspection", combined)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+        self.assertFalse(any("delete-change-set" in call for call in calls))
+
+    def test_quiesce_existing_foreign_refuses(self):
+        result, calls = self.run_bootstrap(
+            self.quiesce_args(),
+            extra_env=self.quiesce_env("foreign", extra={"FAKE_QUIESCE_CREATE": "exists"}))
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("FOREIGN_Database", combined)
+        self.assertIn("preserved for inspection", combined)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+        self.assertFalse(any("delete-change-set" in call for call in calls))
+
+    def test_quiesce_existing_params_mismatch_refuses(self):
+        result, calls = self.run_bootstrap(
+            self.quiesce_args(),
+            extra_env=self.quiesce_env("params_mismatch", extra={"FAKE_QUIESCE_CREATE": "exists"}))
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("PARAMS_VALUE_EnableServices", combined)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+        self.assertFalse(any("delete-change-set" in call for call in calls))
+
+    def test_quiesce_existing_tags_mismatch_refuses(self):
+        result, calls = self.run_bootstrap(
+            self.quiesce_args(),
+            extra_env=self.quiesce_env("tags_mismatch", extra={"FAKE_QUIESCE_CREATE": "exists"}))
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("TAGS_MISMATCH", combined)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+        self.assertFalse(any("delete-change-set" in call for call in calls))
+
+
 class LegacyJournalTests(BootstrapHarness):
     LEGACY_TOKEN = "lc-" + "a" * 30
     LEGACY_TASK = ("arn:aws:ecs:us-east-1:111122223333:"
@@ -3904,7 +4286,7 @@ class GoogleAuthGateTests(BootstrapHarness):
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
         combined = result.stdout + result.stderr
         self.assertIn("EnableGoogleAuth true plus exact owned Google secret", combined)
-        self.assertTrue(any("describe-task-definition" in call or "describe-task" in call for call in calls))
+        self.assertTrue(any("describe-task""-definition" in call or "describe-task" in call for call in calls))
         self.assertNotIn("apps.googleusercontent.com", combined)
 
     def test_google_true_empty_refused_before_mutation(self):
@@ -3995,7 +4377,8 @@ class GoogleAuthGateTests(BootstrapHarness):
                               "GoogleOAuthSecretArn": other})
         self.assertNotEqual(result.returncode, 0)
         combined = result.stdout + result.stderr
-        self.assertIn("does not equal the validated CLI value", combined)
+        self.assertIn("refused", combined)
+        self.assertIn("validating one set while deploying another is refused", combined)
         self.assertFalse(any("deploy " in call for call in calls))
         self.assertFalse(any("create-change-set" in call for call in calls))
 
