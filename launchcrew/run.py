@@ -7,7 +7,9 @@ from pathlib import Path
 
 from . import agents
 from .checker_policies import effective_policies, parse_checker_agent, policy_blocks, policy_reason
-from .facts import check_sentence, check_claims, check_draft, load_facts, normalize
+from .facts import (OWNER_SOURCE_LABEL, check_sentence, check_claims, check_draft,
+                     founder_variant, load_facts, normalize, parse_product_facts,
+                     product_section)
 from .receipts import create_receipt, save_receipt, timestamp, failed_receipt
 from .model_meta import (DATA_BASIS_V2, data_mode_for_attempts, sanitize_model_name,
                          variant_for_attempt)
@@ -166,7 +168,7 @@ def _stage_snapshot(profile):
             'examples': _snapshot_examples(profile)}
 
 
-def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverified_claim=False, receipt_writer=save_receipt, model_enabled=True, visual_verifier=None, memory_claims=None, blocked_claims=None, checker_profile='standard', brief=None, campaign_day=None, scout_profile=None, maker_profile=None, checker_agent=None, progress=None, stage_gate=None):
+def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverified_claim=False, receipt_writer=save_receipt, model_enabled=True, visual_verifier=None, memory_claims=None, blocked_claims=None, checker_profile='standard', brief=None, campaign_day=None, scout_profile=None, maker_profile=None, checker_agent=None, progress=None, stage_gate=None, product_facts=None):
     """Optional progress(event) is called at real stage boundaries only: each
     call corresponds to pipeline work that already happened (completed) or
     is about to happen (started). The event dict carries stage, state,
@@ -185,6 +187,8 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
     profiles = None
     effective = []
     enforcement = None
+    parsed_product = None
+    product_allowlist = []
     try:
         overrides = {'Scout': scout_profile, 'Maker': maker_profile, 'Checker': checker_agent}
         profiles = {}
@@ -199,13 +203,27 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
         enforcement['effective_policies'] = list(effective)
         enforcement['legacy_checker_profile'] = checker_profile
         step = 'load_facts'
+        parsed_product = parse_product_facts(product_facts)
         facts, _ = load_facts(facts_path)
-        claims = list(facts['approved_claims'])
-        for claim in (memory_claims or []):
-            if isinstance(claim, str) and claim.strip() and claim not in claims:
-                claims.append(claim)
+        if parsed_product is None:
+            claims = list(facts['approved_claims'])
+            for claim in (memory_claims or []):
+                if isinstance(claim, str) and claim.strip() and claim not in claims:
+                    claims.append(claim)
+        else:
+            # Owner mode: the demo template never becomes owner evidence.
+            # Only explicitly confirmed owner claims plus explicit extra
+            # pipeline claims authorize drafts. Suggestions stay out.
+            claims = list(parsed_product['confirmed_claims'])
+            for claim in (memory_claims or []):
+                if isinstance(claim, str) and claim.strip() and claim not in claims:
+                    claims.append(claim)
+            facts['sources'] = [OWNER_SOURCE_LABEL]
+            if brief is not None:
+                facts['sources'].append('campaign_brief')
         facts['approved_claims'] = list(claims)
         facts['memory_claims'] = list(memory_claims or [])
+        product_allowlist = list(claims)
         blocked_names = _blocked_names(blocked_claims)
 
         def event(step, agent, action, profile_name=None, at=None):
@@ -347,6 +365,10 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
         note('receipt', 'started', 'LaunchCrew')
         receipt = create_receipt(Path(out).stem, idea, scout, v1, c1, v2, c2, events, usage, approve)
         receipt['checker_profile'] = checker_profile
+        founder_note = parsed_product['founder_note'] if parsed_product else None
+        receipt['product_facts'] = product_section(
+            parsed_product, product_allowlist,
+            founder_variant(founder_note, v2['post'], v2['email']))
         receipt['checker_policies'] = list(effective)
         receipt['checker_enforcement'] = enforcement
         receipt['stage_agents'] = {stage.lower(): _stage_snapshot(profiles[stage]) for stage in ('Scout', 'Maker', 'Checker')}
@@ -382,6 +404,11 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
             except Exception:
                 pass
         failure['checker_profile'] = checker_profile
+        if product_facts is None or parsed_product is not None:
+            try:
+                failure['product_facts'] = product_section(parsed_product, product_allowlist)
+            except Exception:
+                pass
         receipt_writer(failure, out)
         raise
 
