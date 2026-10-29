@@ -543,12 +543,23 @@ export interface components {
             action: string;
             /** Approved By */
             approved_by: string;
+            /** Binding Digest */
+            binding_digest?: string | null;
+            /** Binding Version */
+            binding_version?: string | null;
             /** Revision */
             revision?: number | null;
             /** Timestamp */
             timestamp: string;
         } & {
             [key: string]: unknown;
+        };
+        /** ApprovalBinding */
+        ApprovalBinding: {
+            /** Digest */
+            digest: string;
+            /** Version */
+            version: string;
         };
         /** ApproveIn */
         ApproveIn: {
@@ -626,8 +637,16 @@ export interface components {
             }[];
             /** Blocked Count */
             blocked_count: number;
+            /** Claim Results */
+            claim_results?: components["schemas"]["ClaimResult"][] | null;
+            /** Conflicts Count */
+            conflicts_count?: number | null;
             /** Revision Instructions */
             revision_instructions: string[];
+            /** Supported Count */
+            supported_count?: number | null;
+            /** Unsupported Count */
+            unsupported_count?: number | null;
             /** Verified Count */
             verified_count: number;
         };
@@ -651,6 +670,43 @@ export interface components {
             /** Veto Token */
             veto_token: string;
         };
+        /** ClaimResult */
+        ClaimResult: {
+            /**
+             * Blocked
+             * @default true
+             */
+            blocked: boolean;
+            /**
+             * Claim
+             * @default
+             */
+            claim: string;
+            /** Evidence */
+            evidence?: string | null;
+            /** Evidence Claims */
+            evidence_claims?: string[] | null;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /**
+             * Source
+             * @default
+             */
+            source: string;
+            /**
+             * Verdict
+             * @default unsupported
+             */
+            verdict: string;
+            /**
+             * Verified
+             * @default false
+             */
+            verified: boolean;
+        };
         /** Clone */
         Clone: {
             /** Name */
@@ -660,8 +716,18 @@ export interface components {
         Draft: {
             /** Claims */
             claims: string[];
+            /** Draft Origin */
+            draft_origin?: string | null;
             /** Email */
             email: string;
+            /** Line Evidence */
+            line_evidence?: components["schemas"]["LineEvidence"][] | null;
+            /** Maker Schema */
+            maker_schema?: string | null;
+            /** Model Used */
+            model_used?: string | null;
+            /** Model Written */
+            model_written?: boolean | null;
             /** Post */
             post: string;
         };
@@ -680,6 +746,95 @@ export interface components {
         ExportIn: {
             /** Expected Revision */
             expected_revision?: number | null;
+        };
+        /** FounderNoteField */
+        FounderNoteField: {
+            /**
+             * Confirmed
+             * @default false
+             */
+            confirmed: boolean;
+            /**
+             * Source
+             * @default owner
+             * @enum {string}
+             */
+            source: "owner" | "pasted_text" | "memory" | "listing" | "campaign_brief" | "demo_template";
+            /**
+             * Value
+             * @default
+             */
+            value: string;
+        };
+        /** FounderNoteState */
+        FounderNoteState: {
+            /**
+             * Authorized As Fact
+             * @default false
+             */
+            authorized_as_fact: boolean;
+            /**
+             * Confirmed
+             * @default false
+             */
+            confirmed: boolean;
+            /**
+             * Label
+             * @default Founder note
+             */
+            label: string;
+            /**
+             * Sentence Ok
+             * @default false
+             */
+            sentence_ok: boolean;
+            /**
+             * Source
+             * @default owner
+             */
+            source: string;
+            /**
+             * Value
+             * @default
+             */
+            value: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** FounderVariant */
+        FounderVariant: {
+            /**
+             * Authorized
+             * @default false
+             */
+            authorized: boolean;
+            /**
+             * Email
+             * @default
+             */
+            email: string;
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /**
+             * Post
+             * @default
+             */
+            post: string;
+            /**
+             * Verified
+             * @default false
+             */
+            verified: boolean;
+        } & {
+            [key: string]: unknown;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -718,6 +873,23 @@ export interface components {
              * @enum {string}
              */
             kind: "approval_example" | "blocked_rule";
+        };
+        /** LineEvidence */
+        LineEvidence: {
+            /**
+             * Channel
+             * @default
+             */
+            channel: string;
+            /** Evidence */
+            evidence?: string[];
+            /**
+             * Line
+             * @default
+             */
+            line: string;
+            /** Reasons */
+            reasons?: string[];
         };
         /** MemoryItemEdit */
         MemoryItemEdit: {
@@ -1023,6 +1195,126 @@ export interface components {
                 [key: string]: unknown;
             }[] | null;
         };
+        /** ProductFactField */
+        ProductFactField: {
+            /**
+             * Confirmed
+             * @default false
+             */
+            confirmed: boolean;
+            /**
+             * Source
+             * @default owner
+             * @enum {string}
+             */
+            source: "owner" | "pasted_text" | "memory" | "listing" | "campaign_brief" | "demo_template";
+            /**
+             * Value
+             * @default
+             */
+            value: string;
+        };
+        /** ProductFactState */
+        ProductFactState: {
+            /** Claim */
+            claim?: string | null;
+            /**
+             * Confirmed
+             * @default false
+             */
+            confirmed: boolean;
+            /**
+             * Field
+             * @default
+             */
+            field: string;
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+            /**
+             * Source
+             * @default
+             */
+            source: string;
+            /**
+             * Value
+             * @default
+             */
+            value: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** ProductFactsInput */
+        ProductFactsInput: {
+            /** Allowed Claims */
+            allowed_claims?: components["schemas"]["ProductFactField"][];
+            contents?: components["schemas"]["ProductFactField"] | null;
+            founder_note?: components["schemas"]["FounderNoteField"] | null;
+            material?: components["schemas"]["ProductFactField"] | null;
+            price?: components["schemas"]["ProductFactField"] | null;
+            size?: components["schemas"]["ProductFactField"] | null;
+        };
+        /** ProductFactsSection */
+        ProductFactsSection: {
+            /**
+             * Allowlist
+             * @default []
+             */
+            allowlist: string[];
+            /**
+             * Confirmed Claims
+             * @default []
+             */
+            confirmed_claims: string[];
+            draft_variant?: components["schemas"]["FounderVariant"] | null;
+            /**
+             * Fields
+             * @default []
+             */
+            fields: components["schemas"]["ProductFactState"][];
+            founder_note?: components["schemas"]["FounderNoteState"] | null;
+            /**
+             * Labels
+             * @default {}
+             */
+            labels: {
+                [key: string]: string;
+            };
+            /**
+             * Mode
+             * @default demo_template
+             */
+            mode: string;
+            /**
+             * Suggested
+             * @default []
+             */
+            suggested: components["schemas"]["SuggestedFact"][];
+            /**
+             * Template
+             * @default demo_facts.json
+             */
+            template: string;
+            /**
+             * Template Label
+             * @default Bundled fictional demo template
+             */
+            template_label: string;
+            /**
+             * Template Note
+             * @default
+             */
+            template_note: string;
+            /**
+             * Template Used
+             * @default true
+             */
+            template_used: boolean;
+        } & {
+            [key: string]: unknown;
+        };
         /** Profile */
         Profile: {
             /**
@@ -1060,6 +1352,7 @@ export interface components {
         };
         /** Receipt */
         Receipt: {
+            approval_binding?: components["schemas"]["ApprovalBinding"] | null;
             /**
              * Approval State
              * @enum {string}
@@ -1125,6 +1418,8 @@ export interface components {
             photo_transport?: {
                 [key: string]: unknown;
             } | null;
+            /** @description Slice 1 confirmed product facts with provenance. Absent on historical or pending receipts. */
+            product_facts?: components["schemas"]["ProductFactsSection"] | null;
             /**
              * Revision
              * @default 0
@@ -1178,10 +1473,7 @@ export interface components {
             approved_revision?: number | null;
             /** Blocked Claims */
             blocked_claims?: string[] | null;
-            /** Check */
-            check?: {
-                [key: string]: unknown;
-            } | null;
+            check?: components["schemas"]["Check"] | null;
             /** Checker Policies */
             checker_policies?: string[] | null;
             /** Checker Profile */
@@ -1339,6 +1631,8 @@ export interface components {
              * @default []
              */
             memory_ids: string[];
+            /** @description Slice 1 owner product facts. Only explicitly confirmed fields become evidence; suggestions never do. Absent means legacy demo-template mode. */
+            product_facts?: components["schemas"]["ProductFactsInput"] | null;
             /**
              * Scout Name
              * @description Scout stage agent name. Defaults to built-in Scout.
@@ -1427,6 +1721,36 @@ export interface components {
              * @default []
              */
             sources: string[];
+        } & {
+            [key: string]: unknown;
+        };
+        /** SuggestedFact */
+        SuggestedFact: {
+            /**
+             * Field
+             * @default
+             */
+            field: string;
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /**
+             * Source
+             * @default
+             */
+            source: string;
+            /**
+             * Value
+             * @default
+             */
+            value: string;
         } & {
             [key: string]: unknown;
         };

@@ -141,7 +141,7 @@ describe('slice 2 agent loading states', () => {
     const source = readFileSync('src/app/page.tsx', 'utf8');
     expect(source).toContain('Loading agents...');
     expect(source).toContain('disabled={!agentsReady}');
-    expect(source).toContain('disabled={create.isPending || !agentsReady}');
+    expect(source).toContain('create.isPending || !agentsReady');
   });
 });
 
@@ -205,24 +205,29 @@ describe('slice 2 approved-only export and copy', () => {
   });
 
   it('names downloads safely for product and date', () => {
-    expect(safeExportFilename('run_ABC_123', new Date('2026-10-29T12:00:00Z'), 'json')).toBe('launchcrew-pack-20261029-run-abc-123.json');
-    expect(safeExportFilename('run_ABC_123', new Date('2026-10-29T12:00:00Z'), 'md')).toBe('launchcrew-pack-20261029-run-abc-123.md');
-    expect(safeExportFilename('', new Date('2026-10-29T12:00:00Z'), 'json')).toBe('launchcrew-pack-20261029-run-unknown.json');
-    expect(safeExportFilename('run_demo1', new Date('invalid'), 'json')).toBe('launchcrew-pack-nodate-run-demo1.json');
-    expect(safeExportFilename('run_demo1', new Date('2026-10-29T12:00:00Z'), 'json')).toMatch(/^[a-z0-9.-]+\.[a-z]+$/);
+    const demo = { idea: 'Vegan leather wallet, $49, for Austin commuters' } as unknown as Receipt;
+    expect(safeExportFilename(demo, new Date('2026-10-29T12:00:00Z'), 'json')).toBe('launchcrew-pack-20261029-vegan-leather-wallet-49.json');
+    expect(safeExportFilename(demo, new Date('2026-10-29T12:00:00Z'), 'md')).toBe('launchcrew-pack-20261029-vegan-leather-wallet-49.md');
+    expect(safeExportFilename({} as unknown as Receipt, new Date('2026-10-29T12:00:00Z'), 'json')).toBe('launchcrew-pack-20261029-pack.json');
+    expect(safeExportFilename(demo, new Date('invalid'), 'json')).toBe('launchcrew-pack-nodate-vegan-leather-wallet-49.json');
+    expect(safeExportFilename(demo, new Date('2026-10-29T12:00:00Z'), 'json')).toMatch(/^[a-z0-9.-]+\.[a-z]+$/);
+    const withId = { run_id: 'run_ABC_123', idea: 'Vegan wallet' } as unknown as Receipt;
+    expect(safeExportFilename(withId, new Date('2026-10-29T12:00:00Z'), 'json')).toBe('launchcrew-pack-20261029-vegan-wallet.json');
   });
 });
 
 describe('slice 2 confirmed facts integration point', () => {
-  it('stays empty on demo-only receipts and renders provided facts', () => {
+  it('stays empty on receipts missing product facts and renders the section', () => {
     expect(renderToStaticMarkup(<ConfirmedFactsBlock receipt={{} as unknown as Receipt} />)).toBe('');
     const html = renderToStaticMarkup(
-      <ConfirmedFactsBlock receipt={{ confirmed_facts: [{ claim: 'Vegan leather wallet', evidence: 'owner brief' }] } as unknown as Receipt} />,
+      <ConfirmedFactsBlock receipt={{ product_facts: { mode: 'owner_input', template: 'demo_facts.json', template_label: 'Bundled fictional demo template', template_used: false, template_note: '', fields: [{ field: 'material', label: 'Material', value: 'Vegan leather', confirmed: true, source: 'owner', claim: 'Vegan leather' }], confirmed_claims: ['Vegan leather'], allowlist: ['Vegan leather'], suggested: [{ field: 'size', label: 'Size', value: 'Large', source: 'pasted_text', reason: 'Suggested but not confirmed by the owner' }], founder_note: null, draft_variant: null, labels: {} } } as unknown as Receipt} />,
     );
-    expect(html).toContain('Owner-confirmed facts (1)');
-    expect(html).toContain('Vegan leather wallet');
-    expect(html).toContain('owner brief');
+    expect(html).toContain('Product facts');
+    expect(html).toContain('owner_input');
+    expect(html).toContain('Vegan leather');
     expect(html).toContain('Confirmed');
+    expect(html).toContain('Suggestion');
+    expect(html).not.toContain('Verified');
   });
 });
 
@@ -245,9 +250,10 @@ describe('slice 2 headers, assets, and metadata', () => {
     expect(readFileSync('public/favicon.svg', 'utf8')).toContain('<svg');
   });
 
-  it('describes the demo honestly in document metadata', () => {
+  it('describes the desk honestly in document metadata', () => {
     const layout = readFileSync('src/app/layout.tsx', 'utf8');
-    for (const text of ['openGraph', 'twitter', '/favicon.svg', 'Demo facts only']) expect(layout).toContain(text);
+    for (const text of ['openGraph', 'twitter', '/favicon.svg', 'nothing publishes']) expect(layout).toContain(text);
+    expect(layout).not.toContain('Demo facts only');
   });
 
   it('links the public repo without a demo video or banned claims', () => {

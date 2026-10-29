@@ -5,11 +5,14 @@ import { Button } from '@/components/ui/button';
 import { api, unwrap } from '@/lib/api';
 import { canApproveDay, canExportDay, memoryEditPayload } from '@/lib/v2';
 import { dataModeCopy, dataModeLabel, dataModeNote } from '@/components/model-status';
+import { sourceLabel } from '@/lib/product-facts';
 import type { components } from '@/lib/schema';
 
 type Receipt = components['schemas']['Receipt'];
 type ScoutSection = components['schemas']['ScoutSection'];
 type ModelUsage = components['schemas']['ModelUsage'];
+type ProductFactsSection = components['schemas']['ProductFactsSection'];
+type Check = components['schemas']['Check'];
 type Diff = components['schemas']['RunDiff'];
 type Day = components['schemas']['CampaignDay'];
 const wallet = 'Vegan leather wallet, $49, for Austin commuters, launch on Instagram';
@@ -130,18 +133,93 @@ export function DiffResult({ diff }: { diff: Diff }) {
   </div>;
 }
 
-/** Owner-confirmed facts integration point. The current generated schema has
- *  demo facts only, so this renders nothing until the core branch provides a
- *  confirmed_facts array on the receipt. Defensive read, no schema change. */
+/** Product facts from receipt.product_facts with exact provenance. Returns null
+ *  on historical or pending receipts that predate the section. */
 export function ConfirmedFactsBlock({ receipt }: { receipt: Receipt }) {
-  const confirmed = (receipt as unknown as { confirmed_facts?: unknown }).confirmed_facts;
-  if (!Array.isArray(confirmed) || confirmed.length === 0) return null;
+  const section = (receipt.product_facts ?? null) as ProductFactsSection | null;
+  if (!section || typeof section !== 'object') return null;
+  const mode = typeof section.mode === 'string' ? section.mode : 'unknown';
+  const templateUsed = section.template_used;
+  const templateLabel = typeof section.template_label === 'string' ? section.template_label : '';
+  const template = typeof section.template === 'string' ? section.template : '';
+  const templateNote = typeof section.template_note === 'string' ? section.template_note : '';
+  const fields = Array.isArray(section.fields) ? section.fields : [];
+  const confirmedFields = fields.filter(f => f && f.confirmed);
+  const confirmedClaims = Array.isArray(section.confirmed_claims) ? section.confirmed_claims : [];
+  const suggested = Array.isArray(section.suggested) ? section.suggested : [];
+  const founder = section.founder_note ?? null;
+  const variant = section.draft_variant ?? null;
   return <>
-    <h3>Owner-confirmed facts ({confirmed.length})</h3>
-    <ul className="scout-list">{confirmed.map((entry, i) => {
-      const fact = (entry ?? {}) as { claim?: unknown; evidence?: unknown };
-      return <li key={i} className="scout-fact"><div className="scout-row"><strong>{typeof fact.claim === 'string' && fact.claim ? fact.claim : 'Unlabeled confirmed fact'}</strong><span className="badge approved">Confirmed</span></div><p className="hint">Evidence: {typeof fact.evidence === 'string' && fact.evidence ? fact.evidence : 'none stored'}</p></li>;
+    <h3>Product facts</h3>
+    <p className="hint">Mode: {mode} · Template used: {templateUsed ? 'yes' : 'no'}{templateLabel ? ` · ${templateLabel}` : ''}{template ? ` (${template})` : ''}{templateNote ? ` · ${templateNote}` : ''}</p>
+    <h4>Confirmed fields ({confirmedFields.length})</h4>
+    {confirmedFields.length === 0 && <p className="hint">No confirmed owner fields on this receipt.</p>}
+    <ul className="scout-list">{confirmedFields.map((fact, i) => <li key={i} className="scout-fact"><div className="scout-row"><strong>{fact.label || fact.field || 'Confirmed fact'}: {fact.value || 'empty'}</strong><span className="badge approved">Confirmed</span></div><p className="hint">Source: {fact.source ? sourceLabel(fact.source) : 'unknown'}{fact.claim ? ` · Claim: ${fact.claim}` : ''}</p></li>)}</ul>
+    <h4>Confirmed claims ({confirmedClaims.length})</h4>
+    {confirmedClaims.length === 0 && <p className="hint">No confirmed claims on this receipt.</p>}
+    <ul className="scout-list">{confirmedClaims.map((claim, i) => <li key={i} className="scout-fact"><div className="scout-row"><span>{claim}</span><span className="badge approved">Confirmed</span></div></li>)}</ul>
+    <h4>Suggestions, not verified ({suggested.length})</h4>
+    {suggested.length === 0 && <p className="hint">No unconfirmed suggestions on this receipt.</p>}
+    <ul className="scout-list">{suggested.map((entry, i) => <li key={i} className="scout-fact"><div className="scout-row"><span>{(entry.label || entry.field || 'Suggestion') + ': ' + (entry.value || 'empty')}</span><span className="badge pending">Suggestion</span></div><p className="hint">Source: {entry.source ? sourceLabel(entry.source) : 'unknown'}{entry.reason ? ` · ${entry.reason}` : ' · Suggested but not confirmed by the owner'}</p></li>)}</ul>
+    {founder && typeof founder.value === 'string' && founder.value && <>
+      <h4>Founder note, separate unverified material</h4>
+      <p className="draft">{founder.value}</p>
+      <p className="hint">Owner-supplied unverified color, never an authorized factual claim. Source: {founder.source ? sourceLabel(founder.source) : 'unknown'} · Confirmed: {founder.confirmed ? 'yes' : 'no'} · Sentence ok: {founder.sentence_ok ? 'yes' : 'no'} · Authorized as fact: no</p>
+    </>}
+    {variant && (variant.post || variant.email) && <>
+      <h4>Founder draft variant, separate unverified material</h4>
+      <p className="hint">{variant.label || 'Owner-supplied founder note variant'} · Authorized: no · Verified: no{variant.note ? ` · ${variant.note}` : ''}</p>
+      {variant.post && <><h5>Variant post</h5><p className="draft">{variant.post}</p></>}
+      {variant.email && <><h5>Variant email</h5><p className="draft">{variant.email}</p></>}
+    </>}
+  </>;
+}
+
+/** Checker claim results with verdict and quoted evidence. A supported result
+ *  records a Checker match only. It never authorizes export. */
+export function ClaimResultsBlock({ check, title }: { check: Check | null | undefined; title: string }) {
+  if (!check || !Array.isArray(check.claim_results) || check.claim_results.length === 0) return null;
+  const results = check.claim_results;
+  return <>
+    <h4>{title} ({results.length})</h4>
+    <p className="hint">Supported: {check.supported_count ?? 'unavailable'} · Unsupported: {check.unsupported_count ?? 'unavailable'} · Conflicts: {check.conflicts_count ?? 'unavailable'}. A supported result does not authorize export. Export still needs human approval.</p>
+    <ul className="scout-list">{results.map((entry, i) => {
+      const verdict = typeof entry.verdict === 'string' ? entry.verdict : 'unsupported';
+      const evidence = typeof entry.evidence === 'string' && entry.evidence ? entry.evidence : null;
+      const evidenceClaims = Array.isArray(entry.evidence_claims) ? entry.evidence_claims.filter(c => typeof c === 'string' && c) : [];
+      return <li key={i} className="scout-fact"><div className="scout-row"><strong>{entry.claim || 'Unlabeled claim'}</strong><span className={`badge ${entry.verified ? 'approved' : 'pending'}`}>{verdict}</span></div><p className="hint">Reason: {entry.reason || 'none stored'}{entry.source ? ` · Source: ${entry.source}` : ''} · Blocked: {entry.blocked ? 'yes' : 'no'}</p>{evidence && <p className="hint">Evidence: &quot;{evidence}&quot;</p>}{evidenceClaims.length > 0 && <p className="hint">Evidence claims: {evidenceClaims.map(q => `"${q}"`).join(', ')}</p>}</li>;
     })}</ul>
+  </>;
+}
+
+type SeedMarker = {
+  enabled?: unknown;
+  claim?: unknown;
+  v1_included?: unknown;
+  v2_included?: unknown;
+  v2_removed?: unknown;
+  note?: unknown;
+};
+
+/** Approval binding and seed marker exactly as stored. Null when neither is available. */
+export function ApprovalBindingBlock({ receipt }: { receipt: Receipt }) {
+  const binding = receipt.approval_binding ?? null;
+  const seed = (receipt as unknown as { seed_unverified_claim?: unknown }).seed_unverified_claim;
+  const hasBinding = !!binding && typeof binding.digest === 'string' && typeof binding.version === 'string';
+  const hasSeed = seed !== null && seed !== undefined;
+  if (!hasBinding && !hasSeed) return null;
+  const marker = (seed ?? {}) as SeedMarker;
+  const seedText = typeof seed === 'boolean'
+    ? `Seed demo: ${seed ? 'enabled' : 'not enabled'}.`
+    : typeof seed === 'object' && seed !== null
+      ? `Seed demo: ${marker.enabled ? 'enabled' : 'not enabled'}${typeof marker.claim === 'string' && marker.claim ? ` · claim ${marker.claim}` : ''} · v1 included: ${marker.v1_included ? 'yes' : 'no'} · v2 included: ${marker.v2_included ? 'yes' : 'no'} · v2 removed: ${marker.v2_removed ? 'yes' : 'no'}${typeof marker.note === 'string' && marker.note ? ` · ${marker.note}` : ''}`
+      : 'Seed demo: unavailable on this receipt.';
+  return <>
+    <h4>Approval binding and seed</h4>
+    {hasBinding
+      ? <p className="hint">Binding version {binding!.version} · digest {binding!.digest}</p>
+      : <p className="hint">Approval binding unavailable on this receipt.</p>}
+    {hasSeed && <p className="hint">{seedText}</p>}
   </>;
 }
 
@@ -149,8 +227,10 @@ export function ScoutFactsSection({ receipt }: { receipt: Receipt }) {
   const scout = (receipt.scout ?? null) as ScoutSection | null;
   const scoutName = receipt.stage_bindings?.scout ?? 'Scout';
   const usage = (receipt.model_usage ?? null) as ModelUsage | null;
+  const productMode = (receipt.product_facts as ProductFactsSection | null | undefined)?.mode;
+  const isOwner = productMode === 'owner_input';
   if (!scout || !Array.isArray(scout.facts_used)) {
-    return <section className="panel" aria-label="Scout facts and sources"><p className="eyebrow">SCOUT FACTS AND RISKS</p><h2>Sourced facts unavailable for this receipt.</h2><p className="hint">Historical or failed runs predate stored Scout facts. No facts are invented here; inspect the complete receipt JSON in the record below.</p></section>;
+    return <section className="panel" aria-label="Scout facts and sources"><p className="eyebrow">SCOUT FACTS AND RISKS</p><h2>Sourced facts unavailable for this receipt.</h2><p className="hint">Historical or failed runs predate stored Scout facts. No facts are invented here; inspect the complete receipt JSON in the record below.</p><ConfirmedFactsBlock receipt={receipt} /><ApprovalBindingBlock receipt={receipt} /></section>;
   }
   const facts = scout.facts_used;
   const risks = Array.isArray(scout.risks) ? scout.risks : [];
@@ -159,15 +239,22 @@ export function ScoutFactsSection({ receipt }: { receipt: Receipt }) {
   return <section className="panel" aria-label="Scout facts and sources">
     <p className="eyebrow">SCOUT FACTS AND RISKS</p>
     <h2>What Scout sourced{scoutName && scoutName !== 'Scout' ? ` · ${scoutName}` : ''}.</h2>
-    <p className="hint">Scout stage{scoutName ? `: ${scoutName}` : ''}. Demo facts only, sourced from the local facts file and demo brand brief below. No external research was run and no live product verification is claimed. Only verified facts reach Maker drafts.</p>
+    {isOwner
+      ? <p className="hint">Scout stage{scoutName ? `: ${scoutName}` : ''}. Owner-confirmed facts with provenance from the receipt below. The bundled fictional demo template was not used as facts for this run. No external research was run and no live product verification is claimed. Only confirmed facts reach Maker drafts.</p>
+      : <p className="hint">Scout stage{scoutName ? `: ${scoutName}` : ''}. Demo facts only, sourced from the local facts file and demo brand brief below. No external research was run and no live product verification is claimed. Only verified facts reach Maker drafts.</p>}
     <h3>Sourced facts ({facts.length})</h3>
     {facts.length === 0 && <p className="hint">No stored facts on this receipt.</p>}
     <ul className="scout-list">{facts.map((fact, i) => <li key={i} className="scout-fact"><div className="scout-row"><strong>{fact.claim || 'Unlabeled fact'}</strong><span className={`badge ${fact.verified ? 'approved' : 'pending'}`}>{fact.verified ? 'Verified' : 'Unverified'}</span></div><p className="hint">Evidence: {fact.evidence || 'none stored'}{Array.isArray(fact.sources) && fact.sources.length > 0 ? ` · Sources: ${fact.sources.join(', ')}` : ' · No stored source: unverified model hypothesis, not external research.'}</p></li>)}</ul>
     <ConfirmedFactsBlock receipt={receipt} />
+    <ClaimResultsBlock check={receipt.checker_v1} title="First check evidence" />
+    <ClaimResultsBlock check={currentCheckOf(receipt)} title="Final check evidence" />
+    <ApprovalBindingBlock receipt={receipt} />
     <h3>Risks for review ({risks.length})</h3>
-    <p className="hint">Demo risks are hypotheses for your review, never approved product facts.</p>
+    {isOwner
+      ? <p className="hint">Risks are hypotheses for your review, never approved product facts.</p>
+      : <p className="hint">Demo risks are hypotheses for your review, never approved product facts.</p>}
     {risks.length === 0 && <p className="hint">No stored risks on this receipt.</p>}
-    <ul className="scout-list">{risks.map((risk, i) => <li key={i} className="scout-risk"><div className="scout-row"><span>{risk}</span><span className="tag">{risk.startsWith('Unverified model risk:') ? 'Unverified model hypothesis' : 'Demo risk, unverified'}</span></div></li>)}</ul>
+    <ul className="scout-list">{risks.map((risk, i) => <li key={i} className="scout-risk"><div className="scout-row"><span>{risk}</span><span className="tag">{risk.startsWith('Unverified model risk:') ? 'Unverified model hypothesis' : isOwner ? 'Risk, unverified' : 'Demo risk, unverified'}</span></div></li>)}</ul>
     <p className="hint">Model synthesis: {synthesized ? 'spark (optional Scout synthesis received)' : 'none, deterministic fallback'}{scout.model_note ? ` · ${scout.model_note}` : ''}{usage ? ` · Stored usage: ${usage.mode}, ${usage.spark_calls} Spark calls, model ${usage.model_used}. Data: ${dataModeLabel(usage)} (${dataModeCopy(usage)}). ${dataModeNote(usage)}` : ' · Stored model usage unavailable on this receipt. Data: Unknown (unknown). No stored usage on this receipt.'}</p>
     {sourceLabels.length > 0 && <p className="hint">Fact sources on this receipt: {sourceLabels.join(', ')}.</p>}
   </section>;
@@ -204,10 +291,10 @@ export function CampaignView({ profiles, profilesPending, profilesError }: { pro
   // copy only re-present that approved artifact; they add no client authority.
   const dayExport = (input: { day: number; revision: number }) => unwrap(api.POST('/api/campaigns/{campaign_id}/days/{day}/export', { params: { path: { campaign_id: id, day: input.day } }, body: { expected_revision: input.revision } }));
   const download = useMutation({ mutationFn: dayExport, onSuccess: run => {
-    downloadTextFile(safeExportFilename(run.run_id, new Date(), 'json'), JSON.stringify(run, null, 2), 'application/json'); setNotice(`Export downloaded: ${run.run_id}`);
+    downloadTextFile(safeExportFilename(run, new Date(), 'json'), JSON.stringify(run, null, 2), 'application/json'); setNotice(`Export downloaded: ${run.run_id}`);
   } });
   const markdown = useMutation({ mutationFn: dayExport, onSuccess: run => {
-    downloadTextFile(safeExportFilename(run.run_id, new Date(), 'md'), exportReceiptToMarkdown(run), 'text/markdown'); setNotice(`Markdown export downloaded: ${run.run_id}`);
+    downloadTextFile(safeExportFilename(run, new Date(), 'md'), exportReceiptToMarkdown(run), 'text/markdown'); setNotice(`Markdown export downloaded: ${run.run_id}`);
   } });
   const copy = useMutation({
     mutationFn: dayExport,
@@ -262,11 +349,54 @@ export function terminalNotice(current: string, runId: string, status: string | 
   return current;
 }
 
+type ExportSource = {
+  idea?: unknown;
+  product_facts?: ProductFactsSection | null;
+} & { product_name?: unknown };
+
+function sanitizeSlugCandidate(raw: string): string {
+  const withoutContacts = raw
+    .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, ' ')
+    .replace(/\b\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b/g, ' ')
+    .replace(/\b\d{5,}\b/g, ' ');
+  const words = withoutContacts
+    .toLowerCase()
+    .split(/[^a-z0-9]+/g)
+    .map(w => w.trim())
+    .filter(Boolean)
+    .slice(0, 4)
+    .map(w => w.slice(0, 12));
+  const slug = words.join('-').replace(/^-+|-+$/g, '').slice(0, 40).replace(/-+$/g, '');
+  return slug || 'pack';
+}
+
+/** Product slug for exports. Prefers an explicit owner product name when the
+ *  receipt carries one, else the first confirmed owner value, else a safe
+ *  bounded idea-derived name. Never guesses personal info and never uses raw
+ *  freeform text or the run id as the product. */
+export function exportProductSlug(receipt: ExportSource): string {
+  const explicit = (receipt as { product_name?: unknown }).product_name;
+  if (typeof explicit === 'string' && explicit.trim()) return sanitizeSlugCandidate(explicit);
+  const section = receipt.product_facts ?? null;
+  if (section && section.mode === 'owner_input') {
+    const fields = Array.isArray(section.fields) ? section.fields : [];
+    const order = ['material', 'contents', 'size', 'price'];
+    for (const name of order) {
+      const hit = fields.find(f => f && f.field === name && f.confirmed && typeof f.value === 'string' && f.value.trim());
+      if (hit) return sanitizeSlugCandidate(hit.value);
+    }
+    const claims = Array.isArray(section.confirmed_claims) ? section.confirmed_claims : [];
+    const first = claims.find(c => typeof c === 'string' && c.trim());
+    if (first) return sanitizeSlugCandidate(first);
+  }
+  if (typeof receipt.idea === 'string' && receipt.idea.trim()) return sanitizeSlugCandidate(receipt.idea);
+  return 'pack';
+}
+
 /** Safe product and date download name. Only lowercase letters, digits, and dashes. */
-export function safeExportFilename(runId: string, now: Date, ext: 'json' | 'md'): string {
+export function safeExportFilename(receipt: ExportSource, now: Date, ext: 'json' | 'md'): string {
   const day = Number.isNaN(now.getTime()) ? 'nodate' : now.toISOString().slice(0, 10).replaceAll('-', '');
-  const slug = runId.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'run-unknown';
-  return `launchcrew-pack-${day}-${slug}.${ext}`;
+  return `launchcrew-pack-${day}-${exportProductSlug(receipt)}.${ext}`;
 }
 
 export function downloadTextFile(filename: string, text: string, mime: string) {
