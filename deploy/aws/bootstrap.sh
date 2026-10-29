@@ -5,9 +5,12 @@
 #   phase infra   deploy the CloudFormation stack with EnableServices=false on a
 #                 fresh stack (owned updates refuse while EnableServices=true
 #                 so task definitions and images are never updated under
-#                 running services; run explicit phase quiesce first), so VPC,
-#                 ECR repositories, RDS, and task definitions exist with both
-#                 ECS services at DesiredCount 0 and no app running
+#                 running services; run explicit phase quiesce first, and owned
+#                 updates review a bounded change set allowing only task
+#                 definition or service Modify with no replacement and no DB or
+#                 network change before deploy), so VPC, ECR repositories, RDS,
+#                 and task definitions exist with both ECS services at
+#                 DesiredCount 0 and no app running
 #   phase quiesce safe maintenance to stop the owned app before an update:
 #                 verify exact stack ownership, identity, and tags, review a
 #                 bounded change set built from the existing deployed template
@@ -37,11 +40,13 @@
 #                 code 0, then run the separate verify task definition in
 #                 verify mode as schema and runtime-identity proof
 #   phase enable  re-prove images, owned secrets and execution roles, plus the
-#                 read-only material verify and the runtime-only verify proof,
-#                 then update the stack with EnableServices=true for fixed
-#                 count 1 each, then verify both owned physical services report
-#                 ACTIVE desired 1 running 1 pending 0 with no failures.
-#                 Standalone enable never populates, exports, binds, or migrates.
+#                 prior complete material, migration, and verify journals from
+#                 the current release generation with live describe and no new
+#                 run-task call, then update the stack with EnableServices=true
+#                 for fixed count 1 each, then verify both owned physical
+#                 services report ACTIVE desired 1 running 1 pending 0.
+#                 Standalone enable never populates, exports, binds, migrates,
+#                 or launches any one-off task.
 #   phase all     full readiness chain: owned foundation COMPLETE plus exact
 #                 confirmed SNS gate, owned prereqs ISSUED plus owned secret
 #                 metadata, then infra, images, init, material, dbroles,
@@ -216,7 +221,8 @@ phase_plan() {
   echo "     plus exact returned secret ARN and secret tags; fresh stacks create with tags"
   echo "  2. infra: deploy stack with EnableServices false; owned updates refuse while"
   echo "     EnableServices is true so images are never updated under running services;"
-  echo "     run explicit phase quiesce first, then require CREATE_COMPLETE or UPDATE_COMPLETE"
+  echo "     run explicit phase quiesce first, review a bounded taskdef-only diff with"
+  echo "     no replacement and no DB or network change, then require CREATE_COMPLETE or UPDATE_COMPLETE"
   echo "  2a. quiesce: explicit safe maintenance only, never part of all; verify exact owned"
   echo "     stack identity and tags, review a bounded change set from the existing template"
   echo "     with only ApiService and WebService to DesiredCount 0, execute only on explicit"
@@ -235,12 +241,12 @@ phase_plan() {
   echo "     expected head revision, runtime identity, rolled-back write, and DDL refusal"
   echo "  8. enable: foundation budget readiness preflight (exact Project filter plus alert"
   echo "     thresholds read back, Project activation verified Active read-only, never"
-  echo "     activated here), then re-prove images, bindings, the read-only material"
-  echo "     verify and the runtime-only verify proof from live state, then update stack"
-  echo "     with EnableServices=true, verify owned services ACTIVE desired 1 running 1"
-  echo "     pending 0 each (configuration check only; serving health is proven by"
-  echo "     ALB targets after DNS). Standalone"
-  echo "     enable never populates, exports, binds, or migrates."
+  echo "     activated here), then re-prove images, bindings, plus prior material,"
+  echo "     migration, and verify journals with live describe and no new run-task,"
+  echo "     then update stack with EnableServices=true, verify owned services ACTIVE"
+  echo "     desired 1 running 1 pending 0 each (configuration check only; serving"
+  echo "     health is proven by ALB targets after DNS). Standalone"
+  echo "     enable never populates, exports, binds, migrates, or launches tasks."
   echo "Per-phase inputs: infra needs stack, account, region, parameters file plus foundation gate args;"
   echo "  images needs the five image URIs plus the four secret ARNs for the API and web bindings;"
   echo "  init and material need the bootstrap image plus all four secret ARNs plus foundation gate args;"
@@ -2249,6 +2255,159 @@ if wants_phase infra; then
   fi
   TARGET_SERVICES="false"
   WAS_NEW="$STACK_EXISTS"
+  if [ "$WAS_NEW" -eq 1 ]; then
+    INFRA_CHANGESET="infra-$TARGET_DB_HEAD"
+    "$AWS_BIN" cloudformation delete-change-set --stack-name "$STACK_NAME" --change-set-name "$INFRA_CHANGESET" --region "$EXPECTED_REGION" >/dev/null 2>&1 || true
+    echo "Infra: reviewing bounded update diff at services 0 before deploy."
+    if ! python3 - "$PARAMETERS_FILE" "$AWS_BIN" "$STACK_NAME" "$INFRA_CHANGESET" "$TEMPLATE_FILE" "$EXPECTED_REGION" <<'PYEOF'
+import json, subprocess, sys
+params_file, aws_bin, stack, changeset, template, region = sys.argv[1:7]
+try:
+    with open(params_file) as handle:
+        doc = json.load(handle)
+except Exception:
+    raise SystemExit("parameters file is not valid JSON")
+if isinstance(doc, dict) and "Parameters" in doc:
+    doc = doc["Parameters"]
+if not isinstance(doc, list):
+    raise SystemExit("parameters file must be a JSON list")
+params = []
+for entry in doc:
+    if not isinstance(entry, dict) or "ParameterKey" not in entry:
+        raise SystemExit("parameters file has a malformed entry")
+    key = entry["ParameterKey"]
+    if key == "EnableServices":
+        continue
+    if key in ("BudgetLimitUsd", "BudgetNotifyEmail"):
+        raise SystemExit("parameters file carries a foundation-owned budget key")
+    if "ParameterValue" not in entry:
+        raise SystemExit("parameters file entry has no explicit ParameterValue")
+    value = entry.get("ParameterValue", "")
+    if not isinstance(value, str):
+        raise SystemExit("parameters file value must be a string")
+    if "\n" in value or "\r" in value or "://" in value:
+        raise SystemExit("parameters file value has a refused shape")
+    params.append("ParameterKey=%s,ParameterValue=%s" % (key, value))
+params.append("ParameterKey=EnableServices,ParameterValue=false")
+cmd = [aws_bin, "cloudformation", "create-change-set",
+       "--stack-name", stack, "--change-set-name", changeset,
+       "--change-set-type", "UPDATE", "--template-file", template,
+       "--parameters"] + params + [
+       "--capabilities", "CAPABILITY_NAMED_IAM",
+       "--tags", "Key=Project,Value=LaunchCrew", "Key=Environment,Value=demo",
+       "--region", region]
+proc = subprocess.run(cmd, capture_output=True, text=True)
+sys.exit(proc.returncode)
+PYEOF
+    then
+      echo "refused: infra review change set create failed, no deploy made" >&2
+      phase_failed infra
+    fi
+    INFRA_DESC_JSON="$(mktemp /tmp/launchcrew-infra-desc-XXXXXX)"
+    if ! "$AWS_BIN" cloudformation describe-change-set --stack-name "$STACK_NAME" --change-set-name "$INFRA_CHANGESET" --region "$EXPECTED_REGION" --output json >"$INFRA_DESC_JSON" 2>"$TMP_ERR"; then
+      rm -f "$INFRA_DESC_JSON"
+      "$AWS_BIN" cloudformation delete-change-set --stack-name "$STACK_NAME" --change-set-name "$INFRA_CHANGESET" --region "$EXPECTED_REGION" >/dev/null 2>&1 || true
+      echo "refused: infra review change set unreadable, deleted with no deploy made" >&2
+      phase_failed infra
+    fi
+    INFRA_REVIEW="$(python3 - "$INFRA_DESC_JSON" "$STACK_NAME" "$STACK_ID" 2>/dev/null <<'PYEOF'
+import json, sys
+path, want_stack, want_id = sys.argv[1:4]
+try:
+    doc = json.load(open(path))
+except Exception:
+    print("MALFORMED")
+    sys.exit(0)
+if not isinstance(doc, dict):
+    print("MALFORMED")
+    sys.exit(0)
+if (doc.get("StackName", "") or "") != want_stack:
+    print("STACK_MISMATCH")
+    sys.exit(0)
+if want_id and (doc.get("StackId", "") or "") != want_id:
+    print("STACKID_MISMATCH")
+    sys.exit(0)
+status = doc.get("Status", "") or ""
+reason = doc.get("StatusReason", "") or ""
+if status == "FAILED" and ("didn't contain changes" in reason or "No updates" in reason):
+    print("NO_CHANGES")
+    sys.exit(0)
+if status != "CREATE_COMPLETE":
+    print("STATUS_%s" % (status or "EMPTY"))
+    sys.exit(0)
+if (doc.get("ExecutionStatus", "") or "") != "AVAILABLE":
+    print("EXEC_%s" % (doc.get("ExecutionStatus", "") or "EMPTY"))
+    sys.exit(0)
+changes = doc.get("Changes", None)
+if not isinstance(changes, list):
+    print("MALFORMED")
+    sys.exit(0)
+if len(changes) == 0:
+    print("NO_CHANGES")
+    sys.exit(0)
+if len(changes) > 10:
+    print("TOO_MANY_%s" % len(changes))
+    sys.exit(0)
+allowed = {"ApiTaskDefinition", "WebTaskDefinition", "MigrationTaskDefinition",
+           "BootstrapTaskDefinition", "VerifyTaskDefinition",
+           "SdkInitTaskDefinition", "SdkMaterialTaskDefinition",
+           "ApiService", "WebService"}
+seen = set()
+for entry in changes:
+    if not isinstance(entry, dict):
+        print("MALFORMED")
+        sys.exit(0)
+    if (entry.get("Type", "") or "") != "Resource":
+        print("NON_RESOURCE")
+        sys.exit(0)
+    rc = entry.get("ResourceChange", None)
+    if not isinstance(rc, dict):
+        print("MALFORMED")
+        sys.exit(0)
+    logical = rc.get("LogicalResourceId", "") or ""
+    action = rc.get("Action", "") or ""
+    replacement = rc.get("Replacement", "False")
+    if logical not in allowed:
+        print("FOREIGN_%s" % (logical or "EMPTY"))
+        sys.exit(0)
+    if logical in seen:
+        print("DUPLICATE_%s" % logical)
+        sys.exit(0)
+    seen.add(logical)
+    if action != "Modify":
+        print("ACTION_%s_%s" % (logical, action or "EMPTY"))
+        sys.exit(0)
+    if str(replacement) != "False":
+        print("REPLACEMENT_%s_%s" % (logical, str(replacement)))
+        sys.exit(0)
+    scope = rc.get("Scope", None)
+    if scope is not None:
+        if not isinstance(scope, list) or not scope:
+            print("SCOPE_%s" % logical)
+            sys.exit(0)
+        for item in scope:
+            if item not in ("Properties", "Tags", "Metadata"):
+                print("SCOPE_%s_%s" % (logical, str(item)))
+                sys.exit(0)
+print("OK")
+PYEOF
+)" || INFRA_REVIEW="UNREADABLE"
+    INFRA_REVIEW="$(printf '%s' "$INFRA_REVIEW" | tr -d '[:space:]')"
+    if [ "$INFRA_REVIEW" = "NO_CHANGES" ]; then
+      rm -f "$INFRA_DESC_JSON"
+      "$AWS_BIN" cloudformation delete-change-set --stack-name "$STACK_NAME" --change-set-name "$INFRA_CHANGESET" --region "$EXPECTED_REGION" >/dev/null 2>&1 || true
+      echo "Infra: review reports no updates, stack already current at services 0, proceeding to deploy as no-op."
+    elif [ "$INFRA_REVIEW" != "OK" ]; then
+      rm -f "$INFRA_DESC_JSON"
+      "$AWS_BIN" cloudformation delete-change-set --stack-name "$STACK_NAME" --change-set-name "$INFRA_CHANGESET" --region "$EXPECTED_REGION" >/dev/null 2>&1 || true
+      echo "refused: infra review proof is $INFRA_REVIEW, expected only task definition or service Modify with no replacement and no DB or network change. Review change set deleted with no deploy made." >&2
+      phase_failed infra
+    else
+      rm -f "$INFRA_DESC_JSON"
+      "$AWS_BIN" cloudformation delete-change-set --stack-name "$STACK_NAME" --change-set-name "$INFRA_CHANGESET" --region "$EXPECTED_REGION" >/dev/null 2>&1 || true
+      echo "Infra: review passed, only task definitions or services Modify with no replacement, no DB or network or cert change."
+    fi
+  fi
   if ! cloudformation_deploy "$TARGET_SERVICES" infra; then
     echo "infra deploy failed, no later phase started." >&2
     phase_failed infra
@@ -4011,6 +4170,268 @@ PYEOF
   esac
 }
 
+# Read-only re-proof of a prior one-off task for enable, with no new
+# run-task call. Args: taskdef logical, label, origin phase (material or
+# migrate). Enable never launches one-off tasks, not even read-only
+# verifiers; it re-proves the prior complete journals from the current
+# release generation plus live describe. The prior file must be complete
+# with the exact owned identity, release generation, head, StackId,
+# taskdef, and config, and its task must be STOPPED with every expected
+# essential container exit 0. Missing, unresolved, or mismatched priors
+# fail closed with instructions to run the origin phase first. No journal
+# write happens here, so concurrent origin runs cause a fail-closed rerun,
+# never a false success. Legacy old-head records never satisfy a new
+# generation; they are preserved and reported.
+reprove_prior_one_off_readonly() {
+  REPROVE_LOGICAL="$1"
+  REPROVE_LABEL="$2"
+  REPROVE_ORIGIN="$3"
+  if [ -z "$LAUNCH_JOURNAL_DIR" ]; then
+    case "$0" in
+      */*) REPROVE_SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd 2>/dev/null || echo "")" ;;
+      *) REPROVE_SCRIPT_DIR="" ;;
+    esac
+    if [ -n "$REPROVE_SCRIPT_DIR" ] && [ -d "$REPROVE_SCRIPT_DIR" ]; then
+      LAUNCH_JOURNAL_DIR="$REPROVE_SCRIPT_DIR/../../.local/launch-journals"
+    else
+      echo "refused: enable re-proof needs prior $REPROVE_LABEL $REPROVE_ORIGIN record but journal directory is missing. Run --phase $REPROVE_ORIGIN first with shared journals. No new launch." >&2
+      phase_failed enable
+    fi
+  fi
+  if [ -L "$LAUNCH_JOURNAL_DIR" ]; then echo "enable re-proof journal directory is a symlink, no claim made." >&2; phase_failed enable; fi
+  case "$LAUNCH_JOURNAL_DIR" in
+    /|/tmp|/tmp/|/var/tmp|/var/tmp/|/var|/var/|/etc|/etc/|/usr|/usr/) echo "enable re-proof journal directory is a shared root, no claim made." >&2; phase_failed enable ;;
+  esac
+  if [ ! -d "$LAUNCH_JOURNAL_DIR" ]; then
+    echo "refused: enable re-proof needs prior $REPROVE_LABEL $REPROVE_ORIGIN complete record but journal directory is absent. Run --phase $REPROVE_ORIGIN first. No new launch." >&2
+    phase_failed enable
+  fi
+  if ! python3 - "$LAUNCH_JOURNAL_DIR" 2>/dev/null <<'PYEOF'
+import os, sys
+path = sys.argv[1]
+if os.path.islink(path):
+    sys.exit(1)
+try:
+    info = os.stat(path)
+    mode = info.st_mode & 0o777
+    if info.st_uid != os.getuid():
+        sys.exit(1)
+except Exception:
+    sys.exit(1)
+sys.exit(0 if mode == 0o700 else 1)
+PYEOF
+  then echo "enable re-proof journal directory is not private mode 700 owned, no claim made." >&2; phase_failed enable; fi
+  if ! REPROVE_TASKDEF_ARN="$(stack_resource "$REPROVE_LOGICAL" 2>"$TMP_ERR")"; then
+    echo "enable re-proof $REPROVE_LABEL task definition lookup failed, not claimed." >&2; phase_failed enable
+  fi
+  REPROVE_TASKDEF_ARN="$(printf '%s' "$REPROVE_TASKDEF_ARN" | tr -d '[:space:]')"
+  [ -n "$REPROVE_TASKDEF_ARN" ] && [ "$REPROVE_TASKDEF_ARN" != "None" ] || { echo "enable re-proof $REPROVE_LABEL task definition missing, not claimed." >&2; phase_failed enable; }
+  if ! REPROVE_CONFIG_DIGEST="$(python3 - "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$STACK_NAME" "$CLUSTER_NAME" "$REPROVE_ORIGIN" "$REPROVE_LABEL" "$REPROVE_LOGICAL" "$REPROVE_TASKDEF_ARN" 2>/dev/null <<'PYEOF'
+import hashlib, sys
+raw = "|".join(sys.argv[1:9])
+print(hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32])
+PYEOF
+)"; then echo "enable re-proof $REPROVE_LABEL config digest failed, not claimed." >&2; phase_failed enable; fi
+  REPROVE_CONFIG_DIGEST="$(printf '%s' "$REPROVE_CONFIG_DIGEST" | tr -d '[:space:]')"
+  [ -n "$REPROVE_CONFIG_DIGEST" ] || { echo "enable re-proof $REPROVE_LABEL config digest empty, not claimed." >&2; phase_failed enable; }
+  REPROVE_ACTIVE_FILE="$LAUNCH_JOURNAL_DIR/launchcrew-$STACK_NAME-$REPROVE_ORIGIN-$REPROVE_LABEL-$RELEASE_GEN-active.json"
+  REPROVE_LEGACY_FILE="$LAUNCH_JOURNAL_DIR/launchcrew-$STACK_NAME-$REPROVE_ORIGIN-$REPROVE_LABEL-active.json"
+  if [ -L "$REPROVE_ACTIVE_FILE" ]; then echo "enable re-proof $REPROVE_LABEL record is a symlink, no claim made. Inspect $REPROVE_ACTIVE_FILE." >&2; phase_failed enable; fi
+  if [ ! -f "$REPROVE_ACTIVE_FILE" ]; then
+    if [ -f "$REPROVE_LEGACY_FILE" ]; then
+      echo "refused: enable re-proof needs new $RELEASE_GEN prior $REPROVE_LABEL $REPROVE_ORIGIN complete record but only a legacy old-head record exists. Run --phase $REPROVE_ORIGIN for $RELEASE_GEN first. Legacy preserved at $REPROVE_LEGACY_FILE, no new launch." >&2
+    else
+      echo "refused: enable re-proof needs prior $REPROVE_LABEL $REPROVE_ORIGIN complete record $REPROVE_ACTIVE_FILE but none exists. Run --phase $REPROVE_ORIGIN first. No new launch." >&2
+    fi
+    phase_failed enable
+  fi
+  REPROVE_PARSED="$(python3 - "$REPROVE_ACTIVE_FILE" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$STACK_NAME" "$CLUSTER_NAME" "$REPROVE_ORIGIN" "$REPROVE_LABEL" "$REPROVE_LOGICAL" "$REPROVE_TASKDEF_ARN" "$REPROVE_CONFIG_DIGEST" "$RELEASE_GEN" "$TARGET_DB_HEAD" "${STACK_ID:-}" 2>/dev/null <<'PYEOF'
+import json, os, sys
+(path, want_account, want_region, want_stack, want_cluster,
+ want_phase, want_label, want_logical, want_taskdef, want_digest,
+ want_gen, want_head, want_stack_id) = sys.argv[1:14]
+try:
+    if os.path.islink(path):
+        print("PROOF\tSYMLINK")
+        sys.exit(0)
+    finfo = os.stat(path)
+    if (finfo.st_mode & 0o777) != 0o600:
+        print("PROOF\tMODE")
+        sys.exit(0)
+    if finfo.st_size <= 0 or finfo.st_size > 10240:
+        print("PROOF\tSIZE")
+        sys.exit(0)
+    with open(path, encoding="utf-8") as handle:
+        doc = json.load(handle)
+except Exception:
+    print("PROOF\tUNREADABLE")
+    sys.exit(0)
+if not isinstance(doc, dict):
+    print("PROOF\tMALFORMED")
+    sys.exit(0)
+allow = {"version", "stack", "phase", "label", "taskdef_logical", "taskdef_arn",
+         "cluster", "client_token", "config_digest", "region", "account",
+         "outcome", "task_arn", "updated_utc", "release_generation",
+         "source_sha", "target_head", "stack_id", "predecessor_task_arn",
+         "predecessor_outcome"}
+for key in doc:
+    if key not in allow:
+        print("PROOF\tFOREIGN_FIELD")
+        sys.exit(0)
+blob = json.dumps(doc).lower()
+for bad in ("password", ":secret:", "tls-cert-b64", "tls-key-b64",
+            "database-url", "BEGIN PRIVATE", "BEGIN CERTIFICATE"):
+    if bad in blob:
+        print("PROOF\tSECRET_FIELD")
+        sys.exit(0)
+if doc.get("account", "") != want_account:
+    print("PROOF\tACCOUNT_MISMATCH")
+    sys.exit(0)
+if doc.get("region", "") != want_region:
+    print("PROOF\tREGION_MISMATCH")
+    sys.exit(0)
+if doc.get("stack", "") != want_stack:
+    print("PROOF\tSTACK_MISMATCH")
+    sys.exit(0)
+if doc.get("cluster", "") != want_cluster:
+    print("PROOF\tCLUSTER_MISMATCH")
+    sys.exit(0)
+if doc.get("phase", "") != want_phase:
+    print("PROOF\tPHASE_MISMATCH")
+    sys.exit(0)
+if doc.get("label", "") != want_label:
+    print("PROOF\tLABEL_MISMATCH")
+    sys.exit(0)
+if doc.get("taskdef_logical", "") != want_logical:
+    print("PROOF\tTASKDEF_LOGICAL_MISMATCH")
+    sys.exit(0)
+if doc.get("taskdef_arn", "") != want_taskdef:
+    print("PROOF\tTASKDEF_MISMATCH")
+    sys.exit(0)
+if doc.get("config_digest", "") != want_digest:
+    print("PROOF\tCONFIG_MISMATCH")
+    sys.exit(0)
+if doc.get("release_generation", "") != want_gen:
+    print("PROOF\tGENERATION_MISMATCH")
+    sys.exit(0)
+if doc.get("target_head", "") != want_head:
+    print("PROOF\tHEAD_MISMATCH")
+    sys.exit(0)
+if want_stack_id and doc.get("stack_id", "") != want_stack_id:
+    print("PROOF\tSTACKID_MISMATCH")
+    sys.exit(0)
+token = doc.get("client_token", "")
+if not isinstance(token, str) or len(token) != 33 or not token.startswith("lc-"):
+    print("PROOF\tTOKEN_MALFORMED")
+    sys.exit(0)
+outcome = doc.get("outcome", "")
+task_arn = doc.get("task_arn", "")
+if not isinstance(outcome, str) or not outcome:
+    print("PROOF\tOUTCOME_MISSING")
+    sys.exit(0)
+if task_arn is None:
+    task_arn = ""
+if not isinstance(task_arn, str):
+    print("PROOF\tMALFORMED")
+    sys.exit(0)
+print("PROOF\tOK")
+print("OUTCOME\t%s" % outcome)
+print("TOKEN\t%s" % token)
+print("TASKARN\t%s" % task_arn)
+PYEOF
+)" || REPROVE_PARSED="PROOF\tUNREADABLE"
+  REPROVE_PROOF="$(printf '%s\n' "$REPROVE_PARSED" | awk -F'\t' '$1=="PROOF"{print $2}')"
+  REPROVE_PROOF="$(printf '%s' "$REPROVE_PROOF" | tr -d '[:space:]')"
+  if [ "$REPROVE_PROOF" != "OK" ]; then
+    echo "refused: enable re-proof prior $REPROVE_LABEL $REPROVE_ORIGIN record is $REPROVE_PROOF, no claim made. Inspect $REPROVE_ACTIVE_FILE." >&2
+    phase_failed enable
+  fi
+  REPROVE_OUTCOME="$(printf '%s\n' "$REPROVE_PARSED" | awk -F'\t' '$1=="OUTCOME"{print $2}' | tr -d '[:space:]')"
+  REPROVE_TOKEN="$(printf '%s\n' "$REPROVE_PARSED" | awk -F'\t' '$1=="TOKEN"{print $2}' | tr -d '[:space:]')"
+  REPROVE_TASK="$(printf '%s\n' "$REPROVE_PARSED" | awk -F'\t' '$1=="TASKARN"{print $2}' | tr -d '[:space:]')"
+  if [ "$REPROVE_OUTCOME" != "complete" ]; then
+    echo "refused: enable re-proof prior $REPROVE_LABEL $REPROVE_ORIGIN is $REPROVE_OUTCOME, not complete. Run --phase $REPROVE_ORIGIN to reconcile first. No new launch. Inspect $REPROVE_ACTIVE_FILE." >&2
+    phase_failed enable
+  fi
+  [ -n "$REPROVE_TASK" ] && [ "$REPROVE_TASK" != "None" ] || { echo "refused: enable re-proof prior $REPROVE_LABEL has no task ARN, not claimed. Inspect $REPROVE_ACTIVE_FILE." >&2; phase_failed enable; }
+  if ! "$AWS_BIN" ecs wait tasks-stopped --cluster "$CLUSTER_NAME" --tasks "$REPROVE_TASK" --region "$EXPECTED_REGION" 2>"$TMP_ERR"; then
+    echo "enable re-proof $REPROVE_LABEL wait reported, verifying terminal state before any claim." >&2
+  fi
+  REPROVE_DESC_JSON="$(mktemp /tmp/launchcrew-reprove-XXXXXX)"
+  if ! "$AWS_BIN" ecs describe-tasks --cluster "$CLUSTER_NAME" --tasks "$REPROVE_TASK" --region "$EXPECTED_REGION" --output json >"$REPROVE_DESC_JSON" 2>"$TMP_ERR"; then
+    rm -f "$REPROVE_DESC_JSON"
+    echo "enable re-proof $REPROVE_LABEL terminal state unreadable, not claimed." >&2
+    phase_failed enable
+  fi
+  REPROVE_TASKDEF_JSON="$(mktemp /tmp/launchcrew-reprove-def-XXXXXX)"
+  if ! fetch_taskdef_json "$REPROVE_LOGICAL" "$REPROVE_TASKDEF_JSON"; then
+    rm -f "$REPROVE_DESC_JSON" "$REPROVE_TASKDEF_JSON"
+    echo "enable re-proof $REPROVE_LABEL expected container set unreadable, not claimed." >&2
+    phase_failed enable
+  fi
+  REPROVE_CHECK="$(python3 - "$REPROVE_DESC_JSON" "$REPROVE_TASKDEF_JSON" "$REPROVE_TASK" "$REPROVE_TASKDEF_ARN" "arn:aws:ecs:$EXPECTED_REGION:$EXPECTED_ACCOUNT:cluster/$CLUSTER_NAME" "$REPROVE_TOKEN" 2>/dev/null <<'PYEOF'
+import json, sys
+try:
+    describe = json.load(open(sys.argv[1]))
+    defined = json.load(open(sys.argv[2]))
+except Exception:
+    sys.exit(1)
+expected_arn, expected_taskdef, expected_cluster, expected_token = sys.argv[3:7]
+expected_names = []
+for container in (defined.get("taskDefinition", defined).get("containerDefinitions", []) or []):
+    if container.get("essential", True) and container.get("name"):
+        expected_names.append(container.get("name"))
+tasks = describe.get("tasks", [])
+failures = describe.get("failures", [])
+if failures or not tasks:
+    print("NO_TASK")
+    sys.exit(0)
+if not expected_names:
+    print("NO_EXPECTED_CONTAINERS")
+    sys.exit(0)
+task = tasks[0]
+if (task.get("taskArn", "") or "") != expected_arn:
+    print("WRONG_TASK_ARN")
+    sys.exit(0)
+if task.get("lastStatus") != "STOPPED":
+    print("NOT_STOPPED")
+    sys.exit(0)
+if (task.get("taskDefinitionArn", "") or "") != expected_taskdef:
+    print("WRONG_TASKDEF")
+    sys.exit(0)
+if (task.get("clusterArn", "") or "") != expected_cluster:
+    print("WRONG_CLUSTER")
+    sys.exit(0)
+if (task.get("startedBy", "") or "") != expected_token:
+    print("WRONG_TOKEN")
+    sys.exit(0)
+actual = task.get("containers", []) or []
+names = [(c.get("name", "?") or "?") for c in actual]
+if len(set(names)) != len(names):
+    print("DUPLICATE")
+    sys.exit(0)
+for name in sorted(set(names) - set(expected_names)):
+    print("UNEXPECTED:" + name)
+    sys.exit(0)
+for name in sorted(set(expected_names) - set(names)):
+    print("MISSING:" + name)
+    sys.exit(0)
+for container in actual:
+    if container.get("lastStatus") != "STOPPED" or container.get("exitCode") != 0:
+        print("EXIT_NONZERO:" + (container.get("name", "?") or "?"))
+        sys.exit(0)
+print("OK")
+PYEOF
+)" || REPROVE_CHECK="UNREADABLE"
+  rm -f "$REPROVE_DESC_JSON" "$REPROVE_TASKDEF_JSON"
+  REPROVE_CHECK="$(printf '%s' "$REPROVE_CHECK" | tr -d '[:space:]')"
+  if [ "$REPROVE_CHECK" != "OK" ]; then
+    echo "refused: enable re-proof prior $REPROVE_LABEL terminal proof is $REPROVE_CHECK, not claimed. Inspect $REPROVE_ACTIVE_FILE." >&2
+    phase_failed enable
+  fi
+  echo "Enable re-proof: $REPROVE_LABEL prior $REPROVE_ORIGIN STOPPED exit 0 with no new launch."
+}
+
 if wants_phase enable; then
   echo "Phase enable: update stack with EnableServices=true for fixed count 1 each"
   [ "$STACK_EXISTS" -eq 1 ] || { echo "refused: no stack to enable; run --phase infra first" >&2; phase_failed enable; }
@@ -4019,10 +4440,10 @@ if wants_phase enable; then
   # Resume guard: a standalone enable re-proves everything boot would rely
   # on, because nothing is assumed from memory. Refresh the full image
   # digest and task definition ref proof, the owned secrets and role bindings
-  # including TLS material, the read-only material verify proof, and the
-  # runtime-only verify proof (expected head, runtime identity, rolled-back
-  # write, DDL refusal) before any deploy. Standalone enable never
-  # populates, exports, binds, or migrates.
+  # including TLS material, then re-prove the prior complete material,
+  # migration, and verify journals from the current release generation plus
+  # live describe, with no new run-task call. Standalone enable never
+  # populates, exports, binds, migrates, or launches any one-off task.
   verify_image "$API_IMAGE" launchcrew-api ApiTaskDefinition api api
   verify_image "$WEB_IMAGE" launchcrew-web WebTaskDefinition web-app web
   verify_image "$WEB_PROXY_IMAGE" launchcrew-web-proxy WebTaskDefinition web-proxy web-proxy
@@ -4041,14 +4462,10 @@ if wants_phase enable; then
     "bootstrap-db-roles.RUNTIME_DB_URL=$RUNTIME_SECRET_ARN:database-url::"
   check_sdk_taskdef SdkMaterialTaskDefinition SdkMaterialExecutionRole SdkMaterialTaskRole sdk-material --verify-material
   echo "Enable precheck: all five owned task definition images, secrets, and owned roles match validated values, SDK material shape proven"
-  case "$COMPLETED" in
-    *material*) echo "Enable proof: material already proved verify in this run, no rerun" ;;
-    *) run_one_off_task SdkMaterialTaskDefinition sdk-material enable ;;
-  esac
-  case "$COMPLETED" in
-    *migrate*) echo "Enable proof: migrate already proved verify in this run, no rerun" ;;
-    *) run_one_off_task VerifyTaskDefinition verify enable ;;
-  esac
+  reprove_prior_one_off_readonly SdkMaterialTaskDefinition sdk-material material
+  reprove_prior_one_off_readonly MigrationTaskDefinition migration migrate
+  reprove_prior_one_off_readonly VerifyTaskDefinition verify migrate
+  echo "Enable proof: prior material, migration, and verify journals re-proved STOPPED exit 0 with no new run-task."
   if ! cloudformation_deploy "true" enable; then
     echo "enable deploy failed, services unchanged." >&2
     phase_failed enable

@@ -129,19 +129,35 @@ if [ "$1" = "cloudformation" ] && [ "$2" = "describe-stacks" ]; then
 fi
 if [ "$1" = "cloudformation" ] && [ "$2" = "create-change-set" ]; then
   case "$*" in
-    *"--use-previous-template"*) ;;
-    *) echo "fake-aws: quiesce must use --use-previous-template" >&2; exit 2 ;;
+    *"--use-previous-template"*|*"--template-file"*) ;;
+    *) echo "fake-aws: change set must use previous template or template file" >&2; exit 2 ;;
   esac
   case "$*" in
     *"ParameterKey=EnableServices,ParameterValue=false"*) ;;
-    *) echo "fake-aws: quiesce must set EnableServices=false" >&2; exit 2 ;;
+    *) echo "fake-aws: change set must set EnableServices=false" >&2; exit 2 ;;
   esac
-  printf '{"Id":"arn:aws:cloudformation:us-east-1:111122223333:changeSet/quiesce-006/abc123","StackId":"arn:aws:cloudformation:us-east-1:111122223333:stack/launchcrew-demo/abc123"}\\n'
+  printf '{"Id":"arn:aws:cloudformation:us-east-1:111122223333:changeSet/changeset/abc123","StackId":"arn:aws:cloudformation:us-east-1:111122223333:stack/launchcrew-demo/abc123"}\\n'
   exit 0
 fi
 if [ "$1" = "cloudformation" ] && [ "$2" = "describe-change-set" ]; then
-  CHANGE_MODE="${FAKE_CHANGESET:-exact}"
+  CHANGESET_NAME=""
+  CHANGESET_PREV=""
+  for CHANGESET_ARG in "$@"; do
+    if [ "$CHANGESET_PREV" = "--change-set-name" ]; then CHANGESET_NAME="$CHANGESET_ARG"; fi
+    CHANGESET_PREV="$CHANGESET_ARG"
+  done
   STACKID="arn:aws:cloudformation:us-east-1:111122223333:stack/launchcrew-demo/abc123"
+  case "$CHANGESET_NAME" in
+    *infra*)
+      INFRA_MODE="${FAKE_INFRA_CHANGESET:-exact}"
+      if [ "$INFRA_MODE" = "malformed" ]; then printf 'not-json{{{\\n'; exit 0; fi
+      if [ "$INFRA_MODE" = "empty" ]; then printf '{"ChangeSetName":"infra-006","StackName":"launchcrew-demo","StackId":"%s","Status":"FAILED","StatusReason":"The submitted information didn'"'"'t contain changes. Submit different information to create a change set.","ExecutionStatus":"UNAVAILABLE","Changes":[]}\\n' "$STACKID"; exit 0; fi
+      if [ "$INFRA_MODE" = "foreign" ]; then printf '{"ChangeSetName":"infra-006","StackName":"launchcrew-demo","StackId":"%s","Status":"CREATE_COMPLETE","ExecutionStatus":"AVAILABLE","Changes":[{"Type":"Resource","ResourceChange":{"Action":"Modify","LogicalResourceId":"Database","PhysicalResourceId":"launchcrew-demo-db","ResourceType":"AWS::RDS::DBInstance","Replacement":"False","Scope":["Properties"]}}]}\\n' "$STACKID"; exit 0; fi
+      if [ "$INFRA_MODE" = "replacement" ]; then printf '{"ChangeSetName":"infra-006","StackName":"launchcrew-demo","StackId":"%s","Status":"CREATE_COMPLETE","ExecutionStatus":"AVAILABLE","Changes":[{"Type":"Resource","ResourceChange":{"Action":"Modify","LogicalResourceId":"ApiTaskDefinition","PhysicalResourceId":"arn:aws:ecs:us-east-1:111122223333:task-definition/launchcrew-demo-api:1","ResourceType":"AWS::ECS::TaskDefinition","Replacement":"True","Scope":["Properties"]}}]}\\n' "$STACKID"; exit 0; fi
+      printf '{"ChangeSetName":"infra-006","StackName":"launchcrew-demo","StackId":"%s","Status":"CREATE_COMPLETE","ExecutionStatus":"AVAILABLE","Changes":[{"Type":"Resource","ResourceChange":{"Action":"Modify","LogicalResourceId":"ApiTaskDefinition","PhysicalResourceId":"arn:aws:ecs:us-east-1:111122223333:task-definition/launchcrew-demo-api:1","ResourceType":"AWS::ECS::TaskDefinition","Replacement":"False","Scope":["Properties"]}},{"Type":"Resource","ResourceChange":{"Action":"Modify","LogicalResourceId":"WebTaskDefinition","PhysicalResourceId":"arn:aws:ecs:us-east-1:111122223333:task-definition/launchcrew-demo-web:1","ResourceType":"AWS::ECS::TaskDefinition","Replacement":"False","Scope":["Properties"]}},{"Type":"Resource","ResourceChange":{"Action":"Modify","LogicalResourceId":"MigrationTaskDefinition","PhysicalResourceId":"arn:aws:ecs:us-east-1:111122223333:task-definition/launchcrew-demo-migration:1","ResourceType":"AWS::ECS::TaskDefinition","Replacement":"False","Scope":["Properties"]}},{"Type":"Resource","ResourceChange":{"Action":"Modify","LogicalResourceId":"BootstrapTaskDefinition","PhysicalResourceId":"arn:aws:ecs:us-east-1:111122223333:task-definition/launchcrew-demo-bootstrap:1","ResourceType":"AWS::ECS::TaskDefinition","Replacement":"False","Scope":["Properties"]}},{"Type":"Resource","ResourceChange":{"Action":"Modify","LogicalResourceId":"VerifyTaskDefinition","PhysicalResourceId":"arn:aws:ecs:us-east-1:111122223333:task-definition/launchcrew-demo-verify:1","ResourceType":"AWS::ECS::TaskDefinition","Replacement":"False","Scope":["Properties"]}},{"Type":"Resource","ResourceChange":{"Action":"Modify","LogicalResourceId":"SdkInitTaskDefinition","PhysicalResourceId":"arn:aws:ecs:us-east-1:111122223333:task-definition/launchcrew-demo-sdkinit:1","ResourceType":"AWS::ECS::TaskDefinition","Replacement":"False","Scope":["Properties"]}},{"Type":"Resource","ResourceChange":{"Action":"Modify","LogicalResourceId":"SdkMaterialTaskDefinition","PhysicalResourceId":"arn:aws:ecs:us-east-1:111122223333:task-definition/launchcrew-demo-sdkmaterial:1","ResourceType":"AWS::ECS::TaskDefinition","Replacement":"False","Scope":["Properties"]}}]}\\n' "$STACKID"
+      exit 0 ;;
+  esac
+  CHANGE_MODE="${FAKE_CHANGESET:-exact}"
   if [ "$CHANGE_MODE" = "malformed" ]; then printf 'not-json{{{\\n'; exit 0; fi
   if [ "$CHANGE_MODE" = "empty" ]; then printf '{"ChangeSetName":"quiesce-006","StackName":"launchcrew-demo","StackId":"%s","Status":"CREATE_COMPLETE","ExecutionStatus":"AVAILABLE","Changes":[]}\\n' "$STACKID"; exit 0; fi
   if [ "$CHANGE_MODE" = "foreign" ]; then printf '{"ChangeSetName":"quiesce-006","StackName":"launchcrew-demo","StackId":"%s","Status":"CREATE_COMPLETE","ExecutionStatus":"AVAILABLE","Changes":[{"Type":"Resource","ResourceChange":{"Action":"Modify","LogicalResourceId":"Database","PhysicalResourceId":"launchcrew-demo-db","ResourceType":"AWS::RDS::DBInstance","Replacement":"False","Scope":["Properties"]}}]}\\n' "$STACKID"; exit 0; fi
@@ -528,7 +544,7 @@ if [ "$1" = "ecs" ] && [ "$2" = "run-task" ]; then
   done
   if [ -n "$RUN_TOKEN" ]; then printf '%s' "$RUN_TOKEN" >"${FAKE_TOKEN_FILE:-/dev/null}" 2>/dev/null || true; fi
   TASKARN="$(printf 'arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/task%03d' "$n")"
-  printf '%s|%s\\n' "$TASKARN" "$TASKDEF" >>"${FAKE_TASKDEF_FILE:-/dev/null}" 2>/dev/null || true
+  printf '%s|%s|%s\\n' "$TASKARN" "$TASKDEF" "$RUN_TOKEN" >>"${FAKE_TASKDEF_FILE:-/dev/null}" 2>/dev/null || true
   if [ "$MODE" = "runtask_empty" ]; then printf '{"tasks":[],"failures":[]}\\n'; exit 0; fi
   if [ "$MODE" = "runtask_failures" ]; then printf '{"tasks":[],"failures":[{"arn":"x","reason":"FAIL"}]}\\n'; exit 0; fi
   printf '{"tasks":[{"taskArn":"%s"}],"failures":[]}\\n' "$TASKARN"
@@ -542,9 +558,22 @@ if [ "$1" = "ecs" ] && [ "$2" = "wait" ]; then
   exit 0
 fi
 if [ "$1" = "ecs" ] && [ "$2" = "describe-tasks" ]; then
-  LAST="$(tail -n 1 "${FAKE_TASKDEF_FILE:-/dev/null}" 2>/dev/null || true)"
-  TASKARN="${LAST%%|*}"
-  TASKDEF="${LAST#*|}"
+  REQUESTED=""
+  REQUESTED_PREV=""
+  for REQUESTED_ARG in "$@"; do
+    if [ "$REQUESTED_PREV" = "--tasks" ]; then REQUESTED="$REQUESTED_ARG"; fi
+    REQUESTED_PREV="$REQUESTED_ARG"
+  done
+  TASK_LINE=""
+  if [ -n "$REQUESTED" ] && [ -n "${FAKE_TASKDEF_FILE:-}" ] && [ -f "$FAKE_TASKDEF_FILE" ]; then
+    TASK_LINE="$(grep -F "$REQUESTED|" "$FAKE_TASKDEF_FILE" 2>/dev/null | tail -n 1 || true)"
+  fi
+  if [ -z "$TASK_LINE" ]; then
+    TASK_LINE="$(tail -n 1 "${FAKE_TASKDEF_FILE:-/dev/null}" 2>/dev/null || true)"
+  fi
+  TASKARN="$(printf '%s' "$TASK_LINE" | cut -d'|' -f1)"
+  TASKDEF="$(printf '%s' "$TASK_LINE" | cut -d'|' -f2)"
+  LINE_TOKEN="$(printf '%s' "$TASK_LINE" | cut -s -d'|' -f3)"
   EXIT0=0
   case "$TASKDEF" in
     *migration*) if [ "$MODE" = "migrate_fail" ]; then EXIT0=1; fi ;;
@@ -563,8 +592,8 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-tasks" ]; then
     ENTRY="$(printf '{"name":"%s","lastStatus":"STOPPED","exitCode":%s}' "$NAME" "$EXIT0")"
     if [ -z "$CONTAINERS" ]; then CONTAINERS="$ENTRY"; else CONTAINERS="$CONTAINERS,$ENTRY"; fi
   done
-  STARTED_BY=""
-  if [ -n "${FAKE_TOKEN_FILE:-}" ] && [ -f "$FAKE_TOKEN_FILE" ]; then
+  STARTED_BY="$LINE_TOKEN"
+  if [ -z "$STARTED_BY" ] && [ -n "${FAKE_TOKEN_FILE:-}" ] && [ -f "$FAKE_TOKEN_FILE" ]; then
     STARTED_BY="$(cat "$FAKE_TOKEN_FILE" 2>/dev/null || true)"
   fi
   if [ -n "$STARTED_BY" ]; then
@@ -754,7 +783,7 @@ class BootstrapHarness(unittest.TestCase):
 
     def run_bootstrap(self, args, mode="success", extra_env=None,
                       params_overrides=None, params_raw=None,
-                      foundation_params_raw=None):
+                      foundation_params_raw=None, shared_dir=None):
         import json as _json
         with tempfile.TemporaryDirectory() as tmp:
             fake = Path(tmp) / "fake-aws"
@@ -762,16 +791,34 @@ class BootstrapHarness(unittest.TestCase):
             fake.chmod(fake.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
             log = Path(tmp) / "calls.log"
             log.write_text("", encoding="utf-8")
-            count = Path(tmp) / "count"
-            count.write_text("0", encoding="utf-8")
-            taskdefs = Path(tmp) / "taskdefs"
-            taskdefs.write_text("", encoding="utf-8")
-            token_file = Path(tmp) / "token"
-            token_file.write_text("", encoding="utf-8")
-            created = Path(tmp) / "created"
-            journals = Path(tmp) / "journals"
-            journals.mkdir(mode=0o700)
-            journals.chmod(0o700)
+            if shared_dir is None:
+                count = Path(tmp) / "count"
+                count.write_text("0", encoding="utf-8")
+                taskdefs = Path(tmp) / "taskdefs"
+                taskdefs.write_text("", encoding="utf-8")
+                token_file = Path(tmp) / "token"
+                token_file.write_text("", encoding="utf-8")
+                created = Path(tmp) / "created"
+                journals = Path(tmp) / "journals"
+                journals.mkdir(mode=0o700)
+                journals.chmod(0o700)
+            else:
+                shared = Path(shared_dir)
+                shared.mkdir(parents=True, exist_ok=True)
+                count = shared / "count"
+                if not count.exists():
+                    count.write_text("0", encoding="utf-8")
+                taskdefs = shared / "taskdefs"
+                if not taskdefs.exists():
+                    taskdefs.write_text("", encoding="utf-8")
+                token_file = shared / "token"
+                if not token_file.exists():
+                    token_file.write_text("", encoding="utf-8")
+                created = shared / "created"
+                journals = shared / "journals"
+                if not journals.exists():
+                    journals.mkdir(mode=0o700)
+                journals.chmod(0o700)
             given = {}
             items = list(args)
             index = 0
@@ -864,6 +911,27 @@ class BootstrapHarness(unittest.TestCase):
                 "--stack-name", STACK,
                 "--expected-account", ACCOUNT,
                 "--expected-region", REGION]
+
+    def run_enable_with_priors(self, shared_tmp, enable_extra_env=None,
+                               release="head006-testabc"):
+        base = self.base_args()
+        material_args = [*base, "--phase", "material",
+                         "--release-generation", release]
+        result_mat, _ = self.run_bootstrap(
+            material_args, shared_dir=shared_tmp)
+        self.assertEqual(result_mat.returncode, 0,
+                         msg=result_mat.stdout + result_mat.stderr)
+        migrate_args = [*base, "--phase", "migrate",
+                        "--release-generation", release]
+        result_mig, _ = self.run_bootstrap(
+            migrate_args, shared_dir=shared_tmp)
+        self.assertEqual(result_mig.returncode, 0,
+                         msg=result_mig.stdout + result_mig.stderr)
+        enable_args = [*base, "--phase", "enable",
+                       "--release-generation", release]
+        return self.run_bootstrap(
+            enable_args, extra_env=enable_extra_env,
+            shared_dir=shared_tmp)
 
 
 class DryRunTests(BootstrapHarness):
@@ -1122,25 +1190,26 @@ class PhaseOrderingTests(BootstrapHarness):
         self.assertEqual(len(runs), 1)
         self.assertFalse(any("EnableServices=true" in call for call in calls))
 
-    def test_enable_alone_reproves_images_bindings_and_verify(self):
+    def test_enable_alone_refuses_without_priors_and_launches_nothing(self):
         result, calls = self.run_bootstrap([*self.base_args(), "--phase", "enable"])
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("needs prior", combined)
+        self.assertIn("No new launch", combined)
+        self.assertNotIn("BOOTSTRAP COMPLETE", result.stdout)
+        self.assertFalse(any("run-task" in call for call in calls))
+        self.assertFalse(any("EnableServices=true" in call for call in calls))
+
+    def test_enable_with_priors_succeeds_with_no_new_tasks(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            result, calls = self.run_enable_with_priors(shared_tmp)
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
         self.assertIn("BOOTSTRAP COMPLETE", result.stdout)
-        joined = " ".join(calls)
-        self.assertIn("EnableServices=true", joined)
-        self.assertIn("batch-get-image", joined)
-        self.assertIn("launchcrew-demo-verify", joined)
-        self.assertIn("launchcrew-demo-sdkmaterial", joined)
-        self.assertNotIn("launchcrew-demo-migration:1 --launch-type", joined)
-        self.assertNotIn("launchcrew-demo-bootstrap:1 --launch-type", joined)
-        self.assertNotIn("launchcrew-demo-sdkinit:1 --launch-type", joined)
-        runs = [call for call in calls if "run-task" in call]
-        self.assertEqual(len(runs), 2)
-        material_run = next(i for i, call in enumerate(runs)
-                            if "launchcrew-demo-sdkmaterial" in call)
-        verify_run = next(i for i, call in enumerate(runs)
-                          if "launchcrew-demo-verify" in call)
-        self.assertLess(material_run, verify_run)
+        self.assertIn("Enable precheck", result.stdout)
+        self.assertIn("no new run-task", result.stdout + result.stderr)
+        self.assertFalse(any("run-task" in call for call in calls))
+        self.assertTrue(any("EnableServices=true" in call for call in calls))
+        self.assertIn("BOOTSTRAP COMPLETE phases requested: enable", result.stdout)
 
     def test_infra_alone_needs_no_images_or_secrets(self):
         result, calls = self.run_bootstrap(
@@ -1162,14 +1231,32 @@ class PhaseOrderingTests(BootstrapHarness):
         self.assertEqual(result.returncode, 0)
         self.assertFalse(any("EnableServices=true" in call for call in calls))
 
-    def test_enable_refuses_when_verify_proof_fails(self):
-        result, calls = self.run_bootstrap(
-            [*self.base_args(), "--phase", "enable"], mode="verify_fail")
+    def test_enable_refuses_when_prior_verify_unresolved(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            base = self.base_args()
+            release = "head006-testabc"
+            result_mat, _ = self.run_bootstrap(
+                [*base, "--phase", "material",
+                 "--release-generation", release],
+                shared_dir=shared_tmp)
+            self.assertEqual(result_mat.returncode, 0,
+                             msg=result_mat.stdout + result_mat.stderr)
+            result_mig, _ = self.run_bootstrap(
+                [*base, "--phase", "migrate",
+                 "--release-generation", release],
+                mode="verify_fail", shared_dir=shared_tmp)
+            self.assertNotEqual(result_mig.returncode, 0)
+            result, calls = self.run_bootstrap(
+                [*base, "--phase", "enable",
+                 "--release-generation", release],
+                shared_dir=shared_tmp)
         self.assertNotEqual(result.returncode, 0)
         combined = result.stdout + result.stderr
-        self.assertIn("EXIT_NONZERO", combined)
-        self.assertFalse(any("EnableServices=true" in call for call in calls))
+        self.assertIn("not complete", combined)
+        self.assertIn("No new launch", combined)
         self.assertNotIn("BOOTSTRAP COMPLETE", result.stdout)
+        self.assertFalse(any("run-task" in call for call in calls))
+        self.assertFalse(any("EnableServices=true" in call for call in calls))
 
     def test_enable_refuses_on_image_drift(self):
         result, calls = self.run_bootstrap(
@@ -1271,7 +1358,8 @@ class EnableServiceProofTests(BootstrapHarness):
     WEB_PHYSICAL = "launchcrew-demo-WebService-G7H8I9J0K1L2"
 
     def test_enable_uses_owned_physical_service_ids(self):
-        result, calls = self.run_bootstrap([*self.base_args(), "--phase", "enable"])
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            result, calls = self.run_enable_with_priors(shared_tmp)
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
         self.assertIn("BOOTSTRAP COMPLETE", result.stdout)
         self.assertIn("desiredCount 1", result.stdout)
@@ -1306,23 +1394,40 @@ class EnableServiceProofTests(BootstrapHarness):
             "malformed": "MALFORMED",
             "wrong_cluster": "WRONG_CLUSTER",
         }
-        for mode, token in cases.items():
-            with self.subTest(mode=mode):
-                result, calls = self.run_bootstrap(
-                    [*self.base_args(), "--phase", "enable"],
-                    extra_env={"FAKE_SERVICE": mode})
-                self.assertNotEqual(result.returncode, 0, msg=mode)
-                combined = result.stdout + result.stderr
-                self.assertIn("refused", combined, msg=mode)
-                self.assertIn(token, combined, msg=mode)
-                self.assertNotIn("BOOTSTRAP COMPLETE", result.stdout, msg=mode)
-                self.assertTrue(any("describe-services" in call for call in calls),
-                                msg=mode)
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            base = self.base_args()
+            release = "head006-testabc"
+            result_mat, _ = self.run_bootstrap(
+                [*base, "--phase", "material",
+                 "--release-generation", release],
+                shared_dir=shared_tmp)
+            self.assertEqual(result_mat.returncode, 0,
+                             msg=result_mat.stdout + result_mat.stderr)
+            result_mig, _ = self.run_bootstrap(
+                [*base, "--phase", "migrate",
+                 "--release-generation", release],
+                shared_dir=shared_tmp)
+            self.assertEqual(result_mig.returncode, 0,
+                             msg=result_mig.stdout + result_mig.stderr)
+            for mode, token in cases.items():
+                with self.subTest(mode=mode):
+                    result, calls = self.run_bootstrap(
+                        [*base, "--phase", "enable",
+                         "--release-generation", release],
+                        extra_env={"FAKE_SERVICE": mode},
+                        shared_dir=shared_tmp)
+                    self.assertNotEqual(result.returncode, 0, msg=mode)
+                    combined = result.stdout + result.stderr
+                    self.assertIn("refused", combined, msg=mode)
+                    self.assertIn(token, combined, msg=mode)
+                    self.assertNotIn("BOOTSTRAP COMPLETE", result.stdout, msg=mode)
+                    self.assertTrue(any("describe-services" in call for call in calls),
+                                    msg=mode)
 
     def test_enable_refuses_missing_service_identity(self):
-        result, _ = self.run_bootstrap(
-            [*self.base_args(), "--phase", "enable"],
-            extra_env={"FAKE_API_SERVICE": "None"})
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            result, _ = self.run_enable_with_priors(
+                shared_tmp, enable_extra_env={"FAKE_API_SERVICE": "None"})
         self.assertNotEqual(result.returncode, 0)
         combined = result.stdout + result.stderr
         self.assertIn("owned identifier missing", combined)
@@ -1476,7 +1581,8 @@ class BudgetFilterTests(BootstrapHarness):
                      "orexpr", "legacy", "malformed", "error", "auth")
 
     def test_exact_filter_passes_enable_readback(self):
-        result, calls = self.run_bootstrap([*self.base_args(), "--phase", "enable"])
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            result, calls = self.run_enable_with_priors(shared_tmp)
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
         self.assertTrue(any("describe-budget" in call for call in calls))
         self.assertIn("EQUALS only", result.stdout)
@@ -2045,7 +2151,8 @@ class CloudformationTagsTests(BootstrapHarness):
             self.assertIn("Environment=demo", call)
 
     def test_enable_update_passes_demo_tags(self):
-        result, calls = self.run_bootstrap([*self.base_args(), "--phase", "enable"])
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            result, calls = self.run_enable_with_priors(shared_tmp)
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
         deploys = [call for call in calls if "deploy " in call]
         self.assertTrue(deploys)
@@ -2279,6 +2386,144 @@ class QuiesceTests(BootstrapHarness):
         self.assertIn("LEGACY_ACTIVE_FILE", code)
         self.assertIn("head006", code)
         self.assertIn("legacy predecessor", code)
+
+
+class InfraDiffGuardTests(BootstrapHarness):
+    def test_infra_update_reviews_taskdef_only_diff(self):
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "infra"])
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        joined = " ".join(calls)
+        self.assertIn("create-change-set", joined)
+        self.assertIn("--template-file", joined)
+        self.assertIn("infra-006", joined)
+        self.assertIn("describe-change-set", joined)
+        self.assertIn("delete-change-set", joined)
+        self.assertTrue(any("deploy " in call and "EnableServices=false" in call
+                            for call in calls))
+        self.assertIn("review passed", result.stdout + result.stderr)
+        self.assertFalse(any("run-task" in call for call in calls))
+
+    def test_infra_refuses_foreign_db_change(self):
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "infra"],
+            extra_env={"FAKE_INFRA_CHANGESET": "foreign"})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("FOREIGN_Database", combined)
+        self.assertTrue(any("delete-change-set" in call for call in calls))
+        self.assertFalse(any("deploy " in call for call in calls))
+        self.assertFalse(any("run-task" in call for call in calls))
+
+    def test_infra_refuses_replacement_change(self):
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "infra"],
+            extra_env={"FAKE_INFRA_CHANGESET": "replacement"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("REPLACEMENT", result.stdout + result.stderr)
+        self.assertFalse(any("deploy " in call for call in calls))
+
+    def test_infra_no_changes_proceeds_as_noop_deploy(self):
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "infra"],
+            extra_env={"FAKE_INFRA_CHANGESET": "empty"})
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertIn("already current", result.stdout + result.stderr)
+        self.assertTrue(any("deploy " in call for call in calls))
+
+
+class LegacyJournalTests(BootstrapHarness):
+    LEGACY_TOKEN = "lc-" + "a" * 30
+    LEGACY_TASK = ("arn:aws:ecs:us-east-1:111122223333:"
+                   "task/launchcrew-demo/legacy001")
+    LEGACY_TASKDEF = ("arn:aws:ecs:us-east-1:111122223333:task-definition/"
+                      "launchcrew-demo-sdkmaterial:1")
+
+    def write_legacy(self, journals, outcome="complete"):
+        import json as _json
+        legacy = journals / f"launchcrew-{STACK}-material-sdk-material-active.json"
+        doc = {
+            "version": 1,
+            "stack": STACK,
+            "phase": "material",
+            "label": "sdk-material",
+            "taskdef_logical": "SdkMaterialTaskDefinition",
+            "taskdef_arn": self.LEGACY_TASKDEF,
+            "cluster": STACK,
+            "client_token": self.LEGACY_TOKEN,
+            "config_digest": "0" * 32,
+            "region": REGION,
+            "account": ACCOUNT,
+            "outcome": outcome,
+            "task_arn": self.LEGACY_TASK if outcome == "complete" else "",
+            "updated_utc": "2026-01-01T00:00:00Z",
+        }
+        legacy.write_text(_json.dumps(doc), encoding="utf-8")
+        legacy.chmod(0o600)
+        return legacy
+
+    def test_new_generation_reconciles_legacy_and_preserves_it(self):
+        import json as _json
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared = Path(shared_tmp)
+            journals = shared / "journals"
+            journals.mkdir(mode=0o700)
+            journals.chmod(0o700)
+            legacy = self.write_legacy(journals, outcome="complete")
+            before = legacy.read_text(encoding="utf-8")
+            taskdefs = shared / "taskdefs"
+            taskdefs.write_text(
+                f"{self.LEGACY_TASK}|{self.LEGACY_TASKDEF}|{self.LEGACY_TOKEN}\n",
+                encoding="utf-8")
+            (shared / "count").write_text("10", encoding="utf-8")
+            (shared / "token").write_text("", encoding="utf-8")
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "material",
+                 "--release-generation", "head006-testabc"],
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            self.assertIn("legacy predecessor reconciled",
+                          result.stdout + result.stderr)
+            self.assertTrue(legacy.exists())
+            self.assertEqual(legacy.read_text(encoding="utf-8"), before)
+            self.assertEqual(oct(legacy.stat().st_mode & 0o777), "0o600")
+            new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
+                                   "head006-testabc-active.json")
+            self.assertTrue(new_file.exists())
+            new_doc = _json.loads(new_file.read_text(encoding="utf-8"))
+            self.assertEqual(new_doc.get("outcome"), "complete")
+            self.assertEqual(new_doc.get("release_generation"), "head006-testabc")
+            self.assertEqual(new_doc.get("target_head"), "006")
+            self.assertEqual(new_doc.get("predecessor_task_arn"), self.LEGACY_TASK)
+            self.assertEqual(new_doc.get("predecessor_outcome"), "complete")
+            runs = [call for call in calls if "run-task" in call]
+            self.assertEqual(len(runs), 1)
+            describes = [call for call in calls if "describe-tasks" in call]
+            self.assertGreaterEqual(len(describes), 2)
+
+    def test_unresolved_legacy_blocks_new_launch_without_overwrite(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared = Path(shared_tmp)
+            journals = shared / "journals"
+            journals.mkdir(mode=0o700)
+            journals.chmod(0o700)
+            legacy = self.write_legacy(journals, outcome="started")
+            before = legacy.read_text(encoding="utf-8")
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "material",
+                 "--release-generation", "head006-testabc"],
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("legacy generation is started", combined)
+            self.assertIn("no new launch", combined)
+            self.assertFalse(any("run-task" in call for call in calls))
+            self.assertTrue(legacy.exists())
+            self.assertEqual(legacy.read_text(encoding="utf-8"), before)
+            new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
+                                   "head006-testabc-active.json")
+            self.assertFalse(new_file.exists())
 
 
 if __name__ == "__main__":
