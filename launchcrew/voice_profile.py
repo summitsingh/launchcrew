@@ -63,7 +63,7 @@ MAX_TERM_CHARS = 80
 MAX_CANDIDATE_CHARS = 10000
 
 STYLE_ONLY_NOTICE = (
-    "Style references only: examples are synthetic style references, "
+    "style references only: examples are synthetic style references, "
     "never factual evidence or authority; they never bypass Checker "
     "and never become confirmed facts."
 )
