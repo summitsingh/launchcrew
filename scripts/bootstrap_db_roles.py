@@ -11,12 +11,18 @@ redaction only covers this process: server-side statement logging is outside
 this job, so operators keep it off for secret-bearing statements.
 
 Modes, selected by argv flag only (no secret ever appears in argv):
-  --bind    create exact owned roles if missing (stamped with an ownership
-            comment), bind each role password to the matching injected
-            secret URL password, then apply the privilege split in two
-            connections. The RDS master is NOSUPERUSER CREATEROLE, not a
-            true postgres superuser, so it creates, stamps, and password
-            binds roles plus schema ACLs only. A direct migration
+  --bind    ensure the exact owned database exists first via the built-in
+            postgres maintenance database as the exact master (same host,
+            port, password, pinned verify-full TLS), creating exactly the
+            owned database if absent with a safe identifier and an
+            idempotent existence precondition, refusing a foreign existing
+            owner or a wrong identity and never touching other databases,
+            then create exact owned roles if missing (stamped with an
+            ownership comment), bind each role password to the matching
+            injected secret URL password, then apply the privilege split
+            in two connections. The RDS master is NOSUPERUSER CREATEROLE,
+            not a true postgres superuser, so it creates, stamps, and
+            password binds roles plus schema ACLs only. A direct migration
             connection then applies runtime DML-only object grants plus
             its own default privileges on migration-owned objects.
             Existing roles are rebound only with the ownership stamp and
@@ -53,11 +59,14 @@ HOST = re.compile(r"^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$")
 DBNAME = re.compile(r"^[A-Za-z0-9_.-]{1,63}$")
 MANAGED_COMMENT = "launchcrew-managed"
 NATIVE_BOOTSTRAP_OID = 10
-PHASES_BIND = ("password-binding", "schema-acls", "runtime-grants",
-               "default-privileges")
+PHASES_BIND = ("db-ensure", "password-binding", "schema-acls",
+               "runtime-grants", "default-privileges")
 ROOTCERT_ENV = "DATABASE_SSL_ROOTCERT"
 EXPECTED_HEAD = "004"
 VERIFY_PROBE = "_lc_verify_probe"
+MAINTENANCE_DB = "postgres"
+_SQLSTATE_RE = re.compile(r"^[0-9A-Z]{5}$")
+_ERROR_CLASS_RE = re.compile(r"^[A-Za-z_]{1,64}$")
 # Query keys that reroute the effective destination or replace the pinned CA
 # file even when the URL authority looks right. Matched case-insensitively
 # after percent-decoding, exactly like backend/store.py.
@@ -213,6 +222,30 @@ def _parse_db_url(label, url, expected_user, expected_host, expected_db):
 def _quote_ident(name):
     _check_ident("identifier", name)
     return '"' + name.replace('"', '""') + '"'
+
+
+def _quote_dbname(name):
+    _check_dbname("database", name)
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _error_detail(exc, fallback):
+    """Safe bounded classification of a database exception.
+
+    Returns SQLSTATE plus exception class only, never raw exception text,
+    passwords, URLs, or connection fields. Both parts are allowlisted, so
+    driver messages that echo connection fields cannot leak through logs.
+    """
+    parts = []
+    sqlstate = getattr(exc, "sqlstate", None)
+    if isinstance(sqlstate, str) and _SQLSTATE_RE.match(sqlstate):
+        parts.append("sqlstate=%s" % sqlstate)
+    cls = type(exc).__name__
+    if isinstance(cls, str) and _ERROR_CLASS_RE.match(cls):
+        parts.append("class=%s" % cls)
+    if not parts:
+        return fallback
+    return " ".join(parts)
 
 
 def _role_row(cur, name):
@@ -398,12 +431,104 @@ def do_bind():
     qi_runtime = _quote_ident(runtime_user)
     qi_migration = _quote_ident(migration_user)
     qi_schema = _quote_ident(schema)
+    qi_dbname = _quote_dbname(dbname)
+    # Phase 0: ensure the exact owned database exists. Connect as the exact
+    # master to the built-in postgres maintenance database with the same
+    # host, port, password, and pinned verify-full TLS, then create exactly
+    # the owned database if absent. The maintenance name is a constant,
+    # never from the environment, and no other database is ever inspected
+    # or mutated. CREATE DATABASE cannot run inside a transaction block,
+    # so the read transaction is rolled back and autocommit is enabled for
+    # the single CREATE. No retry on ambiguous failure; the host inspects
+    # the journal and reruns only after review.
+    try:
+        maint_conn = psycopg.connect(host=host, port=port,
+                                     dbname=MAINTENANCE_DB,
+                                     user=master_user,
+                                     password=master_password,
+                                     sslmode="verify-full",
+                                     sslrootcert=bundle)
+    except Exception as exc:
+        return _fail("connect", "maintenance %s"
+                     % _error_detail(exc, "connection-failed"))
+    try:
+        maint_conn.autocommit = False
+        mcur = maint_conn.cursor()
+        try:
+            maint_identity = _connection_identity(mcur)
+        except Exception:
+            try:
+                maint_conn.rollback()
+            except Exception:
+                pass
+            return _fail("connect",
+                         "maintenance master identity lookup failed")
+        if (maint_identity["session_user"] != master_user
+                or maint_identity["current_user"] != master_user):
+            try:
+                maint_conn.rollback()
+            except Exception:
+                pass
+            return _fail("connect",
+                         "maintenance master identity mismatch")
+        try:
+            existing_owner = _database_owner(mcur, dbname)
+        except Exception:
+            try:
+                maint_conn.rollback()
+            except Exception:
+                pass
+            return _fail("db-safety", "catalog check failed")
+        if existing_owner is not None:
+            try:
+                maint_conn.rollback()
+            except Exception:
+                pass
+            if existing_owner != master_user:
+                return _fail("db-safety",
+                             "existing database with foreign owner refused")
+        else:
+            try:
+                maint_conn.rollback()
+            except Exception:
+                pass
+            try:
+                maint_conn.autocommit = True
+            except Exception:
+                return _fail("db-create", "autocommit failed")
+            create_exc = None
+            try:
+                mcur.execute("CREATE DATABASE %s" % qi_dbname)
+            except Exception as exc:
+                if getattr(exc, "sqlstate", None) != "42P04":
+                    return _fail("db-create",
+                                 _error_detail(exc, "create-failed"))
+                create_exc = exc
+            try:
+                final_owner = _database_owner(mcur, dbname)
+            except Exception:
+                return _fail("db-safety", "catalog check failed")
+            if final_owner is None:
+                if create_exc is not None:
+                    return _fail("db-create",
+                                 _error_detail(create_exc, "create-failed"))
+                return _fail("db-create", "database missing after create")
+            if final_owner != master_user:
+                return _fail("db-safety",
+                             "existing database with foreign owner refused")
+        done.append("db-ensure")
+        _ok("db-ensure")
+    finally:
+        try:
+            maint_conn.close()
+        except Exception:
+            pass
     try:
         conn = psycopg.connect(host=host, port=port, dbname=dbname,
                                user=master_user, password=master_password,
                                sslmode="verify-full", sslrootcert=bundle)
-    except Exception:
-        return _fail("connect")
+    except Exception as exc:
+        return _fail("connect", _error_detail(exc, "connection-failed"))
     try:
         conn.autocommit = False
         cur = conn.cursor()
@@ -526,9 +651,10 @@ def do_bind():
                                 user=migration["user"],
                                 password=migration["password"],
                                 sslmode="verify-full", sslrootcert=bundle)
-    except Exception:
-        return _fail("migration-connect",
-                     "completed: %s" % ",".join(done))
+    except Exception as exc:
+        return _fail("migration-connect", "%s completed: %s"
+                     % (_error_detail(exc, "connection-failed"),
+                        ",".join(done)))
     try:
         mconn.autocommit = False
         mcur = mconn.cursor()

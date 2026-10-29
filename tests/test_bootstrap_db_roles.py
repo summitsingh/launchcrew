@@ -35,14 +35,29 @@ class FakeError(Exception):
 
 
 class FakeCursor:
-    def __init__(self, state, user=None):
+    def __init__(self, state, user=None, dbname=None, conn=None):
         self.state = state
         self.user = user
+        self.dbname = dbname
+        self.conn = conn
         self.rowcount = 0
 
     def execute(self, sql, params=None):
         self.state.statements.append((sql, params))
         lowered = sql.strip().lower()
+        if lowered.startswith("create database"):
+            try:
+                saw = self.conn.autocommit if self.conn is not None else None
+            except Exception:
+                saw = None
+            self.state.create_saw_autocommit.append(saw)
+            self.state.create_attempts += 1
+            if self.state.fail_create:
+                raise FakeError("simulated create failure",
+                                sqlstate=self.state.create_sqlstate)
+            self.state.database_owner = self.user
+            self.rowcount = 0
+            return None
         if self.state.fail_on_password and "with password" in lowered:
             raise FakeError("simulated password bind failure")
         if lowered.startswith("create table") and self.state.refuse_ddl:
@@ -87,6 +102,9 @@ class FakeCursor:
                         self.state.role_bypassrls)
             return None
         if lowered == "select session_user, current_user":
+            if (self.dbname == "postgres"
+                    and self.state.maintenance_spoof is not None):
+                return self.state.maintenance_spoof
             if self.user in self.state.spoof_identity:
                 return self.state.spoof_identity[self.user]
             return (self.user, self.user)
@@ -117,14 +135,15 @@ class FakeCursor:
 
 
 class FakeConn:
-    def __init__(self, state, user=None):
+    def __init__(self, state, user=None, dbname=None):
         self.state = state
         self.user = user
+        self.dbname = dbname
         self.autocommit = False
         self.closed = False
 
     def cursor(self):
-        return FakeCursor(self.state, self.user)
+        return FakeCursor(self.state, self.user, self.dbname, self)
 
     def rollback(self):
         self.state.rollbacks += 1
@@ -165,6 +184,15 @@ class FakeDriverState:
         self.connect_count = 0
         self.connects = []
         self.fail_connect = False
+        self.fail_maintenance = False
+        self.maintenance_connect_sqlstate = None
+        self.fail_app_master = False
+        self.app_connect_sqlstate = None
+        self.fail_create = False
+        self.create_sqlstate = None
+        self.maintenance_spoof = None
+        self.create_saw_autocommit = []
+        self.create_attempts = 0
         self.rollbacks = 0
         self.commits = 0
         self.used_client_cursor = False
@@ -181,11 +209,20 @@ class FakePsycopg:
         self.state.connects.append(dict(kwargs))
         if self.state.fail_connect:
             raise FakeError("could not connect")
-        return FakeConn(self.state, kwargs.get("user"))
+        dbname = kwargs.get("dbname")
+        user = kwargs.get("user")
+        if dbname == "postgres" and self.state.fail_maintenance:
+            raise FakeError("maintenance connect failed",
+                            sqlstate=self.state.maintenance_connect_sqlstate)
+        if (dbname == "launchcrew" and user == "launchcrew_master"
+                and self.state.fail_app_master):
+            raise FakeError("app connect failed",
+                            sqlstate=self.state.app_connect_sqlstate)
+        return FakeConn(self.state, user, dbname)
 
     def ClientCursor(self, conn):
         self.state.used_client_cursor = True
-        return FakeCursor(self.state, conn.user)
+        return FakeCursor(self.state, conn.user, conn.dbname, conn)
 
 
 class BindJobTests(unittest.TestCase):
@@ -237,8 +274,9 @@ class BindJobTests(unittest.TestCase):
     def test_bind_success_reports_all_phases(self):
         code, out = self.run_main("--bind")
         self.assertEqual(code, 0, msg=out)
-        for phase in ("password-binding", "schema-acls", "runtime-grants",
-                      "default-privileges", "BIND COMPLETE"):
+        for phase in ("db-ensure", "password-binding", "schema-acls",
+                      "runtime-grants", "default-privileges",
+                      "BIND COMPLETE"):
             self.assertIn(phase, out)
 
     def test_bind_creates_missing_roles_with_login(self):
@@ -297,9 +335,16 @@ class BindJobTests(unittest.TestCase):
     def test_bind_uses_master_then_migration_connections(self):
         code, out = self.run_main("--bind")
         self.assertEqual(code, 0, msg=out)
-        self.assertEqual(self.state.connect_count, 2)
-        first, second = self.state.connects
+        self.assertEqual(self.state.connect_count, 3)
+        maint, first, second = self.state.connects
+        self.assertEqual(maint.get("dbname"), "postgres")
+        self.assertEqual(maint.get("user"), "launchcrew_master")
+        self.assertEqual(maint.get("host"), "dbhost")
+        self.assertEqual(maint.get("port"), 5432)
+        self.assertEqual(maint.get("sslmode"), "verify-full")
+        self.assertEqual(maint.get("sslrootcert"), str(self.bundle))
         self.assertEqual(first.get("user"), "launchcrew_master")
+        self.assertEqual(first.get("dbname"), "launchcrew")
         self.assertEqual(first.get("sslmode"), "verify-full")
         self.assertEqual(first.get("sslrootcert"), str(self.bundle))
         self.assertEqual(second.get("user"), "launchcrew_migration")
@@ -690,6 +735,144 @@ class BindJobTests(unittest.TestCase):
         self.assertNotIn(MG_PW, out)
         self.assertNotIn("s3ntinel-master-pw-9x", out)
 
+    def test_db_ensure_creates_missing_database(self):
+        self.state.database_owner = None
+        code, out = self.run_main("--bind")
+        self.assertEqual(code, 0, msg=out)
+        self.assertIn("db-ensure ok", out)
+        creates = [sql for sql in self.sql_texts()
+                   if sql.startswith("CREATE DATABASE")]
+        self.assertEqual(creates, ['CREATE DATABASE "launchcrew"'])
+        self.assertEqual(self.state.create_attempts, 1)
+        self.assertEqual(self.state.create_saw_autocommit, [True])
+        self.assertEqual(self.state.connect_count, 3)
+        maint, app, mig = self.state.connects
+        self.assertEqual(maint.get("dbname"), "postgres")
+        self.assertEqual(maint.get("user"), "launchcrew_master")
+        self.assertEqual(maint.get("host"), "dbhost")
+        self.assertEqual(maint.get("port"), 5432)
+        self.assertEqual(maint.get("sslmode"), "verify-full")
+        self.assertEqual(maint.get("sslrootcert"), str(self.bundle))
+        self.assertEqual(app.get("dbname"), "launchcrew")
+        self.assertEqual(app.get("user"), "launchcrew_master")
+        self.assertEqual(mig.get("user"), "launchcrew_migration")
+        for sql, params in self.state.statements:
+            if "pg_database" in sql.lower() and "datdba" in sql.lower():
+                self.assertEqual(params, ("launchcrew",))
+        self.assertNotIn(RT_PW, out)
+        self.assertNotIn(MG_PW, out)
+        self.assertNotIn("s3ntinel-master-pw-9x", out)
+        self.assertNotIn("postgresql://", out)
+
+    def test_db_ensure_idempotent_rerun_skips_create(self):
+        self.state.database_owner = None
+        code, out = self.run_main("--bind")
+        self.assertEqual(code, 0, msg=out)
+        self.assertEqual(self.state.create_attempts, 1)
+        self.assertEqual(self.state.database_owner, "launchcrew_master")
+        self.state.statements = []
+        self.state.connects = []
+        self.state.connect_count = 0
+        self.state.create_attempts = 0
+        self.state.create_saw_autocommit = []
+        self.state.commits = 0
+        self.state.rollbacks = 0
+        code, out = self.run_main("--bind")
+        self.assertEqual(code, 0, msg=out)
+        creates = [sql for sql in self.sql_texts()
+                   if sql.startswith("CREATE DATABASE")]
+        self.assertEqual(creates, [])
+        self.assertEqual(self.state.create_attempts, 0)
+        self.assertEqual(self.state.connect_count, 3)
+        self.assertIn("db-ensure ok", out)
+        self.assertIn("BIND COMPLETE", out)
+
+    def test_db_ensure_refuses_foreign_owner(self):
+        self.state.database_owner = "someone_else"
+        code, out = self.run_main("--bind")
+        self.assertNotEqual(code, 0)
+        self.assertIn("db-safety", out)
+        self.assertIn("foreign owner", out)
+        creates = [sql for sql in self.sql_texts()
+                   if sql.startswith("CREATE DATABASE")]
+        self.assertEqual(creates, [])
+        mutating = [sql for sql in self.sql_texts()
+                    if sql.startswith(("CREATE ROLE", "ALTER ROLE",
+                                       "COMMENT ON ROLE", "GRANT",
+                                       "REVOKE"))]
+        self.assertEqual(mutating, [])
+        self.assertEqual(self.state.commits, 0)
+        self.assertEqual(self.state.connect_count, 1)
+        self.assertEqual(self.state.connects[0].get("dbname"), "postgres")
+        self.assertNotIn(RT_PW, out)
+        self.assertNotIn(MG_PW, out)
+        self.assertNotIn("s3ntinel-master-pw-9x", out)
+        self.assertNotIn("postgresql://", out)
+
+    def test_db_create_failure_is_terminal_without_resend(self):
+        self.state.database_owner = None
+        self.state.fail_create = True
+        self.state.create_sqlstate = "42501"
+        code, out = self.run_main("--bind")
+        self.assertNotEqual(code, 0)
+        self.assertIn("db-create", out)
+        self.assertIn("sqlstate=42501", out)
+        self.assertNotIn("simulated create failure", out)
+        self.assertNotIn(RT_PW, out)
+        self.assertNotIn(MG_PW, out)
+        self.assertNotIn("s3ntinel-master-pw-9x", out)
+        self.assertNotIn("postgresql://", out)
+        self.assertEqual(self.state.create_attempts, 1)
+        creates = [sql for sql in self.sql_texts()
+                   if sql.startswith("CREATE DATABASE")]
+        self.assertEqual(len(creates), 1)
+        self.assertEqual(self.state.connect_count, 1)
+        mutating = [sql for sql in self.sql_texts()
+                    if sql.startswith(("CREATE ROLE", "ALTER ROLE",
+                                       "COMMENT ON ROLE", "GRANT",
+                                       "REVOKE"))]
+        self.assertEqual(mutating, [])
+        self.assertEqual(self.state.commits, 0)
+        self.assertNotIn("BIND COMPLETE", out)
+
+    def test_maintenance_identity_mismatch_refused(self):
+        self.state.maintenance_spoof = ("postgres", "postgres")
+        code, out = self.run_main("--bind")
+        self.assertNotEqual(code, 0)
+        self.assertIn("maintenance", out)
+        self.assertIn("identity mismatch", out)
+        creates = [sql for sql in self.sql_texts()
+                   if sql.startswith("CREATE DATABASE")]
+        self.assertEqual(creates, [])
+        mutating = [sql for sql in self.sql_texts()
+                    if sql.startswith(("CREATE ROLE", "ALTER ROLE",
+                                       "COMMENT ON ROLE", "GRANT",
+                                       "REVOKE"))]
+        self.assertEqual(mutating, [])
+        self.assertEqual(self.state.commits, 0)
+        self.assertEqual(self.state.connect_count, 1)
+
+    def test_app_connect_failure_reports_sqlstate_without_secret(self):
+        self.state.database_owner = "launchcrew_master"
+        self.state.fail_app_master = True
+        self.state.app_connect_sqlstate = "28P01"
+        code, out = self.run_main("--bind")
+        self.assertNotEqual(code, 0)
+        self.assertIn("FAIL", out)
+        self.assertIn("sqlstate=28P01", out)
+        self.assertNotIn("app connect failed", out)
+        self.assertNotIn(RT_PW, out)
+        self.assertNotIn(MG_PW, out)
+        self.assertNotIn("s3ntinel-master-pw-9x", out)
+        self.assertNotIn("postgresql://", out)
+        self.assertEqual(self.state.connect_count, 2)
+        mutating = [sql for sql in self.sql_texts()
+                    if sql.startswith(("CREATE ROLE", "ALTER ROLE",
+                                       "COMMENT ON ROLE", "GRANT",
+                                       "REVOKE"))]
+        self.assertEqual(mutating, [])
+        self.assertEqual(self.state.commits, 0)
+
 
 class VerifyJobTests(BindJobTests):
     def test_verify_proves_read_schema_and_ddl_refusal(self):
@@ -807,6 +990,18 @@ class StaticBoundaryTests(unittest.TestCase):
     def test_verify_checks_exact_head_and_sqlstate(self):
         self.assertIn("EXPECTED_HEAD", self.text)
         self.assertIn("42501", self.text)
+
+    def test_db_ensure_guards_present(self):
+        self.assertIn("MAINTENANCE_DB", self.text)
+        self.assertIn("CREATE DATABASE", self.text)
+        self.assertIn("db-ensure", self.text)
+        self.assertIn("db-safety", self.text)
+        self.assertIn("db-create", self.text)
+        self.assertIn("foreign owner", self.text)
+        self.assertIn("autocommit = True", self.text)
+        self.assertIn("42P04", self.text)
+        self.assertIn("_error_detail", self.text)
+        self.assertIn("sqlstate=", self.text)
 
 
 if __name__ == "__main__":
