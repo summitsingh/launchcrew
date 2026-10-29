@@ -12,6 +12,7 @@ from launchcrew.channel_variants import (
     FACEBOOK_MAX_CHARS,
     STATUS_CANDIDATE,
     STATUS_NEEDS_REVISION,
+    SOURCE_LABEL,
     VARIANT_KIND,
     X_MAX_CHARS,
     build_channel_variants,
@@ -508,6 +509,18 @@ class ChannelVariantTests(unittest.TestCase):
         self.assertNotIn("CHK-", blob)
         self.assertNotIn("receipt-123", blob)
         self.assertNotIn("approved-receipt", blob.lower())
+
+    def test_source_label_is_caller_supplied_without_checker_claim(self):
+        self.assertEqual(SOURCE_LABEL, "caller_supplied_draft")
+        draft = "Vegan leather wallet. Designed in Texas."
+        confirmed = ["Vegan leather wallet", "Designed in Texas"]
+        packed = build_channel_variants(draft, confirmed)
+        for key in ALL_CHANNELS:
+            self.assertEqual(
+                packed[key]["metadata"]["source"], "caller_supplied_draft"
+            )
+        self.assertEqual(packed["provenance"]["source"], "caller_supplied_draft")
+        self.assertNotIn("caller_checked_draft", str(packed))
 
 
 if __name__ == "__main__":

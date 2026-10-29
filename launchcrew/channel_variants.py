@@ -32,7 +32,7 @@ EMAIL_SUBJECT = "Quick update"
 EMAIL_GREETING = "Hello,"
 EMAIL_CLOSER = "Thanks,"
 
-SOURCE_LABEL = "caller_checked_draft"
+SOURCE_LABEL = "caller_supplied_draft"
 SOURCE_NOTE = (
     "Caller-supplied draft; does not imply current Checker approval "
     "or receipt binding."
