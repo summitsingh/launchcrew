@@ -12,6 +12,26 @@ def completion(raw, usage=None):
                                   'usage': usage or {}}).encode())
 
 
+class _FakeAdmission:
+    # Explicit fake spend admission for offline transport tests. No DB.
+    def __init__(self):
+        self.reserves = 0
+        self.finalizes = []
+
+    def reserve(self, *, request_digest, model, max_completion_tokens, n,
+                request_bytes_len):
+        assert model == 'muse-spark-1.3'
+        assert max_completion_tokens == 2048 and n == 1
+        assert request_bytes_len <= 32 * 1024
+        self.reserves += 1
+        return {'id': 'fake_%d' % self.reserves, 'status': 'admitted', 'is_owner': True}
+
+    def finalize(self, call_id, *, status, outcome=None, prompt_tokens=None,
+                 completion_tokens=None, total_tokens=None):
+        self.finalizes.append((call_id, status, outcome))
+        return {'id': call_id, 'status': status, 'is_owner': False}
+
+
 def test_keyless_zero_attempt_is_not_sent(monkeypatch):
     monkeypatch.delenv('META_API_KEY', raising=False)
     monkeypatch.delenv('META_WONDER_MODEL', raising=False)
@@ -75,34 +95,40 @@ def test_configured_unknown_model_makes_no_guarantee(monkeypatch):
 
 
 def test_failed_attempt_captures_variant_and_stays_unknown_for_custom(monkeypatch):
+    # Custom models are disabled under the spend guard: refusal before HTTP,
+    # zero HTTP, must not count as attempted.
     monkeypatch.setenv('META_API_KEY', 'offline-fixture')
     monkeypatch.setenv('META_MODEL', 'custom-future-model-9')
     monkeypatch.delenv('META_API_BASE_URL', raising=False)
-    with patch('launchcrew.spark.urlopen', side_effect=TimeoutError('private')):
-        result = spark.call_spark_strict_json('s', 'u', {'claims': []})
-    assert result['attempted'] is True
-    assert result['request_provider'] == 'meta'
+    with patch('launchcrew.spark.urlopen', side_effect=TimeoutError('private')) as transport:
+        result = spark.call_spark_strict_json('s', 'u', {'claims': []}, admission=_FakeAdmission())
+    assert transport.call_count == 0
+    assert result['attempted'] is False
+    assert result['request_provider'] == 'none'
     usage = run.model_usage([('spark', result)])
     assert 'custom-future-model-9' not in json.dumps(usage)
-    assert usage['data_mode'] == 'unknown'
+    assert usage['data_mode'] == 'not_sent'
     assert usage['data_basis'] == 'v2'
     assert usage['model_used'] == 'none'
     assert usage['models_used'] == []
-    assert usage['error_types'] == ['TimeoutError']
-    assert 'No training guarantee is claimed' in usage['data_mode_note']
+    assert usage['spark_calls'] == 0
+    assert usage['error_types'] == []
 
 
 def test_contributor_failure_states_training_permission(monkeypatch):
+    # Contributor models are disabled under the spend guard: refusal before
+    # HTTP, zero HTTP, must not count as attempted.
     monkeypatch.setenv('META_API_KEY', 'offline-fixture')
     monkeypatch.setenv('META_MODEL', 'muse-spark-1.3-contributor')
     monkeypatch.delenv('META_API_BASE_URL', raising=False)
-    with patch('launchcrew.spark.urlopen', side_effect=TimeoutError('private')):
-        result = spark.call_spark_strict_json('s', 'u', {'claims': []})
+    with patch('launchcrew.spark.urlopen', side_effect=TimeoutError('private')) as transport:
+        result = spark.call_spark_strict_json('s', 'u', {'claims': []}, admission=_FakeAdmission())
+    assert transport.call_count == 0
+    assert result['attempted'] is False
     usage = run.model_usage([('spark', result)])
-    assert usage['data_mode'] == 'contributor'
-    assert usage['request_provider'] == 'meta'
-    assert 'may be used as training data' in usage['data_mode_note']
-    assert 'permission to train' in usage['data_mode_note']
+    assert usage['data_mode'] == 'not_sent'
+    assert usage['request_provider'] == 'none'
+    assert usage['spark_calls'] == 0
 
 
 def test_mixed_wonder_standard_and_spark_contributor(monkeypatch):
@@ -126,7 +152,7 @@ def test_standard_success_references_request_variant_not_certification(monkeypat
     monkeypatch.delenv('META_MODEL', raising=False)
     monkeypatch.delenv('META_API_BASE_URL', raising=False)
     with patch('launchcrew.spark.urlopen', return_value=completion({'claims': []}, {'total_tokens': 4})):
-        result = spark.call_spark_strict_json('s', 'u', {'claims': []})
+        result = spark.call_spark_strict_json('s', 'u', {'claims': []}, admission=_FakeAdmission())
     assert result['request_provider'] == 'meta'
     usage = run.model_usage([('spark', result)])
     assert usage['data_mode'] == 'standard_no_train'
@@ -140,16 +166,18 @@ def test_standard_success_references_request_variant_not_certification(monkeypat
 
 
 def test_successful_unknown_model_is_sanitized_to_unknown(monkeypatch):
+    # Custom models are disabled under the spend guard: refusal, zero HTTP.
     monkeypatch.setenv('META_API_KEY', 'offline-fixture')
     monkeypatch.setenv('META_MODEL', 'custom-future-model-9')
     monkeypatch.delenv('META_API_BASE_URL', raising=False)
-    with patch('launchcrew.spark.urlopen', return_value=completion({'claims': []}, {'total_tokens': 4})):
-        result = spark.call_spark_strict_json('s', 'u', {'claims': []})
-    assert result['model_used'] == 'custom-future-model-9'
+    with patch('launchcrew.spark.urlopen', return_value=completion({'claims': []}, {'total_tokens': 4})) as transport:
+        result = spark.call_spark_strict_json('s', 'u', {'claims': []}, admission=_FakeAdmission())
+    assert transport.call_count == 0
+    assert result['attempted'] is False
     usage = run.model_usage([('spark', result)])
-    assert usage['data_mode'] == 'unknown'
-    assert usage['model_used'] == 'unknown'
-    assert usage['models_used'] == ['unknown']
+    assert usage['data_mode'] == 'not_sent'
+    assert usage['model_used'] == 'none'
+    assert usage['models_used'] == []
     assert 'custom-future-model-9' not in json.dumps(usage)
 
 
@@ -168,41 +196,49 @@ def test_provider_allowlist_strict():
 
 
 def test_custom_endpoint_known_id_failure_is_unknown(monkeypatch):
+    # Non-official endpoints are refused under the spend guard: zero HTTP.
     monkeypatch.setenv('META_API_KEY', 'offline-fixture')
     monkeypatch.delenv('META_MODEL', raising=False)
     monkeypatch.setenv('META_API_BASE_URL', 'http://localhost:8000/v1')
-    with patch('launchcrew.spark.urlopen', side_effect=TimeoutError('private')):
-        result = spark.call_spark_strict_json('s', 'u', {'claims': []})
-    assert result['request_provider'] == 'unknown'
+    with patch('launchcrew.spark.urlopen', side_effect=TimeoutError('private')) as transport:
+        result = spark.call_spark_strict_json('s', 'u', {'claims': []}, admission=_FakeAdmission())
+    assert transport.call_count == 0
+    assert result['attempted'] is False
+    assert result['request_provider'] == 'none'
     usage = run.model_usage([('spark', result)])
-    assert usage['data_mode'] == 'unknown'
-    assert usage['request_provider'] == 'unknown'
+    assert usage['data_mode'] == 'not_sent'
+    assert usage['request_provider'] == 'none'
     assert 'localhost' not in json.dumps(usage)
     assert 'offline-fixture' not in json.dumps(usage)
 
 
 def test_custom_endpoint_known_id_success_is_unknown(monkeypatch):
+    # Non-official endpoints are refused under the spend guard: zero HTTP.
     monkeypatch.setenv('META_API_KEY', 'offline-fixture')
     monkeypatch.delenv('META_MODEL', raising=False)
     monkeypatch.setenv('META_API_BASE_URL', 'https://custom.example.org/v1')
-    with patch('launchcrew.spark.urlopen', return_value=completion({'claims': []}, {'total_tokens': 4})):
-        result = spark.call_spark_strict_json('s', 'u', {'claims': []})
-    assert result['request_provider'] == 'unknown'
+    with patch('launchcrew.spark.urlopen', return_value=completion({'claims': []}, {'total_tokens': 4})) as transport:
+        result = spark.call_spark_strict_json('s', 'u', {'claims': []}, admission=_FakeAdmission())
+    assert transport.call_count == 0
+    assert result['attempted'] is False
     usage = run.model_usage([('spark', result)])
-    assert usage['data_mode'] == 'unknown'
-    assert usage['request_provider'] == 'unknown'
+    assert usage['data_mode'] == 'not_sent'
+    assert usage['request_provider'] == 'none'
     assert 'custom.example.org' not in json.dumps(usage)
 
 
 def test_hostname_spoof_is_unknown(monkeypatch):
+    # Spoofed endpoints are refused under the spend guard: zero HTTP.
     monkeypatch.setenv('META_API_KEY', 'offline-fixture')
     monkeypatch.delenv('META_MODEL', raising=False)
     monkeypatch.setenv('META_API_BASE_URL', 'https://api.meta.ai.evil.com/v1')
-    with patch('launchcrew.spark.urlopen', side_effect=TimeoutError('private')):
-        result = spark.call_spark_strict_json('s', 'u', {'claims': []})
+    with patch('launchcrew.spark.urlopen', side_effect=TimeoutError('private')) as transport:
+        result = spark.call_spark_strict_json('s', 'u', {'claims': []}, admission=_FakeAdmission())
+    assert transport.call_count == 0
+    assert result['attempted'] is False
     usage = run.model_usage([('spark', result)])
-    assert usage['data_mode'] == 'unknown'
-    assert usage['request_provider'] == 'unknown'
+    assert usage['data_mode'] == 'not_sent'
+    assert usage['request_provider'] == 'none'
 
 
 def test_historical_stub_missing_provider_fails_closed():
@@ -228,7 +264,7 @@ def test_stored_usage_immutable_after_config_change(monkeypatch):
     monkeypatch.delenv('META_MODEL', raising=False)
     monkeypatch.delenv('META_API_BASE_URL', raising=False)
     with patch('launchcrew.spark.urlopen', return_value=completion({'claims': []}, {'total_tokens': 4})):
-        result = spark.call_spark_strict_json('s', 'u', {'claims': []})
+        result = spark.call_spark_strict_json('s', 'u', {'claims': []}, admission=_FakeAdmission())
     usage = run.model_usage([('spark', result)])
     before = json.dumps(usage, sort_keys=True)
     assert usage['data_mode'] == 'standard_no_train'

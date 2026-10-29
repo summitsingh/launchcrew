@@ -36,6 +36,18 @@ REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA :app_schema FROM :runtime_user;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA :app_schema TO :runtime_user;
 ALTER DEFAULT PRIVILEGES FOR ROLE :migration_user IN SCHEMA :app_schema GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO :runtime_user;
 ALTER DEFAULT PRIVILEGES FOR ROLE :migration_user IN SCHEMA :app_schema GRANT USAGE, SELECT ON SEQUENCES TO :runtime_user;
+-- Model admission functions: future migration-owned functions deny PUBLIC
+-- globally, with no blanket future EXECUTE grant to the runtime role, so
+-- a later SECURITY DEFINER function stays owner-only by default. A
+-- per-schema PUBLIC revoke cannot cancel the global PUBLIC EXECUTE
+-- default, so the global revoke below is required. Explicit exact
+-- runtime EXECUTE grants on model_reserve_call and model_finalize_call
+-- only are applied by migration 005 discovery plus every bootstrap
+-- rebind via the migration connection when those functions exist.
+-- Narrow table revokes for model_budget and model_calls are applied the
+-- same way when those tables exist; this file keeps broad table defaults
+-- for general demo rows only.
+ALTER DEFAULT PRIVILEGES FOR ROLE :migration_user REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
 -- Migration identity: schema DDL plus full row and sequence rights,
 -- for schema changes only. It owns the tables it creates through
 -- alembic, which is the only schema change path. It is used only by

@@ -87,7 +87,7 @@ def _memory_effects(memory_items):
     return claims, blocked, blocked_rules, expertise, approval_examples, used
 
 
-def execute(run_id, idea, profile, seed, memory_items=None, checker_profile='standard', brief=None, campaign_day=None, extra_claims=None, profile_expertise=None, scout_profile=None, maker_profile=None, checker_agent=None, progress_sink=None, stage_gate=None, product_facts=None):
+def execute(run_id, idea, profile, seed, memory_items=None, checker_profile='standard', brief=None, campaign_day=None, extra_claims=None, profile_expertise=None, scout_profile=None, maker_profile=None, checker_agent=None, progress_sink=None, stage_gate=None, product_facts=None, model_admission_factory=None):
     # Invalid product-fact input fails before any pipeline work, so the
     # API reports 422 instead of storing a run.
     parsed_product = parse_product_facts(product_facts)
@@ -148,7 +148,8 @@ def execute(run_id, idea, profile, seed, memory_items=None, checker_profile='sta
                              memory_claims=applied_memory, blocked_claims=blocked,
                              checker_profile=checker_profile, brief=brief, campaign_day=campaign_day,
                              progress=progress_sink, stage_gate=stage_gate,
-                             product_facts=product_facts)
+                             product_facts=product_facts,
+                             model_admission_factory=model_admission_factory)
         except Exception:
             if not captured:
                 raise

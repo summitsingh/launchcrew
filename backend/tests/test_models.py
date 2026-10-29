@@ -12,6 +12,8 @@ from launchcrew.facts import load_facts
 def offline(monkeypatch):
     monkeypatch.delenv('META_API_KEY', raising=False)
     monkeypatch.delenv('META_WONDER_MODEL', raising=False)
+    monkeypatch.delenv('META_MODEL', raising=False)
+    monkeypatch.delenv('META_API_BASE_URL', raising=False)
     monkeypatch.delenv('LAUNCHCREW_SAM_DEMO_PHOTO', raising=False)
     # Fail closed if any test accidentally reaches the real network.
     with patch('launchcrew.spark.urlopen', side_effect=AssertionError('Unexpected transport')), \
@@ -19,9 +21,36 @@ def offline(monkeypatch):
         yield
 
 
-def execute(seed=False):
+class _FakeAdmission:
+    def __init__(self, stage='test'):
+        self.stage = stage
+        self.finalizes = []
+
+    def reserve(self, *, request_digest, model, max_completion_tokens, n,
+                request_bytes_len):
+        assert model == 'muse-spark-1.3'
+        assert max_completion_tokens == 2048 and n == 1
+        assert request_bytes_len <= 32 * 1024
+        return {'id': 'fake_' + self.stage, 'status': 'admitted', 'is_owner': True}
+
+    def finalize(self, call_id, *, status, outcome=None, prompt_tokens=None,
+                 completion_tokens=None, total_tokens=None):
+        self.finalizes.append(status)
+        return {'id': call_id, 'status': status, 'is_owner': False}
+
+
+def _fake_factory():
+    def factory(stage, attempt_id='1'):
+        return _FakeAdmission(stage=str(stage))
+    return factory
+
+
+def execute(seed=False, *, factory=None):
     profile = adapter.agents.load_agent('Maker', adapter.ROOT / 'agents')
-    return adapter.execute('model_test', 'Demo wallet', profile, seed)
+    if factory is None:
+        factory = _fake_factory()
+    return adapter.execute('model_test', 'Demo wallet', profile, seed,
+                           model_admission_factory=factory)
 
 
 def completion(raw, usage=None):
@@ -94,8 +123,9 @@ def test_failure_falls_back_type_only(monkeypatch, caplog):
 def test_invalid_json_shape_falls_back(monkeypatch, raw):
     monkeypatch.setenv('META_API_KEY', 'offline-fixture')
     with patch('launchcrew.spark.urlopen', return_value=completion(raw)):
-        result = spark.call_spark_strict_json('s', 'u', {'claims': []})
+        result = spark.call_spark_strict_json('s', 'u', {'claims': []}, admission=_FakeAdmission())
     assert result['error_type'] == 'ValueError'
+    assert result['attempted'] is True
     assert 'raw_json' not in result
 
 
@@ -115,28 +145,33 @@ def test_checker_suggestion_cannot_unblock(monkeypatch):
 
 
 def test_wonder_failure_audited_then_spark(monkeypatch):
-    monkeypatch.setenv('META_API_KEY', 'offline-fixture')
-    monkeypatch.setenv('META_WONDER_MODEL', 'muse-wonder-1.0')
-    with patch('launchcrew.spark.urlopen', side_effect=[TimeoutError('private'),
-        completion({'facts_used': [], 'risks': []}), completion({'claims': []}), completion({'claims': []})]):
-        result = execute()
-    assert result['model_usage']['wonder_attempts'] == 1
-    assert result['model_usage']['spark_calls'] == 3
-    assert result['model_usage']['error_types'] == ['TimeoutError']
-    assert result['model_usage']['wonder_used'] is False
-    assert result['model_usage']['tokens_known'] is False
-
-
-def test_wonder_success_and_unknown_usage(monkeypatch):
+    # Wonder is disabled under the spend guard: zero Wonder HTTP, Scout
+    # Spark fallback still runs with explicit admission.
     monkeypatch.setenv('META_API_KEY', 'offline-fixture')
     monkeypatch.setenv('META_WONDER_MODEL', 'muse-wonder-1.0')
     with patch('launchcrew.spark.urlopen', side_effect=[
-        completion({'facts_used': [], 'risks': []}), completion({'claims': []}), completion({'claims': []})]):
+        completion({'facts_used': [], 'risks': []}), completion({'claims': []}), completion({'claims': []})]) as transport:
+        result = execute()
+    assert transport.call_count == 3
+    assert result['model_usage']['wonder_attempts'] == 0
+    assert result['model_usage']['spark_calls'] == 3
+    assert result['model_usage']['error_types'] == []
+    assert result['model_usage']['wonder_used'] is False
+
+
+def test_wonder_success_and_unknown_usage(monkeypatch):
+    # Wonder is disabled under the spend guard even when configured: no
+    # Wonder HTTP, Scout Spark fallback covers the Scout stage.
+    monkeypatch.setenv('META_API_KEY', 'offline-fixture')
+    monkeypatch.setenv('META_WONDER_MODEL', 'muse-wonder-1.0')
+    with patch('launchcrew.spark.urlopen', side_effect=[
+        completion({'facts_used': [], 'risks': []}), completion({'claims': []}), completion({'claims': []})]) as transport:
         result = execute()
     usage = result['model_usage']
-    assert usage['wonder_used'] is True and usage['wonder_attempts'] == 1
-    assert usage['spark_calls'] == 2 and usage['tokens_known'] is False
-    assert usage['models_used'] == ['muse-spark-1.3', 'muse-wonder-1.0']
+    assert transport.call_count == 3
+    assert usage['wonder_used'] is False and usage['wonder_attempts'] == 0
+    assert usage['spark_calls'] == 3
+    assert usage['models_used'] == ['muse-spark-1.3']
 
 
 def sse(*events):
@@ -251,12 +286,23 @@ def test_non_model_routes_do_not_call_transport(client, monkeypatch):
 
 
 def test_runs_route_calls_server_transport(client, monkeypatch):
+    # Controlled Postgres: grant three fixed reservations so the sync route
+    # can reserve-before-send with fake transport. Zero budget refuses.
+    from sqlalchemy import text
+    from backend import model_admission, store
     monkeypatch.setenv('META_API_KEY', 'offline-fixture')
+    with store.engine().begin() as connection:
+        connection.execute(text('TRUNCATE model_calls'))
+        connection.execute(text("UPDATE model_budget SET remaining_micros=:n WHERE id='global'"),
+                           {'n': model_admission.RESERVATION_USD_MICROS * 3})
     with patch('launchcrew.spark.urlopen', side_effect=[completion({'facts_used': [], 'risks': []}),
                 completion({'claims': []}), completion({'claims': []})]) as network:
         response = client.post('/api/runs', json={'idea': 'demo', 'agent_name': 'Maker'})
     assert response.status_code == 201 and network.call_count == 3
     assert response.json()['model_usage']['mode'] == 'spark'
+    with store.engine().begin() as connection:
+        connection.execute(text('TRUNCATE model_calls'))
+        connection.execute(text("UPDATE model_budget SET remaining_micros=0 WHERE id='global'"))
 
 
 def test_failed_pipeline_retains_usage_type_only(monkeypatch):
@@ -283,8 +329,9 @@ def test_deterministic_checks_precede_models(monkeypatch):
 def test_invalid_candidate_retains_returned_token_counts(monkeypatch):
     monkeypatch.setenv('META_API_KEY', 'offline-fixture')
     with patch('launchcrew.spark.urlopen', return_value=completion({'claims': 'invalid'}, {'total_tokens': 9})):
-        result = spark.call_spark_strict_json('s', 'u', {'claims': []})
+        result = spark.call_spark_strict_json('s', 'u', {'claims': []}, admission=_FakeAdmission())
     assert result['error_type'] == 'ValueError'
+    assert result['attempted'] is True
     assert result['usage'] == {'total_tokens': 9}
 
 

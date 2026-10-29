@@ -16,6 +16,23 @@ from backend.live_meta_proof import _check_sam_env, _reserve_sam_latch, _validat
 from launchcrew import spark as spark_module
 
 
+class _FakeAdmission:
+    def __init__(self):
+        self.reserves = 0
+
+    def reserve(self, *, request_digest, model, max_completion_tokens, n,
+                request_bytes_len):
+        assert model == 'muse-spark-1.3'
+        assert max_completion_tokens == 2048 and n == 1
+        assert request_bytes_len <= 32 * 1024
+        self.reserves += 1
+        return {'id': 'fake_%d' % self.reserves, 'status': 'admitted', 'is_owner': True}
+
+    def finalize(self, call_id, *, status, outcome=None, prompt_tokens=None,
+                 completion_tokens=None, total_tokens=None):
+        return {'id': call_id, 'status': status, 'is_owner': False}
+
+
 def test_synthetic_proof_constants_fixed():
     assert spark_module.PROOF_MODEL == 'muse-spark-1.3'
     assert spark_module.PROOF_ORIGIN == 'https://api.meta.ai/v1'
@@ -72,6 +89,8 @@ def test_synthetic_proof_request_validates_bounds():
 
 def test_synthetic_spark_call_carries_output_token_and_n(monkeypatch):
     monkeypatch.setenv('META_API_KEY', 'offline-fixture')
+    monkeypatch.delenv('META_MODEL', raising=False)
+    monkeypatch.delenv('META_API_BASE_URL', raising=False)
     captured = {}
 
     def test_synthetic_capture(request, timeout):
@@ -82,7 +101,7 @@ def test_synthetic_spark_call_carries_output_token_and_n(monkeypatch):
              'usage': {'total_tokens': 1}}).encode())
 
     with patch('launchcrew.spark.urlopen', side_effect=test_synthetic_capture):
-        result = spark_module.call_spark_strict_json('s', 'u', {'claims': []})
+        result = spark_module.call_spark_strict_json('s', 'u', {'claims': []}, admission=_FakeAdmission())
     assert result['mode'] == 'spark'
     assert captured['body']['max_completion_tokens'] == 2048
     assert captured['body']['n'] == 1
@@ -634,7 +653,7 @@ def test_synthetic_spark_success_keeps_strict_schema_and_usage(monkeypatch):
                        'private_field': 'must-not-persist'}}).encode())
 
     with patch('launchcrew.spark.urlopen', side_effect=test_synthetic_success) as transport:
-        result = spark_module.call_spark_strict_json('s', 'u', {'claims': []})
+        result = spark_module.call_spark_strict_json('s', 'u', {'claims': []}, admission=_FakeAdmission())
     assert transport.call_count == 1
     assert result['mode'] == 'spark'
     assert result['raw_json'] == {'claims': ['synthetic-ok']}
@@ -660,7 +679,7 @@ def test_synthetic_spark_null_content_length_is_fallback(monkeypatch):
                        'total_tokens': 2058}}).encode())
 
     with patch('launchcrew.spark.urlopen', side_effect=test_synthetic_truncated) as transport:
-        result = spark_module.call_spark_strict_json('s', 'u', {'claims': []})
+        result = spark_module.call_spark_strict_json('s', 'u', {'claims': []}, admission=_FakeAdmission())
     assert transport.call_count == 1
     assert result['mode'] == 'deterministic_fallback'
     assert result['attempted'] is True
@@ -685,7 +704,7 @@ def test_synthetic_spark_nonstring_content_is_fallback(monkeypatch, content):
                        'total_tokens': 7}}).encode())
 
     with patch('launchcrew.spark.urlopen', side_effect=test_synthetic_nonstring) as transport:
-        result = spark_module.call_spark_strict_json('s', 'u', {'claims': []})
+        result = spark_module.call_spark_strict_json('s', 'u', {'claims': []}, admission=_FakeAdmission())
     assert transport.call_count == 1
     assert result['mode'] == 'deterministic_fallback'
     assert result['error_type'] == 'ValueError'
@@ -711,7 +730,7 @@ def test_synthetic_spark_malformed_choice_is_fallback(monkeypatch, choices):
                        'total_tokens': 3}}).encode())
 
     with patch('launchcrew.spark.urlopen', side_effect=test_synthetic_malformed) as transport:
-        result = spark_module.call_spark_strict_json('s', 'u', {'claims': []})
+        result = spark_module.call_spark_strict_json('s', 'u', {'claims': []}, admission=_FakeAdmission())
     assert transport.call_count == 1
     assert result['mode'] == 'deterministic_fallback'
     assert result['error_type'] == 'ValueError'
@@ -733,7 +752,7 @@ def test_synthetic_spark_malformed_never_leaks_provider_text(monkeypatch):
                        'private_field': marker}}).encode())
 
     with patch('launchcrew.spark.urlopen', side_effect=test_synthetic_leak):
-        result = spark_module.call_spark_strict_json('s', 'u', {'claims': []})
+        result = spark_module.call_spark_strict_json('s', 'u', {'claims': []}, admission=_FakeAdmission())
     assert result['mode'] == 'deterministic_fallback'
     assert result['usage'] == {'prompt_tokens': 5, 'completion_tokens': 6, 'total_tokens': 11}
     assert marker not in json.dumps(result)
@@ -746,7 +765,7 @@ def test_synthetic_spark_malformed_never_leaks_provider_text(monkeypatch):
              'usage': {'total_tokens': 2}}).encode())
 
     with patch('launchcrew.spark.urlopen', side_effect=test_synthetic_leak_schema):
-        result = spark_module.call_spark_strict_json('s', 'u', {'claims': []})
+        result = spark_module.call_spark_strict_json('s', 'u', {'claims': []}, admission=_FakeAdmission())
     assert result['mode'] == 'deterministic_fallback'
     assert marker not in json.dumps(result)
 
@@ -764,6 +783,6 @@ def test_synthetic_spark_malformed_makes_single_http_call(monkeypatch):
              'usage': {'total_tokens': 9}}).encode())
 
     with patch('launchcrew.spark.urlopen', side_effect=test_synthetic_counted):
-        result = spark_module.call_spark_strict_json('s', 'u', {'claims': []})
+        result = spark_module.call_spark_strict_json('s', 'u', {'claims': []}, admission=_FakeAdmission())
     assert result['mode'] == 'deterministic_fallback'
     assert len(calls) == 1

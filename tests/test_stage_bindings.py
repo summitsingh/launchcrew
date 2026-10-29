@@ -62,6 +62,32 @@ def completion(raw, usage=None):
                                   'usage': usage or {}}).encode())
 
 
+class _FakeAdmission:
+    """Explicit safe fake admission: one owned admitted operation per reserve."""
+
+    def __init__(self, stage='test'):
+        self.stage = stage
+        self.finalizes = []
+
+    def reserve(self, *, request_digest, model, max_completion_tokens, n,
+                request_bytes_len):
+        assert model == 'muse-spark-1.3'
+        assert max_completion_tokens == 2048 and n == 1
+        assert request_bytes_len <= 32 * 1024
+        return {'id': 'fake_' + str(self.stage), 'status': 'admitted', 'is_owner': True}
+
+    def finalize(self, call_id, *, status, outcome=None, prompt_tokens=None,
+                 completion_tokens=None, total_tokens=None):
+        self.finalizes.append(status)
+        return {'id': call_id, 'status': status, 'is_owner': False}
+
+
+def _fake_factory():
+    def factory(stage, attempt_id='1'):
+        return _FakeAdmission(stage=str(stage))
+    return factory
+
+
 class StageBindingTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -217,7 +243,8 @@ class StageBindingTests(unittest.TestCase):
                 patch('launchcrew.spark.urlopen', side_effect=transport):
             receipt = run_pipeline(IDEA, ROOT / 'facts/demo_facts.json', ROOT / 'agents', out,
                                    model_enabled=True, visual_verifier=None,
-                                   scout_profile=scout, maker_profile=maker, checker_agent=checker)
+                                   scout_profile=scout, maker_profile=maker, checker_agent=checker,
+                                   model_admission_factory=_fake_factory())
         self.assertEqual(len(payloads), 3)
         systems = [item['messages'][0]['content'] for item in payloads]
         self.assertIn('Custom personality marker for EagleScout', systems[0])
