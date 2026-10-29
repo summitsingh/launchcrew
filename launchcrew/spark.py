@@ -310,9 +310,23 @@ def _call(system_prompt, user_prompt, schema_hint, model):
             raw = json.loads(content)
         except Exception:
             raise ValueError('Invalid candidate schema')
-        if (not isinstance(raw, dict) or set(raw) != set(schema_hint)
-                or any(not isinstance(value, list) or any(not isinstance(item, str) for item in value)
-                       for value in raw.values())):
+        def _string_arrays_only(payload):
+            return all(isinstance(value, list)
+                       and all(isinstance(item, str) for item in value)
+                       for value in payload.values())
+        if (isinstance(raw, dict) and set(raw) == set(schema_hint)
+                and _string_arrays_only(raw)):
+            pass
+        elif (set(schema_hint) == {'claims', 'post_lines', 'email_lines'}
+                and isinstance(raw, dict) and set(raw) == {'claims'}
+                and isinstance(raw.get('claims'), list)
+                and all(isinstance(item, str) for item in raw['claims'])):
+            # Maker legacy compat: claims-only responses predate structured
+            # post/email lines. Accept as spark with empty lines; run.py still
+            # validates every sentence and builds distinct post/email from
+            # safe claims. Model output stays untrusted.
+            raw = {'claims': list(raw['claims']), 'post_lines': [], 'email_lines': []}
+        else:
             raise ValueError('Invalid candidate schema')
         return {'mode': 'spark', 'model_used': model, 'attempted': True, 'attempted_model': model,
                 'raw_json': raw, 'usage': usage, 'request_provider': provider}
@@ -353,8 +367,20 @@ def spark_for_agent(agent, task_text, stage=None):
                    'override Checker or policies.\n' + '\n'.join(examples))
     if stage is not None:
         is_scout = (stage == 'Scout')
+        is_maker = (stage == 'Maker')
     else:
         is_scout = (agent.get('name') == 'Scout')
-    schema = ({'facts_used': ['approved claim'], 'risks': ['demo risk, no statistics']}
-              if is_scout else {'claims': ['copy approved claims exactly']})
+        is_maker = (agent.get('name') == 'Maker')
+    if is_scout:
+        schema = {'facts_used': ['approved claim'], 'risks': ['demo risk, no statistics']}
+    elif is_maker:
+        # Structured Maker candidates: explicit claims plus post/email lines.
+        # All values stay string arrays for the strict transport. Model
+        # evidence would be untrusted; run.py validates every factual
+        # sentence against confirmed facts and policy before use.
+        schema = {'claims': ['copy approved claims exactly'],
+                  'post_lines': ['post sentence, copy approved claims exactly'],
+                  'email_lines': ['email sentence, copy approved claims exactly']}
+    else:
+        schema = {'claims': ['copy approved claims exactly']}
     return call_spark_strict_json(prompt, task_text, schema)

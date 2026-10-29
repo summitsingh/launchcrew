@@ -31,7 +31,10 @@ class HardeningTests(unittest.TestCase):
                 self.assertTrue(check_draft(sentence, facts))
         for sentence in facts['approved_claims']:
             self.assertEqual(check_draft(sentence + '.', facts), [])
-        self.assertEqual(check_draft('$59', facts)[0]['reason'], 'Unmatched price value')
+        wrong_price = check_draft('$59', facts)[0]
+        self.assertEqual(wrong_price['reason'], 'Conflicting price value')
+        self.assertEqual(wrong_price['verdict'], 'conflicts')
+        self.assertEqual(wrong_price['evidence'], '$49')
         custom = {'approved_claims': ['$49.99', 'Perfect wallet'], 'sources': ['demo']}
         self.assertEqual(check_draft('$49.99. Perfect wallet.', custom), [])
 
