@@ -165,42 +165,43 @@ class TemplateTests(unittest.TestCase):
 
 class ControllerTests(unittest.TestCase):
     def run_wrapper(self, args, mode="success", extra_env=None):
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            fake = tmp_path / "fake-aws"
-            fake.write_text(FAKE_AWS, encoding="utf-8")
-            fake.chmod(fake.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-            log = tmp_path / "calls.log"
-            log.write_text("", encoding="utf-8")
-            state = tmp_path / "state"
-            state.mkdir()
-            env = dict(os.environ)
-            for key in ("AWS_REGION", "AWS_DEFAULT_REGION", "AWS_PROFILE",
-                        "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
-                env.pop(key, None)
-            env["AWS_BIN"] = str(fake)
-            env["FAKE_AWS_LOG"] = str(log)
-            env["FAKE_STATE_DIR"] = str(state)
-            env["FAKE_MODE"] = mode
-            env["PYTHONPYCACHEPREFIX"] = str(tmp_path / "pycache")
-            if extra_env:
-                env.update(extra_env)
-            journal = tmp_path / "journal"
-            full = ["--launch-ecs", "--cluster", "owned-cluster",
-                    "--task-def", "owned-taskdef",
-                    "--subnet-a", "subnet-aaa", "--subnet-b", "subnet-bbb",
-                    "--job-sg", "sg-123",
-                    "--expected-account", ACCOUNT, "--expected-region", REGION,
-                    "--api-image", API_IMAGE,
-                    "--execution-role", EXEC_ROLE, "--task-role", TASK_ROLE,
-                    "--runtime-secret-arn", RUNTIME_ARN, "--meta-secret-arn", META_ARN,
-                    "--log-stream", "meta-proof/meta-proof/test-123",
-                    "--journal-dir", str(journal), *args]
-            result = subprocess.run(
-                [os.environ.get("PYTHON_BIN", "python3"), str(WRAPPER), *full],
-                capture_output=True, text=True, env=env, check=False)
-            calls = [line for line in log.read_text(encoding="utf-8").splitlines() if line.strip()]
-            return result, calls, journal
+        tmp_obj = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp_obj.cleanup)
+        tmp_path = Path(tmp_obj.name)
+        fake = tmp_path / "fake-aws"
+        fake.write_text(FAKE_AWS, encoding="utf-8")
+        fake.chmod(fake.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        log = tmp_path / "calls.log"
+        log.write_text("", encoding="utf-8")
+        state = tmp_path / "state"
+        state.mkdir()
+        env = dict(os.environ)
+        for key in ("AWS_REGION", "AWS_DEFAULT_REGION", "AWS_PROFILE",
+                    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+            env.pop(key, None)
+        env["AWS_BIN"] = str(fake)
+        env["FAKE_AWS_LOG"] = str(log)
+        env["FAKE_STATE_DIR"] = str(state)
+        env["FAKE_MODE"] = mode
+        env["PYTHONPYCACHEPREFIX"] = str(tmp_path / "pycache")
+        if extra_env:
+            env.update(extra_env)
+        journal = tmp_path / "journal"
+        full = ["--launch-ecs", "--cluster", "owned-cluster",
+                "--task-def", "owned-taskdef",
+                "--subnet-a", "subnet-aaa", "--subnet-b", "subnet-bbb",
+                "--job-sg", "sg-123",
+                "--expected-account", ACCOUNT, "--expected-region", REGION,
+                "--api-image", API_IMAGE,
+                "--execution-role", EXEC_ROLE, "--task-role", TASK_ROLE,
+                "--runtime-secret-arn", RUNTIME_ARN, "--meta-secret-arn", META_ARN,
+                "--log-stream", "meta-proof/meta-proof/test-123",
+                "--journal-dir", str(journal), *args]
+        result = subprocess.run(
+            [os.environ.get("PYTHON_BIN", "python3"), str(WRAPPER), *full],
+            capture_output=True, text=True, env=env, check=False)
+        calls = [line for line in log.read_text(encoding="utf-8").splitlines() if line.strip()]
+        return result, calls, journal
 
     def test_success_verified(self):
         result, calls, journal = self.run_wrapper([])
