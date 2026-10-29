@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { QueryClient, QueryClientProvider, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowRight, Check, FileText, Layers, ShieldCheck } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -35,12 +35,41 @@ function Desk() {
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
   const [exported, setExported] = useState('');
-  const agents = useQuery({ queryKey: ['agents'], queryFn: () => unwrap(api.GET('/api/agents')) });
-  const queue = useQuery({ queryKey: ['queue'], queryFn: () => unwrap(api.GET('/api/queue')), refetchInterval: 3000 });
   const auth = useQuery({ queryKey: ['auth'], queryFn: () => unwrap(api.GET('/api/auth/status')) });
-  const run = useQuery({ queryKey: ['run', active], queryFn: () => unwrap(api.GET('/api/runs/{run_id}/receipt', { params: { path: { run_id: active } } })), enabled: !!active, refetchInterval: 3000 });
+  const authEnabled = auth.data?.enabled === true;
+  const authUser = typeof auth.data?.user === 'string' ? (auth.data.user as string) : '';
+  const authProviders = Array.isArray(auth.data?.providers) ? (auth.data.providers as string[]) : [];
+  const authed = !authEnabled || !!authUser;
+  const agents = useQuery({ queryKey: ['agents', authUser], queryFn: () => unwrap(api.GET('/api/agents')), enabled: authed });
+  const queue = useQuery({ queryKey: ['queue', authUser], queryFn: () => unwrap(api.GET('/api/queue')), refetchInterval: 3000, enabled: authed });
+  const run = useQuery({ queryKey: ['run', active, authUser], queryFn: () => unwrap(api.GET('/api/runs/{run_id}/receipt', { params: { path: { run_id: active } } })), enabled: !!active && authed, refetchInterval: 3000 });
   const refresh = () => { client.invalidateQueries({ queryKey: ['queue'] }); client.invalidateQueries({ queryKey: ['run'] }); };
   const fail = (e: Error) => { setError(e.message); setNotice(''); };
+  const clearActorCache = () => {
+    client.removeQueries({ queryKey: ['agents'] });
+    client.removeQueries({ queryKey: ['queue'] });
+    client.removeQueries({ queryKey: ['run'] });
+  };
+  const resetActorView = () => { setActive(''); setNotice(''); setError(''); setExported(''); };
+  const authUserRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (authUserRef.current === null) { authUserRef.current = authUser; return; }
+    if (authUserRef.current !== authUser) {
+      authUserRef.current = authUser;
+      client.removeQueries({ queryKey: ['agents'] });
+      client.removeQueries({ queryKey: ['queue'] });
+      client.removeQueries({ queryKey: ['run'] });
+      setActive('');
+      setNotice('');
+      setError('');
+      setExported('');
+    }
+  }, [authUser, client]);
+  const signOut = useMutation({
+    mutationFn: () => unwrap(api.POST('/api/auth/logout')),
+    onSuccess: () => { clearActorCache(); resetActorView(); setNotice('Signed out.'); client.invalidateQueries({ queryKey: ['auth'] }); },
+    onError: fail,
+  });
   const ownerErrors = factsMode === 'owner' ? validateOwnerFacts(ownerFacts) : [];
   const ownerEmpty = factsMode === 'owner' && !hasAnyOwnerValue(ownerFacts);
   const createBlocked = factsMode === 'owner' && (ownerErrors.length > 0 || ownerEmpty);
@@ -99,9 +128,10 @@ function Desk() {
       <div id="advanced-nav">{advanced && <nav aria-label="Advanced">{advancedNav.map(navButton)}</nav>}</div>
       <div className="sidebar-note"><ShieldCheck size={20} /><strong>You hold the final say.</strong><p>Every pack needs your approval before export.</p><span className="tiny">Confirmed facts only · No publishing</span></div>
     </aside>
-    <div className="main-wrap"><header className="topbar"><span>Workspace <span className="muted">/ Review desk</span></span><span className="demo-pill"><span className="dot" />{auth.data?.enabled ? 'Auth enabled, unverified' : 'Demo mode'}</span></header>
+    <div className="main-wrap"><header className="topbar"><span>Workspace <span className="muted">/ Review desk</span></span><span className="demo-pill"><span className="dot" />{authEnabled ? 'Auth enabled, unverified' : 'Demo mode'}</span></header>
       <main id="main"><div className="page-intro"><div><p className="eyebrow">LAUNCHCREW / REVIEW DESK</p><h1>{view === 'Memory' ? 'Review your saved memory.' : view === 'Replay' ? 'Compare two recorded runs.' : view === 'Campaign' ? 'Review a week of drafts.' : view === 'Idea' ? 'Start with a clear brief.' : view === 'Agents' ? 'Build your crew.' : view === 'Queue' ? 'Your approval matters.' : view === 'Receipt' ? 'A record of every decision.' : 'From facts to a launch pack.'}</h1><p className="lede">{view === 'Memory' ? 'Manage facts, profiles, examples, and rules explicitly.' : view === 'Replay' ? 'Inspect stored drafts, Checker verdicts, and approvals.' : view === 'Campaign' ? 'Seven pending packs, each reviewed and approved individually.' : view === 'Idea' ? 'Turn approved product facts into drafts you can stand behind.' : view === 'Agents' ? 'Give each agent a role, clear rules, and a boundary.' : view === 'Queue' ? 'Review each pack, approve it individually, then export when ready.' : view === 'Receipt' ? 'Inspect the checks, revisions, and human approval behind a pack.' : 'Follow Scout, Maker, and Checker through the draft and revision.'}</p></div><span className="step-label">{view === 'Memory' ? '06 / MEMORY' : view === 'Replay' ? '07 / REPLAY' : view === 'Campaign' ? '08 / CAMPAIGN' : view === 'Idea' ? '01 / BRIEF' : view === 'Agents' ? '02 / CREW' : view === 'Queue' ? '04 / APPROVAL' : view === 'Receipt' ? '05 / RECORD' : '03 / REVIEW'}</span></div>
-      {auth.data?.enabled && !auth.data.user && <div className="message">Sign in with <a href="/api/auth/google/login">Google</a> or <a href="/api/auth/facebook/login">Facebook</a>. Provider setup is required.</div>}
+      {authEnabled && !authUser && (authProviders.includes('google') ? <div className="message" data-testid="auth-signin">Sign in with <a href="/api/auth/google/login">Google</a>.</div> : <div className="message" data-testid="auth-setup-required">Sign-in is enabled but Google provider setup is required.</div>)}
+      {authEnabled && authUser && <div className="message" role="status" data-testid="auth-signed-in">Signed in as {authUser}. <Button variant="outline" data-testid="sign-out" onClick={() => signOut.mutate()} disabled={signOut.isPending}>{signOut.isPending ? 'Signing out...' : 'Sign out'}</Button></div>}
       {(error || agents.error || queue.error) && <div role="alert" className="message error">{error || agents.error?.message || queue.error?.message}</div>}
       {notice && <div role="status" className="message">{notice}</div>}
       {view === 'Idea' && <div className="two-column"><section className="panel"><div className="panel-head"><span className="eyebrow">THE BRIEF</span><span className="tag">{factsMode === 'owner' ? 'Owner facts mode' : 'Demo facts connected'}</span></div><h2>What are we launching?</h2><form onSubmit={e => { e.preventDefault(); if (createBlocked) return; create.mutate(); }}><label htmlFor="idea">Product, audience, and launch channel</label><textarea id="idea" value={idea} onChange={e => setIdea(e.target.value)} required maxLength={2000} rows={5} />{factsMode === 'owner' ? <p className="hint">The idea sets direction. Only explicitly confirmed owner facts enter the draft. Unconfirmed values stay suggestions.</p> : <p className="hint">The idea sets direction. Only approved demo facts enter the draft.</p>}<fieldset><legend>Product facts mode</legend><label className="checkbox"><input type="radio" name="facts-mode" value="demo" checked={factsMode === 'demo'} onChange={() => setFactsMode('demo')} />Bundled fictional demo-template mode</label><p className="hint">Omit product_facts entirely. Uses the bundled fictional demo template.</p><label className="checkbox"><input type="radio" name="facts-mode" value="owner" checked={factsMode === 'owner'} onChange={() => setFactsMode('owner')} />Owner-input mode</label><p className="hint">Send your confirmed facts as the typed product_facts object. Nothing is confirmed from brief text.</p></fieldset>{factsMode === 'owner' && <ProductFactsForm state={ownerFacts} onChange={setOwnerFacts} />}{factsMode === 'owner' && ownerEmpty && <p role="status">Add at least one owner fact or founder note, or use demo-template mode.</p>}{factsMode === 'owner' && ownerErrors.length > 0 && <div role="alert" className="message error"><ul>{ownerErrors.map((text, i) => <li key={i}>{text}</li>)}</ul></div>}{agents.isPending && <p role="status">Loading agents...</p>}<label htmlFor="run-scout">Scout agent</label><select id="run-scout" value={scout} onChange={e => setScout(e.target.value)} disabled={!agentsReady}>{agents.data?.map(p => <option key={p.name}>{p.name}</option>)}</select><label htmlFor="run-agent">Maker agent</label><select id="run-agent" value={agent} onChange={e => setAgent(e.target.value)} disabled={!agentsReady}>{agents.data?.map(p => <option key={p.name}>{p.name}</option>)}</select><label htmlFor="run-checker-agent">Checker agent</label><select id="run-checker-agent" value={checkerAgent} onChange={e => setCheckerAgent(e.target.value)} disabled={!agentsReady}>{agents.data?.map(p => <option key={p.name}>{p.name}</option>)}</select><p className="hint">Each agent runs its own stage. Original names and rules are kept in the receipt.</p><label htmlFor="run-checker">Checker profile</label><select id="run-checker" value={checkerProfile} onChange={e => setCheckerProfile(e.target.value)}><option>standard</option><option>strict</option></select><SupportedPoliciesHint legacy /><label htmlFor="run-memory">Memory ids, comma separated, optional</label><input id="run-memory" value={memoryIds} onChange={e => setMemoryIds(e.target.value)} /><label className="checkbox"><input type="checkbox" checked={seed} onChange={e => setSeed(e.target.checked)} />{SEED_CLAIM_LABEL}</label><p className="hint">{SEED_CLAIM_HINT}</p><div className="form-footer"><ModelStatusFooter /><Button type="submit" disabled={create.isPending || !agentsReady || createBlocked}>{create.isPending ? 'Starting pack...' : 'Create draft'}<ArrowRight size={16} /></Button></div></form></section>
