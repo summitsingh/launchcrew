@@ -1152,5 +1152,122 @@ class StaticBoundaryTests(unittest.TestCase):
         self.assertIn("pg_proc", self.text)
 
 
+VERIFY_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "verify-db-roles.sh"
+
+
+def _split_acl_entry(entry):
+    text = str(entry)
+    left = text.rsplit("/", 1)[0]
+    grantee, _, privs = left.partition("=")
+    if grantee == "":
+        return None, privs
+    return grantee, privs
+
+
+def _has_public_priv(entries, wanted):
+    for entry in entries or []:
+        grantee, privs = _split_acl_entry(entry)
+        if grantee is None and any(code in privs for code in wanted):
+            return True
+    return False
+
+
+def _named_privs(entries, role):
+    for entry in entries or []:
+        grantee, privs = _split_acl_entry(entry)
+        if grantee == role:
+            return privs
+    return ""
+
+
+class VerifyDbRolesAclProofTests(unittest.TestCase):
+    def setUp(self):
+        self.text = VERIFY_SCRIPT.read_text(encoding="utf-8")
+
+    def test_no_lax_public_substring_checks(self):
+        for lax in ('"=X" in acl', '"=x" in acl', '"=r" in acl',
+                    '"=a" in acl', '"=w" in acl', '"=d" in acl',
+                    '"=X" in facl', "rt_name in acl",
+                    "rt_name not in facl", '%s=X" % rt_name'):
+            self.assertNotIn(lax, self.text)
+
+    def test_uses_aclexplode_with_coalesce_default(self):
+        self.assertIn("aclexplode(coalesce(p.proacl", self.text)
+        self.assertIn("aclexplode(coalesce(c.relacl", self.text)
+        self.assertIn("acldefault(%s, p.proowner)", self.text)
+        self.assertIn("acldefault(%s, c.relowner)", self.text)
+        self.assertIn('("f",', self.text)
+        self.assertIn('("r",', self.text)
+        self.assertIn("e.grantee", self.text)
+        self.assertIn("e.privilege_type", self.text)
+        self.assertIn("int(g) == 0", self.text)
+        self.assertIn("int(rt_oid)", self.text)
+        self.assertIn("SELECT oid FROM pg_roles WHERE rolname", self.text)
+
+    def test_preserves_fail_closed_markers(self):
+        for marker in ("PUBLIC execute present",
+                       "PUBLIC table access present",
+                       "runtime EXECUTE missing",
+                       "runtime SELECT missing",
+                       "runtime write present",
+                       "future function scope wrong",
+                       "trigger guard must not grant runtime"):
+            self.assertIn(marker, self.text)
+
+
+class AclSemanticsTests(unittest.TestCase):
+    RT = "lc_bind_runtime"
+
+    def test_named_execute_is_not_public(self):
+        entries = ["lc_bind_runtime=X/postgres"]
+        self.assertIn("=X", " ".join(entries))
+        self.assertFalse(_has_public_priv(entries, ("X",)))
+        self.assertIn("X", _named_privs(entries, self.RT))
+
+    def test_genuine_public_execute_is_caught(self):
+        self.assertTrue(_has_public_priv(["=X/postgres"], ("X",)))
+        mixed = ["lc_bind_runtime=X/postgres", "=X/postgres"]
+        self.assertTrue(_has_public_priv(mixed, ("X",)))
+        self.assertIn("X", _named_privs(mixed, self.RT))
+
+    def test_grantor_name_is_not_grantee(self):
+        entries = ["=X/lc_bind_runtime"]
+        self.assertTrue(_has_public_priv(entries, ("X",)))
+        self.assertEqual("", _named_privs(entries, self.RT))
+
+    def test_named_table_select_is_not_public(self):
+        entries = ["lc_bind_runtime=r/postgres"]
+        for code in ("r", "a", "w", "d"):
+            self.assertFalse(_has_public_priv(entries, (code,)))
+        self.assertIn("r", _named_privs(entries, self.RT))
+
+    def test_genuine_public_table_access_is_caught(self):
+        for code, entry in (("r", "=r/postgres"), ("a", "=a/postgres"),
+                            ("w", "=w/postgres"), ("d", "=d/postgres")):
+            with self.subTest(code=code):
+                self.assertTrue(_has_public_priv([entry], (code,)))
+        named = ["lc_bind_runtime=arwd/postgres"]
+        for code in ("r", "a", "w", "d"):
+            self.assertFalse(_has_public_priv(named, (code,)))
+        privs = _named_privs(named, self.RT)
+        self.assertIn("r", privs)
+        self.assertTrue(any(b in privs for b in ("a", "w", "d")))
+
+    def test_trigger_guard_grantor_substring_is_not_grant(self):
+        entries = ["=X/lc_bind_runtime"]
+        self.assertIn(self.RT, " ".join(entries))
+        self.assertEqual("", _named_privs(entries, self.RT))
+
+    def test_future_scope_needs_runtime_execute_without_public(self):
+        ok = ["lc_bind_runtime=X/lc_bind_migration"]
+        public = ["=X/lc_bind_migration",
+                  "lc_bind_runtime=X/lc_bind_migration"]
+        missing = ["postgres=X/postgres"]
+        self.assertFalse(_has_public_priv(ok, ("X",)))
+        self.assertIn("X", _named_privs(ok, self.RT))
+        self.assertTrue(_has_public_priv(public, ("X",)))
+        self.assertEqual("", _named_privs(missing, self.RT))
+
+
 if __name__ == "__main__":
     unittest.main()

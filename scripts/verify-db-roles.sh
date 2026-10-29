@@ -545,19 +545,25 @@ mg_url = os.environ["MG_URL"]
 cert = os.environ["CERT_FILE"]
 admin = psycopg.connect(host="127.0.0.1", port=port, dbname=db, user="postgres", autocommit=True)
 cur = admin.cursor()
-cur.execute("SELECT p.proname, pg_get_userbyid(p.proowner), p.prosecdef, p.proconfig, p.proacl, p.proargnames FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = %s AND p.proname LIKE %s ORDER BY p.proname", (schema, "model_%"))
+cur.execute("SELECT p.proname, pg_get_userbyid(p.proowner), p.prosecdef, p.proconfig, p.proargnames FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = %s AND p.proname LIKE %s ORDER BY p.proname", (schema, "model_%"))
 rows = cur.fetchall()
 names = sorted(r[0] for r in rows)
 if names != ["model_finalize_call", "model_no_direct", "model_reserve_call"]:
     raise SystemExit("unexpected model functions")
-for proname, owner, secdef, proconfig, proacl, argnames in rows:
+cur.execute("SELECT oid FROM pg_roles WHERE rolname = %s", (rt_name,))
+rt_row = cur.fetchone()
+if rt_row is None:
+    raise SystemExit("runtime role missing")
+rt_oid = rt_row[0]
+for proname, owner, secdef, proconfig, argnames in rows:
     if owner != mg_name:
         raise SystemExit("function owner mismatch")
     cfg = list(proconfig or [])
     if not any(str(v).startswith("search_path=") and str(v).rstrip().endswith("pg_temp") for v in cfg):
         raise SystemExit("search_path not pinned with pg_temp last")
-    acl = " ".join(str(v) for v in (proacl or []))
-    if "=X" in acl or "=x" in acl:
+    cur.execute("SELECT e.grantee, e.privilege_type FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace, LATERAL aclexplode(coalesce(p.proacl, acldefault(%s, p.proowner))) AS e WHERE n.nspname = %s AND p.proname = %s", ("f", schema, proname))
+    fprivs = cur.fetchall()
+    if any(int(g) == 0 and str(pt).upper() == "EXECUTE" for g, pt in fprivs):
         raise SystemExit("PUBLIC execute present")
     args = " ".join(str(v) for v in (argnames or [])).lower()
     if "amount" in args or "micros" in args or "debit" in args or "refill" in args or "grant" in args:
@@ -565,32 +571,28 @@ for proname, owner, secdef, proconfig, proacl, argnames in rows:
     if proname in ("model_reserve_call", "model_finalize_call"):
         if not secdef:
             raise SystemExit("reserve and finalize must be SECURITY DEFINER")
-        if ("%s=X" % rt_name) not in acl and ("%s=x" % rt_name) not in acl:
+        if not any(int(g) == int(rt_oid) and str(pt).upper() == "EXECUTE" for g, pt in fprivs):
             raise SystemExit("runtime EXECUTE missing")
     else:
         if secdef:
             raise SystemExit("trigger guard must not be SECURITY DEFINER")
-        if rt_name in acl:
+        if any(int(g) == int(rt_oid) for g, pt in fprivs):
             raise SystemExit("trigger guard must not grant runtime")
 cur.execute("SELECT COUNT(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = %s AND (p.proname LIKE %s OR p.proname LIKE %s)", (schema, "%grant%", "%refill%"))
 if cur.fetchone()[0] != 0:
     raise SystemExit("refill function present")
-cur.execute("SELECT c.relname, c.relacl FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = %s AND c.relname IN (%s, %s)", (schema, "model_budget", "model_calls"))
+cur.execute("SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = %s AND c.relname IN (%s, %s)", (schema, "model_budget", "model_calls"))
 found = {}
-for relname, relacl in cur.fetchall():
-    acl = " ".join(str(v) for v in (relacl or []))
-    if "=r" in acl or "=a" in acl or "=w" in acl or "=d" in acl:
+for (relname,) in cur.fetchall():
+    cur.execute("SELECT e.grantee, e.privilege_type FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace, LATERAL aclexplode(coalesce(c.relacl, acldefault(%s, c.relowner))) AS e WHERE n.nspname = %s AND c.relname = %s", ("r", schema, relname))
+    tprivs = cur.fetchall()
+    if any(int(g) == 0 and str(pt).upper() in ("SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER") for g, pt in tprivs):
         raise SystemExit("PUBLIC table access present")
-    rt_entries = [v for v in (relacl or []) if str(v).startswith(rt_name + "=")]
-    if not rt_entries:
+    rt_privs = set(str(pt).upper() for g, pt in tprivs if int(g) == int(rt_oid))
+    if "SELECT" not in rt_privs:
         raise SystemExit("runtime SELECT missing")
-    joined = " ".join(str(v) for v in rt_entries)
-    if "r" not in joined.split("=")[1].split("/")[0]:
-        raise SystemExit("runtime SELECT missing")
-    privs = joined.split("=")[1].split("/")[0]
-    for bad in ("a", "w", "d", "D", "x", "t"):
-        if bad in privs:
-            raise SystemExit("runtime write present")
+    if rt_privs.intersection(("INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER")):
+        raise SystemExit("runtime write present")
     found[relname] = True
 if set(found) != {"model_budget", "model_calls"}:
     raise SystemExit("model tables missing")
@@ -689,9 +691,11 @@ if row2 is None or row2[12] is not True:
     raise SystemExit("second slot must own after grant")
 fname = "test_future_" + prefix
 mc.execute("CREATE OR REPLACE FUNCTION public.%s() RETURNS INTEGER LANGUAGE sql SECURITY DEFINER SET search_path = public, pg_temp AS %s SELECT 1 %s" % (fname, "$$", "$$"))
-mc.execute("SELECT proacl FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = %s AND p.proname = %s", ("public", fname))
-facl = " ".join(str(v) for v in (mc.fetchone()[0] or []))
-if ("=X" in facl) or (rt_name not in facl):
+mc.execute("SELECT e.grantee, e.privilege_type FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace, LATERAL aclexplode(coalesce(p.proacl, acldefault(%s, p.proowner))) AS e WHERE n.nspname = %s AND p.proname = %s", ("f", "public", fname))
+ffprivs = mc.fetchall()
+ff_public = any(int(g) == 0 and str(pt).upper() == "EXECUTE" for g, pt in ffprivs)
+ff_runtime = any(int(g) == int(rt_oid) and str(pt).upper() == "EXECUTE" for g, pt in ffprivs)
+if ff_public or not ff_runtime:
     mc.execute("DROP FUNCTION public.%s()" % fname)
     raise SystemExit("future function scope wrong")
 mc.execute("DROP FUNCTION public.%s()" % fname)
