@@ -21,9 +21,11 @@
 # on failure. No other auth file, cache entry, or
 # profile is touched. Storage flags mirror scripts/podman-local.sh
 # (graph root, runroot, vfs, cgroupfs, containers config) so builds match
-# the proven local path. Single attempts only with three explicit bounded
-# transport retries via Podman --retry 3, no script level blind resend,
-# no overwrite of an existing tag.
+# the proven local path. Single script attempts only, no script level
+# blind resend, no overwrite of an existing tag. Push flags come from a
+# safe help probe before any build: required digestfile and authfile must
+# be listed, optional retry is used only when listed, omitted on 4.9.3
+# where the flag does not exist, with no extra retry guarantee claimed.
 set -euo pipefail
 AWS_BIN="${AWS_BIN:-aws}"
 PODMAN_BIN="${PODMAN_BIN:-podman}"
@@ -419,6 +421,26 @@ for repo in launchcrew-api launchcrew-web launchcrew-web-proxy launchcrew-migrat
   existing_absent "$repo" || exit 1
 done
 
+# --- Podman push CLI compatibility, before any build ---
+# Safe help parsing only: normal command line parsing, no engine and no
+# network. Required push flags must be listed, optional retry is used
+# only when listed. Podman 4.9.3 has no retry flag, so it is omitted
+# there with no extra guarantee claimed. Single script attempts only.
+PODMAN_PUSH_HELP_FILE="$ERR_TMP/podman-push-help.txt"
+if ! "$PODMAN_BIN" push --help >"$PODMAN_PUSH_HELP_FILE" 2>/dev/null; then
+  refuse "Podman push help unreadable"
+fi
+if ! grep -q -- "--digestfile" "$PODMAN_PUSH_HELP_FILE" 2>/dev/null; then
+  refuse "Podman push flag mismatch: digestfile unsupported"
+fi
+if ! grep -q -- "--authfile" "$PODMAN_PUSH_HELP_FILE" 2>/dev/null; then
+  refuse "Podman push flag mismatch: authfile unsupported"
+fi
+PODMAN_PUSH_RETRY_SUPPORTED=0
+if grep -q -- "--retry" "$PODMAN_PUSH_HELP_FILE" 2>/dev/null; then
+  PODMAN_PUSH_RETRY_SUPPORTED=1
+fi
+
 # --- proven Podman storage, same values as scripts/podman-local.sh ---
 PODMAN_RUN_BASE="$PWD/.local/run"
 mkdir -p "$PODMAN_RUN_BASE"
@@ -470,8 +492,26 @@ fi
 # The pushed digest comes only from the --digestfile the push writes.
 # Push stdout can be empty and progress lines never carry the manifest
 # digest, so stdout is never parsed. The digest file must hold exactly
-# one sha256:64 lowercase hex value. Three explicit bounded transport
-# retries via --retry 3 only, no script level blind resend on failure.
+# one sha256:64 lowercase hex value. Retry uses the probed flag only
+# when the installed Podman lists it, omitted on 4.9.3, with no script
+# level blind resend on failure. Push failures report a fixed class
+# from the private log: unsupported-option, auth, transport, unknown.
+push_fail_class() {
+  _file="$1"
+  if grep -qi -E 'unknown flag|unknown shorthand|no such flag|unrecognized|unknown option|unsupported option|bad flag' "$_file" 2>/dev/null; then
+    printf 'unsupported-option'
+    return 0
+  fi
+  if grep -qi -E 'unauthorized|authentication|denied|forbidden|login required|access denied|invalid username|password|credentials' "$_file" 2>/dev/null; then
+    printf 'auth'
+    return 0
+  fi
+  if grep -qi -E 'connection|timeout|timed out|network|transport|tls|certificate|unreachable|dial|temporary failure|try again|reset by peer|broken pipe' "$_file" 2>/dev/null; then
+    printf 'transport'
+    return 0
+  fi
+  printf 'unknown'
+}
 push_one() {
   _local_name="$1"; _repo="$2"
   _target="${REGISTRY}/${_repo}:${SOURCE_SHA}"
@@ -480,8 +520,15 @@ push_one() {
     return 1
   }
   _digest_file="$ERR_TMP/digest-${_repo}"
-  if ! "$PODMAN_BIN" "${PODMAN_GLOBAL[@]}" push --authfile "$AUTH_FILE" --digestfile "$_digest_file" --retry 3 "$_target" "$_target" >"$ERR_TMP/push-${_repo}.out" 2>"$ERR_TMP/push-${_repo}.err"; then
-    echo "publish-ecr: refused: image push failed" >&2
+  _push_status=0
+  if [ "$PODMAN_PUSH_RETRY_SUPPORTED" = "1" ]; then
+    "$PODMAN_BIN" "${PODMAN_GLOBAL[@]}" push --authfile "$AUTH_FILE" --digestfile "$_digest_file" --retry 3 "$_target" "$_target" >"$ERR_TMP/push-${_repo}.out" 2>"$ERR_TMP/push-${_repo}.err" || _push_status=1
+  else
+    "$PODMAN_BIN" "${PODMAN_GLOBAL[@]}" push --authfile "$AUTH_FILE" --digestfile "$_digest_file" "$_target" "$_target" >"$ERR_TMP/push-${_repo}.out" 2>"$ERR_TMP/push-${_repo}.err" || _push_status=1
+  fi
+  if [ "$_push_status" -ne 0 ]; then
+    _push_class="$(push_fail_class "$ERR_TMP/push-${_repo}.err")"
+    echo "publish-ecr: refused: image push failed (${_push_class})" >&2
     return 1
   fi
   _pushed="$(tr -d '[:space:]' <"$_digest_file" 2>/dev/null)" || {

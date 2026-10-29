@@ -275,6 +275,25 @@ printf '%s\\n' "$LINE" >>"$LOG"
 case "$LINE" in
   *"$FAKE_TOKEN"*) echo "fake-podman: secret value in argv" >&2; exit 9 ;;
 esac
+case "$LINE" in
+  *"--help"*)
+    HELP_MODE="${FAKE_PODMAN_HELP_MODE:-4.9}"
+    if [ "$HELP_MODE" = "missing-digest" ]; then
+      printf 'Usage: podman push [options] source destination\\n  --authfile string  auth file\\n'
+      exit 0
+    fi
+    if [ "$HELP_MODE" = "missing-auth" ]; then
+      printf 'Usage: podman push [options] source destination\\n  --digestfile string  digest file\\n'
+      exit 0
+    fi
+    if [ "$HELP_MODE" = "newer" ]; then
+      printf 'Usage: podman push [options] source destination\\n  --authfile string  auth file\\n  --digestfile string  digest file\\n  --retry uint  retries\\n'
+      exit 0
+    fi
+    printf 'Usage: podman push [options] source destination\\n  --authfile string  auth file\\n  --digestfile string  digest file\\n'
+    exit 0
+    ;;
+esac
 CMD=""
 for arg in "$@"; do
   case "$arg" in
@@ -322,7 +341,11 @@ if [ "$CMD" = "push" ]; then
   AFTER="${LINE#*push}"
   case "$AFTER" in *"--authfile "*) ;; *) echo "fake-podman: push authfile misplaced" >&2; exit 2 ;; esac
   case "$AFTER" in *"--digestfile "*) ;; *) echo "fake-podman: push digestfile missing" >&2; exit 2 ;; esac
-  case "$AFTER" in *"--retry 3"*) ;; *) echo "fake-podman: push retry missing" >&2; exit 2 ;; esac
+  if [ "${FAKE_PODMAN_HELP_MODE:-4.9}" = "newer" ]; then
+    case "$AFTER" in *"--retry 3"*) ;; *) echo "fake-podman: push retry missing in newer mode" >&2; exit 2 ;; esac
+  else
+    case "$AFTER" in *"--retry"*) echo "fake-podman: push retry unsupported on 4.9" >&2; exit 2 ;; esac
+  fi
   prev=""; digestfile=""
   for arg in "$@"; do
     if [ "$prev" = "--digestfile" ]; then digestfile="$arg"; fi
@@ -441,7 +464,8 @@ class PublishEcrTests(unittest.TestCase):
         return fix, sha
 
     def run_helper(self, args, mode="success", extra_env=None, dirty=False,
-                   preexisting_manifest=None, push_digest_mode="good"):
+                   preexisting_manifest=None, push_digest_mode="good",
+                   podman_help_mode="4.9"):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             fixture, fixture_sha = self._make_fixture(tmp_path)
@@ -486,6 +510,7 @@ class PublishEcrTests(unittest.TestCase):
             env["FAKE_LOCAL_DIGEST"] = GOOD_DIGEST
             env["FAKE_PUSH_DIGEST"] = GOOD_DIGEST
             env["FAKE_PUSH_DIGEST_MODE"] = push_digest_mode
+            env["FAKE_PODMAN_HELP_MODE"] = podman_help_mode
             env["GITHUB_REPOSITORY"] = _EXPECTED_REPO
             env["GITHUB_REF"] = "refs/heads/main"
             env["SOURCE_SHA"] = fixture_sha
@@ -518,7 +543,8 @@ class PublishEcrTests(unittest.TestCase):
         self.assertEqual(podman_calls, [])
 
     def assert_no_push(self, podman_calls):
-        pushes = [call for call in podman_calls if " push " in f" {call} "]
+        pushes = [call for call in podman_calls
+                  if " push " in f" {call} " and "--help" not in call]
         self.assertEqual(pushes, [])
 
     def assert_no_leak(self, combined):
@@ -807,7 +833,8 @@ class PublishEcrTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         builds = [call for call in podman_calls if " build " in f" {call} "]
         self.assertEqual(len(builds), 6)
-        pushes = [call for call in podman_calls if " push " in f" {call} "]
+        pushes = [call for call in podman_calls
+                  if " push " in f" {call} " and "--help" not in call]
         self.assertEqual(len(pushes), 5)
         self.assertIsNotNone(manifest_text)
         manifest = json.loads(manifest_text)
@@ -833,7 +860,8 @@ class PublishEcrTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         builds = [call for call in podman_calls if " build " in f" {call} "]
         self.assertEqual(len(builds), 6)
-        pushes = [call for call in podman_calls if " push " in f" {call} "]
+        pushes = [call for call in podman_calls
+                  if " push " in f" {call} " and "--help" not in call]
         self.assertEqual(len(pushes), 5)
         self.assertIsNotNone(manifest_text)
         manifest = json.loads(manifest_text)
@@ -898,7 +926,8 @@ class PublishEcrTests(unittest.TestCase):
             ["--confirm"], mode="success")
         self.assertEqual(result.returncode, 0, result.stderr)
         argv_calls = [call for call in podman_calls
-                      if not call.startswith("STDIN_BYTES=")]
+                      if not call.startswith("STDIN_BYTES=")
+                      and "--help" not in call]
         for call in argv_calls:
             self.assertIn("--storage-driver vfs", call)
             self.assertIn("--cgroup-manager cgroupfs", call)
@@ -908,14 +937,19 @@ class PublishEcrTests(unittest.TestCase):
         self.assertEqual(len(builds), 6)
         self.assertTrue(any("containers/db.Containerfile" in call for call in builds))
         self.assertFalse(any(" image " in f" {call} " for call in podman_calls))
-        pushes = [call for call in podman_calls if " push " in f" {call} "]
+        pushes = [call for call in podman_calls
+                  if " push " in f" {call} " and "--help" not in call]
         self.assertEqual(len(pushes), 5)
         for call in pushes:
             self.assertIn("--digestfile ", call)
             self.assertIn("--authfile ", call)
-            self.assertIn("--retry 3", call)
+            self.assertNotIn("--retry", call)
             self.assertNotIn("launchcrew-db", call)
             self.assertNotIn("latest", call)
+        helps = [call for call in podman_calls if "--help" in call]
+        self.assertEqual(len(helps), 1)
+        self.assertIn("push --help", helps[0])
+        self.assertIn("push --help", podman_calls[0])
         logins = [call for call in podman_calls if " login " in f" {call} "]
         self.assertEqual(len(logins), 1)
         self.assertIn("--password-stdin", logins[0])
@@ -942,6 +976,50 @@ class PublishEcrTests(unittest.TestCase):
         for authfile in authfiles:
             self.assertFalse(Path(authfile).exists(),
                              "private auth file must be cleaned up")
+
+    def test_newer_podman_uses_retry_when_help_lists_it(self):
+        result, _, podman_calls, authfiles, manifest_text, fixture_sha = self.run_helper(
+            ["--confirm"], mode="success", podman_help_mode="newer")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        pushes = [call for call in podman_calls
+                  if " push " in f" {call} " and "--help" not in call]
+        self.assertEqual(len(pushes), 5)
+        for call in pushes:
+            self.assertIn("--digestfile ", call)
+            self.assertIn("--authfile ", call)
+            self.assertIn("--retry 3", call)
+        helps = [call for call in podman_calls if "--help" in call]
+        self.assertEqual(len(helps), 1)
+        self.assertIn("push --help", helps[0])
+        self.assertIsNotNone(manifest_text)
+        manifest = json.loads(manifest_text)
+        self.assertEqual(manifest["source_sha"], fixture_sha)
+        self.assertEqual(len(manifest["images"]), 5)
+        for image in manifest["images"]:
+            self.assertEqual(image["digest"], GOOD_DIGEST)
+        combined = result.stdout + result.stderr
+        self.assertIn("confirmed publication", combined)
+        self.assert_no_leak(combined)
+        for authfile in authfiles:
+            self.assertFalse(Path(authfile).exists())
+
+    def test_missing_push_flag_refused_before_any_build(self):
+        for help_mode in ("missing-digest", "missing-auth"):
+            result, _, podman_calls, _, manifest_text, _ = self.run_helper(
+                ["--confirm"], mode="success", podman_help_mode=help_mode)
+            self.assertNotEqual(result.returncode, 0, help_mode)
+            combined = result.stdout + result.stderr
+            self.assertIn("refused", combined, help_mode)
+            self.assertIn("flag mismatch", combined, help_mode)
+            self.assert_no_leak(combined)
+            non_help = [call for call in podman_calls
+                        if "--help" not in call]
+            self.assertEqual(non_help, [], help_mode)
+            builds = [call for call in podman_calls
+                      if " build " in f" {call} "]
+            self.assertEqual(builds, [], help_mode)
+            self.assert_no_push(podman_calls)
+            self.assertIsNone(manifest_text, help_mode)
 
     def test_missing_or_invalid_digestfile_fails_with_no_manifest(self):
         for digest_mode in ("missing", "invalid"):
@@ -971,7 +1049,8 @@ class PublishEcrTests(unittest.TestCase):
         combined = result.stdout + result.stderr
         self.assertIn("partial", combined)
         self.assert_no_leak(combined)
-        pushes = [call for call in podman_calls if " push " in f" {call} "]
+        pushes = [call for call in podman_calls
+                  if " push " in f" {call} " and "--help" not in call]
         self.assertEqual(len(pushes), 5)
         self.assertIsNone(manifest_text)
         self.assertNotIn("confirmed publication", combined)

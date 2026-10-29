@@ -38,6 +38,23 @@ jobs:
           persist-credentials: false
       - name: Install Podman tooling
         run: sudo apt-get update && sudo apt-get install -y podman slirp4netns
+      - name: Probe Podman push CLI compatibility before cloud calls
+        run: |
+          set -eu
+          podman push --help > /tmp/podman-push-help.txt 2>&1
+          if ! grep -q -- "--digestfile" /tmp/podman-push-help.txt; then
+            echo 'publish-ecr: refused: Podman push flag mismatch: digestfile unsupported' >&2
+            exit 1
+          fi
+          if ! grep -q -- "--authfile" /tmp/podman-push-help.txt; then
+            echo 'publish-ecr: refused: Podman push flag mismatch: authfile unsupported' >&2
+            exit 1
+          fi
+          if grep -q -- "--retry" /tmp/podman-push-help.txt; then
+            echo "Podman push lists retry; publisher will use explicit retry."
+          else
+            echo "Podman push has no retry flag (expected on 4.9.3); publisher omits it with no extra guarantee."
+          fi
       - name: Validate source SHA and private secrets before any cloud call
         env:
           EXPECTED_AWS_ACCOUNT_ID: ${{ secrets.ECR_PUBLISH_EXPECTED_ACCOUNT_ID }}
