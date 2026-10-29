@@ -179,21 +179,66 @@ def run_spark_proof(*, latch_path):
     real_urlopen = spark_module.urlopen
     http_count = {'total': 0}
 
+    class _LiveProofResponse:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return self._inner.__exit__(exc_type, exc, tb)
+
+        def read(self, *args, **kwargs):
+            try:
+                return self._inner.read(*args, **kwargs)
+            except Exception as error:
+                name = type(error).__name__
+                if name in ('TimeoutError', 'URLError', 'HTTPError', 'ConnectionError',
+                            'RemoteDisconnected', 'SSLError', 'SocketTimeout',
+                            'IncompleteRead', 'ConnectionResetError', 'BrokenPipeError'):
+                    try:
+                        spark_module.latch_proof_uncertain(latch_path)
+                    except Exception:
+                        pass
+                raise
+
+        def __iter__(self):
+            try:
+                for chunk in self._inner:
+                    yield chunk
+            except Exception as error:
+                name = type(error).__name__
+                if name in ('TimeoutError', 'URLError', 'HTTPError', 'ConnectionError',
+                            'RemoteDisconnected', 'SSLError', 'SocketTimeout',
+                            'IncompleteRead', 'ConnectionResetError', 'BrokenPipeError'):
+                    try:
+                        spark_module.latch_proof_uncertain(latch_path)
+                    except Exception:
+                        pass
+                raise
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
     def proof_open(request, timeout=None):
         spark_module.validate_proof_request(request)
         spark_module.claim_proof_attempt(latch_path)
         http_count['total'] += 1
         try:
-            return spark_module._spark_opener().open(request, timeout=timeout)
+            inner = spark_module._spark_opener().open(request, timeout=timeout)
         except Exception as error:
             name = type(error).__name__
             if name in ('TimeoutError', 'URLError', 'HTTPError', 'ConnectionError',
-                        'RemoteDisconnected', 'SSLError', 'SocketTimeout'):
+                        'RemoteDisconnected', 'SSLError', 'SocketTimeout',
+                        'IncompleteRead', 'ConnectionResetError', 'BrokenPipeError'):
                 try:
                     spark_module.latch_proof_uncertain(latch_path)
                 except Exception:
                     pass
             raise
+        return _LiveProofResponse(inner)
 
     def recording_call(system_prompt, user_prompt, schema_hint, model):
         if model != spark_module.PROOF_MODEL:
@@ -317,6 +362,9 @@ def _check_sam_env():
         return False, 'missing key'
     if os.environ.get('LAUNCHCREW_PHOTO_SAM_ENABLED', '').strip().lower() != 'true':
         return False, 'SAM not enabled'
+    base = os.environ.get('META_API_BASE_URL', '').strip()
+    if base and base.rstrip('/') != 'https://api.meta.ai/v1':
+        return False, 'META_API_BASE_URL override refused for proof'
     if not os.environ.get('LAUNCHCREW_PHOTO_APPROVED_DIGESTS', '').strip():
         return False, 'approved digest list missing'
     photo_path = os.environ.get('LAUNCHCREW_PROOF_PHOTO_PATH', '').strip()
@@ -330,6 +378,36 @@ def _approved_digest_set():
     return {part.strip().lower() for part in raw.split(',') if part.strip()}
 
 
+def _reserve_sam_latch(latch_path):
+    target = Path(latch_path)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    try:
+        fd = os.open(str(target), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        return False
+    except OSError:
+        if target.exists():
+            return False
+        return False
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+            handle.write(json.dumps({'label': 'meta-proof-sam', 'used': True}) + '\n')
+    except OSError:
+        try:
+            target.unlink()
+        except OSError:
+            pass
+        return False
+    try:
+        os.chmod(target, 0o600)
+    except OSError:
+        pass
+    return True
+
+
 def run_sam_proof(*, latch_path):
     from fastapi.testclient import TestClient
     from sqlalchemy import text
@@ -340,16 +418,9 @@ def run_sam_proof(*, latch_path):
     if not ok:
         print('SAM proof refused: ' + reason)
         return 1
-    target = Path(latch_path)
-    if target.exists():
+    if not _reserve_sam_latch(latch_path):
         print('SAM proof latch refused: reuse refused')
         return 1
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps({'label': 'meta-proof-sam', 'used': True}) + '\n', encoding='utf-8')
-    try:
-        os.chmod(target, 0o600)
-    except OSError:
-        pass
     photo_path = os.environ.get('LAUNCHCREW_PROOF_PHOTO_PATH', '').strip()
     try:
         raw_bytes = Path(photo_path).read_bytes()
@@ -402,6 +473,8 @@ def run_sam_proof(*, latch_path):
 
     sam_module.upload_and_segment = proof_upload
     saved_key = os.environ.get('META_API_KEY', '')
+    cleanup_status = {'budget_zero_failed': False}
+    candidate = None
     try:
         with TestClient(app) as client:
             os.environ.pop('META_API_KEY', None)
@@ -421,7 +494,6 @@ def run_sam_proof(*, latch_path):
                 print('SAM proof photo check HTTP ' + str(response.status_code))
                 return 1
             body = response.json() if response.status_code == 200 else {}
-            check = body.get('check', {}) if isinstance(body, dict) else {}
             receipt = body.get('receipt', {}) if isinstance(body, dict) else {}
             with store_module.engine().begin() as connection:
                 budget = connection.execute(
@@ -432,26 +504,25 @@ def run_sam_proof(*, latch_path):
             if response.status_code != 200:
                 print('SAM proof photo check refused: HTTP ' + str(response.status_code))
                 return 1
+            if budget != 0:
+                print('SAM proof budget not spent')
+                return 1
             if row is None or row['status'] not in ('succeeded', 'failed_terminal'):
                 print('SAM proof ledger not terminal')
                 return 1
             if row['status'] != 'succeeded':
                 print('SAM proof ended terminal without success')
                 return 1
-            if sam_counts['uploads'] != 1 or sam_counts['segmentations'] not in (0, 1):
+            if sam_counts['uploads'] != 1 or sam_counts['segmentations'] != 1:
                 print('SAM proof attempt counts invalid')
-                return 1
-            if sam_counts['segmentations'] != 1:
-                print('SAM proof segmentation missing')
                 return 1
             photo_status = receipt.get('photo_status', {}) if isinstance(receipt, dict) else {}
             if photo_status.get('state') not in ('checked',):
                 print('SAM proof receipt photo state invalid')
                 return 1
-            print('SAM PROOF PASS uploads 1 segmentations 1 label ' + str(row['label'] or 'none'))
-            print('method: sam-3.1 expiry: created_at plus 3600')
-            print('ledger: terminal budget spent no retry no delete cleanup')
-            return 0
+            candidate = {'run_id': run_id, 'label': row['label'],
+                         'uploads': sam_counts['uploads'],
+                         'segmentations': sam_counts['segmentations']}
     except sam_module.SamTransportError as error:
         print('SAM proof transport failed: ' + type(error).__name__)
         return 1
@@ -460,13 +531,45 @@ def run_sam_proof(*, latch_path):
         return 1
     finally:
         sam_module.upload_and_segment = original_upload
+        os.environ['LAUNCHCREW_PHOTO_SAM_ENABLED'] = 'false'
         try:
             with store_module.engine().begin() as connection:
                 connection.execute(text("UPDATE sam_budget SET remaining_images=0 WHERE id='global'"))
         except Exception:
-            pass
+            cleanup_status['budget_zero_failed'] = True
         if saved_key and not os.environ.get('META_API_KEY', ''):
             os.environ['META_API_KEY'] = saved_key
+    if candidate is None:
+        return 1
+    if cleanup_status['budget_zero_failed']:
+        print('SAM proof cleanup failed; no PASS')
+        return 1
+    if os.environ.get('LAUNCHCREW_PHOTO_SAM_ENABLED', '').strip().lower() != 'false':
+        print('SAM proof cleanup failed; SAM still enabled')
+        return 1
+    try:
+        with store_module.engine().begin() as connection:
+            final_budget = connection.execute(
+                text("SELECT remaining_images FROM sam_budget WHERE id='global'")).scalar()
+            final_row = connection.execute(
+                text('SELECT status, label FROM sam_calls WHERE run_id=:id AND revision=0'),
+                {'id': candidate['run_id']}).mappings().first()
+    except Exception:
+        print('SAM proof readback failed; no PASS')
+        return 1
+    if final_budget != 0:
+        print('SAM proof budget readback not zero; no PASS')
+        return 1
+    if final_row is None or final_row['status'] != 'succeeded':
+        print('SAM proof ledger readback not terminal success; no PASS')
+        return 1
+    if candidate['uploads'] != 1 or candidate['segmentations'] != 1:
+        print('SAM proof counts readback invalid; no PASS')
+        return 1
+    print('SAM PROOF PASS uploads 1 segmentations 1 label ' + str(final_row['label'] or 'none'))
+    print('method: sam-3.1 expiry: created_at plus 3600')
+    print('ledger: terminal budget spent no retry no delete cleanup')
+    return 0
 
 
 def main(argv=None):

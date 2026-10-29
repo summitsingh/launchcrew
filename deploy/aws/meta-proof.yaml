@@ -2,7 +2,8 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
   LaunchCrew bounded live Spark proof, one-off Fargate task, review only, NOT applied.
   No apply, no ALB, no service, no restart, no photo transfer, no secrets in this file.
-  Region, image digest, secrets, network, and cluster are parameters with no approved defaults.
+  Image digest and secrets are parameters with no approved defaults. Network and
+  cluster are validated separately by the controller RunTask args, not CFN params.
   One task only via RunTask with a distinct meta-proof token. Public API stays keyless.
   Teardown required after Nov 4 and no later than Nov 9, 2026.
 Parameters:
@@ -15,18 +16,6 @@ Parameters:
   MetaSecretArn:
     Type: String
     Description: Secrets Manager ARN for the dedicated LaunchCrew product Meta key, JSON key meta-api-key, placeholder only, no value in this file. Created outside this stack by the reviewed loader; the proof task reads only this plus runtime DB.
-  ClusterName:
-    Type: String
-    Description: Owned ECS cluster name for the one-off RunTask. No default.
-  SubnetA:
-    Type: String
-    Description: Owned public subnet id for Fargate awsvpc with AssignPublicIp ENABLED. No default.
-  SubnetB:
-    Type: String
-    Description: Second owned public subnet id for Fargate awsvpc. No default.
-  JobSecurityGroupId:
-    Type: String
-    Description: Owned JobSG id with no inbound, egress to DB plus 443 only. No default.
 Resources:
   MetaProofLogGroup:
     Type: AWS::Logs::LogGroup

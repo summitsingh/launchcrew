@@ -53,22 +53,35 @@ class ProofLatchError(RuntimeError):
 def init_proof_latch(path):
     """Create a durable nonresettable one-shot latch file before first HTTP.
 
-    Refuses if the file already exists in any form, so reuse after any
-    attempt or crash is impossible. Returns the latch dict.
+    Uses exclusive creation so two concurrent processes cannot both
+    reserve. Refuses if the file already exists in any form, so reuse
+    after any attempt or crash is impossible. Returns the latch dict.
     """
     target = Path(path)
-    if target.exists():
-        raise ProofLatchError('proof latch already exists; reuse refused')
-    target.parent.mkdir(parents=True, exist_ok=True)
-    state = {'max_attempts': PROOF_MAX_ATTEMPTS, 'attempts_used': 0,
-             'uncertain': False, 'label': 'meta-proof'}
-    tmp = target.with_suffix(target.suffix + '.tmp')
-    tmp.write_text(json.dumps(state, sort_keys=True) + '\n', encoding='utf-8')
     try:
-        os.chmod(tmp, 0o600)
+        target.parent.mkdir(parents=True, exist_ok=True)
     except OSError:
         pass
-    tmp.replace(target)
+    state = {'max_attempts': PROOF_MAX_ATTEMPTS, 'attempts_used': 0,
+             'uncertain': False, 'label': 'meta-proof'}
+    payload = json.dumps(state, sort_keys=True) + '\n'
+    try:
+        fd = os.open(str(target), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        raise ProofLatchError('proof latch already exists; reuse refused')
+    except OSError as error:
+        if target.exists():
+            raise ProofLatchError('proof latch already exists; reuse refused')
+        raise ProofLatchError(type(error).__name__ + ': latch create failed')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as handle:
+            handle.write(payload)
+    except OSError:
+        try:
+            target.unlink()
+        except OSError:
+            pass
+        raise ProofLatchError('OSError: latch write failed')
     try:
         os.chmod(target, 0o600)
     except OSError:
@@ -162,29 +175,85 @@ def validate_proof_request(request):
     return body
 
 
+_PROOF_AMBIGUOUS_ERRORS = ('TimeoutError', 'URLError', 'HTTPError',
+                               'ConnectionError', 'RemoteDisconnected', 'SSLError',
+                               'SocketTimeout', 'IncompleteRead',
+                               'ConnectionResetError', 'BrokenPipeError')
+
+
+class _ProofResponseWrapper:
+    """Delegate to the real response while latching read ambiguity.
+
+    Never fabricates or buffers the live body. Only delegates read
+    and iteration, latching durable uncertainty when the read itself
+    fails with an ambiguous transport error.
+    """
+
+    def __init__(self, inner, latch_path):
+        self._inner = inner
+        self._latch_path = latch_path
+
+    def __enter__(self):
+        try:
+            self._inner.__enter__()
+        except Exception:
+            raise
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return self._inner.__exit__(exc_type, exc, tb)
+
+    def read(self, *args, **kwargs):
+        try:
+            return self._inner.read(*args, **kwargs)
+        except Exception as error:
+            if type(error).__name__ in _PROOF_AMBIGUOUS_ERRORS:
+                try:
+                    latch_proof_uncertain(self._latch_path)
+                except Exception:
+                    pass
+            raise
+
+    def __iter__(self):
+        try:
+            for chunk in self._inner:
+                yield chunk
+        except Exception as error:
+            if type(error).__name__ in _PROOF_AMBIGUOUS_ERRORS:
+                try:
+                    latch_proof_uncertain(self._latch_path)
+                except Exception:
+                    pass
+            raise
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
 def proof_urlopen(request, timeout=None, *, latch_path):
     """Proof-process wrapper around the original actual opener.
 
     Validates fixed proof bounds, claims one durable attempt before send,
-    then delegates to the real redirect-refusing opener and returns the
-    real response. Never fabricates a response. Latches uncertainty on
-    ambiguous transport errors with no automatic resend.
+    then delegates to the real redirect-refusing opener and returns a
+    delegating wrapper around the real response. Never fabricates a
+    response. Latches uncertainty on ambiguous open or read transport
+    errors with no automatic resend.
     """
     validate_proof_request(request)
     claim_proof_attempt(latch_path)
     try:
-        return _spark_opener().open(request, timeout=timeout)
+        inner = _spark_opener().open(request, timeout=timeout)
     except ProofLatchError:
         raise
     except Exception as error:
         name = type(error).__name__
-        if name in ('TimeoutError', 'URLError', 'HTTPError', 'ConnectionError',
-                    'RemoteDisconnected', 'SSLError', 'SocketTimeout'):
+        if name in _PROOF_AMBIGUOUS_ERRORS:
             try:
                 latch_proof_uncertain(latch_path)
             except Exception:
                 pass
         raise
+    return _ProofResponseWrapper(inner, latch_path)
 
 
 def _call(system_prompt, user_prompt, schema_hint, model):

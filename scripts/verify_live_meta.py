@@ -42,14 +42,55 @@ def _run_aws(args, timeout=60):
     return completed
 
 
+def _parse_secret_arn(arn, expected_region, expected_account):
+    if not isinstance(arn, str):
+        return None
+    parts = arn.split(":")
+    if len(parts) != 7:
+        return None
+    if parts[0] != "arn" or parts[1] != "aws" or parts[2] != "secretsmanager":
+        return None
+    if parts[3] != expected_region or parts[4] != expected_account:
+        return None
+    if parts[5] != "secret":
+        return None
+    name_suffix = parts[6]
+    if not name_suffix or "-" not in name_suffix:
+        return None
+    base, suffix = name_suffix.rsplit("-", 1)
+    if not base or not suffix:
+        return None
+    return {"region": parts[3], "account": parts[4], "name": name_suffix}
+
+
 def _journal_dir(base):
     target = Path(base)
     target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def _reserve_journal(path, record):
+    target = Path(path)
     try:
-        os.chmod(target, 0o700)
+        fd = os.open(str(target), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        return False
+    except OSError:
+        return False
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
+    except OSError:
+        try:
+            target.unlink()
+        except OSError:
+            pass
+        return False
+    try:
+        os.chmod(target, 0o600)
     except OSError:
         pass
-    return target
+    return True
 
 
 def _write_journal(path, record):
@@ -64,6 +105,33 @@ def _write_journal(path, record):
         os.chmod(path, 0o600)
     except OSError:
         pass
+
+
+def _update_journal_verified(path, token, task_arn):
+    target = Path(path)
+    try:
+        current = json.loads(target.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not isinstance(current, dict) or current.get("token", "") != token:
+        return False
+    if current.get("label", "") != "meta-proof":
+        return False
+    current["status"] = "verified"
+    current["task_arn"] = task_arn
+    _write_journal(target, current)
+    return True
+
+
+def _task_id_from_arn(task_arn):
+    if not isinstance(task_arn, str) or not task_arn:
+        return ""
+    if ":task/" not in task_arn:
+        return ""
+    task_id = task_arn.rsplit("/", 1)[-1].strip()
+    if not task_id or "/" in task_id or " " in task_id:
+        return ""
+    return task_id
 
 
 def launch_ecs(args):
@@ -85,11 +153,14 @@ def launch_ecs(args):
         return 1
     for arn_name in ("runtime_secret_arn", "meta_secret_arn"):
         arn = getattr(args, arn_name)
-        if not arn.startswith("arn:aws:secretsmanager:%s:%s:secret/" % (
-                args.expected_region, args.expected_account)):
+        if _parse_secret_arn(arn, args.expected_region, args.expected_account) is None:
             print("meta-proof launch secret ARN scope mismatch: " + arn_name,
                   file=sys.stderr)
             return 1
+    if args.runtime_secret_arn == args.meta_secret_arn:
+        print("meta-proof launch runtime and Meta secrets must differ",
+              file=sys.stderr)
+        return 1
     caller = _run_aws(["sts", "get-caller-identity", "--query", "Account",
                        "--output", "text", "--region", args.expected_region])
     if caller.returncode != 0 or caller.stdout.strip() != args.expected_account:
@@ -127,10 +198,10 @@ def launch_ecs(args):
                   file=sys.stderr)
             return 1
         values = {entry.get("name"): entry.get("valueFrom", "") for entry in secrets}
-        if args.runtime_secret_arn not in values.get("DATABASE_URL", ""):
+        if values.get("DATABASE_URL", "") != args.runtime_secret_arn + ":database-url::":
             print("meta-proof launch runtime secret binding mismatch", file=sys.stderr)
             return 1
-        if args.meta_secret_arn not in values.get("META_API_KEY", ""):
+        if values.get("META_API_KEY", "") != args.meta_secret_arn + ":meta-api-key::":
             print("meta-proof launch Meta secret binding mismatch", file=sys.stderr)
             return 1
         if definition.get("executionRoleArn") != args.execution_role:
@@ -139,10 +210,40 @@ def launch_ecs(args):
         if definition.get("taskRoleArn") != args.task_role:
             print("meta-proof launch task role mismatch", file=sys.stderr)
             return 1
+        if args.execution_role == args.task_role:
+            print("meta-proof launch execution and task roles must differ",
+                  file=sys.stderr)
+            return 1
+        log_config = container.get("logConfiguration", {})
+        log_options = log_config.get("options", {}) if isinstance(log_config, dict) else {}
+        log_group = log_options.get("awslogs-group", "") if isinstance(log_options, dict) else ""
+        log_prefix = log_options.get("awslogs-stream-prefix", "") if isinstance(log_options, dict) else ""
+        log_driver = log_config.get("logDriver", "") if isinstance(log_config, dict) else ""
+        container_name = container.get("name", "")
+        if log_driver != "awslogs" or log_group != "/launchcrew/demo/meta-proof":
+            print("meta-proof launch log group mismatch; no run attempted",
+                  file=sys.stderr)
+            return 1
+        if log_prefix != "meta-proof" or container_name != "meta-proof":
+            print("meta-proof launch log stream identity mismatch; no run attempted",
+                  file=sys.stderr)
+            return 1
+        if args.log_group and args.log_group != log_group:
+            print("meta-proof launch caller log group mismatch; proof refused",
+                  file=sys.stderr)
+            return 1
     except SystemExit:
         raise
     except Exception:
         print("meta-proof launch task definition shape invalid", file=sys.stderr)
+        return 1
+    if not args.subnet_a.startswith("subnet-") or not args.subnet_b.startswith("subnet-"):
+        print("meta-proof launch subnets must be owned subnet ids; no run attempted",
+              file=sys.stderr)
+        return 1
+    if not args.job_sg.startswith("sg-"):
+        print("meta-proof launch JobSG must be an owned security group id; no run attempted",
+              file=sys.stderr)
         return 1
     sg_in = _run_aws(["ec2", "describe-security-groups", "--group-ids", args.job_sg,
                       "--query", "SecurityGroups[0].IpPermissions", "--output", "json",
@@ -162,7 +263,10 @@ def launch_ecs(args):
               "account": args.expected_account, "region": args.expected_region,
               "cluster": args.cluster, "task_def": args.task_def,
               "api_image": args.api_image, "status": "launched"}
-    _write_journal(journal_file, record)
+    if not _reserve_journal(journal_file, record):
+        print("meta-proof launch journal exists; resend and crash relaunch refused",
+              file=sys.stderr)
+        return 1
     print("meta-proof launch journal written before run-task")
     network = ("awsvpcConfiguration={subnets=[%s,%s],securityGroups=[%s],"
                "assignPublicIp=ENABLED}" % (args.subnet_a, args.subnet_b, args.job_sg))
@@ -213,13 +317,28 @@ def launch_ecs(args):
     if stopped.get("startedBy", "") != token:
         print("meta-proof task token mismatch; proof refused", file=sys.stderr)
         return 1
+    if stopped.get("taskArn", "") != task_arn:
+        print("meta-proof task ARN mismatch; proof refused", file=sys.stderr)
+        return 1
     containers = stopped.get("containers", [])
     if len(containers) != 1 or containers[0].get("exitCode") != 0:
         print("meta-proof container exit was not 0; proof refused", file=sys.stderr)
         return 1
+    if containers[0].get("name", "meta-proof") != "meta-proof":
+        print("meta-proof container identity mismatch; proof refused", file=sys.stderr)
+        return 1
+    task_id = _task_id_from_arn(task_arn)
+    if not task_id:
+        print("meta-proof task identity invalid; proof refused", file=sys.stderr)
+        return 1
+    expected_stream = "meta-proof/meta-proof/" + task_id
+    if args.log_stream and args.log_stream != expected_stream:
+        print("meta-proof log stream does not match launched task; proof refused",
+              file=sys.stderr)
+        return 1
     logs = _run_aws(["logs", "get-log-events",
-                     "--log-group-name", args.log_group,
-                     "--log-stream-name", args.log_stream,
+                     "--log-group-name", "/launchcrew/demo/meta-proof",
+                     "--log-stream-name", expected_stream,
                      "--limit", "100", "--region", args.expected_region])
     if logs.returncode != 0:
         print("meta-proof log read failed; exit 0 alone is not proof", file=sys.stderr)
@@ -233,9 +352,9 @@ def launch_ecs(args):
         print("meta-proof PASS marker missing; exit 0 alone is not proof",
               file=sys.stderr)
         return 1
-    record["status"] = "verified"
-    record["task_arn"] = task_arn
-    _write_journal(journal_file, record)
+    if not _update_journal_verified(journal_file, token, task_arn):
+        print("meta-proof journal verify update refused", file=sys.stderr)
+        return 1
     print("META PROOF ECS VERIFIED task stopped exit 0 plus in-task PASS marker")
     return 0
 

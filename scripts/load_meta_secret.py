@@ -26,6 +26,28 @@ def _run(args, input_text=None, timeout=60):
         capture_output=True, text=True, timeout=timeout)
 
 
+def _parse_secret_arn(arn, expected_region, expected_account, secret_name):
+    if not isinstance(arn, str):
+        return None
+    parts = arn.split(":")
+    if len(parts) != 7:
+        return None
+    if parts[0] != "arn" or parts[1] != "aws" or parts[2] != "secretsmanager":
+        return None
+    if parts[3] != expected_region or parts[4] != expected_account:
+        return None
+    if parts[5] != "secret":
+        return None
+    name_suffix = parts[6]
+    if not name_suffix or not secret_name:
+        return None
+    if not name_suffix.startswith(secret_name + "-"):
+        return None
+    if len(name_suffix) <= len(secret_name) + 1:
+        return None
+    return {"region": parts[3], "account": parts[4], "name": name_suffix}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Load Meta key to owned secret, metadata only.")
     parser.add_argument("--secret-arn", required=True)
@@ -38,9 +60,8 @@ def main(argv=None):
         print("loader refused: META_API_KEY missing from process environment",
               file=sys.stderr)
         return 1
-    prefix = "arn:aws:secretsmanager:%s:%s:secret/%s" % (
-        args.expected_region, args.expected_account, args.secret_name)
-    if not args.secret_arn.startswith(prefix):
+    if _parse_secret_arn(args.secret_arn, args.expected_region,
+                           args.expected_account, args.secret_name) is None:
         print("loader refused: secret ARN scope or name mismatch", file=sys.stderr)
         return 1
     caller = _run(["sts", "get-caller-identity", "--query", "Account",
@@ -51,8 +72,7 @@ def main(argv=None):
     described = _run(["secretsmanager", "describe-secret",
                       "--secret-id", args.secret_arn,
                       "--region", args.expected_region])
-    exists = described.returncode == 0
-    if exists:
+    if described.returncode == 0:
         try:
             doc = json.loads(described.stdout or "{}")
         except Exception:
@@ -61,12 +81,25 @@ def main(argv=None):
         if doc.get("ARN", "") != args.secret_arn:
             print("loader refused: returned ARN mismatch", file=sys.stderr)
             return 1
+        if _parse_secret_arn(doc.get("ARN", ""), args.expected_region,
+                             args.expected_account, args.secret_name) is None:
+            print("loader refused: returned ARN scope invalid", file=sys.stderr)
+            return 1
+        if doc.get("Name", "") != args.secret_name:
+            print("loader refused: secret name mismatch", file=sys.stderr)
+            return 1
         tags = {entry.get("Key"): entry.get("Value")
                 for entry in doc.get("Tags", []) if isinstance(entry, dict)}
         if tags.get("Project") != "LaunchCrew" or tags.get("Environment") != "demo":
             print("loader refused: secret tag mismatch", file=sys.stderr)
             return 1
+        effective_arn = args.secret_arn
     else:
+        detail = (described.stderr or "") + "\n" + (described.stdout or "")
+        if "ResourceNotFoundException" not in detail and "ResourceNotFound" not in detail:
+            print("loader refused: describe-secret ambiguous, zero mutations",
+                  file=sys.stderr)
+            return 1
         created = _run(["secretsmanager", "create-secret",
                         "--name", args.secret_name,
                         "--description", "LaunchCrew demo Meta product key, private",
@@ -79,16 +112,39 @@ def main(argv=None):
             print("loader create-secret failed; no value logged", file=sys.stderr)
             return 1
         try:
-            doc = json.loads(created.stdout or "{}")
+            created_doc = json.loads(created.stdout or "{}")
         except Exception:
             print("loader create-secret shape invalid", file=sys.stderr)
             return 1
-        if doc.get("ARN", "") != args.secret_arn and not args.secret_arn.startswith(
-                "arn:aws:secretsmanager:%s:%s:secret/%s-" % (
-                    args.expected_region, args.expected_account, args.secret_name)):
-            print("loader refused: created ARN mismatch", file=sys.stderr)
+        generated = created_doc.get("ARN", "")
+        if _parse_secret_arn(generated, args.expected_region,
+                             args.expected_account, args.secret_name) is None:
+            print("loader refused: created ARN invalid", file=sys.stderr)
             return 1
-    payload = json.dumps({"SecretId": args.secret_arn,
+        readback = _run(["secretsmanager", "describe-secret",
+                         "--secret-id", generated,
+                         "--region", args.expected_region])
+        if readback.returncode != 0:
+            print("loader refused: created ARN readback failed", file=sys.stderr)
+            return 1
+        try:
+            read_doc = json.loads(readback.stdout or "{}")
+        except Exception:
+            print("loader refused: created readback shape invalid", file=sys.stderr)
+            return 1
+        if read_doc.get("ARN", "") != generated:
+            print("loader refused: created ARN readback mismatch", file=sys.stderr)
+            return 1
+        if read_doc.get("Name", "") != args.secret_name:
+            print("loader refused: created name mismatch", file=sys.stderr)
+            return 1
+        tags = {entry.get("Key"): entry.get("Value")
+                for entry in read_doc.get("Tags", []) if isinstance(entry, dict)}
+        if tags.get("Project") != "LaunchCrew" or tags.get("Environment") != "demo":
+            print("loader refused: created tag mismatch", file=sys.stderr)
+            return 1
+        effective_arn = generated
+    payload = json.dumps({"SecretId": effective_arn,
                           "SecretString": json.dumps({"meta-api-key": key})})
     updated = _run(["secretsmanager", "put-secret-value",
                     "--cli-input-json", "file:///dev/stdin",
@@ -98,7 +154,7 @@ def main(argv=None):
         print("loader put-secret-value failed; no value logged", file=sys.stderr)
         return 1
     final = _run(["secretsmanager", "describe-secret",
-                  "--secret-id", args.secret_arn,
+                  "--secret-id", effective_arn,
                   "--region", args.expected_region])
     if final.returncode != 0:
         print("loader describe-secret readback failed", file=sys.stderr)
@@ -107,6 +163,17 @@ def main(argv=None):
         doc = json.loads(final.stdout or "{}")
     except Exception:
         print("loader describe-secret shape invalid", file=sys.stderr)
+        return 1
+    if doc.get("ARN", "") != effective_arn:
+        print("loader refused: final ARN mismatch", file=sys.stderr)
+        return 1
+    if doc.get("Name", "") != args.secret_name:
+        print("loader refused: final name mismatch", file=sys.stderr)
+        return 1
+    tags = {entry.get("Key"): entry.get("Value")
+            for entry in doc.get("Tags", []) if isinstance(entry, dict)}
+    if tags.get("Project") != "LaunchCrew" or tags.get("Environment") != "demo":
+        print("loader refused: final tag mismatch", file=sys.stderr)
         return 1
     print("Meta secret loaded: metadata only, no value printed")
     print("ARN: " + str(doc.get("ARN", "owned-secret")))

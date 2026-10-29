@@ -12,7 +12,7 @@ from urllib.request import Request
 import pytest
 
 from backend import sam as sam_module
-from backend.live_meta_proof import _validate_spark_receipt
+from backend.live_meta_proof import _check_sam_env, _reserve_sam_latch, _validate_spark_receipt
 from launchcrew import spark as spark_module
 
 
@@ -242,3 +242,110 @@ def test_synthetic_admission_invalid_expiry_terminal_budget_spent(client, monkey
         connection.execute(text("UPDATE sam_budget SET remaining_images=0 WHERE id='global'"))
     assert budget == 0
     assert row is not None and row['status'] == 'failed_terminal'
+
+
+def test_synthetic_sam_env_refuses_base_override(monkeypatch, tmp_path):
+    monkeypatch.setenv('META_API_KEY', 'offline-fixture')
+    monkeypatch.setenv('LAUNCHCREW_PHOTO_SAM_ENABLED', 'true')
+    monkeypatch.setenv('LAUNCHCREW_PHOTO_APPROVED_DIGESTS', 'abc123')
+    photo = tmp_path / 'photo.jpg'
+    photo.write_bytes(b'\xff\xd8\xffrest')
+    monkeypatch.setenv('LAUNCHCREW_PROOF_PHOTO_PATH', str(photo))
+    monkeypatch.setenv('META_API_BASE_URL', 'https://other.example/v1')
+    ok, reason = _check_sam_env()
+    assert ok is False
+    assert 'override refused' in reason
+    monkeypatch.setenv('META_API_BASE_URL', 'https://api.meta.ai/v1')
+    ok, _ = _check_sam_env()
+    assert ok is True
+    monkeypatch.delenv('META_API_BASE_URL', raising=False)
+    ok, _ = _check_sam_env()
+    assert ok is True
+
+
+def test_synthetic_latch_concurrent_single_reservation(tmp_path):
+    import concurrent.futures
+    import os
+    import subprocess
+    import sys
+    latch = tmp_path / 'concurrent-latch.json'
+    code = "from launchcrew.spark import init_proof_latch; init_proof_latch(r'''%s''')" % str(latch)
+
+    def one():
+        env = dict(os.environ)
+        env['PYTHONPYCACHEPREFIX'] = str(tmp_path / 'pycache')
+        return subprocess.run([sys.executable, '-c', code], capture_output=True, env=env)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        future_a = pool.submit(one)
+        future_b = pool.submit(one)
+        result_a = future_a.result(timeout=30)
+        result_b = future_b.result(timeout=30)
+    codes = sorted([result_a.returncode, result_b.returncode])
+    assert codes[0] == 0
+    assert codes[1] != 0
+    state = spark_module.read_proof_latch(latch)
+    assert state['attempts_used'] == 0
+    assert state['uncertain'] is False
+
+
+def test_synthetic_sam_latch_concurrent_single(tmp_path):
+    import concurrent.futures
+    import os
+    import subprocess
+    import sys
+    latch = tmp_path / 'sam-latch.json'
+    code = ("from backend.live_meta_proof import _reserve_sam_latch; "
+            "import sys; sys.exit(0 if _reserve_sam_latch(r'''%s''') else 1)") % str(latch)
+
+    def one():
+        env = dict(os.environ)
+        env['PYTHONPYCACHEPREFIX'] = str(tmp_path / 'pycache')
+        return subprocess.run([sys.executable, '-c', code], capture_output=True, env=env)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        future_a = pool.submit(one)
+        future_b = pool.submit(one)
+        result_a = future_a.result(timeout=30)
+        result_b = future_b.result(timeout=30)
+    codes = sorted([result_a.returncode, result_b.returncode])
+    assert codes[0] == 0
+    assert codes[1] != 0
+    assert latch.exists()
+
+
+def test_synthetic_proof_read_timeout_latches_no_followups(tmp_path):
+    latch = tmp_path / 'read-latch.json'
+    spark_module.init_proof_latch(latch)
+    request = _proof_request(_valid_body())
+    opens = {'count': 0}
+
+    class TimeoutRead:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self, *args, **kwargs):
+            raise TimeoutError('synthetic read timeout')
+
+        def __iter__(self):
+            raise TimeoutError('synthetic read timeout')
+
+    class FakeOpener:
+        def open(self, req, timeout=None):
+            opens['count'] += 1
+            return TimeoutRead()
+
+    with patch.object(spark_module, '_spark_opener', return_value=FakeOpener()):
+        response = spark_module.proof_urlopen(request, timeout=5, latch_path=latch)
+        with pytest.raises(TimeoutError):
+            with response:
+                response.read()
+        state = spark_module.read_proof_latch(latch)
+        assert state['attempts_used'] == 1
+        assert state['uncertain'] is True
+        with pytest.raises(spark_module.ProofLatchError):
+            spark_module.proof_urlopen(request, timeout=5, latch_path=latch)
+        assert opens['count'] == 1
