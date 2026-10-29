@@ -17,7 +17,7 @@
 - Plan and design only in this turn; no live SAM calls, no paid calls, no deploy, no credentials, no video, no final submission. Balance stays UNVERIFIED; SAM defaults OFF and global budget defaults 0.
 - Max 1 image / 1 MiB raw and at most 8 million decoded pixels per check over a single JSON base64 body; validate magic bytes plus actual PNG/JPEG static structure and EXIF-oriented dims via Pillow 13.0.0 (exact pin owned by Task 2); reject malformed, truncated, empty, animated, and decompression-bomb bytes before admission without changing approved raw bytes; never filename alone; no paths, no URLs, no second image, no multipart variant; no raw persistence or preview endpoint. Core geometry stays stdlib only with no custom JPEG decoder.
 - Labels only `detected | not_detected | possible_clipping | unknown`; never assert full-object visibility from a box; cut-off pixels are unrecoverable and crop only subsets existing pixels.
-- The ONLY paid bytes are the operator-verified byte identity of `DSC_3252_demo_1600.jpg` recorded in preflight evidence; no filename class, no general paid permission. Keyless or unconfigured callers get `method: "not_run"` with HTTP 200 and honest copy.
+- The ONLY paid bytes are the exact operator-verified byte identity recorded in private preflight evidence; no filename class, no general paid permission. Keyless or unconfigured callers get `method: "not_run"` with HTTP 200 and honest copy.
 - At most one Files plus at most one Responses per admitted check, Responses only if Files succeeded; no retries; terminal accepted/ambiguous/crashed never resent; in-flight duplicate returns pending, never a faked finished summary.
 - Server-controlled one-shot global budget, default 0; no client budget claim; no public budget reset or epoch choice; reject parallel different-image and stale-revision admissions BEFORE any HTTP.
 - Postgres state only via Alembic migration plus runtime CRUD roles; no implicit DDL. Private admission control metadata (operator-approved sha256 digest for exact-byte approval) lives only in the private admission row when exact-byte approval requires it; provider file IDs stay volatile in memory only and are never persisted. Receipts/exports/logs hold only the sanitized summary, so private control scope stays distinct from public receipt scope.
@@ -359,7 +359,7 @@ cd "$REPO_ROOT" && git add web/src/components/photo-check.tsx web/src/components
 ### Task 5: Live-gate proof (no fake completion)
 
 - [ ] Verify actual SAM pricing/balance/enforceable bound FIRST against existing credits; record the bound. Balance is UNVERIFIED until this step completes with authoritative evidence.
-- [ ] With operator approval: the single upload plus single SAM on the exact operator-verified bytes of `DSC_3252_demo_1600.jpg` iff the upload succeeds; capture sanitized summary only (`{label, reason, policy_version, actor, time}`).
+- [ ] With operator approval: the single upload plus single SAM on the exact operator-verified bytes recorded in private preflight evidence iff the upload succeeds; capture sanitized summary only (`{label, reason, policy_version, actor, time}`).
 - [ ] Deployed-photo plus recording proof as separate gates; any gate failure stays `unknown` and blocks approval/export, never marked complete by mock output. No milestone is substituted by mock success.
 
 ## Self-review (correctness, not mere coverage)

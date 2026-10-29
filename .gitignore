@@ -11,3 +11,4 @@ web/test-results/
 .pytest_cache/
 web/playwright-report/
 web/*.tsbuildinfo
+facts/demo_photos/

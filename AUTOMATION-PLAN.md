@@ -59,7 +59,10 @@ Recommend us-east-1 for coordinator confirmation. File receipts require a single
 
 ## AWS and DNS findings
 
-Coordinator verified Oct 27, supplied evidence, not re-queried in this run: AWS account 492767006483, user koru-admin, aws-cli 2.37.5 on summit-amd. Route53 hosted zones are empty in that account. Both the parent domain of launchcrew.summitsingh.com and korushield.com use Cloudflare nameservers walt.ns.cloudflare.com and fish.ns.cloudflare.com. The target launchcrew.summitsingh.com currently resolves to nothing according to that snapshot. Use Cloudflare, not Route53, for the deployment DNS record. The selected AWS endpoint must be reachable from that record with TLS. No other subdomain is authorized.
+Superseded. See docs/aws-approval-pack.md for the current public review scope.
+Only LaunchCrew-owned resources are in scope, with no account identifiers in
+public source. DNS for the demo hostname uses Cloudflare under a separate
+authorization, not Route53. No other subdomain is authorized.
 
 ## Public repository
 
