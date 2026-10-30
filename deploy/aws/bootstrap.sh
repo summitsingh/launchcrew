@@ -3500,6 +3500,69 @@ PYEOF
   echo "Verified image present with digest and owned task definition ref: $REPO_NAME:$IMAGE_TAG"
 }
 
+# Verify a historical image from an aged original task definition. Same owned
+# account, region, repository, explicit tag, no latest, digest present with no
+# failures as verify_image, but the URI must be digest-pinned (tag@sha256:...)
+# and is never required to equal the current CLI image. The original
+# journal/taskdef/source binding is proven separately via the exact original
+# ARN plus config digest; this proves only the image itself is owned immutable.
+# Wrong repo, unpinned, moved digest, missing digest, or ECR failures refuse.
+# Returns 0 on success, 1 on failure with TASKDEF_OPERATION_MISMATCH:IMAGE
+# text for typed recovery callers. Never prints the full URI.
+verify_historical_image() {
+  HIST_IMAGE="$1"
+  HIST_EXPECTED_REPO="$2"
+  HIST_LABEL="$3"
+  case "$HIST_IMAGE" in
+    *REPLACE_WITH*|*PLACEHOLDER*|"") echo "refused: original $HIST_LABEL operation proof is TASKDEF_OPERATION_MISMATCH:IMAGE_HISTORICAL_PLACEHOLDER, historical image is placeholder or missing, no recovery claimed." >&2; return 1 ;;
+  esac
+  case "$HIST_IMAGE" in
+    *@sha256:*) HIST_PINNED="sha256:$(printf '%s' "$HIST_IMAGE" | sed 's/^.*@sha256://')"
+      HIST_BASE="$(printf '%s' "$HIST_IMAGE" | cut -d@ -f1)" ;;
+    *) echo "refused: original $HIST_LABEL operation proof is TASKDEF_OPERATION_MISMATCH:IMAGE_HISTORICAL_UNPINNED, tag-only historical image refused, no recovery claimed." >&2; return 1 ;;
+  esac
+  HIST_PINNED="$(printf '%s' "$HIST_PINNED" | tr -d '[:space:]')"
+  HIST_BASE="$(printf '%s' "$HIST_BASE" | tr -d '[:space:]')"
+  [ -n "$HIST_PINNED" ] && [ "$HIST_PINNED" != "sha256:" ] && [ "$HIST_PINNED" != "None" ] || { echo "refused: original $HIST_LABEL operation proof is TASKDEF_OPERATION_MISMATCH:IMAGE_HISTORICAL_UNPINNED, historical pinned digest missing, no recovery claimed." >&2; return 1; }
+  case "$HIST_BASE" in
+    *:* ) ;;
+    *) echo "refused: original $HIST_LABEL operation proof is TASKDEF_OPERATION_MISMATCH:IMAGE_HISTORICAL_TAG, historical image has no explicit tag, no recovery claimed." >&2; return 1 ;;
+  esac
+  case "$HIST_BASE" in
+    *:latest) echo "refused: original $HIST_LABEL operation proof is TASKDEF_OPERATION_MISMATCH:IMAGE_HISTORICAL_LATEST, historical image uses floating latest tag, no recovery claimed." >&2; return 1 ;;
+  esac
+  HIST_REPO_FULL="$(printf '%s' "$HIST_BASE" | cut -d/ -f2-)"
+  HIST_REPO_NAME="$(printf '%s' "$HIST_REPO_FULL" | cut -d: -f1)"
+  HIST_IMAGE_TAG="$(printf '%s' "$HIST_REPO_FULL" | cut -s -d: -f2)"
+  [ -n "$HIST_IMAGE_TAG" ] || { echo "refused: original $HIST_LABEL operation proof is TASKDEF_OPERATION_MISMATCH:IMAGE_HISTORICAL_TAG, historical image has no explicit tag, no recovery claimed." >&2; return 1; }
+  [ "$HIST_REPO_NAME" = "$HIST_EXPECTED_REPO" ] || { echo "refused: original $HIST_LABEL operation proof is TASKDEF_OPERATION_MISMATCH:IMAGE_HISTORICAL_REPO, historical repository $HIST_REPO_NAME is not owned $HIST_EXPECTED_REPO, no recovery claimed." >&2; return 1; }
+  HIST_IMAGE_ACCOUNT="$(printf '%s' "$HIST_BASE" | cut -d. -f1)"
+  HIST_IMAGE_REGION="$(printf '%s' "$HIST_BASE" | cut -d. -f4)"
+  [ "$HIST_IMAGE_ACCOUNT" = "$EXPECTED_ACCOUNT" ] || { echo "refused: original $HIST_LABEL operation proof is TASKDEF_OPERATION_MISMATCH:IMAGE_HISTORICAL_ACCOUNT, historical image account does not match expected, no recovery claimed." >&2; return 1; }
+  [ "$HIST_IMAGE_REGION" = "$EXPECTED_REGION" ] || { echo "refused: original $HIST_LABEL operation proof is TASKDEF_OPERATION_MISMATCH:IMAGE_HISTORICAL_REGION, historical image region does not match expected, no recovery claimed." >&2; return 1; }
+  if ! HIST_DIGEST="$("$AWS_BIN" ecr batch-get-image --repository-name "$HIST_REPO_NAME" --image-ids "imageTag=$HIST_IMAGE_TAG" --region "$EXPECTED_REGION" --query "images[0].imageId.imageDigest" --output text 2>"$TMP_ERR")"; then
+    echo "refused: original $HIST_LABEL operation proof is TASKDEF_OPERATION_MISMATCH:IMAGE_HISTORICAL_MISSING, historical image $HIST_REPO_NAME:$HIST_IMAGE_TAG not found in ECR, no recovery claimed." >&2
+    return 1
+  fi
+  HIST_DIGEST="$(printf '%s' "$HIST_DIGEST" | tr -d '[:space:]')"
+  if [ -z "$HIST_DIGEST" ] || [ "$HIST_DIGEST" = "None" ]; then
+    echo "refused: original $HIST_LABEL operation proof is TASKDEF_OPERATION_MISMATCH:IMAGE_HISTORICAL_DIGEST, historical image $HIST_REPO_NAME:$HIST_IMAGE_TAG has no digest in ECR, no recovery claimed." >&2
+    return 1
+  fi
+  if [ "$HIST_DIGEST" != "$HIST_PINNED" ]; then
+    echo "refused: original $HIST_LABEL operation proof is TASKDEF_OPERATION_MISMATCH:IMAGE_HISTORICAL_MOVED, historical pinned digest does not match ECR digest, no recovery claimed." >&2
+    return 1
+  fi
+  if ! HIST_FAILURES="$("$AWS_BIN" ecr batch-get-image --repository-name "$HIST_REPO_NAME" --image-ids "imageTag=$HIST_IMAGE_TAG" --region "$EXPECTED_REGION" --query "length(failures)" --output text 2>"$TMP_ERR")"; then
+    echo "refused: original $HIST_LABEL operation proof is TASKDEF_OPERATION_MISMATCH:IMAGE_HISTORICAL_FAILURES, historical image $HIST_REPO_NAME:$HIST_IMAGE_TAG failure check failed, no recovery claimed." >&2
+    return 1
+  fi
+  HIST_FAILURES="$(printf '%s' "$HIST_FAILURES" | tr -d '[:space:]')"
+  [ "$HIST_FAILURES" = "0" ] || { echo "refused: original $HIST_LABEL operation proof is TASKDEF_OPERATION_MISMATCH:IMAGE_HISTORICAL_FAILURES, historical image $HIST_REPO_NAME:$HIST_IMAGE_TAG reports ECR failures, no recovery claimed." >&2; return 1; }
+  echo "Verified historical image present with digest: $HIST_REPO_NAME:$HIST_IMAGE_TAG"
+  return 0
+}
+
 # API task definition binding with Google shape awareness. Reads EnableGoogleAuth
 # from the parameters file being deployed. True proves the five secret Google
 # shape with exact owned Google client ID plus secret refs. False proves the
@@ -7778,25 +7841,29 @@ attest_aged_typed_recovery() {
       RECOVERY_EXPECT_TASK_L="SdkMaterialTaskRole"
       RECOVERY_EXPECT_C="sdk-material"
       RECOVERY_EXPECT_CMD="--verify-material"
-      RECOVERY_EXPECT_EP="1" ;;
+      RECOVERY_EXPECT_EP="1"
+      RECOVERY_EXPECT_IMAGE="${BOOTSTRAP_IMAGE:-}" ;;
     BootstrapTaskDefinition)
       RECOVERY_EXPECT_EXEC_L="BootstrapExecutionRole"
       RECOVERY_EXPECT_TASK_L="BootstrapTaskRole"
       RECOVERY_EXPECT_C="bootstrap-db-roles"
-      RECOVERY_EXPECT_CMD=""
-      RECOVERY_EXPECT_EP="" ;;
+      RECOVERY_EXPECT_CMD="ABSENT"
+      RECOVERY_EXPECT_EP="ABSENT"
+      RECOVERY_EXPECT_IMAGE="${BOOTSTRAP_IMAGE:-}" ;;
     MigrationTaskDefinition)
       RECOVERY_EXPECT_EXEC_L="MigrationExecutionRole"
       RECOVERY_EXPECT_TASK_L="MigrationTaskRole"
       RECOVERY_EXPECT_C="migration"
-      RECOVERY_EXPECT_CMD=""
-      RECOVERY_EXPECT_EP="" ;;
+      RECOVERY_EXPECT_CMD="ABSENT"
+      RECOVERY_EXPECT_EP="ABSENT"
+      RECOVERY_EXPECT_IMAGE="${MIGRATION_IMAGE:-}" ;;
     VerifyTaskDefinition)
       RECOVERY_EXPECT_EXEC_L="VerifyExecutionRole"
       RECOVERY_EXPECT_TASK_L="VerifyTaskRole"
       RECOVERY_EXPECT_C="bootstrap-db-roles"
       RECOVERY_EXPECT_CMD="--verify"
-      RECOVERY_EXPECT_EP="" ;;
+      RECOVERY_EXPECT_EP="ABSENT"
+      RECOVERY_EXPECT_IMAGE="${BOOTSTRAP_IMAGE:-}" ;;
     *) rm -f "$RECOVERY_ORIG_DEF_JSON"
       echo "refused: original $RECOVERY_TYPED_LABEL logical $RECOVERY_TYPED_LOGICAL unknown, no recovery claimed." >&2
       phase_failed "$RECOVERY_FAIL_PHASE" ;;
@@ -7813,9 +7880,63 @@ attest_aged_typed_recovery() {
   fi
   RECOVERY_EXPECT_EXEC="$(printf '%s' "$RECOVERY_EXPECT_EXEC" | tr -d '[:space:]')"
   RECOVERY_EXPECT_TASK_ROLE="$(printf '%s' "$RECOVERY_EXPECT_TASK_ROLE" | tr -d '[:space:]')"
-  RECOVERY_ORIG_OP="$(python3 - "$RECOVERY_ORIG_DEF_JSON" "$RECOVERY_EXPECT_EXEC" "$RECOVERY_EXPECT_TASK_ROLE" "$RECOVERY_EXPECT_C" "$RECOVERY_EXPECT_CMD" "$RECOVERY_EXPECT_EP" 2>/dev/null <<'PYEOF'
+  RECOVERY_EXPECT_IMAGE="$(printf '%s' "${RECOVERY_EXPECT_IMAGE:-}" | tr -d '[:space:]')"
+  if [ -z "$RECOVERY_EXPECT_IMAGE" ] || [ "$RECOVERY_EXPECT_IMAGE" = "None" ]; then
+    rm -f "$RECOVERY_ORIG_DEF_JSON"
+    echo "refused: original $RECOVERY_TYPED_LABEL expected image missing, no recovery claimed." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  case "$RECOVERY_TYPED_LOGICAL" in
+    BootstrapTaskDefinition)
+      [ -n "${MASTER_SECRET_ARN:-}" ] && [ -n "${RUNTIME_SECRET_ARN:-}" ] && [ -n "${MIGRATION_SECRET_ARN:-}" ] || {
+        rm -f "$RECOVERY_ORIG_DEF_JSON"
+        echo "refused: original $RECOVERY_TYPED_LABEL needs exact master, runtime and migration secret ARNs for operation proof, no recovery claimed." >&2
+        phase_failed "$RECOVERY_FAIL_PHASE"
+      } ;;
+    MigrationTaskDefinition)
+      [ -n "${MIGRATION_SECRET_ARN:-}" ] || {
+        rm -f "$RECOVERY_ORIG_DEF_JSON"
+        echo "refused: original $RECOVERY_TYPED_LABEL needs exact migration secret ARN for operation proof, no recovery claimed." >&2
+        phase_failed "$RECOVERY_FAIL_PHASE"
+      } ;;
+    VerifyTaskDefinition)
+      [ -n "${RUNTIME_SECRET_ARN:-}" ] || {
+        rm -f "$RECOVERY_ORIG_DEF_JSON"
+        echo "refused: original $RECOVERY_TYPED_LABEL needs exact runtime secret ARN for operation proof, no recovery claimed." >&2
+        phase_failed "$RECOVERY_FAIL_PHASE"
+      } ;;
+  esac
+  RECOVERY_ACTUAL_IMAGE="$(python3 - "$RECOVERY_ORIG_DEF_JSON" "$RECOVERY_EXPECT_C" 2>/dev/null <<'PYEOF'
 import json, sys
-doc_file, want_exec, want_task, want_c, want_cmd, want_ep = sys.argv[1:7]
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+taskdef = doc.get("taskDefinition", doc)
+for container in taskdef.get("containerDefinitions", []) or []:
+    if (container.get("name", "") or "") == sys.argv[2]:
+        print(container.get("image", "") or "MISSING_IMAGE")
+        sys.exit(0)
+print("MISSING_CONTAINER")
+PYEOF
+)" || RECOVERY_ACTUAL_IMAGE="UNREADABLE"
+  RECOVERY_ACTUAL_IMAGE="$(printf '%s' "$RECOVERY_ACTUAL_IMAGE" | tr -d '[:space:]')"
+  if [ -n "$RECOVERY_ACTUAL_IMAGE" ] && [ "$RECOVERY_ACTUAL_IMAGE" != "MISSING_CONTAINER" ] && [ "$RECOVERY_ACTUAL_IMAGE" != "MISSING_IMAGE" ] && [ "$RECOVERY_ACTUAL_IMAGE" != "UNREADABLE" ] && [ "$RECOVERY_ACTUAL_IMAGE" != "None" ] && [ "$RECOVERY_ACTUAL_IMAGE" != "$RECOVERY_EXPECT_IMAGE" ]; then
+    case "$RECOVERY_TYPED_LOGICAL" in
+      MigrationTaskDefinition) RECOVERY_HIST_REPO="launchcrew-migration" ;;
+      *) RECOVERY_HIST_REPO="launchcrew-bootstrap" ;;
+    esac
+    if ! verify_historical_image "$RECOVERY_ACTUAL_IMAGE" "$RECOVERY_HIST_REPO" "$RECOVERY_TYPED_LABEL"; then
+      rm -f "$RECOVERY_ORIG_DEF_JSON"
+      phase_failed "$RECOVERY_FAIL_PHASE"
+    fi
+    RECOVERY_EXPECT_IMAGE="$RECOVERY_ACTUAL_IMAGE"
+    echo "Verified original $RECOVERY_TYPED_LABEL historical image differs from current CLI but is owned pinned with digest, operation proof continues."
+  fi
+  RECOVERY_ORIG_OP="$(python3 - "$RECOVERY_ORIG_DEF_JSON" "$RECOVERY_EXPECT_EXEC" "$RECOVERY_EXPECT_TASK_ROLE" "$RECOVERY_EXPECT_C" "$RECOVERY_EXPECT_CMD" "$RECOVERY_EXPECT_EP" "$RECOVERY_EXPECT_IMAGE" "${RUNTIME_SECRET_ARN:-}" "${MIGRATION_SECRET_ARN:-}" "${MASTER_SECRET_ARN:-}" "$RECOVERY_TYPED_LOGICAL" 2>/dev/null <<'PYEOF'
+import json, sys
+(doc_file, want_exec, want_task, want_c, want_cmd, want_ep,
+ want_image, want_rt, want_mg, want_master, want_logical) = sys.argv[1:12]
 try:
     doc = json.load(open(doc_file))
 except Exception:
@@ -7827,23 +7948,120 @@ if (taskdef.get("executionRoleArn", "") or "") != want_exec:
 if (taskdef.get("taskRoleArn", "") or "") != want_task:
     print("TASKDEF_OPERATION_MISMATCH:TASK_ROLE")
     sys.exit(0)
-containers = taskdef.get("containerDefinitions", []) or []
-target = None
-for container in containers:
-    if (container.get("name", "") or "") == want_c and container.get("essential", True):
-        target = container
-        break
-if target is None:
+containers = taskdef.get("containerDefinitions", None)
+if not isinstance(containers, list) or len(containers) != 1:
+    print("TASKDEF_OPERATION_MISMATCH:CONTAINER_COUNT")
+    sys.exit(0)
+target = containers[0]
+if not isinstance(target, dict):
     print("TASKDEF_OPERATION_MISMATCH:MISSING_CONTAINER")
+    sys.exit(0)
+if (target.get("name", "") or "") != want_c or not target.get("essential", True):
+    print("TASKDEF_OPERATION_MISMATCH:MISSING_CONTAINER")
+    sys.exit(0)
+if not want_image or want_image == "None":
+    print("TASKDEF_OPERATION_MISMATCH:IMAGE_MISSING")
+    sys.exit(0)
+if (target.get("image", "") or "") != want_image:
+    print("TASKDEF_OPERATION_MISMATCH:IMAGE")
     sys.exit(0)
 if want_ep == "1":
     if (target.get("entryPoint", None) or []) != ["/opt/venv/bin/python", "/app/scripts/populate_prereqs.py"]:
         print("TASKDEF_OPERATION_MISMATCH:ENTRYPOINT")
         sys.exit(0)
-if want_cmd:
+elif want_ep == "ABSENT":
+    _ep = target.get("entryPoint", None)
+    if _ep not in (None, []):
+        print("TASKDEF_OPERATION_MISMATCH:ENTRYPOINT")
+        sys.exit(0)
+else:
+    print("TASKDEF_OPERATION_MISMATCH:ENTRYPOINT_UNKNOWN")
+    sys.exit(0)
+if want_cmd == "ABSENT":
+    _cmd = target.get("command", None)
+    if _cmd not in (None, []):
+        print("TASKDEF_OPERATION_MISMATCH:COMMAND")
+        sys.exit(0)
+elif want_cmd:
     if (target.get("command", None) or []) != [want_cmd]:
         print("TASKDEF_OPERATION_MISMATCH:COMMAND")
         sys.exit(0)
+else:
+    print("TASKDEF_OPERATION_MISMATCH:COMMAND_UNKNOWN")
+    sys.exit(0)
+actual = {}
+for secret in target.get("secrets", []) or []:
+    if not isinstance(secret, dict):
+        print("TASKDEF_OPERATION_MISMATCH:SECRET_MALFORMED")
+        sys.exit(0)
+    _n = secret.get("name", "") or ""
+    _v = secret.get("valueFrom", "") or ""
+    if not _n or not _v:
+        print("TASKDEF_OPERATION_MISMATCH:SECRET_MALFORMED")
+        sys.exit(0)
+    if _n in actual:
+        print("TASKDEF_OPERATION_MISMATCH:SECRET_DUPLICATE")
+        sys.exit(0)
+    actual[_n] = _v
+if want_logical == "SdkMaterialTaskDefinition":
+    if actual:
+        print("TASKDEF_OPERATION_MISMATCH:UNEXPECTED_SECRET")
+        sys.exit(0)
+elif want_logical == "BootstrapTaskDefinition":
+    if not want_rt or not want_mg or not want_master:
+        print("TASKDEF_OPERATION_MISMATCH:SECRET_EXPECTED_MISSING")
+        sys.exit(0)
+    want = {
+        "MASTER_DB_PASSWORD": "%s:password::" % want_master,
+        "RUNTIME_DB_URL": "%s:database-url::" % want_rt,
+        "MIGRATION_DB_URL": "%s:database-url::" % want_mg,
+    }
+    for key in sorted(want):
+        if key not in actual:
+            print("TASKDEF_OPERATION_MISMATCH:MISSING_SECRET")
+            sys.exit(0)
+        if actual[key] != want[key]:
+            print("TASKDEF_OPERATION_MISMATCH:SECRET")
+            sys.exit(0)
+    for key in sorted(actual):
+        if key not in want:
+            print("TASKDEF_OPERATION_MISMATCH:UNEXPECTED_SECRET")
+            sys.exit(0)
+elif want_logical == "MigrationTaskDefinition":
+    if not want_mg:
+        print("TASKDEF_OPERATION_MISMATCH:SECRET_EXPECTED_MISSING")
+        sys.exit(0)
+    want = {"DATABASE_URL": "%s:database-url::" % want_mg}
+    for key in sorted(want):
+        if key not in actual:
+            print("TASKDEF_OPERATION_MISMATCH:MISSING_SECRET")
+            sys.exit(0)
+        if actual[key] != want[key]:
+            print("TASKDEF_OPERATION_MISMATCH:SECRET")
+            sys.exit(0)
+    for key in sorted(actual):
+        if key not in want:
+            print("TASKDEF_OPERATION_MISMATCH:UNEXPECTED_SECRET")
+            sys.exit(0)
+elif want_logical == "VerifyTaskDefinition":
+    if not want_rt:
+        print("TASKDEF_OPERATION_MISMATCH:SECRET_EXPECTED_MISSING")
+        sys.exit(0)
+    want = {"RUNTIME_DB_URL": "%s:database-url::" % want_rt}
+    for key in sorted(want):
+        if key not in actual:
+            print("TASKDEF_OPERATION_MISMATCH:MISSING_SECRET")
+            sys.exit(0)
+        if actual[key] != want[key]:
+            print("TASKDEF_OPERATION_MISMATCH:SECRET")
+            sys.exit(0)
+    for key in sorted(actual):
+        if key not in want:
+            print("TASKDEF_OPERATION_MISMATCH:UNEXPECTED_SECRET")
+            sys.exit(0)
+else:
+    print("TASKDEF_OPERATION_MISMATCH:LOGICAL_UNKNOWN")
+    sys.exit(0)
 print("OK")
 PYEOF
 )" || RECOVERY_ORIG_OP="UNREADABLE"
@@ -9343,6 +9561,7 @@ PYEOF
         LEGACY_EXPECT_CONTAINER="sdk-init"
         LEGACY_EXPECT_COMMAND="--populate"
         LEGACY_EXPECT_ENTRYPOINT="1"
+        LEGACY_EXPECT_IMAGE="${BOOTSTRAP_IMAGE:-}"
         ;;
       SdkMaterialTaskDefinition)
         LEGACY_EXPECT_EXEC="SdkMaterialExecutionRole"
@@ -9350,27 +9569,31 @@ PYEOF
         LEGACY_EXPECT_CONTAINER="sdk-material"
         LEGACY_EXPECT_COMMAND="--verify-material"
         LEGACY_EXPECT_ENTRYPOINT="1"
+        LEGACY_EXPECT_IMAGE="${BOOTSTRAP_IMAGE:-}"
         ;;
       MigrationTaskDefinition)
         LEGACY_EXPECT_EXEC="MigrationExecutionRole"
         LEGACY_EXPECT_TASK="MigrationTaskRole"
         LEGACY_EXPECT_CONTAINER="migration"
-        LEGACY_EXPECT_COMMAND=""
-        LEGACY_EXPECT_ENTRYPOINT=""
+        LEGACY_EXPECT_COMMAND="ABSENT"
+        LEGACY_EXPECT_ENTRYPOINT="ABSENT"
+        LEGACY_EXPECT_IMAGE="${MIGRATION_IMAGE:-}"
         ;;
       BootstrapTaskDefinition)
         LEGACY_EXPECT_EXEC="BootstrapExecutionRole"
         LEGACY_EXPECT_TASK="BootstrapTaskRole"
         LEGACY_EXPECT_CONTAINER="bootstrap-db-roles"
-        LEGACY_EXPECT_COMMAND=""
-        LEGACY_EXPECT_ENTRYPOINT=""
+        LEGACY_EXPECT_COMMAND="ABSENT"
+        LEGACY_EXPECT_ENTRYPOINT="ABSENT"
+        LEGACY_EXPECT_IMAGE="${BOOTSTRAP_IMAGE:-}"
         ;;
       VerifyTaskDefinition)
         LEGACY_EXPECT_EXEC="VerifyExecutionRole"
         LEGACY_EXPECT_TASK="VerifyTaskRole"
         LEGACY_EXPECT_CONTAINER="bootstrap-db-roles"
         LEGACY_EXPECT_COMMAND="--verify"
-        LEGACY_EXPECT_ENTRYPOINT=""
+        LEGACY_EXPECT_ENTRYPOINT="ABSENT"
+        LEGACY_EXPECT_IMAGE="${BOOTSTRAP_IMAGE:-}"
         ;;
       *)
         rm -f "$LEGACY_DESC" "$LEGACY_TASKDEF_JSON"
@@ -9390,9 +9613,63 @@ PYEOF
     fi
     LEGACY_EXPECT_EXEC_ARN="$(printf '%s' "$LEGACY_EXPECT_EXEC_ARN" | tr -d '[:space:]')"
     LEGACY_EXPECT_TASK_ARN="$(printf '%s' "$LEGACY_EXPECT_TASK_ARN" | tr -d '[:space:]')"
-    LEGACY_OPERATION="$(python3 - "$LEGACY_TASKDEF_JSON" "$LEGACY_EXPECT_CONTAINER" "$LEGACY_EXPECT_COMMAND" "$LEGACY_EXPECT_ENTRYPOINT" "$LEGACY_EXPECT_EXEC_ARN" "$LEGACY_EXPECT_TASK_ARN" 2>/dev/null <<'PYEOF'
+    LEGACY_EXPECT_IMAGE="$(printf '%s' "${LEGACY_EXPECT_IMAGE:-}" | tr -d '[:space:]')"
+    if [ -z "$LEGACY_EXPECT_IMAGE" ] || [ "$LEGACY_EXPECT_IMAGE" = "None" ]; then
+      rm -f "$LEGACY_DESC" "$LEGACY_TASKDEF_JSON"
+      echo "refused: $TASK_LABEL legacy predecessor expected image missing, no new $RELEASE_GEN launch. Inspect $LEGACY_ACTIVE_FILE." >&2
+      phase_failed "$TASK_PHASE"
+    fi
+    case "$TASKDEF_LOGICAL" in
+      BootstrapTaskDefinition)
+        [ -n "${MASTER_SECRET_ARN:-}" ] && [ -n "${RUNTIME_SECRET_ARN:-}" ] && [ -n "${MIGRATION_SECRET_ARN:-}" ] || {
+          rm -f "$LEGACY_DESC" "$LEGACY_TASKDEF_JSON"
+          echo "refused: $TASK_LABEL legacy predecessor needs exact master, runtime and migration secret ARNs for operation proof, no new $RELEASE_GEN launch. Inspect $LEGACY_ACTIVE_FILE." >&2
+          phase_failed "$TASK_PHASE"
+        } ;;
+      MigrationTaskDefinition)
+        [ -n "${MIGRATION_SECRET_ARN:-}" ] || {
+          rm -f "$LEGACY_DESC" "$LEGACY_TASKDEF_JSON"
+          echo "refused: $TASK_LABEL legacy predecessor needs exact migration secret ARN for operation proof, no new $RELEASE_GEN launch. Inspect $LEGACY_ACTIVE_FILE." >&2
+          phase_failed "$TASK_PHASE"
+        } ;;
+      VerifyTaskDefinition)
+        [ -n "${RUNTIME_SECRET_ARN:-}" ] || {
+          rm -f "$LEGACY_DESC" "$LEGACY_TASKDEF_JSON"
+          echo "refused: $TASK_LABEL legacy predecessor needs exact runtime secret ARN for operation proof, no new $RELEASE_GEN launch. Inspect $LEGACY_ACTIVE_FILE." >&2
+          phase_failed "$TASK_PHASE"
+        } ;;
+    esac
+    LEGACY_ACTUAL_IMAGE="$(python3 - "$LEGACY_TASKDEF_JSON" "$LEGACY_EXPECT_CONTAINER" 2>/dev/null <<'PYEOF'
 import json, sys
-(doc_file, want_container, want_command, want_entry, want_exec, want_task) = sys.argv[1:7]
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+taskdef = doc.get("taskDefinition", doc)
+for container in taskdef.get("containerDefinitions", []) or []:
+    if (container.get("name", "") or "") == sys.argv[2]:
+        print(container.get("image", "") or "MISSING_IMAGE")
+        sys.exit(0)
+print("MISSING_CONTAINER")
+PYEOF
+)" || LEGACY_ACTUAL_IMAGE="UNREADABLE"
+    LEGACY_ACTUAL_IMAGE="$(printf '%s' "$LEGACY_ACTUAL_IMAGE" | tr -d '[:space:]')"
+    if [ -n "$LEGACY_ACTUAL_IMAGE" ] && [ "$LEGACY_ACTUAL_IMAGE" != "MISSING_CONTAINER" ] && [ "$LEGACY_ACTUAL_IMAGE" != "MISSING_IMAGE" ] && [ "$LEGACY_ACTUAL_IMAGE" != "UNREADABLE" ] && [ "$LEGACY_ACTUAL_IMAGE" != "None" ] && [ "$LEGACY_ACTUAL_IMAGE" != "$LEGACY_EXPECT_IMAGE" ]; then
+      case "$TASKDEF_LOGICAL" in
+        MigrationTaskDefinition) LEGACY_HIST_REPO="launchcrew-migration" ;;
+        *) LEGACY_HIST_REPO="launchcrew-bootstrap" ;;
+      esac
+      if ! verify_historical_image "$LEGACY_ACTUAL_IMAGE" "$LEGACY_HIST_REPO" "$TASK_LABEL"; then
+        rm -f "$LEGACY_DESC" "$LEGACY_TASKDEF_JSON"
+        phase_failed "$TASK_PHASE"
+      fi
+      LEGACY_EXPECT_IMAGE="$LEGACY_ACTUAL_IMAGE"
+      echo "Verified legacy $TASK_LABEL historical image differs from current CLI but is owned pinned with digest, operation proof continues."
+    fi
+    LEGACY_OPERATION="$(python3 - "$LEGACY_TASKDEF_JSON" "$LEGACY_EXPECT_CONTAINER" "$LEGACY_EXPECT_COMMAND" "$LEGACY_EXPECT_ENTRYPOINT" "$LEGACY_EXPECT_EXEC_ARN" "$LEGACY_EXPECT_TASK_ARN" "$LEGACY_EXPECT_IMAGE" "${RUNTIME_SECRET_ARN:-}" "${MIGRATION_SECRET_ARN:-}" "${MASTER_SECRET_ARN:-}" "$TASKDEF_LOGICAL" 2>/dev/null <<'PYEOF'
+import json, sys
+(doc_file, want_container, want_command, want_entry, want_exec, want_task,
+ want_image, want_rt, want_mg, want_master, want_logical) = sys.argv[1:12]
 try:
     doc = json.load(open(doc_file))
 except Exception:
@@ -9404,23 +9681,120 @@ if (taskdef.get("executionRoleArn", "") or "") != want_exec:
 if (taskdef.get("taskRoleArn", "") or "") != want_task:
     print("TASKDEF_OPERATION_MISMATCH:TASK_ROLE")
     sys.exit(0)
-containers = taskdef.get("containerDefinitions", []) or []
-target = None
-for container in containers:
-    if (container.get("name", "") or "") == want_container and container.get("essential", True):
-        target = container
-        break
-if target is None:
+containers = taskdef.get("containerDefinitions", None)
+if not isinstance(containers, list) or len(containers) != 1:
+    print("TASKDEF_OPERATION_MISMATCH:CONTAINER_COUNT")
+    sys.exit(0)
+target = containers[0]
+if not isinstance(target, dict):
     print("TASKDEF_OPERATION_MISMATCH:MISSING_CONTAINER")
+    sys.exit(0)
+if (target.get("name", "") or "") != want_container or not target.get("essential", True):
+    print("TASKDEF_OPERATION_MISMATCH:MISSING_CONTAINER")
+    sys.exit(0)
+if not want_image or want_image == "None":
+    print("TASKDEF_OPERATION_MISMATCH:IMAGE_MISSING")
+    sys.exit(0)
+if (target.get("image", "") or "") != want_image:
+    print("TASKDEF_OPERATION_MISMATCH:IMAGE")
     sys.exit(0)
 if want_entry == "1":
     if (target.get("entryPoint", None) or []) != ["/opt/venv/bin/python", "/app/scripts/populate_prereqs.py"]:
         print("TASKDEF_OPERATION_MISMATCH:ENTRYPOINT")
         sys.exit(0)
-if want_command:
+elif want_entry == "ABSENT":
+    _ep = target.get("entryPoint", None)
+    if _ep not in (None, []):
+        print("TASKDEF_OPERATION_MISMATCH:ENTRYPOINT")
+        sys.exit(0)
+else:
+    print("TASKDEF_OPERATION_MISMATCH:ENTRYPOINT_UNKNOWN")
+    sys.exit(0)
+if want_command == "ABSENT":
+    _cmd = target.get("command", None)
+    if _cmd not in (None, []):
+        print("TASKDEF_OPERATION_MISMATCH:COMMAND")
+        sys.exit(0)
+elif want_command:
     if (target.get("command", None) or []) != [want_command]:
         print("TASKDEF_OPERATION_MISMATCH:COMMAND")
         sys.exit(0)
+else:
+    print("TASKDEF_OPERATION_MISMATCH:COMMAND_UNKNOWN")
+    sys.exit(0)
+actual = {}
+for secret in target.get("secrets", []) or []:
+    if not isinstance(secret, dict):
+        print("TASKDEF_OPERATION_MISMATCH:SECRET_MALFORMED")
+        sys.exit(0)
+    _n = secret.get("name", "") or ""
+    _v = secret.get("valueFrom", "") or ""
+    if not _n or not _v:
+        print("TASKDEF_OPERATION_MISMATCH:SECRET_MALFORMED")
+        sys.exit(0)
+    if _n in actual:
+        print("TASKDEF_OPERATION_MISMATCH:SECRET_DUPLICATE")
+        sys.exit(0)
+    actual[_n] = _v
+if want_logical in ("SdkInitTaskDefinition", "SdkMaterialTaskDefinition"):
+    if actual:
+        print("TASKDEF_OPERATION_MISMATCH:UNEXPECTED_SECRET")
+        sys.exit(0)
+elif want_logical == "BootstrapTaskDefinition":
+    if not want_rt or not want_mg or not want_master:
+        print("TASKDEF_OPERATION_MISMATCH:SECRET_EXPECTED_MISSING")
+        sys.exit(0)
+    want = {
+        "MASTER_DB_PASSWORD": "%s:password::" % want_master,
+        "RUNTIME_DB_URL": "%s:database-url::" % want_rt,
+        "MIGRATION_DB_URL": "%s:database-url::" % want_mg,
+    }
+    for key in sorted(want):
+        if key not in actual:
+            print("TASKDEF_OPERATION_MISMATCH:MISSING_SECRET")
+            sys.exit(0)
+        if actual[key] != want[key]:
+            print("TASKDEF_OPERATION_MISMATCH:SECRET")
+            sys.exit(0)
+    for key in sorted(actual):
+        if key not in want:
+            print("TASKDEF_OPERATION_MISMATCH:UNEXPECTED_SECRET")
+            sys.exit(0)
+elif want_logical == "MigrationTaskDefinition":
+    if not want_mg:
+        print("TASKDEF_OPERATION_MISMATCH:SECRET_EXPECTED_MISSING")
+        sys.exit(0)
+    want = {"DATABASE_URL": "%s:database-url::" % want_mg}
+    for key in sorted(want):
+        if key not in actual:
+            print("TASKDEF_OPERATION_MISMATCH:MISSING_SECRET")
+            sys.exit(0)
+        if actual[key] != want[key]:
+            print("TASKDEF_OPERATION_MISMATCH:SECRET")
+            sys.exit(0)
+    for key in sorted(actual):
+        if key not in want:
+            print("TASKDEF_OPERATION_MISMATCH:UNEXPECTED_SECRET")
+            sys.exit(0)
+elif want_logical == "VerifyTaskDefinition":
+    if not want_rt:
+        print("TASKDEF_OPERATION_MISMATCH:SECRET_EXPECTED_MISSING")
+        sys.exit(0)
+    want = {"RUNTIME_DB_URL": "%s:database-url::" % want_rt}
+    for key in sorted(want):
+        if key not in actual:
+            print("TASKDEF_OPERATION_MISMATCH:MISSING_SECRET")
+            sys.exit(0)
+        if actual[key] != want[key]:
+            print("TASKDEF_OPERATION_MISMATCH:SECRET")
+            sys.exit(0)
+    for key in sorted(actual):
+        if key not in want:
+            print("TASKDEF_OPERATION_MISMATCH:UNEXPECTED_SECRET")
+            sys.exit(0)
+else:
+    print("TASKDEF_OPERATION_MISMATCH:LOGICAL_UNKNOWN")
+    sys.exit(0)
 print("OK")
 PYEOF
 )" || LEGACY_OPERATION="UNREADABLE"
@@ -9883,9 +10257,9 @@ PYEOF
     return 0
   fi
   if [ "$TASK_LABEL" = "migration" ] && [ "$TASK_PHASE" = "migrate" ] && [ "${RECOVERED_AGED_PRIOR_MIGRATION:-0}" = "1" ]; then
-    MIGRATION_OBSERVED="$(python3 - "$LAUNCH_JOURNAL_DIR" "$STACK_NAME" 2>/dev/null <<'PYEOF'
+    MIGRATION_OBSERVED="$(python3 - "$LAUNCH_JOURNAL_DIR" "$STACK_NAME" "${RELEASE_GEN:-}" "${SOURCE_SHA:-}" "${TARGET_DB_HEAD:-007}" 2>/dev/null <<'PYEOF'
 import json, os, sys
-directory, stack = sys.argv[1:3]
+directory, stack, want_gen, want_source, want_head = sys.argv[1:6]
 prefix = "launchcrew-%s-migrate-migration-" % stack
 rec_dir = os.path.join(directory, "recovery")
 try:
@@ -9894,6 +10268,9 @@ except Exception:
     print("PROOF\tLIST_FAILED")
     sys.exit(0)
 heads = set()
+orig_heads = set()
+orig_legacy = False
+orig_basenames = []
 for name in names:
     if not name.startswith(prefix) or not name.endswith(".recovery.json"):
         continue
@@ -9912,10 +10289,34 @@ for name in names:
     if doc.get("outcome", "") != "complete":
         print("PROOF\tUNRESOLVED")
         sys.exit(0)
+    if doc.get("release_generation", "") != want_gen:
+        continue
+    if doc.get("source_sha", "") != want_source:
+        continue
+    if doc.get("target_head", "") != want_head:
+        continue
     head = doc.get("observed_head", "")
     if head not in ("006", "007"):
         print("PROOF\tHEAD_UNKNOWN")
         sys.exit(0)
+    legacy = doc.get("legacy_unversioned", "")
+    if legacy not in ("true", "false"):
+        print("PROOF\tLEGACY_MALFORMED")
+        sys.exit(0)
+    orig = doc.get("original_target_head", "")
+    base = doc.get("original_basename", "")
+    if not isinstance(base, str) or not base:
+        print("PROOF\tORIGINAL_BASENAME_MISSING")
+        sys.exit(0)
+    if legacy == "true":
+        orig_legacy = True
+        orig_heads.add("LEGACY")
+    else:
+        if orig not in ("004", "005", "006", "007"):
+            print("PROOF\tORIG_HEAD_UNKNOWN")
+            sys.exit(0)
+        orig_heads.add(orig)
+    orig_basenames.append(base)
     heads.add(head)
 if not heads:
     print("PROOF\tNO_ATTESTATION")
@@ -9925,10 +10326,23 @@ if len(heads) != 1:
     sys.exit(0)
 print("PROOF\tOK")
 print("HEAD\t%s" % next(iter(heads)))
+if orig_legacy:
+    print("ORIG_HEAD\tLEGACY")
+else:
+    if len(orig_heads) != 1:
+        print("ORIG_HEAD\tMISMATCH")
+    else:
+        print("ORIG_HEAD\t%s" % next(iter(orig_heads)))
+print("ORIG_LEGACY\t%s" % ("true" if orig_legacy else "false"))
+print("COUNT\t%d" % len(orig_basenames))
+for _b in sorted(set(orig_basenames)):
+    print("ORIG_BASE\t%s" % _b)
 PYEOF
 )" || MIGRATION_OBSERVED="PROOF\tUNREADABLE"
     MIGRATION_OBS_PROOF="$(printf '%s\n' "$MIGRATION_OBSERVED" | awk -F'\t' '$1=="PROOF"{print $2}' | tr -d '[:space:]')"
     MIGRATION_OBS_HEAD="$(printf '%s\n' "$MIGRATION_OBSERVED" | awk -F'\t' '$1=="HEAD"{print $2}' | tr -d '[:space:]')"
+    MIGRATION_ORIG_HEAD="$(printf '%s\n' "$MIGRATION_OBSERVED" | awk -F'\t' '$1=="ORIG_HEAD"{print $2}' | tr -d '[:space:]')"
+    MIGRATION_ORIG_LEGACY="$(printf '%s\n' "$MIGRATION_OBSERVED" | awk -F'\t' '$1=="ORIG_LEGACY"{print $2}' | tr -d '[:space:]')"
     if [ "$MIGRATION_OBS_PROOF" != "OK" ]; then
       release_operation_lock
       echo "refused: migration recovery observed head proof is $MIGRATION_OBS_PROOF, no new migration and no skip without exact head. Inspect $LAUNCH_JOURNAL_DIR/recovery." >&2
@@ -9940,7 +10354,44 @@ PYEOF
       return 0
     fi
     if [ "$MIGRATION_OBS_HEAD" = "006" ]; then
-      echo "$TASK_LABEL aged prior recovered with observed head006 plus verified equivalence, admitting at most one deliberate 007 migration after old-token and current-state checks; never automatically resending an ambiguous 007 attempt."
+      if [ "$MIGRATION_ORIG_LEGACY" = "true" ]; then
+        release_operation_lock
+        echo "refused: migration recovery observed006 with legacy unversioned original target is ambiguous, historical 007 attempt cannot be excluded, separately reviewed repair required with zero new migration RunTask. Preserved history, no resend. Inspect $LAUNCH_JOURNAL_DIR/recovery." >&2
+        phase_failed "$TASK_PHASE"
+      fi
+      if [ "$MIGRATION_ORIG_HEAD" != "006" ]; then
+        release_operation_lock
+        echo "refused: migration recovery observed006 but original target is ${MIGRATION_ORIG_HEAD:-unknown}, not validated 006; ambiguous prior 007 with state regression requires separately reviewed repair with zero new migration RunTask. Preserved history, no resend. Inspect $LAUNCH_JOURNAL_DIR/recovery." >&2
+        phase_failed "$TASK_PHASE"
+      fi
+      MIGRATION_ORIG_LIST="$(printf '%s\n' "$MIGRATION_OBSERVED" | awk -F'\t' '$1=="ORIG_BASE"{print $2}')"
+      MIGRATION_ORIG_OK=1
+      while IFS= read -r MIGRATION_ORIG_BASE || [ -n "$MIGRATION_ORIG_BASE" ]; do
+        [ -n "$MIGRATION_ORIG_BASE" ] || continue
+        case "$MIGRATION_ORIG_BASE" in
+          *"/"*|"."|"..") MIGRATION_ORIG_OK=0; break ;;
+        esac
+        MIGRATION_ORIG_PATH="$LAUNCH_JOURNAL_DIR/$MIGRATION_ORIG_BASE"
+        if [ -L "$MIGRATION_ORIG_PATH" ] || [ ! -f "$MIGRATION_ORIG_PATH" ]; then
+          MIGRATION_ORIG_OK=0; break
+        fi
+        MIGRATION_ORIG_VALIDATED="$(validate_typed_journal_for_recovery "$MIGRATION_ORIG_PATH" "$MIGRATION_ORIG_BASE" "migrate" "migration" "MigrationTaskDefinition" "0")" || MIGRATION_ORIG_VALIDATED="PROOF\tUNREADABLE"
+        MIGRATION_ORIG_VPROOF="$(printf '%s\n' "$MIGRATION_ORIG_VALIDATED" | awk -F'\t' '$1=="PROOF"{print $2}' | tr -d '[:space:]')"
+        MIGRATION_ORIG_VHEAD="$(printf '%s\n' "$MIGRATION_ORIG_VALIDATED" | awk -F'\t' '$1=="HEAD"{print $2}' | tr -d '[:space:]')"
+        MIGRATION_ORIG_VLEGACY="$(printf '%s\n' "$MIGRATION_ORIG_VALIDATED" | awk -F'\t' '$1=="LEGACY"{print $2}' | tr -d '[:space:]')"
+        MIGRATION_ORIG_VOUT="$(printf '%s\n' "$MIGRATION_ORIG_VALIDATED" | awk -F'\t' '$1=="OUTCOME"{print $2}' | tr -d '[:space:]')"
+        if [ "$MIGRATION_ORIG_VPROOF" != "OK" ] || [ "$MIGRATION_ORIG_VHEAD" != "006" ] || [ "$MIGRATION_ORIG_VLEGACY" = "true" ] || [ "$MIGRATION_ORIG_VOUT" != "complete" ]; then
+          MIGRATION_ORIG_OK=0; break
+        fi
+      done <<EOF_ORIG_LIST
+$MIGRATION_ORIG_LIST
+EOF_ORIG_LIST
+      if [ "$MIGRATION_ORIG_OK" != "1" ]; then
+        release_operation_lock
+        echo "refused: migration recovery observed006 but validated original target006 proof failed, ambiguous prior requires separately reviewed repair with zero new migration RunTask. Preserved history, no resend. Inspect $LAUNCH_JOURNAL_DIR and $LAUNCH_JOURNAL_DIR/recovery." >&2
+        phase_failed "$TASK_PHASE"
+      fi
+      echo "$TASK_LABEL aged prior recovered with observed head006 plus validated original target006, admitting at most one deliberate 006->007 migration after old-token and current-state checks; never automatically resending an ambiguous 007 attempt."
     else
       release_operation_lock
       echo "refused: migration recovery observed head is $MIGRATION_OBS_HEAD, not 006 or 007, no migration and no skip. Inspect $LAUNCH_JOURNAL_DIR/recovery." >&2
@@ -10333,20 +10784,21 @@ PYEOF
   REPROVE_LEGACY_FILE="$LAUNCH_JOURNAL_DIR/launchcrew-$STACK_NAME-$REPROVE_ORIGIN-$REPROVE_LABEL-active.json"
   if [ -L "$REPROVE_ACTIVE_FILE" ]; then echo "enable re-proof $REPROVE_LABEL record is a symlink, no claim made. Inspect $REPROVE_ACTIVE_FILE." >&2; phase_failed enable; fi
   case "$REPROVE_ORIGIN/$REPROVE_LABEL" in
-    material/sdk-material) REPROVE_KIND="material-recovery-attestation"; REPROVE_VERIFIER_LOGICAL="SdkMaterialTaskDefinition"; REPROVE_NEED_HEAD="" ;;
-    dbroles/bootstrap) REPROVE_KIND="dbroles-recovery-attestation"; REPROVE_VERIFIER_LOGICAL="RoleStateTaskDefinition"; REPROVE_NEED_HEAD="006,007" ;;
-    migrate/migration) REPROVE_KIND="migration-recovery-attestation"; REPROVE_VERIFIER_LOGICAL="RoleStateTaskDefinition"; REPROVE_NEED_HEAD="007" ;;
-    migrate/verify) REPROVE_KIND="runtime-recovery-attestation"; REPROVE_VERIFIER_LOGICAL="VerifyTaskDefinition"; REPROVE_NEED_HEAD="007" ;;
-    *) REPROVE_KIND=""; REPROVE_VERIFIER_LOGICAL=""; REPROVE_NEED_HEAD="" ;;
+    material/sdk-material) REPROVE_KIND="material-recovery-attestation"; REPROVE_VERIFIER_LOGICAL="SdkMaterialTaskDefinition"; REPROVE_NEED_HEAD=""; REPROVE_ALLOW_STARTED="0"; REPROVE_TYPED_LOGICAL="SdkMaterialTaskDefinition" ;;
+    dbroles/bootstrap) REPROVE_KIND="dbroles-recovery-attestation"; REPROVE_VERIFIER_LOGICAL="RoleStateTaskDefinition"; REPROVE_NEED_HEAD="006,007"; REPROVE_ALLOW_STARTED="1"; REPROVE_TYPED_LOGICAL="BootstrapTaskDefinition" ;;
+    migrate/migration) REPROVE_KIND="migration-recovery-attestation"; REPROVE_VERIFIER_LOGICAL="RoleStateTaskDefinition"; REPROVE_NEED_HEAD="007"; REPROVE_ALLOW_STARTED="0"; REPROVE_TYPED_LOGICAL="MigrationTaskDefinition" ;;
+    migrate/verify) REPROVE_KIND="runtime-recovery-attestation"; REPROVE_VERIFIER_LOGICAL="VerifyTaskDefinition"; REPROVE_NEED_HEAD="007"; REPROVE_ALLOW_STARTED="0"; REPROVE_TYPED_LOGICAL="VerifyTaskDefinition" ;;
+    *) REPROVE_KIND=""; REPROVE_VERIFIER_LOGICAL=""; REPROVE_NEED_HEAD=""; REPROVE_ALLOW_STARTED="0"; REPROVE_TYPED_LOGICAL="" ;;
   esac
   if [ ! -f "$REPROVE_ACTIVE_FILE" ]; then
     if [ -z "$REPROVE_KIND" ]; then
       echo "refused: enable re-proof needs prior $REPROVE_LABEL $REPROVE_ORIGIN complete record $REPROVE_ACTIVE_FILE but none exists. Run --phase $REPROVE_ORIGIN first. No new launch." >&2
       phase_failed enable
     fi
-    REPROVE_ATTEST_FOUND="$(python3 - "$LAUNCH_JOURNAL_DIR" "$STACK_NAME" "$REPROVE_ORIGIN" "$REPROVE_LABEL" "$REPROVE_KIND" "${RELEASE_GEN:-}" "${SOURCE_SHA:-}" "${TARGET_DB_HEAD:-007}" "$REPROVE_NEED_HEAD" 2>/dev/null <<'PYEOF'
+    REPROVE_ATTEST_FOUND="$(python3 - "$LAUNCH_JOURNAL_DIR" "$STACK_NAME" "$REPROVE_ORIGIN" "$REPROVE_LABEL" "$REPROVE_KIND" "${RELEASE_GEN:-}" "${SOURCE_SHA:-}" "${TARGET_DB_HEAD:-007}" "$REPROVE_NEED_HEAD" "${STACK_ID:-}" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$CLUSTER_NAME" 2>/dev/null <<'PYEOF'
 import hashlib, json, os, sys
-(directory, stack, phase, label, want_kind, want_gen, want_source, want_head, need_head) = sys.argv[1:10]
+(directory, stack, phase, label, want_kind, want_gen, want_source, want_head, need_head,
+ want_stack_id, want_account, want_region, want_cluster) = sys.argv[1:14]
 prefix = "launchcrew-%s-%s-%s-" % (stack, phase, label)
 rec_dir = os.path.join(directory, "recovery")
 try:
@@ -10355,7 +10807,7 @@ except Exception:
     print("PROOF\tLIST_FAILED")
     sys.exit(0)
 need = set(x for x in (need_head or "").split(",") if x)
-found = None
+found = []
 for name in names:
     if not name.startswith(prefix) or not name.endswith(".recovery.json"):
         continue
@@ -10393,14 +10845,55 @@ for name in names:
         continue
     if doc.get("absence_proof", "") != "OK":
         continue
+    if not want_stack_id or doc.get("stack_id", "") != want_stack_id:
+        continue
+    _vtask = doc.get("verifier_task_arn", "") or ""
+    _vtdef = doc.get("verifier_taskdef_arn", "") or ""
+    _vtok = doc.get("verifier_token", "") or ""
+    if not _vtask.startswith("arn:aws:ecs:%s:%s:task/%s/" % (want_region, want_account, want_cluster)):
+        continue
+    if not _vtdef.startswith("arn:aws:ecs:%s:%s:task" "-definition/" % (want_region, want_account)):
+        continue
+    if not isinstance(_vtok, str) or len(_vtok) != 33 or not _vtok.startswith("lc-"):
+        continue
     obs = doc.get("observed_head", "") or ""
     if need and obs not in need:
         continue
     if not need and want_kind == "material-recovery-attestation" and obs != "":
         continue
     cont = doc.get("verifier_containers", "") or ""
-    if ":STOPPED:" not in cont:
+    if want_kind == "material-recovery-attestation":
+        if cont != "sdk-material:STOPPED:0" or obs != "":
+            continue
+    elif want_kind in ("dbroles-recovery-attestation", "migration-recovery-attestation"):
+        if cont == "bootstrap-db-roles:STOPPED:0" and obs != "007":
+            continue
+        if cont == "bootstrap-db-roles:STOPPED:10" and obs != "006":
+            continue
+        if cont not in ("bootstrap-db-roles:STOPPED:0", "bootstrap-db-roles:STOPPED:10"):
+            continue
+    elif want_kind == "runtime-recovery-attestation":
+        if cont != "bootstrap-db-roles:STOPPED:0" or obs != "007":
+            continue
+    else:
+        if ":STOPPED:" not in cont:
+            continue
+    _base = doc.get("original_basename", "") or ""
+    _sha = doc.get("original_sha256", "") or ""
+    _leg = doc.get("legacy_unversioned", "") or ""
+    _oout = doc.get("original_outcome", "") or ""
+    if not _base or "/" in _base or not _base.startswith(prefix) or not _base.endswith(".json"):
         continue
+    if len(_sha) != 64 or any(c not in "0123456789abcdef" for c in _sha):
+        continue
+    if _leg not in ("true", "false"):
+        continue
+    if want_kind == "dbroles-recovery-attestation":
+        if _oout not in ("complete", "started"):
+            continue
+    else:
+        if _oout != "complete":
+            continue
     try:
         parts = [
             doc.get("kind", ""), doc.get("verifier_task_arn", ""), doc.get("verifier_token", ""),
@@ -10423,26 +10916,254 @@ for name in names:
             continue
     except Exception:
         continue
-    found = name
-    break
+    found.append(name)
 if not found:
     print("PROOF\tNO_ATTESTATION")
     sys.exit(0)
+if len(found) != 1:
+    print("PROOF\tDUPLICATE")
+    print("COUNT\t%d" % len(found))
+    sys.exit(0)
 print("PROOF\tOK")
-print("FILE\t%s" % found)
+print("FILE\t%s" % found[0])
 PYEOF
 )" || REPROVE_ATTEST_FOUND="PROOF\tUNREADABLE"
     REPROVE_ATTEST_PROOF="$(printf '%s\n' "$REPROVE_ATTEST_FOUND" | awk -F'\t' '$1=="PROOF"{print $2}' | tr -d '[:space:]')"
     if [ "$REPROVE_ATTEST_PROOF" != "OK" ]; then
+      if [ "$REPROVE_ATTEST_PROOF" = "DUPLICATE" ]; then
+        echo "refused: enable re-proof found duplicate matching $REPROVE_KIND attestations for $REPROVE_LABEL $REPROVE_ORIGIN, ambiguous recovery requires separately reviewed repair with no stack update. Inspect $LAUNCH_JOURNAL_DIR/recovery. No new launch." >&2
+        phase_failed enable
+      fi
       if [ -f "$REPROVE_LEGACY_FILE" ]; then
-        echo "refused: enable re-proof needs new $RELEASE_GEN prior $REPROVE_LABEL $REPROVE_ORIGIN complete record or current-release $REPROVE_KIND with observed head ${REPROVE_NEED_HEAD:-any}, but found $REPROVE_ATTEST_PROOF and only a legacy old-head record exists. Run --phase $REPROVE_ORIGIN for $RELEASE_GEN first. Legacy preserved at $REPROVE_LEGACY_FILE, no new launch." >&2
+        echo "refused: enable re-proof needs new $RELEASE_GEN prior $REPROVE_LABEL $REPROVE_ORIGIN complete record or single current-release $REPROVE_KIND with observed head ${REPROVE_NEED_HEAD:-any}, but found $REPROVE_ATTEST_PROOF and only a legacy old-head record exists. Run --phase $REPROVE_ORIGIN for $RELEASE_GEN first. Legacy preserved at $REPROVE_LEGACY_FILE, no new launch." >&2
       else
-        echo "refused: enable re-proof needs prior $REPROVE_LABEL $REPROVE_ORIGIN complete record $REPROVE_ACTIVE_FILE or current-release $REPROVE_KIND with observed head ${REPROVE_NEED_HEAD:-any}, but found $REPROVE_ATTEST_PROOF. Run --phase $REPROVE_ORIGIN first. No new launch." >&2
+        echo "refused: enable re-proof needs prior $REPROVE_LABEL $REPROVE_ORIGIN complete record $REPROVE_ACTIVE_FILE or single current-release $REPROVE_KIND with observed head ${REPROVE_NEED_HEAD:-any}, but found $REPROVE_ATTEST_PROOF. Run --phase $REPROVE_ORIGIN first. No new launch." >&2
       fi
       phase_failed enable
     fi
     REPROVE_ATTEST_FILE="$(printf '%s\n' "$REPROVE_ATTEST_FOUND" | awk -F'\t' '$1=="FILE"{print $2}' | tr -d '[:space:]')"
-    echo "Enable re-proof: $REPROVE_LABEL prior $REPROVE_ORIGIN accepted via current-release $REPROVE_KIND $REPROVE_ATTEST_FILE with no new launch; aged file alone never passes."
+    case "$REPROVE_ATTEST_FILE" in
+      ""|*"/"*|"."|"..") echo "enable re-proof $REPROVE_LABEL attestation filename invalid, no claim made." >&2; phase_failed enable ;;
+    esac
+    REPROVE_ATTEST_PATH="$LAUNCH_JOURNAL_DIR/recovery/$REPROVE_ATTEST_FILE"
+    if [ -L "$REPROVE_ATTEST_PATH" ] || [ ! -f "$REPROVE_ATTEST_PATH" ]; then
+      echo "refused: enable re-proof $REPROVE_LABEL attestation $REPROVE_ATTEST_FILE missing or symlink, no claim made. Inspect $LAUNCH_JOURNAL_DIR/recovery." >&2
+      phase_failed enable
+    fi
+    REPROVE_ATTEST_DETAIL="$(python3 - "$REPROVE_ATTEST_PATH" 2>/dev/null <<'PYEOF'
+import json, os, sys
+path = sys.argv[1]
+try:
+    if os.path.islink(path):
+        print("PROOF\tSYMLINK")
+        sys.exit(0)
+    finfo = os.stat(path)
+    if (finfo.st_mode & 0o777) != 0o600:
+        print("PROOF\tMODE")
+        sys.exit(0)
+    if finfo.st_uid != os.getuid():
+        print("PROOF\tOWNER")
+        sys.exit(0)
+    if finfo.st_size <= 0 or finfo.st_size > 10240:
+        print("PROOF\tSIZE")
+        sys.exit(0)
+    with open(path, encoding="utf-8") as handle:
+        doc = json.load(handle)
+except Exception:
+    print("PROOF\tUNREADABLE")
+    sys.exit(0)
+if not isinstance(doc, dict):
+    print("PROOF\tMALFORMED")
+    sys.exit(0)
+for _k in ("original_basename", "original_sha256", "original_token", "original_task_arn",
+            "original_taskdef_arn", "original_generation", "original_source_sha",
+            "original_target_head", "original_outcome", "legacy_unversioned",
+            "stack_id", "release_generation", "source_sha", "target_head",
+            "observed_head", "verifier_proof", "verifier_last_status",
+            "absence_proof", "runtime_arn", "runtime_name",
+            "runtime_version_pre", "runtime_version_post",
+            "migration_arn", "migration_name",
+            "migration_version_pre", "migration_version_post",
+            "tls_arn", "tls_name", "tls_version_pre", "tls_version_post",
+            "cert_arn", "cert_domain", "cert_serial_pre", "cert_serial_post"):
+    print("%s\t%s" % (_k.upper(), doc.get(_k, "") or ""))
+print("PROOF\tOK")
+PYEOF
+)" || REPROVE_ATTEST_DETAIL="PROOF\tUNREADABLE"
+    REPROVE_DETAIL_PROOF="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="PROOF"{print $2}' | tr -d '[:space:]')"
+    if [ "$REPROVE_DETAIL_PROOF" != "OK" ]; then
+      echo "refused: enable re-proof $REPROVE_LABEL attestation $REPROVE_ATTEST_FILE is $REPROVE_DETAIL_PROOF, no claim made. Inspect $REPROVE_ATTEST_PATH." >&2
+      phase_failed enable
+    fi
+    REPROVE_ORIG_BASE="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="ORIGINAL_BASENAME"{print $2}' | tr -d '[:space:]')"
+    REPROVE_ORIG_SHA="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="ORIGINAL_SHA256"{print $2}' | tr -d '[:space:]')"
+    case "$REPROVE_ORIG_BASE" in
+      ""|*"/"*|"."|"..") echo "refused: enable re-proof $REPROVE_LABEL attestation has invalid original basename, no claim made. Inspect $REPROVE_ATTEST_PATH." >&2; phase_failed enable ;;
+    esac
+    REPROVE_ORIG_PATH="$LAUNCH_JOURNAL_DIR/$REPROVE_ORIG_BASE"
+    if [ -L "$REPROVE_ORIG_PATH" ] || [ ! -f "$REPROVE_ORIG_PATH" ]; then
+      echo "refused: enable re-proof $REPROVE_LABEL attestation $REPROVE_ATTEST_FILE is orphan, exact original $REPROVE_ORIG_BASE missing, separately reviewed repair required with no stack update. Inspect $REPROVE_ATTEST_PATH. No new launch." >&2
+      phase_failed enable
+    fi
+    if ! REPROVE_ORIG_ACTUAL_SHA="$(sha256_of_file "$REPROVE_ORIG_PATH")"; then
+      echo "refused: enable re-proof $REPROVE_LABEL original $REPROVE_ORIG_BASE hash unreadable, no claim made. Inspect $REPROVE_ORIG_PATH." >&2
+      phase_failed enable
+    fi
+    REPROVE_ORIG_ACTUAL_SHA="$(printf '%s' "$REPROVE_ORIG_ACTUAL_SHA" | tr -d '[:space:]')"
+    if [ -z "$REPROVE_ORIG_SHA" ] || [ "$REPROVE_ORIG_ACTUAL_SHA" != "$REPROVE_ORIG_SHA" ]; then
+      echo "refused: enable re-proof $REPROVE_LABEL original $REPROVE_ORIG_BASE hash mismatch, bytes changed since attestation, no claim made. Inspect $REPROVE_ORIG_PATH and $REPROVE_ATTEST_PATH." >&2
+      phase_failed enable
+    fi
+    REPROVE_ORIG_VALIDATED="$(validate_typed_journal_for_recovery "$REPROVE_ORIG_PATH" "$REPROVE_ORIG_BASE" "$REPROVE_ORIGIN" "$REPROVE_LABEL" "$REPROVE_TYPED_LOGICAL" "${REPROVE_ALLOW_STARTED:-0}")" || REPROVE_ORIG_VALIDATED="PROOF\tUNREADABLE"
+    REPROVE_ORIG_VPROOF="$(printf '%s\n' "$REPROVE_ORIG_VALIDATED" | awk -F'\t' '$1=="PROOF"{print $2}' | tr -d '[:space:]')"
+    if [ "$REPROVE_ORIG_VPROOF" != "OK" ]; then
+      REPROVE_ORIG_VOUT="$(printf '%s\n' "$REPROVE_ORIG_VALIDATED" | awk -F'\t' '$1=="OUTCOME"{print $2}' | tr -d '[:space:]')"
+      echo "refused: enable re-proof $REPROVE_LABEL original $REPROVE_ORIG_BASE is $REPROVE_ORIG_VPROOF ${REPROVE_ORIG_VOUT:-}, full typed binding failed, no claim made. Inspect $REPROVE_ORIG_PATH." >&2
+      phase_failed enable
+    fi
+    REPROVE_V_TOKEN="$(printf '%s\n' "$REPROVE_ORIG_VALIDATED" | awk -F'\t' '$1=="TOKEN"{print $2}' | tr -d '[:space:]')"
+    REPROVE_V_TASK="$(printf '%s\n' "$REPROVE_ORIG_VALIDATED" | awk -F'\t' '$1=="TASKARN"{print $2}' | tr -d '[:space:]')"
+    REPROVE_V_TASKDEF="$(printf '%s\n' "$REPROVE_ORIG_VALIDATED" | awk -F'\t' '$1=="TASKDEF"{print $2}' | tr -d '[:space:]')"
+    REPROVE_V_GEN="$(printf '%s\n' "$REPROVE_ORIG_VALIDATED" | awk -F'\t' '$1=="GEN"{print $2}' | tr -d '[:space:]')"
+    REPROVE_V_SOURCE="$(printf '%s\n' "$REPROVE_ORIG_VALIDATED" | awk -F'\t' '$1=="SOURCE"{print $2}' | tr -d '[:space:]')"
+    REPROVE_V_HEAD="$(printf '%s\n' "$REPROVE_ORIG_VALIDATED" | awk -F'\t' '$1=="HEAD"{print $2}' | tr -d '[:space:]')"
+    REPROVE_V_OUT="$(printf '%s\n' "$REPROVE_ORIG_VALIDATED" | awk -F'\t' '$1=="OUTCOME"{print $2}' | tr -d '[:space:]')"
+    REPROVE_V_LEGACY="$(printf '%s\n' "$REPROVE_ORIG_VALIDATED" | awk -F'\t' '$1=="LEGACY"{print $2}' | tr -d '[:space:]')"
+    [ "$REPROVE_V_LEGACY" = "true" ] || REPROVE_V_LEGACY="false"
+    REPROVE_A_TOKEN="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="ORIGINAL_TOKEN"{print $2}' | tr -d '[:space:]')"
+    REPROVE_A_TASK="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="ORIGINAL_TASK_ARN"{print $2}' | tr -d '[:space:]')"
+    REPROVE_A_TASKDEF="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="ORIGINAL_TASKDEF_ARN"{print $2}' | tr -d '[:space:]')"
+    REPROVE_A_GEN="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="ORIGINAL_GENERATION"{print $2}' | tr -d '[:space:]')"
+    REPROVE_A_SOURCE="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="ORIGINAL_SOURCE_SHA"{print $2}' | tr -d '[:space:]')"
+    REPROVE_A_HEAD="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="ORIGINAL_TARGET_HEAD"{print $2}' | tr -d '[:space:]')"
+    REPROVE_A_OUT="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="ORIGINAL_OUTCOME"{print $2}' | tr -d '[:space:]')"
+    REPROVE_A_LEGACY="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="LEGACY_UNVERSIONED"{print $2}' | tr -d '[:space:]')"
+    if [ "$REPROVE_V_TOKEN" != "$REPROVE_A_TOKEN" ] || [ "$REPROVE_V_TASK" != "$REPROVE_A_TASK" ] || [ "$REPROVE_V_TASKDEF" != "$REPROVE_A_TASKDEF" ]; then
+      echo "refused: enable re-proof $REPROVE_LABEL original task binding mismatch, wrong task or token, no claim made. Inspect $REPROVE_ORIG_PATH and $REPROVE_ATTEST_PATH." >&2
+      phase_failed enable
+    fi
+    if [ "$REPROVE_V_GEN" != "$REPROVE_A_GEN" ] || [ "$REPROVE_V_SOURCE" != "$REPROVE_A_SOURCE" ] || [ "$REPROVE_V_HEAD" != "$REPROVE_A_HEAD" ]; then
+      echo "refused: enable re-proof $REPROVE_LABEL original generation, source or head mismatch, no claim made. Inspect $REPROVE_ORIG_PATH and $REPROVE_ATTEST_PATH." >&2
+      phase_failed enable
+    fi
+    if [ "$REPROVE_V_OUT" != "$REPROVE_A_OUT" ] || [ "$REPROVE_V_LEGACY" != "$REPROVE_A_LEGACY" ]; then
+      echo "refused: enable re-proof $REPROVE_LABEL original outcome or legacy flag mismatch, no claim made. Inspect $REPROVE_ORIG_PATH and $REPROVE_ATTEST_PATH." >&2
+      phase_failed enable
+    fi
+    REPROVE_A_STACK="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="STACK_ID"{print $2}' | tr -d '[:space:]')"
+    REPROVE_A_RELGEN="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="RELEASE_GENERATION"{print $2}' | tr -d '[:space:]')"
+    REPROVE_A_SOURCE="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="SOURCE_SHA"{print $2}' | tr -d '[:space:]')"
+    REPROVE_A_HEAD="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="TARGET_HEAD"{print $2}' | tr -d '[:space:]')"
+    REPROVE_A_VPROOF="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="VERIFIER_PROOF"{print $2}' | tr -d '[:space:]')"
+    REPROVE_A_VSTATUS="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="VERIFIER_LAST_STATUS"{print $2}' | tr -d '[:space:]')"
+    REPROVE_A_ABSENCE="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="ABSENCE_PROOF"{print $2}' | tr -d '[:space:]')"
+    if [ -z "$REPROVE_A_STACK" ] || [ "$REPROVE_A_STACK" != "${STACK_ID:-}" ]; then
+      echo "refused: enable re-proof $REPROVE_LABEL attestation stack mismatch, wrong stack, no claim made. Inspect $REPROVE_ATTEST_PATH." >&2
+      phase_failed enable
+    fi
+    if [ "$REPROVE_A_RELGEN" != "${RELEASE_GEN:-}" ] || [ "$REPROVE_A_SOURCE" != "${SOURCE_SHA:-}" ] || [ "$REPROVE_A_HEAD" != "${TARGET_DB_HEAD:-007}" ]; then
+      echo "refused: enable re-proof $REPROVE_LABEL attestation release, source or head mismatch, no claim made. Inspect $REPROVE_ATTEST_PATH." >&2
+      phase_failed enable
+    fi
+    if [ "$REPROVE_A_VPROOF" != "OK" ] || [ "$REPROVE_A_VSTATUS" != "STOPPED" ] || [ "$REPROVE_A_ABSENCE" != "OK" ]; then
+      echo "refused: enable re-proof $REPROVE_LABEL attestation missing verifier proof, no claim made. Inspect $REPROVE_ATTEST_PATH." >&2
+      phase_failed enable
+    fi
+    [ -n "${RUNTIME_SECRET_ARN:-}" ] && [ -n "${MIGRATION_SECRET_ARN:-}" ] && [ -n "${TLS_SECRET_ARN:-}" ] || {
+      echo "refused: enable re-proof $REPROVE_LABEL needs exact runtime, migration and TLS secret ARNs, no claim made." >&2
+      phase_failed enable
+    }
+    REPROVE_CUR_RT="$(fetch_secret_version_identity "$RUNTIME_SECRET_ARN" runtime)"
+    REPROVE_CUR_RT_PROOF="$(printf '%s\n' "$REPROVE_CUR_RT" | awk -F'\t' '$1=="PROOF"{print $2}' | tr -d '[:space:]')"
+    if [ "$REPROVE_CUR_RT_PROOF" != "OK" ]; then
+      echo "refused: enable re-proof $REPROVE_LABEL runtime secret proof is $REPROVE_CUR_RT_PROOF, no claim made." >&2
+      phase_failed enable
+    fi
+    REPROVE_CUR_MG="$(fetch_secret_version_identity "$MIGRATION_SECRET_ARN" migration)"
+    REPROVE_CUR_MG_PROOF="$(printf '%s\n' "$REPROVE_CUR_MG" | awk -F'\t' '$1=="PROOF"{print $2}' | tr -d '[:space:]')"
+    if [ "$REPROVE_CUR_MG_PROOF" != "OK" ]; then
+      echo "refused: enable re-proof $REPROVE_LABEL migration secret proof is $REPROVE_CUR_MG_PROOF, no claim made." >&2
+      phase_failed enable
+    fi
+    REPROVE_CUR_TLS="$(fetch_secret_version_identity "$TLS_SECRET_ARN" tls)"
+    REPROVE_CUR_TLS_PROOF="$(printf '%s\n' "$REPROVE_CUR_TLS" | awk -F'\t' '$1=="PROOF"{print $2}' | tr -d '[:space:]')"
+    if [ "$REPROVE_CUR_TLS_PROOF" != "OK" ]; then
+      echo "refused: enable re-proof $REPROVE_LABEL TLS secret proof is $REPROVE_CUR_TLS_PROOF, no claim made." >&2
+      phase_failed enable
+    fi
+    REPROVE_CUR_RT_ARN="$(printf '%s\n' "$REPROVE_CUR_RT" | awk -F'\t' '$1=="ARN"{print $2}' | tr -d '[:space:]')"
+    REPROVE_CUR_RT_NAME="$(printf '%s\n' "$REPROVE_CUR_RT" | awk -F'\t' '$1=="NAME"{print $2}' | tr -d '[:space:]')"
+    REPROVE_CUR_RT_VER="$(printf '%s\n' "$REPROVE_CUR_RT" | awk -F'\t' '$1=="VERSION"{print $2}' | tr -d '[:space:]')"
+    REPROVE_CUR_MG_ARN="$(printf '%s\n' "$REPROVE_CUR_MG" | awk -F'\t' '$1=="ARN"{print $2}' | tr -d '[:space:]')"
+    REPROVE_CUR_MG_NAME="$(printf '%s\n' "$REPROVE_CUR_MG" | awk -F'\t' '$1=="NAME"{print $2}' | tr -d '[:space:]')"
+    REPROVE_CUR_MG_VER="$(printf '%s\n' "$REPROVE_CUR_MG" | awk -F'\t' '$1=="VERSION"{print $2}' | tr -d '[:space:]')"
+    REPROVE_CUR_TLS_ARN="$(printf '%s\n' "$REPROVE_CUR_TLS" | awk -F'\t' '$1=="ARN"{print $2}' | tr -d '[:space:]')"
+    REPROVE_CUR_TLS_NAME="$(printf '%s\n' "$REPROVE_CUR_TLS" | awk -F'\t' '$1=="NAME"{print $2}' | tr -d '[:space:]')"
+    REPROVE_CUR_TLS_VER="$(printf '%s\n' "$REPROVE_CUR_TLS" | awk -F'\t' '$1=="VERSION"{print $2}' | tr -d '[:space:]')"
+    REPROVE_A_RT_ARN="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="RUNTIME_ARN"{print $2}' | tr -d '[:space:]')"
+    REPROVE_A_RT_NAME="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="RUNTIME_NAME"{print $2}' | tr -d '[:space:]')"
+    REPROVE_A_RT_PRE="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="RUNTIME_VERSION_PRE"{print $2}' | tr -d '[:space:]')"
+    REPROVE_A_RT_POST="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="RUNTIME_VERSION_POST"{print $2}' | tr -d '[:space:]')"
+    REPROVE_A_MG_ARN="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="MIGRATION_ARN"{print $2}' | tr -d '[:space:]')"
+    REPROVE_A_MG_NAME="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="MIGRATION_NAME"{print $2}' | tr -d '[:space:]')"
+    REPROVE_A_MG_PRE="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="MIGRATION_VERSION_PRE"{print $2}' | tr -d '[:space:]')"
+    REPROVE_A_MG_POST="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="MIGRATION_VERSION_POST"{print $2}' | tr -d '[:space:]')"
+    REPROVE_A_TLS_ARN="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="TLS_ARN"{print $2}' | tr -d '[:space:]')"
+    REPROVE_A_TLS_NAME="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="TLS_NAME"{print $2}' | tr -d '[:space:]')"
+    REPROVE_A_TLS_PRE="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="TLS_VERSION_PRE"{print $2}' | tr -d '[:space:]')"
+    REPROVE_A_TLS_POST="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="TLS_VERSION_POST"{print $2}' | tr -d '[:space:]')"
+    if [ "$REPROVE_CUR_RT_ARN" != "$REPROVE_A_RT_ARN" ] || [ "$REPROVE_A_RT_ARN" != "$RUNTIME_SECRET_ARN" ] || [ "$REPROVE_CUR_RT_NAME" != "$REPROVE_A_RT_NAME" ]; then
+      echo "refused: enable re-proof $REPROVE_LABEL runtime material identity mismatch, no claim made. Inspect $REPROVE_ATTEST_PATH." >&2
+      phase_failed enable
+    fi
+    if [ "$REPROVE_CUR_RT_VER" != "$REPROVE_A_RT_PRE" ] || [ "$REPROVE_CUR_RT_VER" != "$REPROVE_A_RT_POST" ]; then
+      echo "refused: enable re-proof $REPROVE_LABEL live runtime VersionId changed since recovery attestation, no claim made. Inspect $REPROVE_ATTEST_PATH." >&2
+      phase_failed enable
+    fi
+    if [ "$REPROVE_CUR_MG_ARN" != "$REPROVE_A_MG_ARN" ] || [ "$REPROVE_A_MG_ARN" != "$MIGRATION_SECRET_ARN" ] || [ "$REPROVE_CUR_MG_NAME" != "$REPROVE_A_MG_NAME" ]; then
+      echo "refused: enable re-proof $REPROVE_LABEL migration material identity mismatch, no claim made. Inspect $REPROVE_ATTEST_PATH." >&2
+      phase_failed enable
+    fi
+    if [ "$REPROVE_CUR_MG_VER" != "$REPROVE_A_MG_PRE" ] || [ "$REPROVE_CUR_MG_VER" != "$REPROVE_A_MG_POST" ]; then
+      echo "refused: enable re-proof $REPROVE_LABEL live migration VersionId changed since recovery attestation, no claim made. Inspect $REPROVE_ATTEST_PATH." >&2
+      phase_failed enable
+    fi
+    if [ "$REPROVE_CUR_TLS_ARN" != "$REPROVE_A_TLS_ARN" ] || [ "$REPROVE_A_TLS_ARN" != "$TLS_SECRET_ARN" ] || [ "$REPROVE_CUR_TLS_NAME" != "$REPROVE_A_TLS_NAME" ]; then
+      echo "refused: enable re-proof $REPROVE_LABEL TLS material identity mismatch, no claim made. Inspect $REPROVE_ATTEST_PATH." >&2
+      phase_failed enable
+    fi
+    if [ "$REPROVE_CUR_TLS_VER" != "$REPROVE_A_TLS_PRE" ] || [ "$REPROVE_CUR_TLS_VER" != "$REPROVE_A_TLS_POST" ]; then
+      echo "refused: enable re-proof $REPROVE_LABEL live TLS VersionId changed since recovery attestation, no claim made. Inspect $REPROVE_ATTEST_PATH." >&2
+      phase_failed enable
+    fi
+    if ! REPROVE_CUR_CERT_VALUE="$(params_file_value AcmCertificateArn)"; then
+      echo "refused: enable re-proof $REPROVE_LABEL certificate ARN missing from parameters file, no claim made." >&2
+      phase_failed enable
+    fi
+    REPROVE_CUR_CERT_VALUE="$(printf '%s' "$REPROVE_CUR_CERT_VALUE" | tr -d '[:space:]')"
+    [ -n "$REPROVE_CUR_CERT_VALUE" ] || { echo "refused: enable re-proof $REPROVE_LABEL certificate ARN empty, no claim made." >&2; phase_failed enable; }
+    REPROVE_CUR_CERT="$(fetch_cert_identity "$REPROVE_CUR_CERT_VALUE")"
+    REPROVE_CUR_CERT_PROOF="$(printf '%s\n' "$REPROVE_CUR_CERT" | awk -F'\t' '$1=="PROOF"{print $2}' | tr -d '[:space:]')"
+    if [ "$REPROVE_CUR_CERT_PROOF" != "OK" ]; then
+      echo "refused: enable re-proof $REPROVE_LABEL certificate proof is $REPROVE_CUR_CERT_PROOF, no claim made." >&2
+      phase_failed enable
+    fi
+    REPROVE_CUR_CERT_ARN="$(printf '%s\n' "$REPROVE_CUR_CERT" | awk -F'\t' '$1=="ARN"{print $2}' | tr -d '[:space:]')"
+    REPROVE_CUR_CERT_DOMAIN="$(printf '%s\n' "$REPROVE_CUR_CERT" | awk -F'\t' '$1=="DOMAIN"{print $2}' | tr -d '[:space:]')"
+    REPROVE_CUR_CERT_SERIAL="$(printf '%s\n' "$REPROVE_CUR_CERT" | awk -F'\t' '$1=="SERIAL"{print $2}' | tr -d '[:space:]')"
+    REPROVE_A_CERT_ARN="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="CERT_ARN"{print $2}' | tr -d '[:space:]')"
+    REPROVE_A_CERT_DOMAIN="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="CERT_DOMAIN"{print $2}' | tr -d '[:space:]')"
+    REPROVE_A_CERT_PRE="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="CERT_SERIAL_PRE"{print $2}' | tr -d '[:space:]')"
+    REPROVE_A_CERT_POST="$(printf '%s\n' "$REPROVE_ATTEST_DETAIL" | awk -F'\t' '$1=="CERT_SERIAL_POST"{print $2}' | tr -d '[:space:]')"
+    if [ "$REPROVE_CUR_CERT_ARN" != "$REPROVE_A_CERT_ARN" ] || [ "$REPROVE_A_CERT_ARN" != "$REPROVE_CUR_CERT_VALUE" ] || [ "$REPROVE_CUR_CERT_DOMAIN" != "$REPROVE_A_CERT_DOMAIN" ]; then
+      echo "refused: enable re-proof $REPROVE_LABEL certificate identity mismatch, no claim made. Inspect $REPROVE_ATTEST_PATH." >&2
+      phase_failed enable
+    fi
+    if [ "$REPROVE_CUR_CERT_SERIAL" != "$REPROVE_A_CERT_PRE" ] || [ "$REPROVE_CUR_CERT_SERIAL" != "$REPROVE_A_CERT_POST" ]; then
+      echo "refused: enable re-proof $REPROVE_LABEL live certificate serial changed since recovery attestation, no claim made. Inspect $REPROVE_ATTEST_PATH." >&2
+      phase_failed enable
+    fi
+    echo "Enable re-proof: $REPROVE_LABEL prior $REPROVE_ORIGIN accepted via single current-release $REPROVE_KIND $REPROVE_ATTEST_FILE with exact original $REPROVE_ORIG_BASE revalidated and unchanged material, no new launch; aged file alone never passes."
     return 0
   fi
   REPROVE_PARSED="$(python3 - "$REPROVE_ACTIVE_FILE" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$STACK_NAME" "$CLUSTER_NAME" "$REPROVE_ORIGIN" "$REPROVE_LABEL" "$REPROVE_LOGICAL" "$REPROVE_TASKDEF_ARN" "$REPROVE_CONFIG_DIGEST" "$RELEASE_GEN" "$TARGET_DB_HEAD" "${STACK_ID:-}" 2>/dev/null <<'PYEOF'

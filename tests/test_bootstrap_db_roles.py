@@ -193,8 +193,14 @@ class FakeCursor:
                 return list(self.state.sequence_default_acls)
             return list(self.state.model_default_acls)
         if "pg_class" in lowered:
-            if "relkind" in lowered:
+            if "relkind" in lowered and "owner.rolname" in lowered:
                 return list(self.state.inventory)
+            if "relkind" in lowered:
+                projected = []
+                for row in self.state.inventory:
+                    if len(row) >= 2:
+                        projected.append((row[0], row[1]))
+                return projected
             return list(self.state.model_table_owners)
         if "pg_proc" in lowered:
             if "prosecdef" in lowered:

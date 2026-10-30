@@ -1334,10 +1334,10 @@ def do_verify_role_state():
                         pass
                     return _fail("role-state-model-defaults")
             gcur.execute(
-                "SELECT e.grantee, e.privilege_type FROM pg_default_acl d, "
-                "LATERAL aclexplode(d.defaclacl) AS e "
+                "SELECT e.grantee, e.privilege_type FROM pg_default_acl d "
                 "JOIN pg_roles r ON r.oid = d.defaclrole "
                 "JOIN pg_namespace n ON n.oid = d.defaclnamespace "
+                "CROSS JOIN LATERAL aclexplode(d.defaclacl) AS e "
                 "WHERE d.defaclobjtype = %s AND r.rolname = %s "
                 "AND n.nspname = %s",
                 ("r", migration_user, schema))
@@ -1369,10 +1369,10 @@ def do_verify_role_state():
                         pass
                     return _fail("role-state-table-defaults")
             gcur.execute(
-                "SELECT e.grantee, e.privilege_type FROM pg_default_acl d, "
-                "LATERAL aclexplode(d.defaclacl) AS e "
+                "SELECT e.grantee, e.privilege_type FROM pg_default_acl d "
                 "JOIN pg_roles r ON r.oid = d.defaclrole "
                 "JOIN pg_namespace n ON n.oid = d.defaclnamespace "
+                "CROSS JOIN LATERAL aclexplode(d.defaclacl) AS e "
                 "WHERE d.defaclobjtype = %s AND r.rolname = %s "
                 "AND n.nspname = %s",
                 ("S", migration_user, schema))
