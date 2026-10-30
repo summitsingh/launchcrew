@@ -1030,6 +1030,12 @@ class PhaseCHarness(unittest.TestCase):
             shared_dir=shared_tmp)
         self.assertEqual(result_mat.returncode, 0,
                          msg=result_mat.stdout + result_mat.stderr)
+        result_roles, _, _ = self.run_phase(
+            [*base, "--phase", "dbroles",
+             "--release-generation", release],
+            shared_dir=shared_tmp)
+        self.assertEqual(result_roles.returncode, 0,
+                         msg=result_roles.stdout + result_roles.stderr)
         result_mig, _, _ = self.run_phase(
             [*base, "--phase", "migrate",
              "--release-generation", release],
@@ -1182,7 +1188,7 @@ class ControllerOrderTests(PhaseCHarness):
         self.assertEqual(result.returncode, 0,
                          msg=result.stdout + result.stderr)
         self.assertIn("Enable precheck", result.stdout)
-        self.assertIn("no new run-task", result.stdout + result.stderr)
+        self.assertIn("no new mutating run-task", result.stdout + result.stderr)
         self.assertIn("desiredCount 1", result.stdout)
         self.assertIn("Phase enable complete", result.stdout)
         runs = self.run_calls(calls)
