@@ -1242,6 +1242,29 @@ PYEOF
   if [ "${FAKE_DESCRIBE_TOKEN_MISMATCH:-0}" = "1" ]; then
     STARTED_BY="lc-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
   fi
+  case "$TASKDEF" in
+    *rolestate*)
+      if [ "${FAKE_PREFLIGHT_TASKS_NOT_LIST:-0}" = "1" ]; then printf '{"tasks":"not-a-list","failures":[]}\\n'; exit 0; fi
+      if [ "${FAKE_PREFLIGHT_FAILURES_NOT_LIST:-0}" = "1" ]; then printf '{"tasks":[],"failures":"not-a-list"}\\n'; exit 0; fi
+      if [ "${FAKE_PREFLIGHT_MULTI:-0}" = "1" ]; then
+        EXTRA_ARN="arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/preflight-extra-999"
+        if [ -n "$STARTED_BY" ]; then
+          printf '{"tasks":[{"taskArn":"%s","clusterArn":"arn:aws:ecs:us-east-1:111122223333:cluster/launchcrew-demo","taskDefinitionArn":"%s","lastStatus":"%s","startedBy":"%s","containers":[%s]},{"taskArn":"%s","clusterArn":"arn:aws:ecs:us-east-1:111122223333:cluster/launchcrew-demo","taskDefinitionArn":"%s","lastStatus":"%s","startedBy":"%s","containers":[%s]}],"failures":[]}\\n' "$TASKARN" "$TASKDEF" "$TASK_STATUS" "$STARTED_BY" "$CONTAINERS" "$EXTRA_ARN" "$TASKDEF" "$TASK_STATUS" "$STARTED_BY" "$CONTAINERS"
+        else
+          printf '{"tasks":[{"taskArn":"%s","clusterArn":"arn:aws:ecs:us-east-1:111122223333:cluster/launchcrew-demo","taskDefinitionArn":"%s","lastStatus":"%s","containers":[%s]},{"taskArn":"%s","clusterArn":"arn:aws:ecs:us-east-1:111122223333:cluster/launchcrew-demo","taskDefinitionArn":"%s","lastStatus":"%s","containers":[%s]}],"failures":[]}\\n' "$TASKARN" "$TASKDEF" "$TASK_STATUS" "$CONTAINERS" "$EXTRA_ARN" "$TASKDEF" "$TASK_STATUS" "$CONTAINERS"
+        fi
+        exit 0
+      fi
+      if [ "${FAKE_PREFLIGHT_FAILURES:-0}" = "1" ]; then
+        if [ -n "$STARTED_BY" ]; then
+          printf '{"tasks":[{"taskArn":"%s","clusterArn":"arn:aws:ecs:us-east-1:111122223333:cluster/launchcrew-demo","taskDefinitionArn":"%s","lastStatus":"%s","startedBy":"%s","containers":[%s]}],"failures":[{"arn":"arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/preflight-extra-999","reason":"MISSING"}]}\\n' "$TASKARN" "$TASKDEF" "$TASK_STATUS" "$STARTED_BY" "$CONTAINERS"
+        else
+          printf '{"tasks":[{"taskArn":"%s","clusterArn":"arn:aws:ecs:us-east-1:111122223333:cluster/launchcrew-demo","taskDefinitionArn":"%s","lastStatus":"%s","containers":[%s]}],"failures":[{"arn":"arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/preflight-extra-999","reason":"MISSING"}]}\\n' "$TASKARN" "$TASKDEF" "$TASK_STATUS" "$CONTAINERS"
+        fi
+        exit 0
+      fi
+      ;;
+  esac
   if [ -n "$STARTED_BY" ]; then
     printf '{"tasks":[{"taskArn":"%s","clusterArn":"arn:aws:ecs:us-east-1:111122223333:cluster/launchcrew-demo","taskDefinitionArn":"%s","lastStatus":"%s","startedBy":"%s","containers":[%s]}],"failures":[]}\\n' "$TASKARN" "$TASKDEF" "$TASK_STATUS" "$STARTED_BY" "$CONTAINERS"
   else
@@ -1330,7 +1353,18 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-task""-definition" ]; then
     *launchcrew-demo-rolestate*)
       RS_HOST="${FAKE_DB_HOST:-launchcrew-demo.abc123.us-east-1.rds.amazonaws.com}"
       RS_MASTER="${FAKE_DB_USER:-launchcrew_app}"
-      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/RoleStateExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/RoleStateTaskRole%s","containerDefinitions":[{"name":"bootstrap-db-roles","essential":true,"command":["--verify-role-state"],"image":"%s","environment":[{"name":"LAUNCHCREW_DB_TLS_MODE","value":"verify-full"},{"name":"DATABASE_SSL_ROOTCERT","value":"/app/rds-ca-bundle.pem"},{"name":"DB_NAME","value":"launchcrew"},{"name":"DB_MASTER_USER","value":"%s"},{"name":"DB_HOST","value":"%s"},{"name":"APP_SCHEMA","value":"public"},{"name":"RUNTIME_USER","value":"launchcrew_runtime"},{"name":"MIGRATION_USER","value":"launchcrew_migration"}],"secrets":[{"name":"RUNTIME_DB_URL","valueFrom":"%s:database-url::"},{"name":"MIGRATION_DB_URL","valueFrom":"%s:database-url::"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_BOOT" "$RS_MASTER" "$RS_HOST" "$SEC_RT" "$SEC_MG"
+      RS_IMG="${FAKE_ROLESTATE_IMAGE:-$IMG_BOOT}"
+      RS_CMD_JSON=',"command":["--verify-role-state"]'
+      if [ -n "${FAKE_ROLESTATE_CMD:-}" ]; then RS_CMD_JSON=",\\"command\\":[\\"$FAKE_ROLESTATE_CMD\\"]"; fi
+      RS_EP_JSON=""
+      if [ -n "${FAKE_ROLESTATE_ENTRYPOINT:-}" ]; then RS_EP_JSON=",\\"entryPoint\\":[\\"$FAKE_ROLESTATE_ENTRYPOINT\\"]"; fi
+      RS_EXTRA_SECRET_JSON=""
+      if [ "${FAKE_ROLESTATE_EXTRA_SECRET:-0}" = "1" ]; then RS_EXTRA_SECRET_JSON=",{\\"name\\":\\"EVIL_SECRET\\",\\"valueFrom\\":\\"arn:aws:secretsmanager:us-east-1:111122223333:secret:evil-Xx:password::\\"}"; fi
+      RS_EXTRA_CONTAINER_JSON=""
+      if [ "${FAKE_ROLESTATE_EXTRA_CONTAINER:-0}" = "1" ]; then RS_EXTRA_CONTAINER_JSON=",{\\"name\\":\\"evil-sidecar\\",\\"essential\\":true,\\"image\\":\\"evil:latest\\"}"; fi
+      RS_TASKDEF_ARN="$TASKDEF"
+      if [ -n "${FAKE_ROLESTATE_TASKDEF_ARN:-}" ]; then RS_TASKDEF_ARN="$FAKE_ROLESTATE_TASKDEF_ARN"; fi
+      printf '{"taskDefinition":{"taskDefinitionArn":"%s","executionRoleArn":"arn:aws:iam::111122223333:role/RoleStateExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/RoleStateTaskRole%s","containerDefinitions":[{"name":"bootstrap-db-roles","essential":true%s%s,"image":"%s","environment":[{"name":"LAUNCHCREW_DB_TLS_MODE","value":"verify-full"},{"name":"DATABASE_SSL_ROOTCERT","value":"/app/rds-ca-bundle.pem"},{"name":"DB_NAME","value":"launchcrew"},{"name":"DB_MASTER_USER","value":"%s"},{"name":"DB_HOST","value":"%s"},{"name":"APP_SCHEMA","value":"public"},{"name":"RUNTIME_USER","value":"launchcrew_runtime"},{"name":"MIGRATION_USER","value":"launchcrew_migration"}],"secrets":[{"name":"RUNTIME_DB_URL","valueFrom":"%s:database-url::"},{"name":"MIGRATION_DB_URL","valueFrom":"%s:database-url::"}%s]}%s]}}\\n' "$RS_TASKDEF_ARN" "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$RS_CMD_JSON" "$RS_EP_JSON" "$RS_IMG" "$RS_MASTER" "$RS_HOST" "$SEC_RT" "$SEC_MG" "$RS_EXTRA_SECRET_JSON" "$RS_EXTRA_CONTAINER_JSON"
       exit 0 ;;
     *) echo "fake-aws: unexpected describe task definition: $*" >&2; exit 2 ;;
   esac
@@ -9064,6 +9098,224 @@ class TypedRecoveryTests(BootstrapHarness):
             self.assertFalse(any("run-task" in c for c in calls))
             count_after_second = (shared / "count").read_text(encoding="utf-8")
             self.assertEqual(count_after_second, count_after_first)
+
+    def test_migration_preflight_malformed_describe_refuses_with_no_migration(self):
+        import json as _json
+        import tempfile as _tempfile
+        cases = [
+            {"FAKE_PREFLIGHT_MULTI": "1"},
+            {"FAKE_PREFLIGHT_FAILURES": "1"},
+            {"FAKE_PREFLIGHT_TASKS_NOT_LIST": "1"},
+            {"FAKE_PREFLIGHT_FAILURES_NOT_LIST": "1"},
+        ]
+        for idx, extra in enumerate(cases):
+            with self.subTest(extra=extra):
+                with _tempfile.TemporaryDirectory() as shared_tmp:
+                    shared, journals = self.fresh_shared(shared_tmp)
+                    token = "lc-" + chr(ord("a") + idx) * 30
+                    task = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+                            f"task/launchcrew-demo/live-migration-007m{idx}")
+                    prior = self.write_prior(
+                        journals, "migrate", "migration",
+                        "MigrationTaskDefinition", token, task,
+                        self.MIG_TASKDEF, generation="head007-abc1234",
+                        head="007", outcome="complete")
+                    before = prior.read_bytes()
+                    (shared / "taskdefs").write_text(
+                        f"{task}|{self.MIG_TASKDEF}|{token}\n",
+                        encoding="utf-8")
+                    (shared / "count").write_text("10", encoding="utf-8")
+                    (shared / "token").write_text("", encoding="utf-8")
+                    env = {"FAKE_ROLESTATE_EXIT": "10"}
+                    env.update(extra)
+                    result, calls = self.run_bootstrap(
+                        self.migrate_args(),
+                        extra_env=env,
+                        shared_dir=shared_tmp)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(prior.read_bytes(), before)
+                    runs = [c for c in calls if "run-task" in c]
+                    role_runs = [c for c in runs
+                                 if "launchcrew-demo-rolestate" in c]
+                    self.assertEqual(len(role_runs), 1)
+                    self.assertFalse(any("launchcrew-demo-migration" in c
+                                         for c in runs))
+                    preflight = journals / (
+                        f"launchcrew-{STACK}-migrate-preflight-"
+                        f"{self.RELEASE}-active.json")
+                    self.assertTrue(preflight.is_file())
+                    pre_doc = _json.loads(
+                        preflight.read_text(encoding="utf-8"))
+                    self.assertEqual(pre_doc.get("outcome"), "started")
+                    self.assertTrue(pre_doc.get("task_arn", "").startswith(
+                        f"arn:aws:ecs:{REGION}:{ACCOUNT}:task/{STACK}/"))
+                    new_file = journals / (
+                        f"launchcrew-{STACK}-migrate-migration-"
+                        f"{self.RELEASE}-active.json")
+                    self.assertFalse(new_file.exists())
+                    count_after_first = (shared / "count").read_text(
+                        encoding="utf-8")
+                    pre_bytes = preflight.read_bytes()
+                    second, second_calls = self.run_bootstrap(
+                        self.migrate_args(),
+                        extra_env=env,
+                        shared_dir=shared_tmp)
+                    self.assertNotEqual(second.returncode, 0)
+                    self.assertEqual(prior.read_bytes(), before)
+                    self.assertEqual(preflight.read_bytes(), pre_bytes)
+                    self.assertFalse(any("run-task" in c
+                                         for c in second_calls))
+                    self.assertEqual(
+                        (shared / "count").read_text(encoding="utf-8"),
+                        count_after_first)
+                    self.assertFalse(new_file.exists())
+
+    def test_migration_preflight_taskdef_drift_refuses_on_replay(self):
+        import json as _json
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            live_token = "lc-" + "d" * 30
+            live_task = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+                         "task/launchcrew-demo/live-migration-007drift")
+            prior = self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", live_token, live_task,
+                self.MIG_TASKDEF, generation="head007-abc1234",
+                head="007", outcome="complete")
+            before = prior.read_bytes()
+            (shared / "taskdefs").write_text(
+                f"{live_task}|{self.MIG_TASKDEF}|{live_token}\n",
+                encoding="utf-8")
+            (shared / "count").write_text("10", encoding="utf-8")
+            (shared / "token").write_text("", encoding="utf-8")
+            first, first_calls = self.run_bootstrap(
+                self.migrate_args(),
+                extra_env={"FAKE_ROLESTATE_EXIT": "10"},
+                shared_dir=shared_tmp)
+            self.assertEqual(first.returncode, 0,
+                             msg=first.stdout + first.stderr)
+            first_runs = [c for c in first_calls if "run-task" in c]
+            self.assertEqual(len([c for c in first_runs
+                                  if "launchcrew-demo-rolestate" in c]), 1)
+            self.assertEqual(len([c for c in first_runs
+                                  if "launchcrew-demo-migration" in c]), 1)
+            preflight = journals / (
+                f"launchcrew-{STACK}-migrate-preflight-"
+                f"{self.RELEASE}-active.json")
+            self.assertTrue(preflight.is_file())
+            pre_doc = _json.loads(preflight.read_text(encoding="utf-8"))
+            self.assertEqual(pre_doc.get("outcome"), "complete")
+            self.assertEqual(pre_doc.get("observed_head"), "007")
+            migration_file = journals / (
+                f"launchcrew-{STACK}-migrate-migration-"
+                f"{self.RELEASE}-active.json")
+            self.assertTrue(migration_file.is_file())
+            migration_file.unlink()
+            pre_bytes = preflight.read_bytes()
+            count_good = (shared / "count").read_text(encoding="utf-8")
+            drift_cases = [
+                {"FAKE_ROLESTATE_CMD": "--evil-command"},
+                {"FAKE_ROLESTATE_TASKDEF_ARN":
+                 f"arn:aws:ecs:{REGION}:{ACCOUNT}:task-definition/"
+                 "launchcrew-demo-rolestate:999"},
+            ]
+            for drift in drift_cases:
+                with self.subTest(drift=sorted(drift)):
+                    env = {"FAKE_ROLESTATE_EXIT": "10"}
+                    env.update(drift)
+                    result, calls = self.run_bootstrap(
+                        self.migrate_args(),
+                        extra_env=env,
+                        shared_dir=shared_tmp)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(prior.read_bytes(), before)
+                    self.assertEqual(preflight.read_bytes(), pre_bytes)
+                    self.assertFalse(any("run-task" in c for c in calls))
+                    self.assertEqual(
+                        (shared / "count").read_text(encoding="utf-8"),
+                        count_good)
+                    self.assertFalse(migration_file.exists())
+            control, control_calls = self.run_bootstrap(
+                self.migrate_args(),
+                extra_env={"FAKE_ROLESTATE_EXIT": "10"},
+                shared_dir=shared_tmp)
+            self.assertEqual(control.returncode, 0,
+                             msg=control.stdout + control.stderr)
+            control_runs = [c for c in control_calls if "run-task" in c]
+            self.assertFalse(any("launchcrew-demo-rolestate" in c
+                                 for c in control_runs))
+            self.assertEqual(len([c for c in control_runs
+                                  if "launchcrew-demo-migration" in c]), 1)
+            self.assertTrue(migration_file.is_file())
+            self.assertEqual(preflight.read_bytes(), pre_bytes)
+
+    def test_migration_preflight_journal_durable_and_secret_free(self):
+        import json as _json
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            token006 = "lc-" + "j" * 30
+            task006 = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+                       "task/launchcrew-demo/live-migration-006j")
+            prior006 = self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", token006, task006,
+                self.MIG_TASKDEF, generation="head006-abc1234",
+                head="006", outcome="complete")
+            before006 = prior006.read_bytes()
+            token007 = "lc-" + "k" * 30
+            task007 = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+                       "task/launchcrew-demo/live-migration-007j")
+            prior007 = self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", token007, task007,
+                self.MIG_TASKDEF, generation="head007-abc1234",
+                head="007", outcome="complete")
+            before007 = prior007.read_bytes()
+            (shared / "taskdefs").write_text(
+                f"{task006}|{self.MIG_TASKDEF}|{token006}\n"
+                f"{task007}|{self.MIG_TASKDEF}|{token007}\n",
+                encoding="utf-8")
+            (shared / "count").write_text("10", encoding="utf-8")
+            (shared / "token").write_text("", encoding="utf-8")
+            result, calls = self.run_bootstrap(
+                self.migrate_args(),
+                extra_env={"FAKE_ROLESTATE_EXIT": "10"},
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            self.assertEqual(prior006.read_bytes(), before006)
+            self.assertEqual(prior007.read_bytes(), before007)
+            preflight = journals / (
+                f"launchcrew-{STACK}-migrate-preflight-"
+                f"{self.RELEASE}-active.json")
+            self.assertTrue(preflight.is_file())
+            self.assertEqual(oct(preflight.stat().st_mode & 0o777), "0o600")
+            raw = preflight.read_bytes()
+            text = raw.decode("utf-8")
+            doc = _json.loads(text)
+            self.assertEqual(doc.get("version"), 1)
+            self.assertEqual(doc.get("kind"),
+                             "migration-role-state-preflight")
+            self.assertEqual(doc.get("outcome"), "complete")
+            self.assertEqual(doc.get("observed_head"), "007")
+            expect = _json.dumps(doc, indent=2, sort_keys=True) + "\n"
+            self.assertEqual(text, expect)
+            lowered = text.lower()
+            self.assertNotIn("password", lowered)
+            self.assertNotIn("://", text)
+            self.assertNotIn("-----begin", lowered)
+            self.assertNotIn("private key", lowered)
+            for secret_arn in (SECRET_RT, SECRET_MG, SECRET_MASTER,
+                               SECRET_TLS):
+                self.assertNotIn(secret_arn, text)
+            leftovers = [p for p in journals.iterdir()
+                         if p.name.startswith(".launch-preflight-")]
+            self.assertEqual(leftovers, [])
+            combined = result.stdout + result.stderr
+            self.assertNotIn("get-secret-value", combined.lower())
+            self.assertNotIn("://", combined)
 
 
 class EnableEvidenceTests(BootstrapHarness):

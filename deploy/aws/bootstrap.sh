@@ -3304,12 +3304,16 @@ PYEOF
 # read-only job shape before any RunTask: the verified bootstrap image,
 # default binder EntryPoint with exact Command --verify-role-state, exact
 # metadata env, exact two secrets (runtime plus migration URLs, no master),
-# and the exact owned physical execution and task roles. Least privilege
-# with no master secret is proven here plus the fargate template.
+# the exact owned physical execution and task roles, and the exact owned
+# physical task definition ARN. Sets RS_CHECKED_ARN to the resolved ARN that
+# was proven, so callers can assert check-versus-use equality before RunTask.
+# Least privilege with no master secret is proven here plus the fargate
+# template.
 check_rolestate_taskdef() {
   RS_LOGICAL="RoleStateTaskDefinition"
   RS_EXEC_LOGICAL="RoleStateExecutionRole"
   RS_TASK_LOGICAL="RoleStateTaskRole"
+  RS_CHECKED_ARN=""
   if ! RS_EXEC_ARN="$(resolve_role_arn "$RS_EXEC_LOGICAL")"; then
     echo "$RS_LOGICAL owned execution role unresolvable, job not proven owned." >&2
     phase_failed "$PHASE"
@@ -3333,15 +3337,34 @@ check_rolestate_taskdef() {
     echo "$RS_LOGICAL task definition missing, job not tied to an owned task." >&2
     phase_failed "$PHASE"
   fi
-  RS_PROOF="$(python3 - "$RS_JSON" "$BOOTSTRAP_IMAGE" "$RS_EXEC_ARN" "$RS_TASK_ARN" "$RUNTIME_SECRET_ARN" "$MIGRATION_SECRET_ARN" "$RS_DB_HOST" "$RS_MASTER_USER" 2>/dev/null <<'PYEOF'
+  RS_CHECKED_ARN="$(printf '%s' "${FETCH_ARN:-}" | tr -d '[:space:]')"
+  if [ -z "$RS_CHECKED_ARN" ] || [ "$RS_CHECKED_ARN" = "None" ]; then
+    rm -f "$RS_JSON"
+    echo "$RS_LOGICAL task definition ARN missing, job not tied to an owned task." >&2
+    phase_failed "$PHASE"
+  fi
+  case "$RS_CHECKED_ARN" in
+    "arn:aws:ecs:$EXPECTED_REGION:$EXPECTED_ACCOUNT:task-definition/"*) ;;
+    *) rm -f "$RS_JSON"
+      echo "refused: $RS_LOGICAL task definition ARN is not owned, job not proven owned." >&2
+      phase_failed "$PHASE" ;;
+  esac
+  RS_PROOF="$(python3 - "$RS_JSON" "$BOOTSTRAP_IMAGE" "$RS_EXEC_ARN" "$RS_TASK_ARN" "$RUNTIME_SECRET_ARN" "$MIGRATION_SECRET_ARN" "$RS_DB_HOST" "$RS_MASTER_USER" "$RS_CHECKED_ARN" 2>/dev/null <<'PYEOF'
 import json, sys
 (doc_file, want_image, want_exec, want_task,
- want_rt, want_mg, want_host, want_master) = sys.argv[1:9]
+ want_rt, want_mg, want_host, want_master,
+ want_taskdef_arn) = sys.argv[1:10]
 try:
     doc = json.load(open(doc_file))
 except Exception:
     sys.exit(1)
 taskdef = doc.get("taskDefinition", doc)
+if not isinstance(taskdef, dict):
+    print("TASKDEF_MALFORMED")
+    sys.exit(0)
+if (taskdef.get("taskDefinitionArn", "") or "") != want_taskdef_arn:
+    print("TASKDEF_ARN_MISMATCH")
+    sys.exit(0)
 if (taskdef.get("executionRoleArn", "") or "") != want_exec:
     print("EXEC_ROLE_MISMATCH")
     sys.exit(0)
@@ -3411,7 +3434,7 @@ PYEOF
   rm -f "$RS_JSON"
   RS_PROOF="$(printf '%s' "$RS_PROOF" | tr -d '[:space:]')"
   case "$RS_PROOF" in
-    OK) echo "Verified owned role-state task definition image, Command, env, two secrets with no master, roles: $RS_LOGICAL" ;;
+    OK) echo "Verified owned role-state task definition image, Command, env, two secrets with no master, roles, physical ARN: $RS_LOGICAL" ;;
     *) echo "refused: $RS_LOGICAL task definition proof is $RS_PROOF, job not proven owned." >&2; phase_failed "$PHASE" ;;
   esac
 }
@@ -9306,11 +9329,13 @@ write_preflight_journal() {
   PREFLIGHT_JOURNAL_LAST="$7"
   (umask 077; python3 - "$PREFLIGHT_JOURNAL_PATH" "$STACK_NAME" "$PREFLIGHT_PHASE" "$PREFLIGHT_LABEL" "$PREFLIGHT_LOGICAL" "$PREFLIGHT_TASKDEF" "$CLUSTER_NAME" "$PREFLIGHT_TOKEN" "$EXPECTED_REGION" "$EXPECTED_ACCOUNT" "$PREFLIGHT_JOURNAL_OUTCOME" "$PREFLIGHT_JOURNAL_TASK" "$PREFLIGHT_CONFIG_DIGEST" "${RELEASE_GEN:-}" "${SOURCE_SHA:-}" "${TARGET_DB_HEAD:-008}" "${STACK_ID:-}" "$PREFLIGHT_JOURNAL_OBSERVED" "$PREFLIGHT_JOURNAL_EXIT" "$PREFLIGHT_JOURNAL_CONTAINERS" "$PREFLIGHT_JOURNAL_LAST" <<'PYEOF'
 import json, os, sys, tempfile
+if len(sys.argv) != 22:
+    raise SystemExit("refused: preflight journal args malformed")
 (path, stack, phase, label, taskdef_logical, taskdef_arn, cluster,
  token, region, account, outcome, task_arn, config_digest,
  release_gen, source_sha, target_head, stack_id,
  observed_head, verifier_exit, verifier_containers,
- verifier_last) = sys.argv[1:21]
+ verifier_last) = sys.argv[1:22]
 if os.path.islink(path):
     raise SystemExit("refused: preflight journal path is a symlink")
 try:
@@ -9350,8 +9375,17 @@ try:
     with os.fdopen(fd, "w", encoding="utf-8") as out:
         json.dump(doc, out, indent=2, sort_keys=True)
         out.write("\n")
+        out.flush()
+        os.fsync(out.fileno())
     os.replace(tmp_path, path)
     os.chmod(path, 0o600)
+    with open(path, "rb") as synced:
+        os.fsync(synced.fileno())
+    dir_fd = os.open(directory, os.O_DIRECTORY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
 except Exception:
     try:
         os.unlink(tmp_path)
@@ -9363,12 +9397,15 @@ PYEOF
   chmod 600 "$PREFLIGHT_JOURNAL_PATH" 2>/dev/null || { echo "migration preflight journal mode failed, no launch attempted." >&2; phase_failed "$TASK_PHASE"; }
 }
 # Read-only terminal check for one preflight task. Args: task ARN, token,
-# taskdef ARN. Waits for STOPPED as a hint only, then requires STOPPED
-# lastStatus, exact task and taskdef ARNs, exact owned cluster ARN, exact
-# startedBy token, and STOPPED exit 0 or 10 from every expected essential
-# container from the owned taskdef document, with all exits equal. Sets
-# PREFLIGHT_TERM_PROOF to OK:<exit>:<containers> or a fail-closed reason.
-# Never writes journals and never fails the phase; the caller decides.
+# taskdef ARN. Waits for STOPPED as a hint only, then requires ECS
+# DescribeTasks tasks and failures to be arrays with exactly one task and
+# zero failures, STOPPED lastStatus, exact task and taskdef ARNs, exact
+# owned cluster ARN, exact startedBy token, and STOPPED exit 0 or 10 from
+# every expected essential container named by the owned DescribeTaskDefinition
+# document, with all exits equal. DescribeTasks carries no essential flag
+# and none is trusted. Sets PREFLIGHT_TERM_PROOF to OK:<exit>:<containers>
+# or a fail-closed reason. Never writes journals and never fails the phase;
+# the caller decides.
 preflight_terminal_proof() {
   PREFLIGHT_TERM_TASK="$1"
   PREFLIGHT_TERM_TOKEN="$2"
@@ -9397,19 +9434,54 @@ try:
 except Exception:
     sys.exit(1)
 expected_arn, expected_taskdef, expected_cluster, expected_token = sys.argv[3:7]
+if not isinstance(describe, dict) or not isinstance(defined, dict):
+    print("MALFORMED_RESPONSE")
+    sys.exit(0)
+taskdef_doc = defined.get("taskDefinition", defined)
+if not isinstance(taskdef_doc, dict):
+    print("MALFORMED_TASKDEF")
+    sys.exit(0)
+container_defs = taskdef_doc.get("containerDefinitions", None)
+if not isinstance(container_defs, list):
+    print("MALFORMED_TASKDEF")
+    sys.exit(0)
 expected_names = []
-for container in (defined.get("taskDefinition", defined).get("containerDefinitions", []) or []):
-    if container.get("essential", True) and container.get("name"):
-        expected_names.append(container.get("name"))
-tasks = describe.get("tasks", [])
-failures = describe.get("failures", [])
-if failures or not tasks:
-    print("NO_TASK")
+for container in container_defs:
+    if not isinstance(container, dict):
+        print("MALFORMED_TASKDEF")
+        sys.exit(0)
+    essential = container.get("essential", True)
+    if not isinstance(essential, bool):
+        print("MALFORMED_TASKDEF")
+        sys.exit(0)
+    if not essential:
+        continue
+    name = container.get("name", "")
+    if not isinstance(name, str) or not name:
+        print("MALFORMED_TASKDEF")
+        sys.exit(0)
+    expected_names.append(name)
+tasks = describe.get("tasks", None)
+failures = describe.get("failures", None)
+if not isinstance(tasks, list) or not isinstance(failures, list):
+    print("MALFORMED_RESPONSE")
+    sys.exit(0)
+if len(failures) != 0:
+    print("HAS_FAILURES")
+    sys.exit(0)
+if len(tasks) != 1:
+    if len(tasks) == 0:
+        print("NO_TASK")
+    else:
+        print("MULTIPLE_TASKS")
     sys.exit(0)
 if not expected_names:
     print("NO_EXPECTED_CONTAINERS")
     sys.exit(0)
 task = tasks[0]
+if not isinstance(task, dict):
+    print("MALFORMED_TASK")
+    sys.exit(0)
 if (task.get("taskArn", "") or "") != expected_arn:
     print("WRONG_TASK_ARN")
     sys.exit(0)
@@ -9425,7 +9497,18 @@ if (task.get("clusterArn", "") or "") != expected_cluster:
 if (task.get("startedBy", "") or "") != expected_token:
     print("WRONG_TOKEN")
     sys.exit(0)
-actual = task.get("containers", []) or []
+actual = task.get("containers", None)
+if not isinstance(actual, list):
+    print("MALFORMED_CONTAINERS")
+    sys.exit(0)
+for entry in actual:
+    if not isinstance(entry, dict):
+        print("MALFORMED_CONTAINERS")
+        sys.exit(0)
+    entry_name = entry.get("name", "")
+    if not isinstance(entry_name, str) or not entry_name:
+        print("MALFORMED_CONTAINERS")
+        sys.exit(0)
 names = [(c.get("name", "?") or "?") for c in actual]
 if len(set(names)) != len(names):
     print("DUPLICATE")
@@ -9462,13 +9545,106 @@ PYEOF
   [ -n "$PREFLIGHT_TERM_PROOF" ] || PREFLIGHT_TERM_PROOF="UNREADABLE"
   return 0
 }
+# Verify the preflight bootstrap image digest at use time. Same owned
+# account, region, repository, explicit tag, no latest, digest present with
+# no ECR failures as verify_image, but fails via the preflight task phase
+# with no new RunTask. A tag@sha256 pin requires ECR digest equality.
+preflight_verify_bootstrap_digest() {
+  PREFLIGHT_IMAGE_URI="$BOOTSTRAP_IMAGE"
+  case "$PREFLIGHT_IMAGE_URI" in
+    *REPLACE_WITH*|*PLACEHOLDER*|"")
+      release_operation_lock
+      echo "refused: migration preflight bootstrap image is placeholder, no new migration RunTask. Preserved history, no resend." >&2
+      phase_failed "$TASK_PHASE" ;;
+  esac
+  PREFLIGHT_PINNED=""
+  case "$PREFLIGHT_IMAGE_URI" in
+    *@sha256:*) PREFLIGHT_PINNED="sha256:$(printf '%s' "$PREFLIGHT_IMAGE_URI" | sed 's/^.*@sha256://')"
+      PREFLIGHT_BASE="$(printf '%s' "$PREFLIGHT_IMAGE_URI" | cut -d@ -f1)" ;;
+    *) PREFLIGHT_BASE="$PREFLIGHT_IMAGE_URI" ;;
+  esac
+  case "$PREFLIGHT_BASE" in
+    *:* ) ;;
+    *) release_operation_lock
+      echo "refused: migration preflight bootstrap image has no explicit tag, no new migration RunTask. Preserved history, no resend." >&2
+      phase_failed "$TASK_PHASE" ;;
+  esac
+  case "$PREFLIGHT_BASE" in
+    *:latest)
+      release_operation_lock
+      echo "refused: migration preflight bootstrap image uses floating latest, no new migration RunTask. Preserved history, no resend." >&2
+      phase_failed "$TASK_PHASE" ;;
+  esac
+  PREFLIGHT_REPO_FULL="$(printf '%s' "$PREFLIGHT_BASE" | cut -d/ -f2-)"
+  PREFLIGHT_REPO_NAME="$(printf '%s' "$PREFLIGHT_REPO_FULL" | cut -d: -f1)"
+  PREFLIGHT_IMAGE_TAG="$(printf '%s' "$PREFLIGHT_REPO_FULL" | cut -s -d: -f2)"
+  if [ -z "$PREFLIGHT_IMAGE_TAG" ] || [ "$PREFLIGHT_REPO_NAME" != "launchcrew-bootstrap" ]; then
+    release_operation_lock
+    echo "refused: migration preflight bootstrap image is not owned launchcrew-bootstrap with explicit tag, no new migration RunTask. Preserved history, no resend." >&2
+    phase_failed "$TASK_PHASE"
+  fi
+  PREFLIGHT_IMAGE_ACCOUNT="$(printf '%s' "$PREFLIGHT_BASE" | cut -d. -f1)"
+  PREFLIGHT_IMAGE_REGION="$(printf '%s' "$PREFLIGHT_BASE" | cut -d. -f4)"
+  if [ "$PREFLIGHT_IMAGE_ACCOUNT" != "$EXPECTED_ACCOUNT" ] || [ "$PREFLIGHT_IMAGE_REGION" != "$EXPECTED_REGION" ]; then
+    release_operation_lock
+    echo "refused: migration preflight bootstrap image account or region mismatch, no new migration RunTask. Preserved history, no resend." >&2
+    phase_failed "$TASK_PHASE"
+  fi
+  if ! PREFLIGHT_DIGEST="$("$AWS_BIN" ecr batch-get-image --repository-name "$PREFLIGHT_REPO_NAME" --image-ids "imageTag=$PREFLIGHT_IMAGE_TAG" --region "$EXPECTED_REGION" --query "images[0].imageId.imageDigest" --output text 2>"$TMP_ERR")"; then
+    release_operation_lock
+    echo "migration preflight bootstrap image $PREFLIGHT_REPO_NAME:$PREFLIGHT_IMAGE_TAG not found in ECR, no new migration RunTask. Preserved history, no resend." >&2
+    phase_failed "$TASK_PHASE"
+  fi
+  PREFLIGHT_DIGEST="$(printf '%s' "$PREFLIGHT_DIGEST" | tr -d '[:space:]')"
+  if [ -z "$PREFLIGHT_DIGEST" ] || [ "$PREFLIGHT_DIGEST" = "None" ]; then
+    release_operation_lock
+    echo "refused: migration preflight bootstrap image has no digest in ECR, no new migration RunTask. Preserved history, no resend." >&2
+    phase_failed "$TASK_PHASE"
+  fi
+  if [ -n "$PREFLIGHT_PINNED" ] && [ "$PREFLIGHT_DIGEST" != "$PREFLIGHT_PINNED" ]; then
+    release_operation_lock
+    echo "refused: migration preflight bootstrap pinned digest moved, no new migration RunTask. Preserved history, no resend." >&2
+    phase_failed "$TASK_PHASE"
+  fi
+  if ! PREFLIGHT_FAILURES="$("$AWS_BIN" ecr batch-get-image --repository-name "$PREFLIGHT_REPO_NAME" --image-ids "imageTag=$PREFLIGHT_IMAGE_TAG" --region "$EXPECTED_REGION" --query "length(failures)" --output text 2>"$TMP_ERR")"; then
+    release_operation_lock
+    echo "migration preflight bootstrap image failure check failed, no new migration RunTask. Preserved history, no resend." >&2
+    phase_failed "$TASK_PHASE"
+  fi
+  PREFLIGHT_FAILURES="$(printf '%s' "$PREFLIGHT_FAILURES" | tr -d '[:space:]')"
+  if [ "$PREFLIGHT_FAILURES" != "0" ]; then
+    release_operation_lock
+    echo "refused: migration preflight bootstrap image reports ECR failures, no new migration RunTask. Preserved history, no resend." >&2
+    phase_failed "$TASK_PHASE"
+  fi
+  echo "Verified migration preflight bootstrap image digest with no ECR failures"
+}
+# Reprove the exact owned RoleState task definition before any RunTask and
+# on every journal replay before accepting exit 10 or 0. Proves exact
+# Command, EntryPoint, runtime plus migration secret refs with no master,
+# roles, image tag, physical ARN, plus ECR digest, then asserts the checked
+# ARN equals the ARN resolved for RunTask. Any drift fails closed with no
+# resend. The journal parser separately requires the persisted ARN to equal
+# the resolved ARN, so checked, persisted, live task, and RunTask ARNs match.
+preflight_reprove_taskdef() {
+  check_rolestate_taskdef
+  PREFLIGHT_CHECKED="$(printf '%s' "${RS_CHECKED_ARN:-}" | tr -d '[:space:]')"
+  if [ -z "$PREFLIGHT_CHECKED" ] || [ "$PREFLIGHT_CHECKED" != "$PREFLIGHT_TASKDEF" ]; then
+    release_operation_lock
+    echo "refused: migration preflight task definition drift between check and use, no new migration RunTask. Preserved history, no resend. Inspect $PREFLIGHT_FILE." >&2
+    phase_failed "$TASK_PHASE"
+  fi
+  preflight_verify_bootstrap_digest
+}
 # Durable read-only current-release role-state preflight for a live 007 to
 # 008 migration. Runs only under the migration operation lock after all
 # historical migration priors are validated with exact completed target007,
 # no historical target008, and no legacy. Uses the owned RoleState taskdef
 # proven by check_rolestate_taskdef with exact Command --verify-role-state
-# plus runtime and migration secrets only and no master. Exit 10 means exact
-# validated head007 ready, exit 0 means exact validated head008 complete.
+# plus runtime and migration secrets only and no master, plus physical ARN
+# and ECR digest, with check-versus-use ARN equality on every fresh launch
+# and every replay. Exit 10 means exact validated head007 ready, exit 0
+# means exact validated head008 complete.
 # Persists token and journal before RunTask with exact task ARN, cluster,
 # taskdef, container, STOPPED, all required container exits, and observed
 # head. Restart reuses one persisted token and task with no resend.
@@ -9711,6 +9887,7 @@ PYEOF
         echo "refused: migration preflight complete has no task ARN, no new migration RunTask and no preflight resend. Preserved history, no resend. Inspect $PREFLIGHT_FILE." >&2
         phase_failed "$TASK_PHASE"
       }
+      preflight_reprove_taskdef
       preflight_terminal_proof "$PREFLIGHT_TASK" "$PREFLIGHT_TOKEN" "$PREFLIGHT_TASKDEF"
       case "$PREFLIGHT_TERM_PROOF" in
         OK:10:bootstrap-db-roles:STOPPED:10)
@@ -9744,6 +9921,7 @@ PYEOF
         phase_failed "$TASK_PHASE"
       }
       echo "migration preflight prior started, re-proving terminal state with no resend."
+      preflight_reprove_taskdef
       preflight_terminal_proof "$PREFLIGHT_TASK" "$PREFLIGHT_TOKEN" "$PREFLIGHT_TASKDEF"
       case "$PREFLIGHT_TERM_PROOF" in
         OK:10:bootstrap-db-roles:STOPPED:10)
@@ -9766,7 +9944,7 @@ PYEOF
     echo "refused: migration preflight prior $PREFLIGHT_OUTCOME is unresolved, restart uses one persisted token and task with no resend, manual review required with zero new migration RunTask. Preserved history, no resend. Inspect $PREFLIGHT_FILE." >&2
     phase_failed "$TASK_PHASE"
   fi
-  check_rolestate_taskdef
+  preflight_reprove_taskdef
   if ! PREFLIGHT_TOKEN="$(python3 - 2>/dev/null <<'PYEOF'
 import uuid
 print("lc-" + uuid.uuid4().hex[:30])
