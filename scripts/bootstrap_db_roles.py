@@ -43,6 +43,21 @@ Modes, selected by argv flag only (no secret ever appears in argv):
             nonsecret MIGRATION_USER metadata, failing closed on wrong owner.
             Never connects as master or migration here, and never commits.
             No provider key is read or injected here.
+  --verify-role-state
+            read-only current-state equivalence proof with both runtime and
+            migration URLs, no master secret, zero writes including zero
+            rolled-back writes, never commits. Proves both role password
+            authentications via successful connections, both role flags and
+            exact native memberships, both ownership markers, expected schema
+            and every relation and function ownership by the migration role,
+            schema and table and sequence grants plus default grants for
+            future objects, model table and function ownership and EXECUTE
+            scope with no PUBLIC, plus the actual alembic head and critical
+            schema properties. Head 007 returns 0, head 006 ready for the
+            single 007 migration returns 10, any other head or any partial
+            or inconsistent state returns 1 and requires a separately
+            reviewed repair. Never logs a password, URL, or statement with
+            secret material.
 
 TLS guard: LAUNCHCREW_DB_TLS_MODE must be verify-full and
 DATABASE_SSL_ROOTCERT must be an existing CA bundle file, otherwise the job
@@ -834,6 +849,585 @@ def _refused_ddl(exc):
     return getattr(exc, "sqlstate", None) == "42501"
 
 
+def _has_priv(cur, func, obj, priv):
+    cur.execute("SELECT %s(%%s, %%s)" % func, (obj, priv))
+    row = cur.fetchone()
+    return bool(row and row[0])
+
+
+def _constraint_def(cur, schema, table, name):
+    cur.execute(
+        "SELECT pg_get_constraintdef(c.oid) FROM pg_constraint c "
+        "JOIN pg_class t ON t.oid = c.conrelid "
+        "JOIN pg_namespace n ON n.oid = t.relnamespace "
+        "WHERE n.nspname = %s AND t.relname = %s AND c.conname = %s",
+        (schema, table, name))
+    row = cur.fetchone()
+    return str(row[0]) if row and row[0] else ""
+
+
+def do_verify_role_state():
+    import psycopg
+
+    bundle = _tls_guard()
+    _reject_ambient_pg_overrides()
+    host = _check_host("DB_HOST", _env("DB_HOST"))
+    port = _check_port(os.environ.get("DB_PORT", "5432"))
+    dbname = _check_dbname("DB_NAME", _env("DB_NAME"))
+    master_user = _check_ident("DB_MASTER_USER", _env("DB_MASTER_USER"))
+    runtime_url = _env("RUNTIME_DB_URL")
+    migration_url = _env("MIGRATION_DB_URL")
+    runtime_user = _check_ident("RUNTIME_USER", _env("RUNTIME_USER"))
+    migration_user = _check_ident("MIGRATION_USER", _env("MIGRATION_USER"))
+    schema = _check_ident("APP_SCHEMA", os.environ.get("APP_SCHEMA", "public"))
+    if runtime_user == migration_user:
+        raise ValueError("RUNTIME_USER and MIGRATION_USER must be distinct roles")
+    if runtime_user == master_user or migration_user == master_user:
+        raise ValueError("runtime and migration roles must differ from the master user")
+    runtime = _parse_db_url("RUNTIME_DB_URL", runtime_url,
+                            runtime_user, host, dbname)
+    migration = _parse_db_url("MIGRATION_DB_URL", migration_url,
+                              migration_user, host, dbname)
+    if runtime["port"] != port:
+        raise ValueError("RUNTIME_DB_URL port does not match DB_PORT")
+    if migration["port"] != port:
+        raise ValueError("MIGRATION_DB_URL port does not match DB_PORT")
+    for secret in (runtime_url, migration_url,
+                   runtime["password"], migration["password"]):
+        _known_secrets.append(secret)
+    try:
+        rconn = psycopg.connect(host=runtime["host"], port=runtime["port"],
+                                dbname=runtime["dbname"], user=runtime["user"],
+                                password=runtime["password"],
+                                sslmode="verify-full", sslrootcert=bundle)
+    except Exception as exc:
+        return _fail("role-state-runtime-connect",
+                     _error_detail(exc, "connection-failed"))
+    try:
+        rconn.autocommit = False
+        rcur = rconn.cursor()
+        try:
+            ident = _connection_identity(rcur)
+        except Exception:
+            try:
+                rconn.rollback()
+            except Exception:
+                pass
+            return _fail("role-state-runtime-identity")
+        if (ident["session_user"] != runtime_user
+                or ident["current_user"] != runtime_user):
+            try:
+                rconn.rollback()
+            except Exception:
+                pass
+            return _fail("role-state-runtime-identity")
+        _ok("role-state-runtime-connect")
+        try:
+            for user in (runtime_user, migration_user):
+                row = _role_row(rcur, user)
+                if row is None:
+                    try:
+                        rconn.rollback()
+                    except Exception:
+                        pass
+                    return _fail("role-state-role-missing")
+                verdict = _managed_verdict(rcur, user, row, master_user)
+                if verdict is not None:
+                    try:
+                        rconn.rollback()
+                    except Exception:
+                        pass
+                    return _fail("role-state-role-safety")
+        except Exception:
+            try:
+                rconn.rollback()
+            except Exception:
+                pass
+            return _fail("role-state-role-catalog")
+        _ok("role-state-roles")
+        try:
+            rconn.rollback()
+        except Exception:
+            pass
+    finally:
+        try:
+            rconn.close()
+        except Exception:
+            pass
+    try:
+        mconn = psycopg.connect(host=migration["host"], port=migration["port"],
+                                dbname=migration["dbname"], user=migration["user"],
+                                password=migration["password"],
+                                sslmode="verify-full", sslrootcert=bundle)
+    except Exception as exc:
+        return _fail("role-state-migration-connect",
+                     _error_detail(exc, "connection-failed"))
+    try:
+        mconn.autocommit = False
+        mcur = mconn.cursor()
+        try:
+            ident = _connection_identity(mcur)
+        except Exception:
+            try:
+                mconn.rollback()
+            except Exception:
+                pass
+            return _fail("role-state-migration-identity")
+        if (ident["session_user"] != migration_user
+                or ident["current_user"] != migration_user):
+            try:
+                mconn.rollback()
+            except Exception:
+                pass
+            return _fail("role-state-migration-identity")
+        _ok("role-state-migration-connect")
+        try:
+            for user in (runtime_user, migration_user):
+                row = _role_row(mcur, user)
+                if row is None:
+                    try:
+                        mconn.rollback()
+                    except Exception:
+                        pass
+                    return _fail("role-state-role-missing")
+                verdict = _managed_verdict(mcur, user, row, master_user)
+                if verdict is not None:
+                    try:
+                        mconn.rollback()
+                    except Exception:
+                        pass
+                    return _fail("role-state-role-safety")
+        except Exception:
+            try:
+                mconn.rollback()
+            except Exception:
+                pass
+            return _fail("role-state-role-catalog")
+        try:
+            owner = _schema_owner(mcur, schema)
+            if not owner:
+                try:
+                    mconn.rollback()
+                except Exception:
+                    pass
+                return _fail("role-state-schema-missing")
+            if owner != master_user:
+                if owner != "pg_database_owner":
+                    try:
+                        mconn.rollback()
+                    except Exception:
+                        pass
+                    return _fail("role-state-schema-owner")
+                try:
+                    db_owner = _database_owner(mcur, dbname)
+                except Exception:
+                    try:
+                        mconn.rollback()
+                    except Exception:
+                        pass
+                    return _fail("role-state-schema-catalog")
+                if db_owner != master_user:
+                    try:
+                        mconn.rollback()
+                    except Exception:
+                        pass
+                    return _fail("role-state-schema-owner")
+            _ok("role-state-schema")
+        except Exception:
+            try:
+                mconn.rollback()
+            except Exception:
+                pass
+            return _fail("role-state-schema-catalog")
+        try:
+            inventory = _schema_object_owners(mcur, schema)
+            funcs = _function_owners(mcur, schema)
+        except Exception:
+            try:
+                mconn.rollback()
+            except Exception:
+                pass
+            return _fail("role-state-ownership-catalog")
+        for relname, _relkind, relowner in inventory:
+            if relowner != migration_user:
+                try:
+                    mconn.rollback()
+                except Exception:
+                    pass
+                return _fail("role-state-ownership")
+        for proname, funcowner in funcs:
+            if funcowner != migration_user:
+                try:
+                    mconn.rollback()
+                except Exception:
+                    pass
+                return _fail("role-state-ownership")
+        _ok("role-state-ownership")
+        try:
+            mcur.execute("SELECT version_num FROM alembic_version")
+            version = mcur.fetchone()
+            head = str(version[0]) if version and version[0] else ""
+            if head not in ("006", "007"):
+                try:
+                    mconn.rollback()
+                except Exception:
+                    pass
+                return _fail("role-state-head")
+            print("bootstrap-db-roles: role-state-head ok revision=%s"
+                  % _redact(head), flush=True)
+        except Exception:
+            try:
+                mconn.rollback()
+            except Exception:
+                pass
+            return _fail("role-state-head")
+        try:
+            names = {rel for rel, _kind, _own in inventory}
+            if "workspaces" not in names:
+                try:
+                    mconn.rollback()
+                except Exception:
+                    pass
+                return _fail("role-state-workspaces-missing")
+            if "alembic_version" not in names:
+                try:
+                    mconn.rollback()
+                except Exception:
+                    pass
+                return _fail("role-state-alembic-missing")
+            for model_table in MODEL_TABLES:
+                if model_table not in names:
+                    try:
+                        mconn.rollback()
+                    except Exception:
+                        pass
+                    return _fail("role-state-model-missing")
+            fnames = {name for name, _own in funcs}
+            for want in (MODEL_RESERVE_FUNC, MODEL_FINALIZE_FUNC,
+                          MODEL_TRIGGER_FUNC):
+                if want not in fnames:
+                    try:
+                        mconn.rollback()
+                    except Exception:
+                        pass
+                    return _fail("role-state-model-missing")
+            cdef = _constraint_def(mcur, schema, "memory_items",
+                                   "memory_item_kind")
+            if not cdef or "brand_fact" not in cdef:
+                try:
+                    mconn.rollback()
+                except Exception:
+                    pass
+                return _fail("role-state-check-missing")
+            has_voice = "voice_profile" in cdef
+            if head == "007" and not has_voice:
+                try:
+                    mconn.rollback()
+                except Exception:
+                    pass
+                return _fail("role-state-check-007")
+            if head == "006" and has_voice:
+                try:
+                    mconn.rollback()
+                except Exception:
+                    pass
+                return _fail("role-state-check-006")
+            _ok("role-state-schema-props")
+        except Exception:
+            try:
+                mconn.rollback()
+            except Exception:
+                pass
+            return _fail("role-state-schema-props")
+        try:
+            mconn.rollback()
+        except Exception:
+            pass
+    finally:
+        try:
+            mconn.close()
+        except Exception:
+            pass
+    try:
+        gconn = psycopg.connect(host=runtime["host"], port=runtime["port"],
+                                dbname=runtime["dbname"], user=runtime["user"],
+                                password=runtime["password"],
+                                sslmode="verify-full", sslrootcert=bundle)
+    except Exception:
+        return _fail("role-state-grants-connect")
+    try:
+        gconn.autocommit = False
+        gcur = gconn.cursor()
+        try:
+            if not _has_priv(gcur, "has_schema_privilege", schema, "USAGE"):
+                try:
+                    gconn.rollback()
+                except Exception:
+                    pass
+                return _fail("role-state-schema-grant")
+            if _has_priv(gcur, "has_schema_privilege", schema, "CREATE"):
+                try:
+                    gconn.rollback()
+                except Exception:
+                    pass
+                return _fail("role-state-schema-grant")
+            gcur.execute(
+                "SELECT c.relname, c.relkind FROM pg_class c "
+                "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                "WHERE n.nspname = %s "
+                "AND c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S') "
+                "ORDER BY c.relname",
+                (schema,))
+            rels = gcur.fetchall() or []
+            for relname, relkind in rels:
+                qname = "%s.%s" % (schema, relname)
+                if relkind == "S":
+                    if not _has_priv(gcur, "has_sequence_privilege",
+                                     qname, "USAGE"):
+                        try:
+                            gconn.rollback()
+                        except Exception:
+                            pass
+                        return _fail("role-state-sequence-grant")
+                    if not _has_priv(gcur, "has_sequence_privilege",
+                                     qname, "SELECT"):
+                        try:
+                            gconn.rollback()
+                        except Exception:
+                            pass
+                        return _fail("role-state-sequence-grant")
+                    continue
+                if relname in MODEL_TABLES:
+                    if not _has_priv(gcur, "has_table_privilege",
+                                     qname, "SELECT"):
+                        try:
+                            gconn.rollback()
+                        except Exception:
+                            pass
+                        return _fail("role-state-model-grant")
+                    for priv in ("INSERT", "UPDATE", "DELETE",
+                                 "TRUNCATE", "REFERENCES", "TRIGGER"):
+                        if _has_priv(gcur, "has_table_privilege",
+                                     qname, priv):
+                            try:
+                                gconn.rollback()
+                            except Exception:
+                                pass
+                            return _fail("role-state-model-grant")
+                    continue
+                for priv in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+                    if not _has_priv(gcur, "has_table_privilege",
+                                     qname, priv):
+                        try:
+                            gconn.rollback()
+                        except Exception:
+                            pass
+                        return _fail("role-state-table-grant")
+                for priv in ("TRUNCATE", "REFERENCES", "TRIGGER"):
+                    if _has_priv(gcur, "has_table_privilege", qname, priv):
+                        try:
+                            gconn.rollback()
+                        except Exception:
+                            pass
+                        return _fail("role-state-table-grant")
+            _ok("role-state-grants")
+        except Exception:
+            try:
+                gconn.rollback()
+            except Exception:
+                pass
+            return _fail("role-state-grants")
+        try:
+            gcur.execute(
+                "SELECT p.proname FROM pg_proc p "
+                "JOIN pg_namespace n ON n.oid = p.pronamespace "
+                "WHERE n.nspname = %s AND p.proname IN (%s, %s, %s)",
+                (schema, MODEL_RESERVE_FUNC, MODEL_FINALIZE_FUNC,
+                 MODEL_TRIGGER_FUNC))
+            grows = gcur.fetchall() or []
+            if sorted(str(r[0]) for r in grows) != sorted(
+                    [MODEL_RESERVE_FUNC, MODEL_FINALIZE_FUNC,
+                     MODEL_TRIGGER_FUNC]):
+                try:
+                    gconn.rollback()
+                except Exception:
+                    pass
+                return _fail("role-state-model-functions")
+            for proname in (MODEL_RESERVE_FUNC, MODEL_FINALIZE_FUNC):
+                qfunc = "%s.%s" % (schema, proname)
+                if not _has_priv(gcur, "has_function_privilege",
+                                 qfunc, "EXECUTE"):
+                    try:
+                        gconn.rollback()
+                    except Exception:
+                        pass
+                    return _fail("role-state-model-functions")
+            qtrig = "%s.%s" % (schema, MODEL_TRIGGER_FUNC)
+            if _has_priv(gcur, "has_function_privilege", qtrig, "EXECUTE"):
+                try:
+                    gconn.rollback()
+                except Exception:
+                    pass
+                return _fail("role-state-model-functions")
+            gcur.execute(
+                "SELECT e.grantee, e.privilege_type FROM pg_proc p "
+                "JOIN pg_namespace n ON n.oid = p.pronamespace, "
+                "LATERAL aclexplode(coalesce(p.proacl, "
+                "acldefault(%s, p.proowner))) AS e "
+                "WHERE n.nspname = %s AND p.proname IN (%s, %s, %s)",
+                ("f", schema, MODEL_RESERVE_FUNC, MODEL_FINALIZE_FUNC,
+                 MODEL_TRIGGER_FUNC))
+            facls = gcur.fetchall() or []
+            for grantee, priv in facls:
+                try:
+                    g_int = int(grantee)
+                except Exception:
+                    try:
+                        gconn.rollback()
+                    except Exception:
+                        pass
+                    return _fail("role-state-model-functions")
+                if g_int == 0 and str(priv).upper() == "EXECUTE":
+                    try:
+                        gconn.rollback()
+                    except Exception:
+                        pass
+                    return _fail("role-state-model-functions")
+            _ok("role-state-model-functions")
+        except Exception:
+            try:
+                gconn.rollback()
+            except Exception:
+                pass
+            return _fail("role-state-model-functions")
+        try:
+            gcur.execute(
+                "SELECT e.grantee, e.privilege_type FROM pg_default_acl, "
+                "LATERAL aclexplode(defaclacl) AS e "
+                "WHERE defaclobjtype = %s", ("f",))
+            defaults = gcur.fetchall() or []
+            gcur.execute("SELECT oid FROM pg_roles WHERE rolname = %s",
+                         (runtime_user,))
+            oid_row = gcur.fetchone()
+            if not oid_row:
+                try:
+                    gconn.rollback()
+                except Exception:
+                    pass
+                return _fail("role-state-model-defaults")
+            rt_oid = oid_row[0]
+            for grantee, priv in defaults:
+                try:
+                    g_int = int(grantee)
+                    r_int = int(rt_oid)
+                except Exception:
+                    try:
+                        gconn.rollback()
+                    except Exception:
+                        pass
+                    return _fail("role-state-model-defaults")
+                if str(priv).upper() == "EXECUTE" and (
+                        g_int == 0 or g_int == r_int):
+                    try:
+                        gconn.rollback()
+                    except Exception:
+                        pass
+                    return _fail("role-state-model-defaults")
+            gcur.execute(
+                "SELECT e.grantee, e.privilege_type FROM pg_default_acl d, "
+                "LATERAL aclexplode(d.defaclacl) AS e "
+                "JOIN pg_roles r ON r.oid = d.defaclrole "
+                "JOIN pg_namespace n ON n.oid = d.defaclnamespace "
+                "WHERE d.defaclobjtype = %s AND r.rolname = %s "
+                "AND n.nspname = %s",
+                ("r", migration_user, schema))
+            tdefs = gcur.fetchall() or []
+            tprivs = set()
+            for grantee, priv in tdefs:
+                try:
+                    g_int = int(grantee)
+                    r_int = int(rt_oid)
+                except Exception:
+                    try:
+                        gconn.rollback()
+                    except Exception:
+                        pass
+                    return _fail("role-state-table-defaults")
+                if g_int == 0:
+                    try:
+                        gconn.rollback()
+                    except Exception:
+                        pass
+                    return _fail("role-state-table-defaults")
+                if g_int == r_int:
+                    tprivs.add(str(priv).upper())
+            for want in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+                if want not in tprivs:
+                    try:
+                        gconn.rollback()
+                    except Exception:
+                        pass
+                    return _fail("role-state-table-defaults")
+            gcur.execute(
+                "SELECT e.grantee, e.privilege_type FROM pg_default_acl d, "
+                "LATERAL aclexplode(d.defaclacl) AS e "
+                "JOIN pg_roles r ON r.oid = d.defaclrole "
+                "JOIN pg_namespace n ON n.oid = d.defaclnamespace "
+                "WHERE d.defaclobjtype = %s AND r.rolname = %s "
+                "AND n.nspname = %s",
+                ("S", migration_user, schema))
+            sdefs = gcur.fetchall() or []
+            sprivs = set()
+            for grantee, priv in sdefs:
+                try:
+                    g_int = int(grantee)
+                    r_int = int(rt_oid)
+                except Exception:
+                    try:
+                        gconn.rollback()
+                    except Exception:
+                        pass
+                    return _fail("role-state-sequence-defaults")
+                if g_int == 0:
+                    try:
+                        gconn.rollback()
+                    except Exception:
+                        pass
+                    return _fail("role-state-sequence-defaults")
+                if g_int == r_int:
+                    sprivs.add(str(priv).upper())
+            for want in ("USAGE", "SELECT"):
+                if want not in sprivs:
+                    try:
+                        gconn.rollback()
+                    except Exception:
+                        pass
+                    return _fail("role-state-sequence-defaults")
+            _ok("role-state-model-defaults")
+        except Exception:
+            try:
+                gconn.rollback()
+            except Exception:
+                pass
+            return _fail("role-state-model-defaults")
+        try:
+            gconn.rollback()
+        except Exception:
+            pass
+    finally:
+        try:
+            gconn.close()
+        except Exception:
+            pass
+    if head == "007":
+        print("bootstrap-db-roles: ROLE-STATE COMPLETE head=007 "
+              "roles=2 read-only, no master, repair not needed", flush=True)
+        return 0
+    print("bootstrap-db-roles: ROLE-STATE COMPLETE head=006 "
+          "roles=2 read-only, ready for single 007 migration", flush=True)
+    return 10
+
+
 def do_verify():
     import psycopg
 
@@ -1163,12 +1757,16 @@ def do_verify():
 
 
 def main(argv):
-    if len(argv) != 2 or argv[1] not in ("--bind", "--verify"):
-        print("usage: bootstrap_db_roles.py [--bind|--verify]", flush=True)
+    if len(argv) != 2 or argv[1] not in ("--bind", "--verify",
+                                        "--verify-role-state"):
+        print("usage: bootstrap_db_roles.py [--bind|--verify|--verify-role-state]",
+              flush=True)
         return 2
     try:
         if argv[1] == "--bind":
             return do_bind()
+        if argv[1] == "--verify-role-state":
+            return do_verify_role_state()
         return do_verify()
     except ValueError as exc:
         return _fail("config", str(exc))

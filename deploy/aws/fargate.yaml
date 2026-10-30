@@ -962,6 +962,70 @@ Resources:
         - ContainerName: web-proxy
           ContainerPort: 8443
           TargetGroupArn: !Ref WebTargetGroup
+  RoleStateExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: rolestate-execution-secrets-only
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: [secretsmanager:GetSecretValue]
+                Resource: [!Ref RuntimeDbUrlSecretArn, !Ref MigrationDbUrlSecretArn]
+  RoleStateTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      Policies: []
+  RoleStateTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      RequiresCompatibilities: [FARGATE]
+      NetworkMode: awsvpc
+      Cpu: '256'
+      Memory: '512'
+      ExecutionRoleArn: !GetAtt RoleStateExecutionRole.Arn
+      TaskRoleArn: !GetAtt RoleStateTaskRole.Arn
+      Tags:
+        - { Key: Project, Value: LaunchCrew }
+        - { Key: Environment, Value: demo }
+      ContainerDefinitions:
+        - Name: bootstrap-db-roles
+          Image: !Ref BootstrapImageUri
+          Essential: true
+          Command: ['--verify-role-state']
+          Environment:
+            - { Name: LAUNCHCREW_DB_TLS_MODE, Value: verify-full }
+            - { Name: DATABASE_SSL_ROOTCERT, Value: /app/rds-ca-bundle.pem }
+            - { Name: DB_NAME, Value: launchcrew }
+            - { Name: DB_MASTER_USER, Value: !Ref DatabaseUsername }
+            - { Name: DB_HOST, Value: !GetAtt Database.Endpoint.Address }
+            - { Name: APP_SCHEMA, Value: public }
+            - { Name: RUNTIME_USER, Value: launchcrew_runtime }
+            - { Name: MIGRATION_USER, Value: launchcrew_migration }
+          Secrets:
+            - { Name: RUNTIME_DB_URL, ValueFrom: !Sub '${RuntimeDbUrlSecretArn}:database-url::' }
+            - { Name: MIGRATION_DB_URL, ValueFrom: !Sub '${MigrationDbUrlSecretArn}:database-url::' }
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref MigrationLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: role-state
 Outputs:
   LoadBalancerDnsName:
     Description: ALB DNS name, placeholder target only, Cloudflare record requires separate explicit authorization

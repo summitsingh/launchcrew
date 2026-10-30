@@ -9,7 +9,7 @@
 #                 updates prove both services live 0/0/0, review every page of
 #                 a bounded change set allowing only owned task definition
 #                 image or service taskdef Modify with replacement only on the
-#                 seven task definitions plus optional exact ApiGoogleAuthPolicy
+#                 eight task definitions plus optional exact ApiGoogleAuthPolicy
 #                 Add only when Google explicitly enabled with least privilege
 #                 proof, then execute the same reviewed change set ID and
 #                 re-prove 0/0/0, never deleting a same-name pending set),
@@ -2742,7 +2742,8 @@ if len(changes) == 0:
     sys.exit(0)
 TASKDEFS = {"ApiTaskDefinition", "WebTaskDefinition", "MigrationTaskDefinition",
             "BootstrapTaskDefinition", "VerifyTaskDefinition",
-            "SdkInitTaskDefinition", "SdkMaterialTaskDefinition"}
+            "SdkInitTaskDefinition", "SdkMaterialTaskDefinition",
+            "RoleStateTaskDefinition"}
 SERVICES = {"ApiService", "WebService"}
 seen = set()
 for entry in changes:
@@ -3298,6 +3299,122 @@ PYEOF
   esac
 }
 
+# Require the owned role-state task definition to carry the exact
+# read-only job shape before any RunTask: the verified bootstrap image,
+# default binder EntryPoint with exact Command --verify-role-state, exact
+# metadata env, exact two secrets (runtime plus migration URLs, no master),
+# and the exact owned physical execution and task roles. Least privilege
+# with no master secret is proven here plus the fargate template.
+check_rolestate_taskdef() {
+  RS_LOGICAL="RoleStateTaskDefinition"
+  RS_EXEC_LOGICAL="RoleStateExecutionRole"
+  RS_TASK_LOGICAL="RoleStateTaskRole"
+  if ! RS_EXEC_ARN="$(resolve_role_arn "$RS_EXEC_LOGICAL")"; then
+    echo "$RS_LOGICAL owned execution role unresolvable, job not proven owned." >&2
+    phase_failed "$PHASE"
+  fi
+  if ! RS_TASK_ARN="$(resolve_role_arn "$RS_TASK_LOGICAL")"; then
+    echo "$RS_LOGICAL owned task role unresolvable, job not proven owned." >&2
+    phase_failed "$PHASE"
+  fi
+  if ! RS_DB_HOST="$(owned_db_endpoint)"; then
+    echo "$RS_LOGICAL owned database endpoint unreadable, job not proven owned." >&2
+    phase_failed "$PHASE"
+  fi
+  if ! RS_MASTER_USER="$(params_file_value DatabaseUsername)"; then
+    echo "$RS_LOGICAL master username missing from parameters file, job not proven owned." >&2
+    phase_failed "$PHASE"
+  fi
+  RS_MASTER_USER="$(printf '%s' "$RS_MASTER_USER" | tr -d '[:space:]')"
+  RS_JSON="$(mktemp /tmp/launchcrew-rolestate-XXXXXX)"
+  if ! fetch_taskdef_json "$RS_LOGICAL" "$RS_JSON"; then
+    rm -f "$RS_JSON"
+    echo "$RS_LOGICAL task definition missing, job not tied to an owned task." >&2
+    phase_failed "$PHASE"
+  fi
+  RS_PROOF="$(python3 - "$RS_JSON" "$BOOTSTRAP_IMAGE" "$RS_EXEC_ARN" "$RS_TASK_ARN" "$RUNTIME_SECRET_ARN" "$MIGRATION_SECRET_ARN" "$RS_DB_HOST" "$RS_MASTER_USER" 2>/dev/null <<'PYEOF'
+import json, sys
+(doc_file, want_image, want_exec, want_task,
+ want_rt, want_mg, want_host, want_master) = sys.argv[1:9]
+try:
+    doc = json.load(open(doc_file))
+except Exception:
+    sys.exit(1)
+taskdef = doc.get("taskDefinition", doc)
+if (taskdef.get("executionRoleArn", "") or "") != want_exec:
+    print("EXEC_ROLE_MISMATCH")
+    sys.exit(0)
+if (taskdef.get("taskRoleArn", "") or "") != want_task:
+    print("TASK_ROLE_MISMATCH")
+    sys.exit(0)
+containers = taskdef.get("containerDefinitions", []) or []
+target = None
+for container in containers:
+    if (container.get("name", "") or "") == "bootstrap-db-roles":
+        target = container
+        break
+if target is None:
+    print("MISSING_CONTAINER")
+    sys.exit(0)
+if (target.get("image", "") or "") != want_image:
+    print("IMAGE_MISMATCH")
+    sys.exit(0)
+if target.get("entryPoint", None):
+    print("ENTRYPOINT_MISMATCH")
+    sys.exit(0)
+if (target.get("command", None) or []) != ["--verify-role-state"]:
+    print("COMMAND_MISMATCH")
+    sys.exit(0)
+actual = {}
+for secret in target.get("secrets", []) or []:
+    actual[secret.get("name", "") or ""] = secret.get("valueFrom", "") or ""
+want = {
+    "RUNTIME_DB_URL": "%s:database-url::" % want_rt,
+    "MIGRATION_DB_URL": "%s:database-url::" % want_mg,
+}
+for key in sorted(want):
+    if key not in actual:
+        print("MISSING:" + key)
+        sys.exit(0)
+    if actual[key] != want[key]:
+        print("SECRET_MISMATCH:" + key)
+        sys.exit(0)
+for key in sorted(actual):
+    if key not in want:
+        print("UNEXPECTED:" + key)
+        sys.exit(0)
+if "MASTER_DB_PASSWORD" in actual:
+    print("MASTER_REFUSED")
+    sys.exit(0)
+env = {}
+for item in target.get("environment", []) or []:
+    if isinstance(item, dict) and item.get("name"):
+        env[item.get("name")] = item.get("value", "")
+want_env = {
+    "LAUNCHCREW_DB_TLS_MODE": "verify-full",
+    "DATABASE_SSL_ROOTCERT": "/app/rds-ca-bundle.pem",
+    "DB_NAME": "launchcrew",
+    "DB_MASTER_USER": want_master,
+    "DB_HOST": want_host,
+    "APP_SCHEMA": "public",
+    "RUNTIME_USER": "launchcrew_runtime",
+    "MIGRATION_USER": "launchcrew_migration",
+}
+for key in sorted(want_env):
+    if env.get(key, None) != want_env[key]:
+        print("ENV_MISMATCH:" + key)
+        sys.exit(0)
+print("OK")
+PYEOF
+)" || { rm -f "$RS_JSON"; echo "$RS_LOGICAL task definition unreadable, not treated as matching." >&2; phase_failed "$PHASE"; }
+  rm -f "$RS_JSON"
+  RS_PROOF="$(printf '%s' "$RS_PROOF" | tr -d '[:space:]')"
+  case "$RS_PROOF" in
+    OK) echo "Verified owned role-state task definition image, Command, env, two secrets with no master, roles: $RS_LOGICAL" ;;
+    *) echo "refused: $RS_LOGICAL task definition proof is $RS_PROOF, job not proven owned." >&2; phase_failed "$PHASE" ;;
+  esac
+}
+
 # Verify one published image: explicit tag required with no latest fallback,
 # digest present with no failures, owned account and region and repository
 # scope, and the exact URI the owned stack task definition references.
@@ -3420,6 +3537,7 @@ if wants_phase images; then
   verify_image "$BOOTSTRAP_IMAGE" launchcrew-bootstrap BootstrapTaskDefinition bootstrap-db-roles bootstrap
   verify_image "$BOOTSTRAP_IMAGE" launchcrew-bootstrap SdkInitTaskDefinition sdk-init bootstrap-sdk-init
   verify_image "$BOOTSTRAP_IMAGE" launchcrew-bootstrap SdkMaterialTaskDefinition sdk-material bootstrap-sdk-material
+  verify_image "$BOOTSTRAP_IMAGE" launchcrew-bootstrap RoleStateTaskDefinition bootstrap-db-roles bootstrap-rolestate
   check_api_taskdef_binding images
   check_taskdef_binding WebTaskDefinition WebExecutionRole WebTaskRole \
     "web-proxy.TLS_CERT_B64=$TLS_SECRET_ARN:tls-cert-b64::" \
@@ -4260,7 +4378,8 @@ if not isinstance(token, str) or len(token) != 33 or not token.startswith("lc-")
     print("PROOF\tTOKEN_MALFORMED")
     sys.exit(0)
 outcome = doc.get("outcome", "")
-if outcome != "complete":
+allowed_prior = ("complete", "started") if (want_phase == "dbroles" and want_label == "bootstrap") else ("complete",)
+if outcome not in allowed_prior:
     print("PROOF\tUNRESOLVED")
     print("OUTCOME\t%s" % (outcome if isinstance(outcome, str) and outcome else "MISSING"))
     sys.exit(0)
@@ -4294,6 +4413,7 @@ print("TOKEN\t%s" % token)
 print("TASKARN\t%s" % task_arn)
 print("TASKDEF\t%s" % taskdef_arn)
 print("GEN\t%s" % gen)
+print("OUTCOME\t%s" % outcome)
 PYEOF
 )" || PRIOR_PARSED="PROOF\tUNREADABLE"
     PRIOR_PROOF="$(printf '%s\n' "$PRIOR_PARSED" | awk -F'\t' '$1=="PROOF"{print $2}')"
@@ -4308,6 +4428,7 @@ PYEOF
     PRIOR_TASK="$(printf '%s\n' "$PRIOR_PARSED" | awk -F'\t' '$1=="TASKARN"{print $2}' | tr -d '[:space:]')"
     PRIOR_TASKDEF="$(printf '%s\n' "$PRIOR_PARSED" | awk -F'\t' '$1=="TASKDEF"{print $2}' | tr -d '[:space:]')"
     PRIOR_GEN="$(printf '%s\n' "$PRIOR_PARSED" | awk -F'\t' '$1=="GEN"{print $2}' | tr -d '[:space:]')"
+    PRIOR_JOURNAL_OUTCOME="$(printf '%s\n' "$PRIOR_PARSED" | awk -F'\t' '$1=="OUTCOME"{print $2}' | tr -d '[:space:]')"
     PRIOR_DESC="$(mktemp /tmp/launchcrew-prior-desc-XXXXXX)"
     if ! "$AWS_BIN" ecs describe-tasks --cluster "$CLUSTER_NAME" --tasks "$PRIOR_TASK" --region "$EXPECTED_REGION" --output json >"$PRIOR_DESC" 2>"$TMP_ERR"; then
       rm -f "$PRIOR_DESC" "$PRIOR_LIST"
@@ -4382,12 +4503,37 @@ PYEOF
         attest_aged_init_recovery "$TASK_PHASE" "$PRIOR_PATH" "$PRIOR_BASE"
         echo "$TASK_LABEL prior $PRIOR_GEN recovered via attestation, desired-state equivalence for new $RELEASE_GEN, not retroactive proof. Preserved at $PRIOR_PATH."
         RECOVERED_AGED_PRIOR_INIT=1
+      elif [ "$PRIOR_CHECK" = "NO_TASK" ] && [ "$TASK_LABEL" = "sdk-material" ] && [ "$TASK_PHASE" = "material" ]; then
+        echo "$TASK_LABEL prior $PRIOR_GEN aged out NO_TASK, requiring recovery attestation before new $RELEASE_GEN launch."
+        attest_aged_typed_recovery "$TASK_PHASE" "$PRIOR_PATH" "$PRIOR_BASE" "material" "sdk-material" "SdkMaterialTaskDefinition" "material-recovery-attestation" "SdkMaterialTaskDefinition" "sdk-material" "0" "0"
+        echo "$TASK_LABEL prior $PRIOR_GEN recovered via attestation, desired-state equivalence for new $RELEASE_GEN, not retroactive proof. Preserved at $PRIOR_PATH."
+        RECOVERED_AGED_PRIOR_MATERIAL=1
+      elif [ "$PRIOR_CHECK" = "NO_TASK" ] && [ "$TASK_LABEL" = "bootstrap" ] && [ "$TASK_PHASE" = "dbroles" ]; then
+        echo "$TASK_LABEL prior $PRIOR_GEN aged out NO_TASK, requiring recovery attestation before new $RELEASE_GEN launch."
+        attest_aged_typed_recovery "$TASK_PHASE" "$PRIOR_PATH" "$PRIOR_BASE" "dbroles" "bootstrap" "BootstrapTaskDefinition" "dbroles-recovery-attestation" "RoleStateTaskDefinition" "bootstrap-db-roles" "1" "1"
+        echo "$TASK_LABEL prior $PRIOR_GEN recovered via attestation, desired-state equivalence for new $RELEASE_GEN, not retroactive proof and never a binder rerun. Preserved at $PRIOR_PATH."
+        RECOVERED_AGED_PRIOR_DBROLES=1
+      elif [ "$PRIOR_CHECK" = "NO_TASK" ] && [ "$TASK_LABEL" = "migration" ] && [ "$TASK_PHASE" = "migrate" ]; then
+        echo "$TASK_LABEL prior $PRIOR_GEN aged out NO_TASK, requiring recovery attestation before new $RELEASE_GEN launch."
+        attest_aged_typed_recovery "$TASK_PHASE" "$PRIOR_PATH" "$PRIOR_BASE" "migrate" "migration" "MigrationTaskDefinition" "migration-recovery-attestation" "RoleStateTaskDefinition" "bootstrap-db-roles" "0" "1"
+        echo "$TASK_LABEL prior $PRIOR_GEN recovered via attestation, desired-state equivalence for new $RELEASE_GEN, not retroactive proof. Preserved at $PRIOR_PATH."
+        RECOVERED_AGED_PRIOR_MIGRATION=1
+      elif [ "$PRIOR_CHECK" = "NO_TASK" ] && [ "$TASK_LABEL" = "verify" ] && [ "$TASK_PHASE" = "migrate" ]; then
+        echo "$TASK_LABEL prior $PRIOR_GEN aged out NO_TASK, requiring recovery attestation before new $RELEASE_GEN launch."
+        attest_aged_typed_recovery "$TASK_PHASE" "$PRIOR_PATH" "$PRIOR_BASE" "migrate" "verify" "VerifyTaskDefinition" "runtime-recovery-attestation" "VerifyTaskDefinition" "bootstrap-db-roles" "0" "0"
+        echo "$TASK_LABEL prior $PRIOR_GEN recovered via attestation, desired-state equivalence for new $RELEASE_GEN, not retroactive proof. Preserved at $PRIOR_PATH."
+        RECOVERED_AGED_PRIOR_VERIFY=1
       else
         rm -f "$PRIOR_LIST"
         echo "refused: $TASK_LABEL prior $PRIOR_GEN predecessor terminal proof is $PRIOR_CHECK, no new $RELEASE_GEN launch. Inspect $PRIOR_PATH." >&2
         phase_failed "$TASK_PHASE"
       fi
     else
+      if [ "${PRIOR_JOURNAL_OUTCOME:-complete}" = "started" ]; then
+        rm -f "$PRIOR_LIST"
+        echo "refused: $TASK_LABEL prior $PRIOR_GEN is STARTED with live STOPPED task, historical ambiguity requires separately reviewed repair, no automatic binder rerun and no relabel. Inspect $PRIOR_PATH." >&2
+        phase_failed "$TASK_PHASE"
+      fi
       if [ "$PRIOR_GEN" = "$RELEASE_GEN" ]; then
         echo "$TASK_LABEL same-generation archive $PRIOR_BASE reconciled STOPPED exit 0, preserved at $PRIOR_PATH; new launch proceeds."
       else
@@ -4879,6 +5025,143 @@ PYEOF
   }
 }
 
+# Write one private mode 600 typed recovery attestation atomically. Uses
+# RECOVERY_KIND plus RECOVERY_* globals plus path and outcome args. Metadata
+# only, never a secret value, URL, or key bytes. Includes original journal
+# SHA256 and outcome, exact current material identities, verifier proof,
+# observed DB head, and a cryptographically bound one-shot terminal proof
+# for durability after verifier retention. For a STARTED binder original the
+# note states current-state equivalence and explicitly does not relabel the
+# old STARTED job as completed. Legacy unversioned originals mark
+# legacy_unversioned true and explain current desired-state equivalence,
+# never historical exit, head, or StackId.
+write_typed_recovery_attestation() {
+  TYPED_WRITE_PATH="$1"
+  TYPED_WRITE_OUTCOME="$2"
+  (umask 077; python3 - "$TYPED_WRITE_PATH" "$STACK_NAME" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$CLUSTER_NAME" \
+    "${RECOVERY_KIND:-}" \
+    "${RECOVERY_ORIG_BASENAME:-}" "${RECOVERY_ORIG_SHA:-}" "${RECOVERY_ORIG_TOKEN:-}" "${RECOVERY_ORIG_TASK:-}" \
+    "${RECOVERY_ORIG_TASKDEF:-}" "${RECOVERY_ORIG_GEN:-}" "${RECOVERY_ORIG_SOURCE:-}" "${RECOVERY_ORIG_HEAD:-}" \
+    "${RECOVERY_ORIG_OUTCOME:-}" "${RECOVERY_ORIG_LEGACY:-false}" \
+    "${RECOVERY_STACK_ID:-}" "${RECOVERY_PROJECT:-}" "${RECOVERY_ENV:-}" "${RELEASE_GEN:-}" "${SOURCE_SHA:-}" \
+    "${TARGET_DB_HEAD:-007}" "${RECOVERY_RT_NAME:-}" "${RECOVERY_RT_ARN:-}" "${RECOVERY_RT_PRE:-}" "${RECOVERY_RT_POST:-}" \
+    "${RECOVERY_MG_NAME:-}" "${RECOVERY_MG_ARN:-}" "${RECOVERY_MG_PRE:-}" "${RECOVERY_MG_POST:-}" \
+    "${RECOVERY_TLS_NAME:-}" "${RECOVERY_TLS_ARN:-}" "${RECOVERY_TLS_PRE:-}" "${RECOVERY_TLS_POST:-}" \
+    "${RECOVERY_CERT_ARN:-}" "${RECOVERY_CERT_DOMAIN:-}" "${RECOVERY_CERT_SERIAL_PRE:-}" "${RECOVERY_CERT_SERIAL_POST:-}" \
+    "${RECOVERY_CERT_STATUS:-}" "${RECOVERY_CERT_TYPE:-}" "${RECOVERY_CERT_EXPORT:-}" \
+    "${RECOVERY_VERIFIER_TOKEN:-}" "${RECOVERY_VERIFIER_TASK:-}" "${RECOVERY_VERIFIER_TASKDEF:-}" \
+    "${RECOVERY_VERIFIER_PROOF:-}" "${RECOVERY_VERIFIER_CONTAINERS:-}" "${RECOVERY_VERIFIER_LAST_STATUS:-}" \
+    "${RECOVERY_VERIFIER_DIGEST:-}" "${RECOVERY_ABSENCE_PROOF:-}" "${RECOVERY_OBSERVED_HEAD:-}" "$TYPED_WRITE_OUTCOME" <<'PYEOF'
+import json, os, sys, tempfile
+(path, stack, account, region, cluster,
+ kind,
+ orig_base, orig_sha, orig_token, orig_task,
+ orig_taskdef, orig_gen, orig_source, orig_head,
+ orig_outcome, orig_legacy,
+ stack_id, project, env,
+ release_gen, source_sha, target_head,
+ rt_name, rt_arn, rt_pre, rt_post,
+ mg_name, mg_arn, mg_pre, mg_post,
+ tls_name, tls_arn, tls_pre, tls_post,
+ cert_arn, cert_domain, cert_pre, cert_post,
+ cert_status, cert_type, cert_export,
+ verifier_token, verifier_task, verifier_taskdef,
+ verifier_proof, verifier_containers, verifier_last_status,
+ verifier_digest, absence_proof, observed_head, outcome) = sys.argv[1:60]
+if os.path.islink(path):
+    raise SystemExit("refused: recovery path is a symlink")
+try:
+    import datetime
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+except Exception:
+    stamp = ""
+if orig_legacy == "true":
+    note_text = "legacy_unversioned desired-state equivalence for proceeding, proves current desired-state equivalence, not historical task exit, head, or StackId"
+elif orig_outcome == "started":
+    note_text = "desired-state equivalence for proceeding, not retroactive proof that the old job succeeded; does not relabel old STARTED as completed"
+else:
+    note_text = "desired-state equivalence for proceeding, not retroactive proof that the old job exited successfully"
+doc = {
+    "version": 1,
+    "kind": kind,
+    "stack": stack,
+    "account": account,
+    "region": region,
+    "cluster": cluster,
+    "original_basename": orig_base,
+    "original_sha256": orig_sha,
+    "original_token": orig_token,
+    "original_task_arn": orig_task,
+    "original_taskdef_arn": orig_taskdef,
+    "original_generation": orig_gen,
+    "original_source_sha": orig_source,
+    "original_target_head": orig_head,
+    "original_outcome": orig_outcome,
+    "legacy_unversioned": orig_legacy,
+    "stack_id": stack_id,
+    "project": project,
+    "environment": env,
+    "release_generation": release_gen,
+    "source_sha": source_sha,
+    "target_head": target_head,
+    "runtime_name": rt_name,
+    "runtime_arn": rt_arn,
+    "runtime_version_pre": rt_pre,
+    "runtime_version_post": rt_post,
+    "migration_name": mg_name,
+    "migration_arn": mg_arn,
+    "migration_version_pre": mg_pre,
+    "migration_version_post": mg_post,
+    "tls_name": tls_name,
+    "tls_arn": tls_arn,
+    "tls_version_pre": tls_pre,
+    "tls_version_post": tls_post,
+    "cert_arn": cert_arn,
+    "cert_domain": cert_domain,
+    "cert_serial_pre": cert_pre,
+    "cert_serial_post": cert_post,
+    "cert_status": cert_status,
+    "cert_type": cert_type,
+    "cert_export": cert_export,
+    "verifier_token": verifier_token,
+    "verifier_task_arn": verifier_task,
+    "verifier_taskdef_arn": verifier_taskdef,
+    "verifier_proof": verifier_proof,
+    "verifier_containers": verifier_containers,
+    "verifier_last_status": verifier_last_status,
+    "verifier_digest": verifier_digest,
+    "absence_proof": absence_proof,
+    "observed_head": observed_head,
+    "outcome": outcome,
+    "note": note_text,
+    "updated_utc": stamp,
+}
+directory = os.path.dirname(os.path.abspath(path)) or "."
+fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".recovery-")
+try:
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as out:
+        json.dump(doc, out, indent=2, sort_keys=True)
+        out.write("\n")
+    os.replace(tmp_path, path)
+    os.chmod(path, 0o600)
+except Exception:
+    try:
+        os.unlink(tmp_path)
+    except Exception:
+        pass
+    raise
+PYEOF
+) || {
+    echo "recovery attestation write failed, no verifier claimed." >&2
+    phase_failed "${RECOVERY_FAIL_PHASE:-init}"
+  }
+  chmod 600 "$TYPED_WRITE_PATH" 2>/dev/null || {
+    echo "recovery attestation mode failed, no verifier claimed." >&2
+    phase_failed "${RECOVERY_FAIL_PHASE:-init}"
+  }
+}
+
 # Strict validation of an original init journal for recovery. Args: path,
 # basename. Only outcome complete qualifies; pending, started, adopted,
 # and every ambiguous outcome refuse with no recovery. Versioned records
@@ -5193,6 +5476,334 @@ print("GEN\t%s" % gen)
 print("SOURCE\t%s" % source)
 print("HEAD\t%s" % head)
 print("STACKID\t%s" % doc.get("stack_id", ""))
+print("LEGACY\tfalse")
+PYEOF
+}
+
+# Strict validation of an original typed journal for recovery. Args: path,
+# basename, phase, label, logical, allow_started (0 complete only, 1 started
+# or complete for the distinct binder case). Only allowed outcomes qualify;
+# pending, adopted, and every ambiguous outcome refuse with no recovery.
+# Versioned records validate exact owned account, region, stack, cluster,
+# phase, label, logical, generation, head, StackId, token, task ARN shape,
+# taskdef ARN shape, and recomputed config digest. Exact legacy unversioned
+# branch ONLY for the exact unversioned active basename validates the 14-key
+# legacy schema with version 1, allowed outcome, owned identity, token, task
+# and taskdef ARNs, and recomputed digest. It never fabricates generation,
+# source, head, or stack id and returns those empty with LEGACY true. Prints
+# PROOF OK plus TOKEN, TASKARN, TASKDEF, GEN, SOURCE, HEAD, STACKID, OUTCOME,
+# LEGACY on success, else PROOF reason. Never writes the original.
+validate_typed_journal_for_recovery() {
+  TYPED_PATH="$1"
+  TYPED_BASE="$2"
+  TYPED_PHASE="$3"
+  TYPED_LABEL="$4"
+  TYPED_LOGICAL="$5"
+  TYPED_ALLOW_STARTED="${6:-0}"
+  python3 - "$TYPED_PATH" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$STACK_NAME" "$CLUSTER_NAME" "$TARGET_DB_HEAD" "${STACK_ID:-}" "$TYPED_BASE" "$TYPED_PHASE" "$TYPED_LABEL" "$TYPED_LOGICAL" "$TYPED_ALLOW_STARTED" 2>/dev/null <<'PYEOF'
+import hashlib, json, os, re, sys
+(path, want_account, want_region, want_stack, want_cluster,
+ want_head, want_stack_id, want_base,
+ want_phase, want_label, want_logical, allow_started) = sys.argv[1:13]
+allow_started = (allow_started == "1")
+try:
+    if os.path.islink(path):
+        print("PROOF\tSYMLINK")
+        sys.exit(0)
+    finfo = os.stat(path)
+    if (finfo.st_mode & 0o777) != 0o600:
+        print("PROOF\tMODE")
+        sys.exit(0)
+    if finfo.st_uid != os.getuid():
+        print("PROOF\tOWNER")
+        sys.exit(0)
+    if finfo.st_size <= 0 or finfo.st_size > 10240:
+        print("PROOF\tSIZE")
+        sys.exit(0)
+    with open(path, encoding="utf-8") as handle:
+        doc = json.load(handle)
+except Exception:
+    print("PROOF\tUNREADABLE")
+    sys.exit(0)
+if not isinstance(doc, dict):
+    print("PROOF\tMALFORMED")
+    sys.exit(0)
+try:
+    if want_base and want_base not in ("active.json", "legacy"):
+        if os.path.basename(path) != want_base:
+            print("PROOF\tPATH_MISMATCH")
+            sys.exit(0)
+except Exception:
+    print("PROOF\tPATH_MISMATCH")
+    sys.exit(0)
+legacy_base = "launchcrew-%s-%s-%s-active.json" % (want_stack, want_phase, want_label)
+if want_base == legacy_base:
+    legacy_expected = {"account", "client_token", "cluster", "config_digest",
+                       "label", "outcome", "phase", "region", "stack",
+                       "task_arn", "taskdef_arn", "taskdef_logical",
+                       "updated_utc", "version"}
+    if set(doc.keys()) != legacy_expected:
+        for _k in doc:
+            if _k not in legacy_expected:
+                print("PROOF\tFOREIGN_FIELD")
+                sys.exit(0)
+        print("PROOF\tLEGACY_KEYS_MISMATCH")
+        sys.exit(0)
+    if doc.get("version", 0) != 1:
+        print("PROOF\tVERSION_MISMATCH")
+        sys.exit(0)
+    for _k, _v in doc.items():
+        if _k == "version":
+            if not isinstance(_v, int) or isinstance(_v, bool):
+                print("PROOF\tMALFORMED")
+                sys.exit(0)
+            continue
+        if not isinstance(_v, str):
+            print("PROOF\tMALFORMED")
+            sys.exit(0)
+    for _k, _v in doc.items():
+        _kl = str(_k).lower()
+        if _kl in ("password", "database-url", "database_url",
+                   "tls-cert-b64", "tls-key-b64", "tls_cert_b64", "tls_key_b64",
+                   "secret_value", "secretvalue", "private_key", "privatekey",
+                   "certificate_body", "certificate_chain"):
+            print("PROOF\tSECRET_FIELD")
+            sys.exit(0)
+        if isinstance(_v, str):
+            _vl = _v.lower()
+            if "://" in _vl:
+                print("PROOF\tSECRET_FIELD")
+                sys.exit(0)
+            if "-----begin" in _vl or "-----end" in _vl or "private key" in _vl:
+                print("PROOF\tSECRET_FIELD")
+                sys.exit(0)
+            if "tls-cert-b64" in _vl or "tls-key-b64" in _vl or "database-url" in _vl:
+                print("PROOF\tSECRET_FIELD")
+                sys.exit(0)
+            if "password" in _vl:
+                print("PROOF\tSECRET_FIELD")
+                sys.exit(0)
+    for _f, _w in (("account", want_account), ("region", want_region),
+                   ("stack", want_stack), ("cluster", want_cluster),
+                   ("phase", want_phase), ("label", want_label),
+                   ("taskdef_logical", want_logical)):
+        if doc.get(_f, "") != _w:
+            print("PROOF\t%s_MISMATCH" % _f.upper())
+            sys.exit(0)
+    _token = doc.get("client_token", "")
+    if not isinstance(_token, str) or len(_token) != 33 or not _token.startswith("lc-"):
+        print("PROOF\tTOKEN_MALFORMED")
+        sys.exit(0)
+    _outcome = doc.get("outcome", "")
+    allowed = ("complete", "started") if allow_started else ("complete",)
+    if _outcome not in allowed:
+        print("PROOF\tUNRESOLVED")
+        print("OUTCOME\t%s" % (_outcome if isinstance(_outcome, str) and _outcome else "MISSING"))
+        sys.exit(0)
+    _task = doc.get("task_arn", "")
+    if not isinstance(_task, str) or not _task.startswith(
+            "arn:aws:ecs:%s:%s:task/%s/" % (want_region, want_account, want_cluster)):
+        print("PROOF\tTASKARN_FOREIGN")
+        sys.exit(0)
+    _tdef = doc.get("taskdef_arn", "")
+    if not isinstance(_tdef, str) or not _tdef.startswith(
+            "arn:aws:ecs:%s:%s:task" "-definition/" % (want_region, want_account)):
+        print("PROOF\tTASKDEF_FOREIGN")
+        sys.exit(0)
+    try:
+        _tail = _tdef.split(":task" "-definition/", 1)[1]
+        _fam = _tail.split(":", 1)[0]
+        _rev = _tail.split(":", 1)[1] if ":" in _tail else ""
+    except Exception:
+        _fam = ""
+        _rev = ""
+    if not _fam or not _rev:
+        print("PROOF\tTASKDEF_MALFORMED")
+        sys.exit(0)
+    try:
+        _rec = doc.get("config_digest", "")
+        _raw = "|".join([
+            doc.get("account", ""), doc.get("region", ""),
+            doc.get("stack", ""), doc.get("cluster", ""),
+            doc.get("phase", ""), doc.get("label", ""),
+            doc.get("taskdef_logical", ""), doc.get("taskdef_arn", ""),
+        ])
+        _exp = hashlib.sha256(_raw.encode("utf-8")).hexdigest()[:32]
+        if not isinstance(_rec, str) or _rec != _exp:
+            print("PROOF\tCONFIG_MISMATCH")
+            sys.exit(0)
+    except Exception:
+        print("PROOF\tCONFIG_MISMATCH")
+        sys.exit(0)
+    _upd = doc.get("updated_utc", "")
+    if not isinstance(_upd, str) or not _upd:
+        print("PROOF\tUPDATED_MISSING")
+        sys.exit(0)
+    print("PROOF\tOK")
+    print("TOKEN\t%s" % _token)
+    print("TASKARN\t%s" % _task)
+    print("TASKDEF\t%s" % _tdef)
+    print("GEN\t")
+    print("SOURCE\t")
+    print("HEAD\t")
+    print("STACKID\t")
+    print("OUTCOME\t%s" % _outcome)
+    print("LEGACY\ttrue")
+    print("UPDATED\t%s" % _upd)
+    sys.exit(0)
+allow = {"version", "stack", "phase", "label", "taskdef_logical", "taskdef_arn",
+         "cluster", "client_token", "config_digest", "region", "account",
+         "outcome", "task_arn", "updated_utc", "release_generation",
+         "source_sha", "target_head", "stack_id", "predecessor_task_arn",
+         "predecessor_outcome"}
+for key in doc:
+    if key not in allow:
+        print("PROOF\tFOREIGN_FIELD")
+        sys.exit(0)
+for _k, _v in doc.items():
+    if _k == "version":
+        if not isinstance(_v, int) or isinstance(_v, bool):
+            print("PROOF\tMALFORMED")
+            sys.exit(0)
+        continue
+    if not isinstance(_v, str):
+        print("PROOF\tMALFORMED")
+        sys.exit(0)
+for _k, _v in doc.items():
+    _kl = str(_k).lower()
+    if _kl in ("password", "database-url", "database_url",
+               "tls-cert-b64", "tls-key-b64", "tls_cert_b64", "tls_key_b64",
+               "secret_value", "secretvalue", "private_key", "privatekey",
+               "certificate_body", "certificate_chain"):
+        print("PROOF\tSECRET_FIELD")
+        sys.exit(0)
+    if isinstance(_v, str):
+        _vl = _v.lower()
+        if "://" in _vl:
+            print("PROOF\tSECRET_FIELD")
+            sys.exit(0)
+        if "-----begin" in _vl or "-----end" in _vl or "private key" in _vl:
+            print("PROOF\tSECRET_FIELD")
+            sys.exit(0)
+        if "tls-cert-b64" in _vl or "tls-key-b64" in _vl or "database-url" in _vl:
+            print("PROOF\tSECRET_FIELD")
+            sys.exit(0)
+        if "password" in _vl:
+            print("PROOF\tSECRET_FIELD")
+            sys.exit(0)
+checks = (("account", want_account), ("region", want_region),
+          ("stack", want_stack), ("cluster", want_cluster),
+          ("phase", want_phase), ("label", want_label),
+          ("taskdef_logical", want_logical))
+for field, want in checks:
+    if doc.get(field, "") != want:
+        print("PROOF\t%s_MISMATCH" % field.upper())
+        sys.exit(0)
+gen = doc.get("release_generation", "")
+source = doc.get("source_sha", "")
+head = doc.get("target_head", "")
+if not isinstance(gen, str) or not gen:
+    print("PROOF\tGENERATION_MISSING")
+    sys.exit(0)
+for char in gen:
+    if char not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-":
+        print("PROOF\tGENERATION_MALFORMED")
+        sys.exit(0)
+if not isinstance(source, str):
+    print("PROOF\tSOURCE_MALFORMED")
+    sys.exit(0)
+if source:
+    if len(source) < 7 or len(source) > 40:
+        print("PROOF\tSOURCE_MALFORMED")
+        sys.exit(0)
+    for char in source:
+        if char not in "0123456789abcdefABCDEF":
+            print("PROOF\tSOURCE_MALFORMED")
+            sys.exit(0)
+allowed_heads = {"004", "005", "006", want_head}
+if not isinstance(head, str) or head not in allowed_heads:
+    print("PROOF\tHEAD_UNKNOWN")
+    sys.exit(0)
+named = set()
+for found in re.findall(r"head(\d{3})", gen):
+    named.add(found)
+for tok in re.split(r"[-_.]", gen):
+    if re.fullmatch(r"\d{3}", tok or ""):
+        named.add(tok)
+if len(named) == 0:
+    print("PROOF\tGENERATION_FOREIGN")
+    sys.exit(0)
+if len(named) != 1:
+    print("PROOF\tGENERATION_AMBIGUOUS")
+    sys.exit(0)
+if next(iter(named)) != head:
+    print("PROOF\tHEAD_MISMATCH")
+    sys.exit(0)
+if want_stack_id and doc.get("stack_id", "") != want_stack_id:
+    print("PROOF\tSTACKID_MISMATCH")
+    sys.exit(0)
+if want_base and want_base != "active.json" and want_base != "legacy":
+    try:
+        base_esc = "launchcrew-" + re.escape(want_stack) + "-" + re.escape(want_phase) + "-" + re.escape(want_label)
+        active_re = re.compile(r"^" + base_esc + r"-([A-Za-z0-9_.-]+)-active\.json$")
+        archive_re = re.compile(r"^" + base_esc + r"-([A-Za-z0-9_.-]+)-complete-(lc-[A-Za-z0-9]{30})\.json$")
+        file_gen = None
+        m = active_re.match(want_base or "")
+        if m:
+            file_gen = m.group(1)
+        else:
+            m2 = archive_re.match(want_base or "")
+            if m2:
+                file_gen = m2.group(1)
+    except Exception:
+        file_gen = None
+    if file_gen and file_gen != gen:
+        print("PROOF\tGENERATION_FILENAME_MISMATCH")
+        sys.exit(0)
+token = doc.get("client_token", "")
+if not isinstance(token, str) or len(token) != 33 or not token.startswith("lc-"):
+    print("PROOF\tTOKEN_MALFORMED")
+    sys.exit(0)
+outcome = doc.get("outcome", "")
+allowed = ("complete", "started") if allow_started else ("complete",)
+if outcome not in allowed:
+    print("PROOF\tUNRESOLVED")
+    print("OUTCOME\t%s" % (outcome if isinstance(outcome, str) and outcome else "MISSING"))
+    sys.exit(0)
+task_arn = doc.get("task_arn", "")
+if not isinstance(task_arn, str) or not task_arn.startswith(
+        "arn:aws:ecs:%s:%s:task/%s/" % (want_region, want_account, want_cluster)):
+    print("PROOF\tTASKARN_FOREIGN")
+    sys.exit(0)
+taskdef_arn = doc.get("taskdef_arn", "")
+if not isinstance(taskdef_arn, str) or not taskdef_arn.startswith(
+        "arn:aws:ecs:%s:%s:task" "-definition/" % (want_region, want_account)):
+    print("PROOF\tTASKDEF_FOREIGN")
+    sys.exit(0)
+try:
+    rec_digest = doc.get("config_digest", "")
+    raw = "|".join([
+        doc.get("account", ""), doc.get("region", ""),
+        doc.get("stack", ""), doc.get("cluster", ""),
+        doc.get("phase", ""), doc.get("label", ""),
+        doc.get("taskdef_logical", ""), doc.get("taskdef_arn", ""),
+    ])
+    expect_digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+    if not isinstance(rec_digest, str) or rec_digest != expect_digest:
+        print("PROOF\tCONFIG_MISMATCH")
+        sys.exit(0)
+except Exception:
+    print("PROOF\tCONFIG_MISMATCH")
+    sys.exit(0)
+print("PROOF\tOK")
+print("TOKEN\t%s" % token)
+print("TASKARN\t%s" % task_arn)
+print("TASKDEF\t%s" % taskdef_arn)
+print("GEN\t%s" % gen)
+print("SOURCE\t%s" % source)
+print("HEAD\t%s" % head)
+print("STACKID\t%s" % doc.get("stack_id", ""))
+print("OUTCOME\t%s" % outcome)
 print("LEGACY\tfalse")
 PYEOF
 }
@@ -6089,6 +6700,152 @@ PYEOF
   }
 }
 
+# Compute cryptographically bound one-shot terminal proof digest for typed
+# recovery. Binds kind, verifier task, token, taskdef, containers,
+# lastStatus, original SHA, outcome, StackId, material ARNs, names,
+# VersionIds, cert identity, release, source, head, observed head, original
+# basename, and legacy flag. Order must match typed attestation validation
+# exactly. Sets RECOVERY_VERIFIER_DIGEST. Fails closed on empty.
+compute_typed_verifier_digest() {
+  if ! RECOVERY_VERIFIER_DIGEST="$(python3 - "${RECOVERY_KIND:-}" "$RECOVERY_VERIFIER_TASK" "$RECOVERY_VERIFIER_TOKEN" "$RECOVERY_VERIFIER_TASKDEF" "$RECOVERY_VERIFIER_CONTAINERS" "$RECOVERY_VERIFIER_LAST_STATUS" "$RECOVERY_ORIG_SHA" "${RECOVERY_ORIG_OUTCOME:-}" "$RECOVERY_STACK_ID" "$RECOVERY_RT_ARN" "$RECOVERY_RT_NAME" "$RECOVERY_RT_PRE" "$RECOVERY_RT_POST" "$RECOVERY_MG_ARN" "$RECOVERY_MG_NAME" "$RECOVERY_MG_PRE" "$RECOVERY_MG_POST" "$RECOVERY_TLS_ARN" "$RECOVERY_TLS_NAME" "$RECOVERY_TLS_PRE" "$RECOVERY_TLS_POST" "$RECOVERY_CERT_ARN" "$RECOVERY_CERT_DOMAIN" "$RECOVERY_CERT_SERIAL_PRE" "$RECOVERY_CERT_SERIAL_POST" "${RELEASE_GEN:-}" "${SOURCE_SHA:-}" "${TARGET_DB_HEAD:-007}" "${RECOVERY_OBSERVED_HEAD:-}" "$RECOVERY_ORIG_BASENAME" "${RECOVERY_ORIG_LEGACY:-false}" 2>/dev/null <<'PYEOF'
+import hashlib, sys
+parts = sys.argv[1:]
+print(hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest())
+PYEOF
+)"; then
+    echo "refused: recovery verifier digest failed, no attestation." >&2
+    phase_failed "${RECOVERY_FAIL_PHASE:-init}"
+  fi
+  RECOVERY_VERIFIER_DIGEST="$(printf '%s' "$RECOVERY_VERIFIER_DIGEST" | tr -d '[:space:]')"
+  [ -n "$RECOVERY_VERIFIER_DIGEST" ] || {
+    echo "refused: recovery verifier digest empty, no attestation." >&2
+    phase_failed "${RECOVERY_FAIL_PHASE:-init}"
+  }
+}
+
+# Terminal proof for a typed recovery verifier task. Args: task ARN, token,
+# taskdef ARN, allow_exit10 (0 exit 0 only, 1 exit 0 or 10 for role-state
+# head006 ready). Requires STOPPED with exact owned task, taskdef, cluster,
+# and startedBy, plus every expected essential container STOPPED with an
+# allowed exit. Sets RECOVERY_VERIFIER_PROOF to OK, RECOVERY_VERIFIER_EXIT
+# to the observed exit, and RECOVERY_OBSERVED_HEAD for role-state (007 for
+# 0, 006 for 10, empty otherwise). Fails closed via phase_failed.
+prove_typed_verifier_terminal() {
+  TYPED_TASK="$1"
+  TYPED_TOKEN="$2"
+  TYPED_TASKDEF="$3"
+  TYPED_ALLOW10="${4:-0}"
+  if ! "$AWS_BIN" ecs wait tasks-stopped --cluster "$CLUSTER_NAME" --tasks "$TYPED_TASK" --region "$EXPECTED_REGION" 2>"$TMP_ERR"; then
+    echo "recovery verifier wait reported, verifying terminal state before any claim." >&2
+  fi
+  TYPED_DESC="$(mktemp /tmp/launchcrew-typedverify-XXXXXX)"
+  if ! "$AWS_BIN" ecs describe-tasks --cluster "$CLUSTER_NAME" --tasks "$TYPED_TASK" --region "$EXPECTED_REGION" --output json >"$TYPED_DESC" 2>"$TMP_ERR"; then
+    rm -f "$TYPED_DESC"
+    echo "recovery verifier terminal state unreadable, not treated as success." >&2
+    phase_failed "${RECOVERY_FAIL_PHASE:-init}"
+  fi
+  TYPED_DEF_JSON="$(mktemp /tmp/launchcrew-typedverify-def-XXXXXX)"
+  if ! "$AWS_BIN" ecs "describe-task""-definition" --task"-definition" "$TYPED_TASKDEF" --region "$EXPECTED_REGION" --output json >"$TYPED_DEF_JSON" 2>"$TMP_ERR"; then
+    rm -f "$TYPED_DESC" "$TYPED_DEF_JSON"
+    echo "recovery verifier expected container set unreadable, not treated as success." >&2
+    phase_failed "${RECOVERY_FAIL_PHASE:-init}"
+  fi
+  TYPED_CHECK="$(python3 - "$TYPED_DESC" "$TYPED_DEF_JSON" "$TYPED_TASK" "$TYPED_TASKDEF" "arn:aws:ecs:$EXPECTED_REGION:$EXPECTED_ACCOUNT:cluster/$CLUSTER_NAME" "$TYPED_TOKEN" "$TYPED_ALLOW10" 2>/dev/null <<'PYEOF'
+import json, sys
+try:
+    describe = json.load(open(sys.argv[1]))
+    defined = json.load(open(sys.argv[2]))
+except Exception:
+    sys.exit(1)
+expected_arn, expected_taskdef, expected_cluster, expected_token, allow10 = sys.argv[3:8]
+allow10 = (allow10 == "1")
+expected_names = []
+for container in (defined.get("taskDefinition", defined).get("containerDefinitions", []) or []):
+    if container.get("essential", True) and container.get("name"):
+        expected_names.append(container.get("name"))
+tasks = describe.get("tasks", [])
+failures = describe.get("failures", [])
+if failures or not tasks:
+    print("NO_TASK")
+    sys.exit(0)
+if not expected_names:
+    print("NO_EXPECTED_CONTAINERS")
+    sys.exit(0)
+task = tasks[0]
+if (task.get("taskArn", "") or "") != expected_arn:
+    print("WRONG_TASK_ARN")
+    sys.exit(0)
+if task.get("lastStatus") != "STOPPED":
+    print("NOT_STOPPED")
+    sys.exit(0)
+if (task.get("taskDefinitionArn", "") or "") != expected_taskdef:
+    print("WRONG_TASKDEF")
+    sys.exit(0)
+if (task.get("clusterArn", "") or "") != expected_cluster:
+    print("WRONG_CLUSTER")
+    sys.exit(0)
+if (task.get("startedBy", "") or "") != expected_token:
+    print("WRONG_TOKEN")
+    sys.exit(0)
+actual = task.get("containers", []) or []
+names = [(c.get("name", "?") or "?") for c in actual]
+if len(set(names)) != len(names):
+    print("DUPLICATE")
+    sys.exit(0)
+for name in sorted(set(names) - set(expected_names)):
+    print("UNEXPECTED:" + name)
+    sys.exit(0)
+for name in sorted(set(expected_names) - set(names)):
+    print("MISSING:" + name)
+    sys.exit(0)
+exits = set()
+for container in actual:
+    if container.get("lastStatus") != "STOPPED":
+        print("EXIT_NONZERO:" + (container.get("name", "?") or "?"))
+        sys.exit(0)
+    code = container.get("exitCode", None)
+    if not isinstance(code, int) or isinstance(code, bool):
+        print("EXIT_NONZERO:" + (container.get("name", "?") or "?"))
+        sys.exit(0)
+    if code != 0 and not (allow10 and code == 10):
+        print("EXIT_NONZERO:" + (container.get("name", "?") or "?"))
+        sys.exit(0)
+    exits.add(code)
+if len(exits) != 1:
+    print("EXIT_MIXED")
+    sys.exit(0)
+print("OK:%d" % next(iter(exits)))
+PYEOF
+)" || TYPED_CHECK="UNREADABLE"
+  rm -f "$TYPED_DESC" "$TYPED_DEF_JSON"
+  TYPED_CHECK="$(printf '%s' "$TYPED_CHECK" | tr -d '[:space:]')"
+  case "$TYPED_CHECK" in
+    OK:0) RECOVERY_VERIFIER_EXIT="0" ;;
+    OK:10)
+      if [ "$TYPED_ALLOW10" != "1" ]; then
+        echo "refused: recovery verifier terminal proof is EXIT_NONZERO, not claimed." >&2
+        phase_failed "${RECOVERY_FAIL_PHASE:-init}"
+      fi
+      RECOVERY_VERIFIER_EXIT="10" ;;
+    *) echo "refused: recovery verifier terminal proof is $TYPED_CHECK, not claimed." >&2; phase_failed "${RECOVERY_FAIL_PHASE:-init}" ;;
+  esac
+  RECOVERY_VERIFIER_PROOF="OK"
+  if [ "${RECOVERY_KIND:-}" = "dbroles-recovery-attestation" ] || [ "${RECOVERY_KIND:-}" = "migration-recovery-attestation" ]; then
+    if [ "$RECOVERY_VERIFIER_EXIT" = "0" ]; then
+      RECOVERY_OBSERVED_HEAD="007"
+    elif [ "$RECOVERY_VERIFIER_EXIT" = "10" ]; then
+      RECOVERY_OBSERVED_HEAD="006"
+    else
+      RECOVERY_OBSERVED_HEAD=""
+    fi
+  elif [ "${RECOVERY_KIND:-}" = "runtime-recovery-attestation" ]; then
+    RECOVERY_OBSERVED_HEAD="007"
+  else
+    RECOVERY_OBSERVED_HEAD=""
+  fi
+  echo "recovery verifier terminal proof: STOPPED, exact owned task and cluster ARNs, every expected container exit $RECOVERY_VERIFIER_EXIT."
+}
+
 # Attest an aged-out prior COMPLETE init journal via a separate read-only
 # material verifier. Args: fail phase, original path, original basename.
 # Validates exact owned StackId, tags, heads, original ownership, digest,
@@ -6938,6 +7695,936 @@ PYEOF
   echo "recovery complete: $RECOVERY_ORIG_BASENAME attested via read-only verifier $RECOVERY_VERIFIER_TASK; desired-state equivalence, not retroactive proof."
 }
 
+# Attest an aged-out prior typed journal via a separate read-only verifier.
+# Args: fail phase, original path, original basename, phase, label, logical,
+# kind, verifier logical, verifier container, allow_started (0/1),
+# allow_exit10 (0/1). Validates exact owned StackId, tags, heads, original
+# ownership, digest, taskdef operation, roles, image, token, plus exact
+# current owned secret names, ARNs, VersionIds and certificate identity
+# before and after verification. Persists admission before any verifier
+# RunTask, requires live STOPPED with allowed exit and exact identities,
+# then persists a mode 600 typed attestation with bound one-shot proof.
+# On restart with complete, validates immutable schema, original hash and
+# ownership, current StackId, tags, material, generation, source, head,
+# plus the bounded point-in-time gate for the old startedBy in two stable
+# rounds. If verifier still live, rechecks terminal; if aged out, permits
+# only for exact MISSING plus intact proof and fresh desired state, never
+# claiming live status after expiry or retroactive old exit. Never Put,
+# Export, bind, migrate, or resend through this route. Binder STARTED
+# originals never relabel as completed. Returns 0 on recovered, else fails.
+attest_aged_typed_recovery() {
+  RECOVERY_FAIL_PHASE="$1"
+  RECOVERY_ORIG_PATH="$2"
+  RECOVERY_ORIG_BASENAME="$3"
+  RECOVERY_TYPED_PHASE="$4"
+  RECOVERY_TYPED_LABEL="$5"
+  RECOVERY_TYPED_LOGICAL="$6"
+  RECOVERY_KIND="$7"
+  RECOVERY_VERIFIER_LOGICAL="$8"
+  RECOVERY_VERIFIER_CONTAINER="$9"
+  RECOVERY_ALLOW_STARTED="${10:-0}"
+  RECOVERY_ALLOW10="${11:-0}"
+  RECOVERY_OBSERVED_HEAD=""
+  RECOVERY_VERIFIER_EXIT=""
+  if [ -z "$LAUNCH_JOURNAL_DIR" ] || [ ! -d "$LAUNCH_JOURNAL_DIR" ]; then
+    echo "refused: recovery needs journal directory with prior $RECOVERY_TYPED_LABEL record, no recovery claimed." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  if [ -L "$LAUNCH_JOURNAL_DIR" ]; then
+    echo "recovery journal directory is a symlink, no recovery claimed." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  if ! RECOVERY_ORIG_SHA="$(sha256_of_file "$RECOVERY_ORIG_PATH")"; then
+    echo "refused: original $RECOVERY_TYPED_LABEL journal hash unreadable, no recovery claimed. Inspect $RECOVERY_ORIG_PATH." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  RECOVERY_ORIG_SHA="$(printf '%s' "$RECOVERY_ORIG_SHA" | tr -d '[:space:]')"
+  [ -n "$RECOVERY_ORIG_SHA" ] || {
+    echo "refused: original $RECOVERY_TYPED_LABEL journal hash empty, no recovery claimed." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  }
+  RECOVERY_VALIDATED="$(validate_typed_journal_for_recovery "$RECOVERY_ORIG_PATH" "$RECOVERY_ORIG_BASENAME" "$RECOVERY_TYPED_PHASE" "$RECOVERY_TYPED_LABEL" "$RECOVERY_TYPED_LOGICAL" "$RECOVERY_ALLOW_STARTED")" || RECOVERY_VALIDATED="PROOF\tUNREADABLE"
+  RECOVERY_VALID_PROOF="$(printf '%s\n' "$RECOVERY_VALIDATED" | awk -F'\t' '$1=="PROOF"{print $2}' | tr -d '[:space:]')"
+  if [ "$RECOVERY_VALID_PROOF" != "OK" ]; then
+    RECOVERY_VALID_OUTCOME="$(printf '%s\n' "$RECOVERY_VALIDATED" | awk -F'\t' '$1=="OUTCOME"{print $2}' | tr -d '[:space:]')"
+    echo "refused: original $RECOVERY_TYPED_LABEL journal $RECOVERY_ORIG_BASENAME is $RECOVERY_VALID_PROOF ${RECOVERY_VALID_OUTCOME:-}, no recovery claimed. Inspect $RECOVERY_ORIG_PATH." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  RECOVERY_ORIG_TOKEN="$(printf '%s\n' "$RECOVERY_VALIDATED" | awk -F'\t' '$1=="TOKEN"{print $2}' | tr -d '[:space:]')"
+  RECOVERY_ORIG_TASK="$(printf '%s\n' "$RECOVERY_VALIDATED" | awk -F'\t' '$1=="TASKARN"{print $2}' | tr -d '[:space:]')"
+  RECOVERY_ORIG_TASKDEF="$(printf '%s\n' "$RECOVERY_VALIDATED" | awk -F'\t' '$1=="TASKDEF"{print $2}' | tr -d '[:space:]')"
+  RECOVERY_ORIG_GEN="$(printf '%s\n' "$RECOVERY_VALIDATED" | awk -F'\t' '$1=="GEN"{print $2}' | tr -d '[:space:]')"
+  RECOVERY_ORIG_SOURCE="$(printf '%s\n' "$RECOVERY_VALIDATED" | awk -F'\t' '$1=="SOURCE"{print $2}' | tr -d '[:space:]')"
+  RECOVERY_ORIG_HEAD="$(printf '%s\n' "$RECOVERY_VALIDATED" | awk -F'\t' '$1=="HEAD"{print $2}' | tr -d '[:space:]')"
+  RECOVERY_ORIG_STACKID="$(printf '%s\n' "$RECOVERY_VALIDATED" | awk -F'\t' '$1=="STACKID"{print $2}' | tr -d '[:space:]')"
+  RECOVERY_ORIG_OUTCOME="$(printf '%s\n' "$RECOVERY_VALIDATED" | awk -F'\t' '$1=="OUTCOME"{print $2}' | tr -d '[:space:]')"
+  RECOVERY_ORIG_LEGACY="$(printf '%s\n' "$RECOVERY_VALIDATED" | awk -F'\t' '$1=="LEGACY"{print $2}' | tr -d '[:space:]')"
+  [ "$RECOVERY_ORIG_LEGACY" = "true" ] || RECOVERY_ORIG_LEGACY="false"
+  [ -n "$RECOVERY_ORIG_OUTCOME" ] || RECOVERY_ORIG_OUTCOME="complete"
+  validate_stack_for_recovery
+  if [ -n "$RECOVERY_ORIG_STACKID" ] && [ "$RECOVERY_ORIG_STACKID" != "$RECOVERY_STACK_ID" ]; then
+    echo "refused: original $RECOVERY_TYPED_LABEL StackId does not equal the owned StackId, no recovery claimed. Inspect $RECOVERY_ORIG_PATH." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  RECOVERY_ORIG_DEF_JSON="$(mktemp /tmp/launchcrew-recorig-XXXXXX)"
+  if ! "$AWS_BIN" ecs "describe-task""-definition" --task"-definition" "$RECOVERY_ORIG_TASKDEF" --region "$EXPECTED_REGION" --output json >"$RECOVERY_ORIG_DEF_JSON" 2>"$TMP_ERR"; then
+    rm -f "$RECOVERY_ORIG_DEF_JSON"
+    echo "refused: original $RECOVERY_TYPED_LABEL taskdef unreadable, no recovery claimed. Inspect $RECOVERY_ORIG_PATH." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  case "$RECOVERY_TYPED_LOGICAL" in
+    SdkMaterialTaskDefinition)
+      RECOVERY_EXPECT_EXEC_L="SdkMaterialExecutionRole"
+      RECOVERY_EXPECT_TASK_L="SdkMaterialTaskRole"
+      RECOVERY_EXPECT_C="sdk-material"
+      RECOVERY_EXPECT_CMD="--verify-material"
+      RECOVERY_EXPECT_EP="1" ;;
+    BootstrapTaskDefinition)
+      RECOVERY_EXPECT_EXEC_L="BootstrapExecutionRole"
+      RECOVERY_EXPECT_TASK_L="BootstrapTaskRole"
+      RECOVERY_EXPECT_C="bootstrap-db-roles"
+      RECOVERY_EXPECT_CMD=""
+      RECOVERY_EXPECT_EP="" ;;
+    MigrationTaskDefinition)
+      RECOVERY_EXPECT_EXEC_L="MigrationExecutionRole"
+      RECOVERY_EXPECT_TASK_L="MigrationTaskRole"
+      RECOVERY_EXPECT_C="migration"
+      RECOVERY_EXPECT_CMD=""
+      RECOVERY_EXPECT_EP="" ;;
+    VerifyTaskDefinition)
+      RECOVERY_EXPECT_EXEC_L="VerifyExecutionRole"
+      RECOVERY_EXPECT_TASK_L="VerifyTaskRole"
+      RECOVERY_EXPECT_C="bootstrap-db-roles"
+      RECOVERY_EXPECT_CMD="--verify"
+      RECOVERY_EXPECT_EP="" ;;
+    *) rm -f "$RECOVERY_ORIG_DEF_JSON"
+      echo "refused: original $RECOVERY_TYPED_LABEL logical $RECOVERY_TYPED_LOGICAL unknown, no recovery claimed." >&2
+      phase_failed "$RECOVERY_FAIL_PHASE" ;;
+  esac
+  if ! RECOVERY_EXPECT_EXEC="$(resolve_role_arn "$RECOVERY_EXPECT_EXEC_L")"; then
+    rm -f "$RECOVERY_ORIG_DEF_JSON"
+    echo "refused: original $RECOVERY_TYPED_LABEL expected execution role unresolvable, no recovery claimed." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  if ! RECOVERY_EXPECT_TASK_ROLE="$(resolve_role_arn "$RECOVERY_EXPECT_TASK_L")"; then
+    rm -f "$RECOVERY_ORIG_DEF_JSON"
+    echo "refused: original $RECOVERY_TYPED_LABEL expected task role unresolvable, no recovery claimed." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  RECOVERY_EXPECT_EXEC="$(printf '%s' "$RECOVERY_EXPECT_EXEC" | tr -d '[:space:]')"
+  RECOVERY_EXPECT_TASK_ROLE="$(printf '%s' "$RECOVERY_EXPECT_TASK_ROLE" | tr -d '[:space:]')"
+  RECOVERY_ORIG_OP="$(python3 - "$RECOVERY_ORIG_DEF_JSON" "$RECOVERY_EXPECT_EXEC" "$RECOVERY_EXPECT_TASK_ROLE" "$RECOVERY_EXPECT_C" "$RECOVERY_EXPECT_CMD" "$RECOVERY_EXPECT_EP" 2>/dev/null <<'PYEOF'
+import json, sys
+doc_file, want_exec, want_task, want_c, want_cmd, want_ep = sys.argv[1:7]
+try:
+    doc = json.load(open(doc_file))
+except Exception:
+    sys.exit(1)
+taskdef = doc.get("taskDefinition", doc)
+if (taskdef.get("executionRoleArn", "") or "") != want_exec:
+    print("TASKDEF_OPERATION_MISMATCH:EXEC_ROLE")
+    sys.exit(0)
+if (taskdef.get("taskRoleArn", "") or "") != want_task:
+    print("TASKDEF_OPERATION_MISMATCH:TASK_ROLE")
+    sys.exit(0)
+containers = taskdef.get("containerDefinitions", []) or []
+target = None
+for container in containers:
+    if (container.get("name", "") or "") == want_c and container.get("essential", True):
+        target = container
+        break
+if target is None:
+    print("TASKDEF_OPERATION_MISMATCH:MISSING_CONTAINER")
+    sys.exit(0)
+if want_ep == "1":
+    if (target.get("entryPoint", None) or []) != ["/opt/venv/bin/python", "/app/scripts/populate_prereqs.py"]:
+        print("TASKDEF_OPERATION_MISMATCH:ENTRYPOINT")
+        sys.exit(0)
+if want_cmd:
+    if (target.get("command", None) or []) != [want_cmd]:
+        print("TASKDEF_OPERATION_MISMATCH:COMMAND")
+        sys.exit(0)
+print("OK")
+PYEOF
+)" || RECOVERY_ORIG_OP="UNREADABLE"
+  rm -f "$RECOVERY_ORIG_DEF_JSON"
+  RECOVERY_ORIG_OP="$(printf '%s' "$RECOVERY_ORIG_OP" | tr -d '[:space:]')"
+  if [ "$RECOVERY_ORIG_OP" != "OK" ]; then
+    echo "refused: original $RECOVERY_TYPED_LABEL operation proof is $RECOVERY_ORIG_OP, no recovery claimed. Inspect $RECOVERY_ORIG_PATH." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  [ -n "$RUNTIME_SECRET_ARN" ] || { echo "refused: recovery needs exact runtime secret ARN, no recovery claimed." >&2; phase_failed "$RECOVERY_FAIL_PHASE"; }
+  [ -n "$MIGRATION_SECRET_ARN" ] || { echo "refused: recovery needs exact migration secret ARN, no recovery claimed." >&2; phase_failed "$RECOVERY_FAIL_PHASE"; }
+  [ -n "$TLS_SECRET_ARN" ] || { echo "refused: recovery needs exact TLS secret ARN, no recovery claimed." >&2; phase_failed "$RECOVERY_FAIL_PHASE"; }
+  RECOVERY_RT_IDENTITY="$(fetch_secret_version_identity "$RUNTIME_SECRET_ARN" runtime)"
+  RECOVERY_RT_PROOF="$(printf '%s\n' "$RECOVERY_RT_IDENTITY" | awk -F'\t' '$1=="PROOF"{print $2}' | tr -d '[:space:]')"
+  if [ "$RECOVERY_RT_PROOF" != "OK" ]; then
+    echo "refused: recovery runtime secret proof is $RECOVERY_RT_PROOF, no recovery claimed." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  RECOVERY_MG_IDENTITY="$(fetch_secret_version_identity "$MIGRATION_SECRET_ARN" migration)"
+  RECOVERY_MG_PROOF="$(printf '%s\n' "$RECOVERY_MG_IDENTITY" | awk -F'\t' '$1=="PROOF"{print $2}' | tr -d '[:space:]')"
+  if [ "$RECOVERY_MG_PROOF" != "OK" ]; then
+    echo "refused: recovery migration secret proof is $RECOVERY_MG_PROOF, no recovery claimed." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  RECOVERY_TLS_IDENTITY="$(fetch_secret_version_identity "$TLS_SECRET_ARN" tls)"
+  RECOVERY_TLS_PROOF="$(printf '%s\n' "$RECOVERY_TLS_IDENTITY" | awk -F'\t' '$1=="PROOF"{print $2}' | tr -d '[:space:]')"
+  if [ "$RECOVERY_TLS_PROOF" != "OK" ]; then
+    echo "refused: recovery TLS secret proof is $RECOVERY_TLS_PROOF, no recovery claimed." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  RECOVERY_RT_NAME="$(printf '%s\n' "$RECOVERY_RT_IDENTITY" | awk -F'\t' '$1=="NAME"{print $2}' | tr -d '[:space:]')"
+  RECOVERY_RT_ARN="$(printf '%s\n' "$RECOVERY_RT_IDENTITY" | awk -F'\t' '$1=="ARN"{print $2}' | tr -d '[:space:]')"
+  RECOVERY_RT_PRE="$(printf '%s\n' "$RECOVERY_RT_IDENTITY" | awk -F'\t' '$1=="VERSION"{print $2}' | tr -d '[:space:]')"
+  RECOVERY_MG_NAME="$(printf '%s\n' "$RECOVERY_MG_IDENTITY" | awk -F'\t' '$1=="NAME"{print $2}' | tr -d '[:space:]')"
+  RECOVERY_MG_ARN="$(printf '%s\n' "$RECOVERY_MG_IDENTITY" | awk -F'\t' '$1=="ARN"{print $2}' | tr -d '[:space:]')"
+  RECOVERY_MG_PRE="$(printf '%s\n' "$RECOVERY_MG_IDENTITY" | awk -F'\t' '$1=="VERSION"{print $2}' | tr -d '[:space:]')"
+  RECOVERY_TLS_NAME="$(printf '%s\n' "$RECOVERY_TLS_IDENTITY" | awk -F'\t' '$1=="NAME"{print $2}' | tr -d '[:space:]')"
+  RECOVERY_TLS_ARN="$(printf '%s\n' "$RECOVERY_TLS_IDENTITY" | awk -F'\t' '$1=="ARN"{print $2}' | tr -d '[:space:]')"
+  RECOVERY_TLS_PRE="$(printf '%s\n' "$RECOVERY_TLS_IDENTITY" | awk -F'\t' '$1=="VERSION"{print $2}' | tr -d '[:space:]')"
+  if ! RECOVERY_CERT_ARN_VALUE="$(params_file_value AcmCertificateArn)"; then
+    echo "refused: recovery certificate ARN missing from parameters file, no recovery claimed." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  RECOVERY_CERT_ARN_VALUE="$(printf '%s' "$RECOVERY_CERT_ARN_VALUE" | tr -d '[:space:]')"
+  [ -n "$RECOVERY_CERT_ARN_VALUE" ] || { echo "refused: recovery certificate ARN empty, no recovery claimed." >&2; phase_failed "$RECOVERY_FAIL_PHASE"; }
+  RECOVERY_CERT_IDENTITY="$(fetch_cert_identity "$RECOVERY_CERT_ARN_VALUE")"
+  RECOVERY_CERT_PROOF="$(printf '%s\n' "$RECOVERY_CERT_IDENTITY" | awk -F'\t' '$1=="PROOF"{print $2}' | tr -d '[:space:]')"
+  if [ "$RECOVERY_CERT_PROOF" != "OK" ]; then
+    echo "refused: recovery certificate proof is $RECOVERY_CERT_PROOF, no recovery claimed." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  RECOVERY_CERT_ARN="$(printf '%s\n' "$RECOVERY_CERT_IDENTITY" | awk -F'\t' '$1=="ARN"{print $2}' | tr -d '[:space:]')"
+  RECOVERY_CERT_DOMAIN="$(printf '%s\n' "$RECOVERY_CERT_IDENTITY" | awk -F'\t' '$1=="DOMAIN"{print $2}' | tr -d '[:space:]')"
+  RECOVERY_CERT_SERIAL_PRE="$(printf '%s\n' "$RECOVERY_CERT_IDENTITY" | awk -F'\t' '$1=="SERIAL"{print $2}' | tr -d '[:space:]')"
+  RECOVERY_CERT_STATUS="$(printf '%s\n' "$RECOVERY_CERT_IDENTITY" | awk -F'\t' '$1=="STATUS"{print $2}' | tr -d '[:space:]')"
+  RECOVERY_CERT_TYPE="$(printf '%s\n' "$RECOVERY_CERT_IDENTITY" | awk -F'\t' '$1=="TYPE"{print $2}' | tr -d '[:space:]')"
+  RECOVERY_CERT_EXPORT="$(printf '%s\n' "$RECOVERY_CERT_IDENTITY" | awk -F'\t' '$1=="EXPORT"{print $2}' | tr -d '[:space:]')"
+  ensure_recovery_dir
+  RECOVERY_FILE="$LAUNCH_JOURNAL_DIR/recovery/$RECOVERY_ORIG_BASENAME.recovery.json"
+  if [ -L "$RECOVERY_FILE" ]; then
+    echo "refused: recovery attestation is a symlink, no recovery claimed. Inspect $RECOVERY_FILE." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  if [ "${RECOVERY_READONLY:-0}" = "1" ] && [ ! -f "$RECOVERY_FILE" ]; then
+    echo "refused: enable re-proof needs prior $RECOVERY_TYPED_LABEL recovery attestation $RECOVERY_FILE but none exists. Run --phase $RECOVERY_TYPED_PHASE first to attest. No new launch." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  acquire_recovery_lock "$RECOVERY_ORIG_BASENAME"
+  if [ -f "$RECOVERY_FILE" ]; then
+    RECOVERY_EXISTING="$(python3 - "$RECOVERY_FILE" "$STACK_NAME" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$CLUSTER_NAME" \
+      "$RECOVERY_KIND" "$RECOVERY_ORIG_BASENAME" "$RECOVERY_ORIG_SHA" "$RECOVERY_ORIG_TOKEN" "$RECOVERY_ORIG_TASK" \
+      "$RECOVERY_ORIG_TASKDEF" "$RECOVERY_ORIG_GEN" "$RECOVERY_ORIG_SOURCE" "$RECOVERY_ORIG_HEAD" "$RECOVERY_ORIG_OUTCOME" \
+      "$RECOVERY_STACK_ID" "${RECOVERY_ORIG_LEGACY:-false}" 2>/dev/null <<'PYEOF'
+import hashlib, json, os, sys
+(path, want_stack, want_account, want_region, want_cluster,
+ want_kind, want_base, want_sha, want_token, want_task,
+ want_taskdef, want_gen, want_source, want_head, want_outcome,
+ want_stack_id, want_legacy) = sys.argv[1:18]
+try:
+    if os.path.islink(path):
+        print("PROOF\tSYMLINK")
+        sys.exit(0)
+    finfo = os.stat(path)
+    if (finfo.st_mode & 0o777) != 0o600:
+        print("PROOF\tMODE")
+        sys.exit(0)
+    if finfo.st_uid != os.getuid():
+        print("PROOF\tOWNER")
+        sys.exit(0)
+    if finfo.st_size <= 0 or finfo.st_size > 10240:
+        print("PROOF\tSIZE")
+        sys.exit(0)
+    with open(path, encoding="utf-8") as handle:
+        doc = json.load(handle)
+except Exception:
+    print("PROOF\tUNREADABLE")
+    sys.exit(0)
+if not isinstance(doc, dict):
+    print("PROOF\tMALFORMED")
+    sys.exit(0)
+try:
+    if os.path.basename(path) != want_base + ".recovery.json":
+        print("PROOF\tPATH_MISMATCH")
+        sys.exit(0)
+    if os.path.basename(os.path.dirname(os.path.abspath(path))) != "recovery":
+        print("PROOF\tPATH_MISMATCH")
+        sys.exit(0)
+except Exception:
+    print("PROOF\tPATH_MISMATCH")
+    sys.exit(0)
+allow = {"version", "kind", "stack", "account", "region", "cluster",
+         "original_basename", "original_sha256", "original_token",
+         "original_task_arn", "original_taskdef_arn", "original_generation",
+         "original_source_sha", "original_target_head", "original_outcome",
+         "legacy_unversioned",
+         "stack_id", "project", "environment", "release_generation",
+         "source_sha", "target_head", "runtime_name", "runtime_arn",
+         "runtime_version_pre", "runtime_version_post", "migration_name",
+         "migration_arn", "migration_version_pre", "migration_version_post",
+         "tls_name", "tls_arn", "tls_version_pre", "tls_version_post",
+         "cert_arn", "cert_domain", "cert_serial_pre", "cert_serial_post",
+         "cert_status", "cert_type", "cert_export", "verifier_token",
+         "verifier_task_arn", "verifier_taskdef_arn", "verifier_proof",
+         "verifier_containers", "verifier_last_status", "verifier_digest",
+         "absence_proof", "observed_head", "outcome", "note", "updated_utc"}
+for key in doc:
+    if key not in allow:
+        print("PROOF\tFOREIGN_FIELD")
+        sys.exit(0)
+for _k, _v in doc.items():
+    if _k == "version":
+        if not isinstance(_v, int) or isinstance(_v, bool):
+            print("PROOF\tMALFORMED")
+            sys.exit(0)
+        continue
+    if not isinstance(_v, str):
+        print("PROOF\tMALFORMED")
+        sys.exit(0)
+for _k, _v in doc.items():
+    _kl = str(_k).lower()
+    if _kl in ("password", "database-url", "database_url",
+               "tls-cert-b64", "tls-key-b64", "tls_cert_b64", "tls_key_b64",
+               "secret_value", "secretvalue", "private_key", "privatekey",
+               "certificate_body", "certificate_chain"):
+        print("PROOF\tSECRET_FIELD")
+        sys.exit(0)
+    if isinstance(_v, str):
+        _vl = _v.lower()
+        if "://" in _vl:
+            print("PROOF\tSECRET_FIELD")
+            sys.exit(0)
+        if "-----begin" in _vl or "-----end" in _vl or "private key" in _vl:
+            print("PROOF\tSECRET_FIELD")
+            sys.exit(0)
+        if "tls-cert-b64" in _vl or "tls-key-b64" in _vl or "database-url" in _vl:
+            print("PROOF\tSECRET_FIELD")
+            sys.exit(0)
+        if "password" in _vl:
+            print("PROOF\tSECRET_FIELD")
+            sys.exit(0)
+if doc.get("version", 0) != 1 or doc.get("kind", "") != want_kind:
+    print("PROOF\tKIND_MISMATCH")
+    sys.exit(0)
+if doc.get("stack", "") != want_stack or doc.get("account", "") != want_account:
+    print("PROOF\tOWNER_MISMATCH")
+    sys.exit(0)
+if doc.get("region", "") != want_region or doc.get("cluster", "") != want_cluster:
+    print("PROOF\tOWNER_MISMATCH")
+    sys.exit(0)
+if doc.get("original_basename", "") != want_base:
+    print("PROOF\tORIGINAL_MISMATCH")
+    sys.exit(0)
+if doc.get("original_sha256", "") != want_sha:
+    print("PROOF\tORIGINAL_ALTERED")
+    sys.exit(0)
+if doc.get("original_token", "") != want_token:
+    print("PROOF\tORIGINAL_MISMATCH")
+    sys.exit(0)
+if doc.get("original_task_arn", "") != want_task:
+    print("PROOF\tORIGINAL_MISMATCH")
+    sys.exit(0)
+if doc.get("original_taskdef_arn", "") != want_taskdef:
+    print("PROOF\tORIGINAL_MISMATCH")
+    sys.exit(0)
+if doc.get("original_generation", "") != want_gen:
+    print("PROOF\tORIGINAL_MISMATCH")
+    sys.exit(0)
+if doc.get("original_source_sha", "") != want_source:
+    print("PROOF\tORIGINAL_MISMATCH")
+    sys.exit(0)
+if doc.get("original_target_head", "") != want_head:
+    print("PROOF\tORIGINAL_MISMATCH")
+    sys.exit(0)
+if doc.get("original_outcome", "") != want_outcome:
+    print("PROOF\tORIGINAL_MISMATCH")
+    sys.exit(0)
+if doc.get("legacy_unversioned", "") not in ("true", "false"):
+    print("PROOF\tLEGACY_MALFORMED")
+    sys.exit(0)
+if doc.get("legacy_unversioned", "") != want_legacy:
+    print("PROOF\tLEGACY_MISMATCH")
+    sys.exit(0)
+if doc.get("stack_id", "") != want_stack_id:
+    print("PROOF\tSTACKID_MISMATCH")
+    sys.exit(0)
+if doc.get("project", "") != "LaunchCrew" or doc.get("environment", "") != "demo":
+    print("PROOF\tTAG_MISMATCH")
+    sys.exit(0)
+token = doc.get("verifier_token", "")
+if not isinstance(token, str) or len(token) != 33 or not token.startswith("lc-"):
+    print("PROOF\tVERIFIER_TOKEN_MALFORMED")
+    sys.exit(0)
+outcome = doc.get("outcome", "")
+if not isinstance(outcome, str) or not outcome:
+    print("PROOF\tOUTCOME_MISSING")
+    sys.exit(0)
+if outcome not in ("admitted", "started", "complete", "ambiguous_call_failed", "ambiguous_response"):
+    print("PROOF\tOUTCOME_UNKNOWN")
+    sys.exit(0)
+if outcome == "complete":
+    if doc.get("verifier_proof", "") != "OK":
+        print("PROOF\tVERIFIER_PROOF_MISMATCH")
+        sys.exit(0)
+    if doc.get("verifier_last_status", "") != "STOPPED":
+        print("PROOF\tVERIFIER_STATUS_MISMATCH")
+        sys.exit(0)
+    _cont = doc.get("verifier_containers", "")
+    if not isinstance(_cont, str) or ":STOPPED:" not in _cont:
+        print("PROOF\tVERIFIER_CONTAINERS_MISMATCH")
+        sys.exit(0)
+    try:
+        _exit = _cont.rsplit(":", 1)[1]
+    except Exception:
+        _exit = ""
+    if want_kind in ("dbroles-recovery-attestation", "migration-recovery-attestation"):
+        if _exit not in ("0", "10"):
+            print("PROOF\tVERIFIER_CONTAINERS_MISMATCH")
+            sys.exit(0)
+        _obs = doc.get("observed_head", "")
+        if (_exit == "0" and _obs != "007") or (_exit == "10" and _obs != "006"):
+            print("PROOF\tOBSERVED_HEAD_MISMATCH")
+            sys.exit(0)
+    elif want_kind == "runtime-recovery-attestation":
+        if _exit != "0" or doc.get("observed_head", "") != "007":
+            print("PROOF\tVERIFIER_CONTAINERS_MISMATCH")
+            sys.exit(0)
+    else:
+        if _exit != "0":
+            print("PROOF\tVERIFIER_CONTAINERS_MISMATCH")
+            sys.exit(0)
+    _dig = doc.get("verifier_digest", "")
+    if not isinstance(_dig, str) or len(_dig) != 64:
+        print("PROOF\tDIGEST_MALFORMED")
+        sys.exit(0)
+    for _c in _dig:
+        if _c not in "0123456789abcdef":
+            print("PROOF\tDIGEST_MALFORMED")
+            sys.exit(0)
+    try:
+        _parts = [
+            doc.get("kind", ""), doc.get("verifier_task_arn", ""), doc.get("verifier_token", ""),
+            doc.get("verifier_taskdef_arn", ""), doc.get("verifier_containers", ""),
+            doc.get("verifier_last_status", ""), doc.get("original_sha256", ""),
+            doc.get("original_outcome", ""), doc.get("stack_id", ""), doc.get("runtime_arn", ""),
+            doc.get("runtime_name", ""), doc.get("runtime_version_pre", ""),
+            doc.get("runtime_version_post", ""), doc.get("migration_arn", ""),
+            doc.get("migration_name", ""), doc.get("migration_version_pre", ""),
+            doc.get("migration_version_post", ""), doc.get("tls_arn", ""),
+            doc.get("tls_name", ""), doc.get("tls_version_pre", ""),
+            doc.get("tls_version_post", ""), doc.get("cert_arn", ""),
+            doc.get("cert_domain", ""), doc.get("cert_serial_pre", ""),
+            doc.get("cert_serial_post", ""), doc.get("release_generation", ""),
+            doc.get("source_sha", ""), doc.get("target_head", ""),
+            doc.get("observed_head", ""), doc.get("original_basename", ""), doc.get("legacy_unversioned", ""),
+        ]
+        _exp = hashlib.sha256("|".join(_parts).encode("utf-8")).hexdigest()
+        if _dig != _exp:
+            print("PROOF\tDIGEST_MISMATCH")
+            sys.exit(0)
+    except Exception:
+        print("PROOF\tDIGEST_MISMATCH")
+        sys.exit(0)
+    if doc.get("absence_proof", "") != "OK":
+        print("PROOF\tABSENCE_MISMATCH")
+        sys.exit(0)
+    _vtask = doc.get("verifier_task_arn", "")
+    if not _vtask.startswith("arn:aws:ecs:%s:%s:task/%s/" % (want_region, want_account, want_cluster)):
+        print("PROOF\tVERIFIER_TASK_FOREIGN")
+        sys.exit(0)
+    _vtdef = doc.get("verifier_taskdef_arn", "")
+    if not _vtdef.startswith("arn:aws:ecs:%s:%s:task" "-definition/" % (want_region, want_account)):
+        print("PROOF\tVERIFIER_TASKDEF_FOREIGN")
+        sys.exit(0)
+print("PROOF\tOK")
+print("OUTCOME\t%s" % outcome)
+print("VTOKEN\t%s" % token)
+print("VTASK\t%s" % (doc.get("verifier_task_arn", "") or ""))
+print("VTASKDEF\t%s" % (doc.get("verifier_taskdef_arn", "") or ""))
+print("VPROOF\t%s" % (doc.get("verifier_proof", "") or ""))
+print("VCONTAINERS\t%s" % (doc.get("verifier_containers", "") or ""))
+print("VLASTSTATUS\t%s" % (doc.get("verifier_last_status", "") or ""))
+print("VDIGEST\t%s" % (doc.get("verifier_digest", "") or ""))
+print("LEGACY\t%s" % (doc.get("legacy_unversioned", "") or ""))
+print("RT_PRE\t%s" % (doc.get("runtime_version_pre", "") or ""))
+print("RT_POST\t%s" % (doc.get("runtime_version_post", "") or ""))
+print("RT_ARN\t%s" % (doc.get("runtime_arn", "") or ""))
+print("RT_NAME\t%s" % (doc.get("runtime_name", "") or ""))
+print("MG_PRE\t%s" % (doc.get("migration_version_pre", "") or ""))
+print("MG_POST\t%s" % (doc.get("migration_version_post", "") or ""))
+print("MG_ARN\t%s" % (doc.get("migration_arn", "") or ""))
+print("MG_NAME\t%s" % (doc.get("migration_name", "") or ""))
+print("TLS_PRE\t%s" % (doc.get("tls_version_pre", "") or ""))
+print("TLS_POST\t%s" % (doc.get("tls_version_post", "") or ""))
+print("TLS_ARN\t%s" % (doc.get("tls_arn", "") or ""))
+print("TLS_NAME\t%s" % (doc.get("tls_name", "") or ""))
+print("CERT_PRE\t%s" % (doc.get("cert_serial_pre", "") or ""))
+print("CERT_POST\t%s" % (doc.get("cert_serial_post", "") or ""))
+print("CERT_ARN\t%s" % (doc.get("cert_arn", "") or ""))
+print("CERT_DOMAIN\t%s" % (doc.get("cert_domain", "") or ""))
+print("CERT_STATUS\t%s" % (doc.get("cert_status", "") or ""))
+print("CERT_TYPE\t%s" % (doc.get("cert_type", "") or ""))
+print("CERT_EXPORT\t%s" % (doc.get("cert_export", "") or ""))
+print("REL_GEN\t%s" % (doc.get("release_generation", "") or ""))
+print("REL_SOURCE\t%s" % (doc.get("source_sha", "") or ""))
+print("REL_HEAD\t%s" % (doc.get("target_head", "") or ""))
+print("OBS_HEAD\t%s" % (doc.get("observed_head", "") or ""))
+PYEOF
+)" || RECOVERY_EXISTING="PROOF\tUNREADABLE"
+    RECOVERY_EXIST_PROOF="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="PROOF"{print $2}' | tr -d '[:space:]')"
+    if [ "$RECOVERY_EXIST_PROOF" != "OK" ]; then
+      release_recovery_lock
+      echo "refused: existing recovery attestation is $RECOVERY_EXIST_PROOF, no new verifier. Inspect $RECOVERY_FILE and $RECOVERY_ORIG_PATH." >&2
+      phase_failed "$RECOVERY_FAIL_PHASE"
+    fi
+    RECOVERY_EXIST_OUTCOME="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="OUTCOME"{print $2}' | tr -d '[:space:]')"
+    RECOVERY_EXIST_VTOKEN="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="VTOKEN"{print $2}' | tr -d '[:space:]')"
+    RECOVERY_EXIST_VTASK="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="VTASK"{print $2}' | tr -d '[:space:]')"
+    RECOVERY_EXIST_VTASKDEF="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="VTASKDEF"{print $2}' | tr -d '[:space:]')"
+    if [ "$RECOVERY_EXIST_OUTCOME" = "complete" ]; then
+      RECOVERY_ATTEST_RT_PRE="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="RT_PRE"{print $2}' | tr -d '[:space:]')"
+      RECOVERY_ATTEST_RT_POST="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="RT_POST"{print $2}' | tr -d '[:space:]')"
+      RECOVERY_ATTEST_RT_ARN="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="RT_ARN"{print $2}' | tr -d '[:space:]')"
+      RECOVERY_ATTEST_RT_NAME="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="RT_NAME"{print $2}' | tr -d '[:space:]')"
+      RECOVERY_ATTEST_MG_PRE="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="MG_PRE"{print $2}' | tr -d '[:space:]')"
+      RECOVERY_ATTEST_MG_POST="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="MG_POST"{print $2}' | tr -d '[:space:]')"
+      RECOVERY_ATTEST_MG_ARN="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="MG_ARN"{print $2}' | tr -d '[:space:]')"
+      RECOVERY_ATTEST_MG_NAME="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="MG_NAME"{print $2}' | tr -d '[:space:]')"
+      RECOVERY_ATTEST_TLS_PRE="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="TLS_PRE"{print $2}' | tr -d '[:space:]')"
+      RECOVERY_ATTEST_TLS_POST="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="TLS_POST"{print $2}' | tr -d '[:space:]')"
+      RECOVERY_ATTEST_TLS_ARN="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="TLS_ARN"{print $2}' | tr -d '[:space:]')"
+      RECOVERY_ATTEST_TLS_NAME="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="TLS_NAME"{print $2}' | tr -d '[:space:]')"
+      RECOVERY_ATTEST_CERT_PRE="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="CERT_PRE"{print $2}' | tr -d '[:space:]')"
+      RECOVERY_ATTEST_CERT_POST="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="CERT_POST"{print $2}' | tr -d '[:space:]')"
+      RECOVERY_ATTEST_CERT_ARN="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="CERT_ARN"{print $2}' | tr -d '[:space:]')"
+      RECOVERY_ATTEST_CERT_DOMAIN="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="CERT_DOMAIN"{print $2}' | tr -d '[:space:]')"
+      RECOVERY_ATTEST_REL_GEN="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="REL_GEN"{print $2}' | tr -d '[:space:]')"
+      RECOVERY_ATTEST_REL_SOURCE="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="REL_SOURCE"{print $2}' | tr -d '[:space:]')"
+      RECOVERY_ATTEST_REL_HEAD="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="REL_HEAD"{print $2}' | tr -d '[:space:]')"
+      if [ "$RECOVERY_RT_PRE" != "$RECOVERY_ATTEST_RT_PRE" ] || [ "$RECOVERY_RT_PRE" != "$RECOVERY_ATTEST_RT_POST" ]; then
+        release_recovery_lock
+        echo "refused: live runtime VersionId changed since recovery attestation, no bypass. Inspect $RECOVERY_FILE." >&2
+        phase_failed "$RECOVERY_FAIL_PHASE"
+      fi
+      if [ "$RECOVERY_MG_PRE" != "$RECOVERY_ATTEST_MG_PRE" ] || [ "$RECOVERY_MG_PRE" != "$RECOVERY_ATTEST_MG_POST" ]; then
+        release_recovery_lock
+        echo "refused: live migration VersionId changed since recovery attestation, no bypass. Inspect $RECOVERY_FILE." >&2
+        phase_failed "$RECOVERY_FAIL_PHASE"
+      fi
+      if [ "$RECOVERY_TLS_PRE" != "$RECOVERY_ATTEST_TLS_PRE" ] || [ "$RECOVERY_TLS_PRE" != "$RECOVERY_ATTEST_TLS_POST" ]; then
+        release_recovery_lock
+        echo "refused: live TLS VersionId changed since recovery attestation, no bypass. Inspect $RECOVERY_FILE." >&2
+        phase_failed "$RECOVERY_FAIL_PHASE"
+      fi
+      if [ "$RECOVERY_CERT_SERIAL_PRE" != "$RECOVERY_ATTEST_CERT_PRE" ] || [ "$RECOVERY_CERT_SERIAL_PRE" != "$RECOVERY_ATTEST_CERT_POST" ]; then
+        release_recovery_lock
+        echo "refused: live certificate serial changed since recovery attestation, no bypass. Inspect $RECOVERY_FILE." >&2
+        phase_failed "$RECOVERY_FAIL_PHASE"
+      fi
+      if [ "$RECOVERY_RT_ARN" != "$RECOVERY_ATTEST_RT_ARN" ] || [ "$RECOVERY_ATTEST_RT_ARN" != "$RUNTIME_SECRET_ARN" ]; then
+        release_recovery_lock
+        echo "refused: recovery runtime ARN does not equal exact owned ARN, no bypass. Inspect $RECOVERY_FILE." >&2
+        phase_failed "$RECOVERY_FAIL_PHASE"
+      fi
+      if [ "$RECOVERY_RT_NAME" != "$RECOVERY_ATTEST_RT_NAME" ]; then
+        release_recovery_lock
+        echo "refused: live runtime Name changed since recovery attestation, no bypass. Inspect $RECOVERY_FILE." >&2
+        phase_failed "$RECOVERY_FAIL_PHASE"
+      fi
+      if [ "$RECOVERY_MG_ARN" != "$RECOVERY_ATTEST_MG_ARN" ] || [ "$RECOVERY_ATTEST_MG_ARN" != "$MIGRATION_SECRET_ARN" ]; then
+        release_recovery_lock
+        echo "refused: recovery migration ARN does not equal exact owned ARN, no bypass. Inspect $RECOVERY_FILE." >&2
+        phase_failed "$RECOVERY_FAIL_PHASE"
+      fi
+      if [ "$RECOVERY_MG_NAME" != "$RECOVERY_ATTEST_MG_NAME" ]; then
+        release_recovery_lock
+        echo "refused: live migration Name changed since recovery attestation, no bypass. Inspect $RECOVERY_FILE." >&2
+        phase_failed "$RECOVERY_FAIL_PHASE"
+      fi
+      if [ "$RECOVERY_TLS_ARN" != "$RECOVERY_ATTEST_TLS_ARN" ] || [ "$RECOVERY_ATTEST_TLS_ARN" != "$TLS_SECRET_ARN" ]; then
+        release_recovery_lock
+        echo "refused: recovery TLS ARN does not equal exact owned ARN, no bypass. Inspect $RECOVERY_FILE." >&2
+        phase_failed "$RECOVERY_FAIL_PHASE"
+      fi
+      if [ "$RECOVERY_TLS_NAME" != "$RECOVERY_ATTEST_TLS_NAME" ]; then
+        release_recovery_lock
+        echo "refused: live TLS Name changed since recovery attestation, no bypass. Inspect $RECOVERY_FILE." >&2
+        phase_failed "$RECOVERY_FAIL_PHASE"
+      fi
+      if [ "$RECOVERY_CERT_ARN" != "$RECOVERY_ATTEST_CERT_ARN" ] || [ "$RECOVERY_ATTEST_CERT_ARN" != "$RECOVERY_CERT_ARN_VALUE" ]; then
+        release_recovery_lock
+        echo "refused: recovery certificate ARN does not equal exact owned ARN, no bypass. Inspect $RECOVERY_FILE." >&2
+        phase_failed "$RECOVERY_FAIL_PHASE"
+      fi
+      if [ "$RECOVERY_CERT_DOMAIN" != "$RECOVERY_ATTEST_CERT_DOMAIN" ]; then
+        release_recovery_lock
+        echo "refused: live certificate domain changed since recovery attestation, no bypass. Inspect $RECOVERY_FILE." >&2
+        phase_failed "$RECOVERY_FAIL_PHASE"
+      fi
+      if [ "$RECOVERY_ATTEST_REL_GEN" != "${RELEASE_GEN:-}" ] || [ "$RECOVERY_ATTEST_REL_HEAD" != "${TARGET_DB_HEAD:-007}" ]; then
+        release_recovery_lock
+        echo "refused: recovery attestation release generation or head does not equal current owned release, same-release restart only with no bypass. Inspect $RECOVERY_FILE." >&2
+        phase_failed "$RECOVERY_FAIL_PHASE"
+      fi
+      if [ "$RECOVERY_ATTEST_REL_SOURCE" != "${SOURCE_SHA:-}" ]; then
+        release_recovery_lock
+        echo "refused: recovery attestation source SHA does not equal current owned source, same-release restart only with no bypass. Inspect $RECOVERY_FILE." >&2
+        phase_failed "$RECOVERY_FAIL_PHASE"
+      fi
+      [ -n "$RECOVERY_EXIST_VTASK" ] && [ "$RECOVERY_EXIST_VTASK" != "None" ] || {
+        release_recovery_lock
+        echo "refused: recovery attestation complete has no verifier task, cannot re-prove. Inspect $RECOVERY_FILE." >&2
+        phase_failed "$RECOVERY_FAIL_PHASE"
+      }
+      [ -n "$RECOVERY_EXIST_VTASKDEF" ] && [ "$RECOVERY_EXIST_VTASKDEF" != "None" ] || {
+        release_recovery_lock
+        echo "refused: recovery attestation complete has no verifier taskdef, cannot re-prove. Inspect $RECOVERY_FILE." >&2
+        phase_failed "$RECOVERY_FAIL_PHASE"
+      }
+      RECOVERY_REVERIFY_DESC="$(mktemp /tmp/launchcrew-reverify-XXXXXX)"
+      if ! "$AWS_BIN" ecs describe-tasks --cluster "$CLUSTER_NAME" --tasks "$RECOVERY_EXIST_VTASK" --region "$EXPECTED_REGION" --output json >"$RECOVERY_REVERIFY_DESC" 2>"$TMP_ERR"; then
+        rm -f "$RECOVERY_REVERIFY_DESC"
+        release_recovery_lock
+        echo "refused: recovery verifier terminal state unreadable, not treated as success. Inspect $RECOVERY_FILE." >&2
+        phase_failed "$RECOVERY_FAIL_PHASE"
+      fi
+      RECOVERY_REVERIFY_PRESENCE="$(python3 - "$RECOVERY_REVERIFY_DESC" "$RECOVERY_EXIST_VTASK" 2>/dev/null <<'PYEOF'
+import json, sys
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    print("UNREADABLE")
+    sys.exit(0)
+expected = sys.argv[2] if len(sys.argv) > 2 else ""
+if not isinstance(doc, dict):
+    print("UNREADABLE")
+    sys.exit(0)
+if "tasks" not in doc or "failures" not in doc:
+    print("AMBIGUOUS_RESPONSE")
+    sys.exit(0)
+tasks = doc.get("tasks")
+failures = doc.get("failures")
+if not isinstance(tasks, list) or not isinstance(failures, list):
+    print("AMBIGUOUS_RESPONSE")
+    sys.exit(0)
+for entry in tasks:
+    if not isinstance(entry, dict):
+        print("AMBIGUOUS_RESPONSE")
+        sys.exit(0)
+for entry in failures:
+    if not isinstance(entry, dict):
+        print("AMBIGUOUS_RESPONSE")
+        sys.exit(0)
+    if not isinstance(entry.get("arn"), str) or not isinstance(entry.get("reason"), str):
+        print("AMBIGUOUS_RESPONSE")
+        sys.exit(0)
+if tasks and failures:
+    print("AMBIGUOUS_MIXED")
+    sys.exit(0)
+if tasks and not failures:
+    print("PRESENT")
+    sys.exit(0)
+if not tasks and not failures:
+    print("AMBIGUOUS_EMPTY")
+    sys.exit(0)
+if len(failures) != 1:
+    print("AMBIGUOUS_FAILURES")
+    sys.exit(0)
+single = failures[0]
+if single.get("reason") != "MISSING":
+    print("AMBIGUOUS_REASON")
+    sys.exit(0)
+if not expected or single.get("arn") != expected:
+    print("AMBIGUOUS_ARN")
+    sys.exit(0)
+print("NO_TASK")
+PYEOF
+)" || RECOVERY_REVERIFY_PRESENCE="UNREADABLE"
+      rm -f "$RECOVERY_REVERIFY_DESC"
+      RECOVERY_REVERIFY_PRESENCE="$(printf '%s' "$RECOVERY_REVERIFY_PRESENCE" | tr -d '[:space:]')"
+      if [ "$RECOVERY_REVERIFY_PRESENCE" = "NO_TASK" ]; then
+        prove_no_running_for_startedby "$RECOVERY_ORIG_TOKEN" "recovery re-verify" "$RECOVERY_ORIG_TASK"
+        RECOVERY_ABSENCE_PROOF="OK"
+        release_recovery_lock
+        echo "recovery re-verified via persisted one-shot terminal proof after verifier retention expiry: original $RECOVERY_ORIG_BASENAME unchanged, fresh desired state intact, no live verifier claim, no new verifier, no resend. Not retroactive proof."
+        return 0
+      fi
+      if [ "$RECOVERY_REVERIFY_PRESENCE" != "PRESENT" ]; then
+        release_recovery_lock
+        echo "refused: recovery verifier presence is $RECOVERY_REVERIFY_PRESENCE, cannot re-prove. Inspect $RECOVERY_FILE." >&2
+        phase_failed "$RECOVERY_FAIL_PHASE"
+      fi
+      prove_typed_verifier_terminal "$RECOVERY_EXIST_VTASK" "$RECOVERY_EXIST_VTOKEN" "$RECOVERY_EXIST_VTASKDEF" "$RECOVERY_ALLOW10"
+      prove_no_running_for_startedby "$RECOVERY_ORIG_TOKEN" "recovery re-verify" "$RECOVERY_ORIG_TASK"
+      RECOVERY_ABSENCE_PROOF="OK"
+      release_recovery_lock
+      echo "recovery re-verified: original $RECOVERY_ORIG_BASENAME unchanged, live material and verifier still prove desired-state equivalence, not retroactive proof."
+      return 0
+    fi
+    if [ "$RECOVERY_EXIST_OUTCOME" = "started" ] && [ -n "$RECOVERY_EXIST_VTASK" ] && [ "$RECOVERY_EXIST_VTASK" != "None" ]; then
+      if [ "${RECOVERY_READONLY:-0}" = "1" ]; then
+        release_recovery_lock
+        echo "refused: enable re-proof needs complete recovery attestation but existing is $RECOVERY_EXIST_OUTCOME unresolved. Run --phase $RECOVERY_TYPED_PHASE to reconcile first. No new launch." >&2
+        phase_failed "$RECOVERY_FAIL_PHASE"
+      fi
+      [ -n "$RECOVERY_EXIST_VTASKDEF" ] && [ "$RECOVERY_EXIST_VTASKDEF" != "None" ] || {
+        release_recovery_lock
+        echo "refused: recovery $RECOVERY_EXIST_OUTCOME has no verifier taskdef, manual review required. Inspect $RECOVERY_FILE." >&2
+        phase_failed "$RECOVERY_FAIL_PHASE"
+      }
+      RECOVERY_RESUME_RT_PRE="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="RT_PRE"{print $2}' | tr -d '[:space:]')"
+      RECOVERY_RESUME_MG_PRE="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="MG_PRE"{print $2}' | tr -d '[:space:]')"
+      RECOVERY_RESUME_TLS_PRE="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="TLS_PRE"{print $2}' | tr -d '[:space:]')"
+      RECOVERY_RESUME_CERT_PRE="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="CERT_PRE"{print $2}' | tr -d '[:space:]')"
+      RECOVERY_RESUME_RT_ARN="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="RT_ARN"{print $2}' | tr -d '[:space:]')"
+      RECOVERY_RESUME_MG_ARN="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="MG_ARN"{print $2}' | tr -d '[:space:]')"
+      RECOVERY_RESUME_TLS_ARN="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="TLS_ARN"{print $2}' | tr -d '[:space:]')"
+      RECOVERY_RESUME_CERT_ARN="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="CERT_ARN"{print $2}' | tr -d '[:space:]')"
+      RECOVERY_RESUME_REL_GEN="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="REL_GEN"{print $2}' | tr -d '[:space:]')"
+      RECOVERY_RESUME_REL_HEAD="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="REL_HEAD"{print $2}' | tr -d '[:space:]')"
+      RECOVERY_RESUME_REL_SOURCE="$(printf '%s\n' "$RECOVERY_EXISTING" | awk -F'\t' '$1=="REL_SOURCE"{print $2}' | tr -d '[:space:]')"
+      if [ "$RECOVERY_RT_PRE" != "$RECOVERY_RESUME_RT_PRE" ]; then
+        release_recovery_lock
+        echo "refused: live runtime VersionId changed during recovery resume, no attestation. Inspect $RECOVERY_FILE." >&2
+        phase_failed "$RECOVERY_FAIL_PHASE"
+      fi
+      if [ "$RECOVERY_MG_PRE" != "$RECOVERY_RESUME_MG_PRE" ]; then
+        release_recovery_lock
+        echo "refused: live migration VersionId changed during recovery resume, no attestation. Inspect $RECOVERY_FILE." >&2
+        phase_failed "$RECOVERY_FAIL_PHASE"
+      fi
+      if [ "$RECOVERY_TLS_PRE" != "$RECOVERY_RESUME_TLS_PRE" ]; then
+        release_recovery_lock
+        echo "refused: live TLS VersionId changed during recovery resume, no attestation. Inspect $RECOVERY_FILE." >&2
+        phase_failed "$RECOVERY_FAIL_PHASE"
+      fi
+      if [ "$RECOVERY_CERT_SERIAL_PRE" != "$RECOVERY_RESUME_CERT_PRE" ]; then
+        release_recovery_lock
+        echo "refused: live certificate serial changed during recovery resume, no attestation. Inspect $RECOVERY_FILE." >&2
+        phase_failed "$RECOVERY_FAIL_PHASE"
+      fi
+      if [ "$RECOVERY_RT_ARN" != "$RECOVERY_RESUME_RT_ARN" ] || [ "$RECOVERY_MG_ARN" != "$RECOVERY_RESUME_MG_ARN" ] || [ "$RECOVERY_TLS_ARN" != "$RECOVERY_RESUME_TLS_ARN" ] || [ "$RECOVERY_CERT_ARN" != "$RECOVERY_RESUME_CERT_ARN" ]; then
+        release_recovery_lock
+        echo "refused: live material ARN changed during recovery resume, no attestation. Inspect $RECOVERY_FILE." >&2
+        phase_failed "$RECOVERY_FAIL_PHASE"
+      fi
+      if [ "$RECOVERY_RESUME_REL_GEN" != "${RELEASE_GEN:-}" ] || [ "$RECOVERY_RESUME_REL_HEAD" != "${TARGET_DB_HEAD:-007}" ] || [ "$RECOVERY_RESUME_REL_SOURCE" != "${SOURCE_SHA:-}" ]; then
+        release_recovery_lock
+        echo "refused: recovery resume release does not equal current owned release, same-release only with no attestation. Inspect $RECOVERY_FILE." >&2
+        phase_failed "$RECOVERY_FAIL_PHASE"
+      fi
+      echo "recovery prior $RECOVERY_EXIST_OUTCOME unresolved, reconciling recorded verifier with no new RunTask."
+      prove_typed_verifier_terminal "$RECOVERY_EXIST_VTASK" "$RECOVERY_EXIST_VTOKEN" "$RECOVERY_EXIST_VTASKDEF" "$RECOVERY_ALLOW10"
+      RECOVERY_VERIFIER_TOKEN="$RECOVERY_EXIST_VTOKEN"
+      RECOVERY_VERIFIER_TASK="$RECOVERY_EXIST_VTASK"
+      RECOVERY_VERIFIER_TASKDEF="$RECOVERY_EXIST_VTASKDEF"
+      RECOVERY_RT_POST="$RECOVERY_RT_PRE"
+      RECOVERY_MG_POST="$RECOVERY_MG_PRE"
+      RECOVERY_TLS_POST="$RECOVERY_TLS_PRE"
+      RECOVERY_CERT_SERIAL_POST="$RECOVERY_CERT_SERIAL_PRE"
+      RECOVERY_VERIFIER_PROOF="OK"
+      if [ "$RECOVERY_KIND" = "material-recovery-attestation" ]; then
+        RECOVERY_VERIFIER_CONTAINERS="sdk-material:STOPPED:0"
+      elif [ "$RECOVERY_KIND" = "runtime-recovery-attestation" ]; then
+        RECOVERY_VERIFIER_CONTAINERS="bootstrap-db-roles:STOPPED:0"
+      else
+        if [ "${RECOVERY_VERIFIER_EXIT:-0}" = "10" ]; then
+          RECOVERY_VERIFIER_CONTAINERS="bootstrap-db-roles:STOPPED:10"
+        else
+          RECOVERY_VERIFIER_CONTAINERS="bootstrap-db-roles:STOPPED:0"
+        fi
+      fi
+      RECOVERY_VERIFIER_LAST_STATUS="STOPPED"
+      compute_typed_verifier_digest
+      prove_no_running_for_startedby "$RECOVERY_ORIG_TOKEN" "recovery resume" "$RECOVERY_ORIG_TASK"
+      RECOVERY_ABSENCE_PROOF="OK"
+      write_typed_recovery_attestation "$RECOVERY_FILE" "complete"
+      release_recovery_lock
+      echo "recovery resumed to complete: desired-state equivalence for $RECOVERY_ORIG_BASENAME, not retroactive proof."
+      return 0
+    fi
+    release_recovery_lock
+    echo "refused: existing recovery is $RECOVERY_EXIST_OUTCOME unresolved, manual review required with no new verifier and no resend. Inspect $RECOVERY_FILE." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  if [ "${RECOVERY_READONLY:-0}" = "1" ]; then
+    release_recovery_lock
+    echo "refused: enable re-proof needs complete recovery attestation but none exists. Run --phase $RECOVERY_TYPED_PHASE first to attest. No new launch." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  if ! RECOVERY_VERIFIER_TASKDEF="$(stack_resource "$RECOVERY_VERIFIER_LOGICAL" 2>"$TMP_ERR")"; then
+    release_recovery_lock
+    echo "refused: recovery verifier task definition lookup failed, no verifier claimed." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  RECOVERY_VERIFIER_TASKDEF="$(printf '%s' "$RECOVERY_VERIFIER_TASKDEF" | tr -d '[:space:]')"
+  [ -n "$RECOVERY_VERIFIER_TASKDEF" ] && [ "$RECOVERY_VERIFIER_TASKDEF" != "None" ] || {
+    release_recovery_lock
+    echo "refused: recovery verifier task definition missing, no verifier claimed." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  }
+  case "$RECOVERY_VERIFIER_LOGICAL" in
+    SdkMaterialTaskDefinition)
+      check_sdk_taskdef SdkMaterialTaskDefinition SdkMaterialExecutionRole SdkMaterialTaskRole sdk-material --verify-material ;;
+    RoleStateTaskDefinition)
+      check_rolestate_taskdef ;;
+    VerifyTaskDefinition)
+      check_taskdef_binding VerifyTaskDefinition VerifyExecutionRole VerifyTaskRole \
+        "bootstrap-db-roles.RUNTIME_DB_URL=$RUNTIME_SECRET_ARN:database-url::" ;;
+    *) release_recovery_lock
+      echo "refused: recovery verifier $RECOVERY_VERIFIER_LOGICAL unknown, no verifier claimed." >&2
+      phase_failed "$RECOVERY_FAIL_PHASE" ;;
+  esac
+  if ! RECOVERY_VERIFIER_TOKEN="$(python3 - 2>/dev/null <<'PYEOF'
+import uuid
+print("lc-" + uuid.uuid4().hex[:30])
+PYEOF
+)"; then
+    release_recovery_lock
+    echo "recovery verifier token generation failed, no verifier claimed." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  RECOVERY_VERIFIER_TOKEN="$(printf '%s' "$RECOVERY_VERIFIER_TOKEN" | tr -d '[:space:]')"
+  case "$RECOVERY_VERIFIER_TOKEN" in
+    lc-??????????????????????????????) ;;
+    *) release_recovery_lock; echo "recovery verifier token malformed, no verifier claimed." >&2; phase_failed "$RECOVERY_FAIL_PHASE" ;;
+  esac
+  RECOVERY_VERIFIER_TASK=""
+  RECOVERY_RT_POST=""
+  RECOVERY_MG_POST=""
+  RECOVERY_TLS_POST=""
+  RECOVERY_CERT_SERIAL_POST=""
+  RECOVERY_VERIFIER_PROOF=""
+  RECOVERY_VERIFIER_CONTAINERS=""
+  RECOVERY_VERIFIER_LAST_STATUS=""
+  RECOVERY_VERIFIER_DIGEST=""
+  RECOVERY_ABSENCE_PROOF=""
+  RECOVERY_OBSERVED_HEAD=""
+  write_typed_recovery_attestation "$RECOVERY_FILE" "admitted"
+  echo "recovery admission persisted before verifier RunTask: $RECOVERY_FILE"
+  if ! RECOVERY_SUBNET_A="$(stack_resource PublicSubnetA 2>"$TMP_ERR")"; then
+    echo "refused: recovery subnets unreadable after admission, manual review required. Inspect $RECOVERY_FILE." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  if ! RECOVERY_SUBNET_B="$(stack_resource PublicSubnetB 2>"$TMP_ERR")"; then
+    echo "refused: recovery subnets unreadable after admission, manual review required. Inspect $RECOVERY_FILE." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  if ! RECOVERY_JOB_SG="$(stack_resource JobSecurityGroup 2>"$TMP_ERR")"; then
+    echo "refused: recovery security group unreadable after admission, manual review required. Inspect $RECOVERY_FILE." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  RECOVERY_SUBNET_A="$(printf '%s' "$RECOVERY_SUBNET_A" | tr -d '[:space:]')"
+  RECOVERY_SUBNET_B="$(printf '%s' "$RECOVERY_SUBNET_B" | tr -d '[:space:]')"
+  RECOVERY_JOB_SG="$(printf '%s' "$RECOVERY_JOB_SG" | tr -d '[:space:]')"
+  RECOVERY_RUN_JSON="$(mktemp /tmp/launchcrew-recrun-XXXXXX)"
+  RECOVERY_RUN_OK=1
+  if ! "$AWS_BIN" ecs run-task --cluster "$CLUSTER_NAME" --task"-definition" "$RECOVERY_VERIFIER_TASKDEF" --launch-type FARGATE --network-configuration "awsvpcConfiguration={subnets=[$RECOVERY_SUBNET_A,$RECOVERY_SUBNET_B],securityGroups=[$RECOVERY_JOB_SG],assignPublicIp=ENABLED}" --client-token "$RECOVERY_VERIFIER_TOKEN" --started-by "$RECOVERY_VERIFIER_TOKEN" --region "$EXPECTED_REGION" --output json >"$RECOVERY_RUN_JSON" 2>"$TMP_ERR"; then
+    RECOVERY_RUN_OK=0
+  fi
+  if [ "$RECOVERY_RUN_OK" -eq 0 ]; then
+    rm -f "$RECOVERY_RUN_JSON"
+    write_typed_recovery_attestation "$RECOVERY_FILE" "ambiguous_call_failed"
+    release_recovery_lock
+    echo "refused: recovery verifier run-task call failed; launch is ambiguous with no resend. Inspect $RECOVERY_FILE." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  RECOVERY_VERIFIER_TASK="$(python3 - "$RECOVERY_RUN_JSON" 2>/dev/null <<'PYEOF'
+import json, sys
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+tasks = doc.get("tasks", [])
+failures = doc.get("failures", [])
+if failures:
+    print("FAILURES")
+elif not tasks:
+    print("EMPTY")
+elif len(tasks) != 1:
+    print("MULTIPLE")
+else:
+    arn = (tasks[0] or {}).get("taskArn", "")
+    print(arn if arn and arn != "None" else "EMPTY")
+PYEOF
+)" || RECOVERY_VERIFIER_TASK="UNREADABLE"
+  rm -f "$RECOVERY_RUN_JSON"
+  RECOVERY_VERIFIER_TASK="$(printf '%s' "$RECOVERY_VERIFIER_TASK" | tr -d '[:space:]')"
+  case "$RECOVERY_VERIFIER_TASK" in
+    FAILURES|EMPTY|MULTIPLE|UNREADABLE|"")
+      write_typed_recovery_attestation "$RECOVERY_FILE" "ambiguous_response"
+      release_recovery_lock
+      echo "refused: recovery verifier run-task response is ${RECOVERY_VERIFIER_TASK:-empty}; launch is ambiguous with no resend. Inspect $RECOVERY_FILE." >&2
+      phase_failed "$RECOVERY_FAIL_PHASE" ;;
+  esac
+  write_typed_recovery_attestation "$RECOVERY_FILE" "started"
+  echo "recovery verifier started: $RECOVERY_VERIFIER_TASK"
+  prove_typed_verifier_terminal "$RECOVERY_VERIFIER_TASK" "$RECOVERY_VERIFIER_TOKEN" "$RECOVERY_VERIFIER_TASKDEF" "$RECOVERY_ALLOW10"
+  RECOVERY_POST_RT="$(fetch_secret_version_identity "$RUNTIME_SECRET_ARN" runtime)"
+  RECOVERY_POST_RT_PROOF="$(printf '%s\n' "$RECOVERY_POST_RT" | awk -F'\t' '$1=="PROOF"{print $2}' | tr -d '[:space:]')"
+  if [ "$RECOVERY_POST_RT_PROOF" != "OK" ]; then
+    echo "refused: recovery post runtime proof is $RECOVERY_POST_RT_PROOF, material changed during verification, no attestation." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  RECOVERY_POST_MG="$(fetch_secret_version_identity "$MIGRATION_SECRET_ARN" migration)"
+  RECOVERY_POST_MG_PROOF="$(printf '%s\n' "$RECOVERY_POST_MG" | awk -F'\t' '$1=="PROOF"{print $2}' | tr -d '[:space:]')"
+  if [ "$RECOVERY_POST_MG_PROOF" != "OK" ]; then
+    echo "refused: recovery post migration proof is $RECOVERY_POST_MG_PROOF, material changed during verification, no attestation." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  RECOVERY_POST_TLS="$(fetch_secret_version_identity "$TLS_SECRET_ARN" tls)"
+  RECOVERY_POST_TLS_PROOF="$(printf '%s\n' "$RECOVERY_POST_TLS" | awk -F'\t' '$1=="PROOF"{print $2}' | tr -d '[:space:]')"
+  if [ "$RECOVERY_POST_TLS_PROOF" != "OK" ]; then
+    echo "refused: recovery post TLS proof is $RECOVERY_POST_TLS_PROOF, material changed during verification, no attestation." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  RECOVERY_POST_CERT="$(fetch_cert_identity "$RECOVERY_CERT_ARN_VALUE")"
+  RECOVERY_POST_CERT_PROOF="$(printf '%s\n' "$RECOVERY_POST_CERT" | awk -F'\t' '$1=="PROOF"{print $2}' | tr -d '[:space:]')"
+  if [ "$RECOVERY_POST_CERT_PROOF" != "OK" ]; then
+    echo "refused: recovery post certificate proof is $RECOVERY_POST_CERT_PROOF, material changed during verification, no attestation." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  RECOVERY_RT_POST="$(printf '%s\n' "$RECOVERY_POST_RT" | awk -F'\t' '$1=="VERSION"{print $2}' | tr -d '[:space:]')"
+  RECOVERY_MG_POST="$(printf '%s\n' "$RECOVERY_POST_MG" | awk -F'\t' '$1=="VERSION"{print $2}' | tr -d '[:space:]')"
+  RECOVERY_TLS_POST="$(printf '%s\n' "$RECOVERY_POST_TLS" | awk -F'\t' '$1=="VERSION"{print $2}' | tr -d '[:space:]')"
+  RECOVERY_CERT_SERIAL_POST="$(printf '%s\n' "$RECOVERY_POST_CERT" | awk -F'\t' '$1=="SERIAL"{print $2}' | tr -d '[:space:]')"
+  if [ "$RECOVERY_RT_POST" != "$RECOVERY_RT_PRE" ]; then
+    echo "refused: runtime VersionId changed during verification, no attestation." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  if [ "$RECOVERY_MG_POST" != "$RECOVERY_MG_PRE" ]; then
+    echo "refused: migration VersionId changed during verification, no attestation." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  if [ "$RECOVERY_TLS_POST" != "$RECOVERY_TLS_PRE" ]; then
+    echo "refused: TLS VersionId changed during verification, no attestation." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  if [ "$RECOVERY_CERT_SERIAL_POST" != "$RECOVERY_CERT_SERIAL_PRE" ]; then
+    echo "refused: certificate serial changed during verification, no attestation." >&2
+    phase_failed "$RECOVERY_FAIL_PHASE"
+  fi
+  if [ "$RECOVERY_KIND" = "material-recovery-attestation" ]; then
+    RECOVERY_VERIFIER_CONTAINERS="sdk-material:STOPPED:0"
+  elif [ "$RECOVERY_KIND" = "runtime-recovery-attestation" ]; then
+    RECOVERY_VERIFIER_CONTAINERS="bootstrap-db-roles:STOPPED:0"
+  else
+    if [ "${RECOVERY_VERIFIER_EXIT:-0}" = "10" ]; then
+      RECOVERY_VERIFIER_CONTAINERS="bootstrap-db-roles:STOPPED:10"
+    else
+      RECOVERY_VERIFIER_CONTAINERS="bootstrap-db-roles:STOPPED:0"
+    fi
+  fi
+  RECOVERY_VERIFIER_LAST_STATUS="STOPPED"
+  compute_typed_verifier_digest
+  prove_no_running_for_startedby "$RECOVERY_ORIG_TOKEN" "recovery" "$RECOVERY_ORIG_TASK"
+  RECOVERY_ABSENCE_PROOF="OK"
+  write_typed_recovery_attestation "$RECOVERY_FILE" "complete"
+  release_recovery_lock
+  echo "recovery complete: $RECOVERY_ORIG_BASENAME attested via read-only verifier $RECOVERY_VERIFIER_TASK; desired-state equivalence, not retroactive proof."
+}
+
 # Require desired-state equivalence for every prior init journal before a
 # later phase proceeds. Args: calling phase. With zero init journals,
 # allow and let the later read-only verifier prove material, preserving
@@ -7132,6 +8819,224 @@ PYEOF
   echo "init desired-state satisfied for $REQUIRE_FAIL_PHASE: every prior init live-proven or recovered, none bypassed."
 }
 
+# Require desired-state equivalence for every prior typed journal before a
+# later phase proceeds. Args: calling phase, target phase, label, logical,
+# kind, verifier logical, verifier container, allow_started, allow_exit10.
+# With zero journals, allow and let the later read-only verifier prove state.
+# With any journal, unresolved, foreign, or altered records refuse with no
+# bypass. Allowed records that still live-prove STOPPED with allowed exit
+# proceed with no recovery. Allowed records that return NO_TASK require a
+# valid typed recovery attestation via attest_aged_typed_recovery,
+# re-verified live with no new verifier when already complete. Any other
+# live proof refuses with no recovery, so general NO_TASK is never success.
+# Binder STARTED originals never rerun the binder; they attest via the
+# read-only role-state verifier and never relabel STARTED as completed.
+require_typed_desired_state() {
+  TYPED_REQ_FAIL="$1"
+  TYPED_REQ_PHASE="$2"
+  TYPED_REQ_LABEL="$3"
+  TYPED_REQ_LOGICAL="$4"
+  TYPED_REQ_KIND="$5"
+  TYPED_REQ_VERIFIER="$6"
+  TYPED_REQ_CONTAINER="$7"
+  TYPED_REQ_STARTED="${8:-0}"
+  TYPED_REQ_ALLOW10="${9:-0}"
+  RECOVERY_FAIL_PHASE="$TYPED_REQ_FAIL"
+  if [ -z "$LAUNCH_JOURNAL_DIR" ]; then
+    case "$0" in
+      */*) TYPED_REQ_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd 2>/dev/null || echo "")" ;;
+      *) TYPED_REQ_DIR="" ;;
+    esac
+    if [ -n "$TYPED_REQ_DIR" ] && [ -d "$TYPED_REQ_DIR" ]; then
+      LAUNCH_JOURNAL_DIR="$TYPED_REQ_DIR/../../.local/launch-journals"
+    else
+      echo "$TYPED_REQ_LABEL desired-state journal directory missing, no claim made." >&2
+      phase_failed "$TYPED_REQ_FAIL"
+    fi
+  fi
+  if [ -L "$LAUNCH_JOURNAL_DIR" ]; then
+    echo "$TYPED_REQ_LABEL desired-state journal directory is a symlink, no claim made." >&2
+    phase_failed "$TYPED_REQ_FAIL"
+  fi
+  if [ ! -d "$LAUNCH_JOURNAL_DIR" ]; then
+    echo "$TYPED_REQ_LABEL desired-state: no journal directory, no prior to reconcile, proceeding to verifier."
+    return 0
+  fi
+  if ! python3 - "$LAUNCH_JOURNAL_DIR" 2>/dev/null <<'PYEOF'
+import os, sys
+path = sys.argv[1]
+if os.path.islink(path):
+    sys.exit(1)
+try:
+    info = os.stat(path)
+    mode = info.st_mode & 0o777
+    if info.st_uid != os.getuid():
+        sys.exit(1)
+except Exception:
+    sys.exit(1)
+sys.exit(0 if mode == 0o700 else 1)
+PYEOF
+  then
+    echo "$TYPED_REQ_LABEL desired-state journal directory is not private mode 700 owned, no claim made." >&2
+    phase_failed "$TYPED_REQ_FAIL"
+  fi
+  TYPED_REQ_LIST="$(mktemp /tmp/launchcrew-typed-list-XXXXXX)"
+  TYPED_REQ_ENUM="$(python3 - "$LAUNCH_JOURNAL_DIR" "$STACK_NAME" "$TYPED_REQ_PHASE" "$TYPED_REQ_LABEL" "$TYPED_REQ_LIST" 2>/dev/null <<'PYEOF'
+import os, sys
+directory, stack, phase, label, out_path = sys.argv[1:6]
+prefix = "launchcrew-%s-%s-%s-" % (stack, phase, label)
+try:
+    names = sorted(os.listdir(directory))
+except Exception:
+    print("PROOF\tLIST_FAILED")
+    sys.exit(0)
+found = []
+for name in names:
+    if not name.startswith(prefix) or not name.endswith(".json"):
+        continue
+    if name.endswith(".lock") or name.endswith(".recovery.json"):
+        continue
+    found.append(name)
+    if len(found) > 32:
+        print("PROOF\tTOO_MANY")
+        sys.exit(0)
+try:
+    with open(out_path, "w", encoding="utf-8") as out:
+        for name in found:
+            out.write(name + "\n")
+except Exception:
+    print("PROOF\tLIST_FAILED")
+    sys.exit(0)
+print("PROOF\tOK")
+print("COUNT\t%d" % len(found))
+PYEOF
+)" || TYPED_REQ_ENUM="PROOF\tLIST_FAILED"
+  TYPED_REQ_PROOF="$(printf '%s\n' "$TYPED_REQ_ENUM" | awk -F'\t' '$1=="PROOF"{print $2}' | tr -d '[:space:]')"
+  if [ "$TYPED_REQ_PROOF" != "OK" ]; then
+    rm -f "$TYPED_REQ_LIST"
+    echo "refused: $TYPED_REQ_LABEL desired-state enumeration is $TYPED_REQ_PROOF, no bypass. Inspect $LAUNCH_JOURNAL_DIR." >&2
+    phase_failed "$TYPED_REQ_FAIL"
+  fi
+  TYPED_REQ_COUNT="$(printf '%s\n' "$TYPED_REQ_ENUM" | awk -F'\t' '$1=="COUNT"{print $2}' | tr -d '[:space:]')"
+  if [ -z "$TYPED_REQ_COUNT" ] || [ "$TYPED_REQ_COUNT" = "0" ]; then
+    rm -f "$TYPED_REQ_LIST"
+    echo "$TYPED_REQ_LABEL desired-state: no prior record, proceeding to verifier which will prove state."
+    return 0
+  fi
+  while IFS= read -r TYPED_REQ_BASE || [ -n "$TYPED_REQ_BASE" ]; do
+    [ -n "$TYPED_REQ_BASE" ] || continue
+    TYPED_REQ_PATH="$LAUNCH_JOURNAL_DIR/$TYPED_REQ_BASE"
+    TYPED_REQ_VALIDATED="$(validate_typed_journal_for_recovery "$TYPED_REQ_PATH" "$TYPED_REQ_BASE" "$TYPED_REQ_PHASE" "$TYPED_REQ_LABEL" "$TYPED_REQ_LOGICAL" "$TYPED_REQ_STARTED")" || TYPED_REQ_VALIDATED="PROOF\tUNREADABLE"
+    TYPED_REQ_VPROOF="$(printf '%s\n' "$TYPED_REQ_VALIDATED" | awk -F'\t' '$1=="PROOF"{print $2}' | tr -d '[:space:]')"
+    if [ "$TYPED_REQ_VPROOF" != "OK" ]; then
+      TYPED_REQ_VOUT="$(printf '%s\n' "$TYPED_REQ_VALIDATED" | awk -F'\t' '$1=="OUTCOME"{print $2}' | tr -d '[:space:]')"
+      rm -f "$TYPED_REQ_LIST"
+      echo "refused: $TYPED_REQ_LABEL desired-state prior $TYPED_REQ_BASE is $TYPED_REQ_VPROOF ${TYPED_REQ_VOUT:-}, no bypass. Inspect $TYPED_REQ_PATH." >&2
+      phase_failed "$TYPED_REQ_FAIL"
+    fi
+    TYPED_REQ_TOKEN="$(printf '%s\n' "$TYPED_REQ_VALIDATED" | awk -F'\t' '$1=="TOKEN"{print $2}' | tr -d '[:space:]')"
+    TYPED_REQ_TASK="$(printf '%s\n' "$TYPED_REQ_VALIDATED" | awk -F'\t' '$1=="TASKARN"{print $2}' | tr -d '[:space:]')"
+    TYPED_REQ_TASKDEF="$(printf '%s\n' "$TYPED_REQ_VALIDATED" | awk -F'\t' '$1=="TASKDEF"{print $2}' | tr -d '[:space:]')"
+    TYPED_REQ_OUTCOME="$(printf '%s\n' "$TYPED_REQ_VALIDATED" | awk -F'\t' '$1=="OUTCOME"{print $2}' | tr -d '[:space:]')"
+    TYPED_REQ_DESC="$(mktemp /tmp/launchcrew-typed-desc-XXXXXX)"
+    if ! "$AWS_BIN" ecs describe-tasks --cluster "$CLUSTER_NAME" --tasks "$TYPED_REQ_TASK" --region "$EXPECTED_REGION" --output json >"$TYPED_REQ_DESC" 2>"$TMP_ERR"; then
+      rm -f "$TYPED_REQ_DESC" "$TYPED_REQ_LIST"
+      echo "refused: $TYPED_REQ_LABEL desired-state prior $TYPED_REQ_BASE terminal state unreadable, no bypass. Inspect $TYPED_REQ_PATH." >&2
+      phase_failed "$TYPED_REQ_FAIL"
+    fi
+    TYPED_REQ_DEF_JSON="$(mktemp /tmp/launchcrew-typed-def-XXXXXX)"
+    if ! "$AWS_BIN" ecs "describe-task""-definition" --task"-definition" "$TYPED_REQ_TASKDEF" --region "$EXPECTED_REGION" --output json >"$TYPED_REQ_DEF_JSON" 2>"$TMP_ERR"; then
+      rm -f "$TYPED_REQ_DESC" "$TYPED_REQ_DEF_JSON" "$TYPED_REQ_LIST"
+      echo "refused: $TYPED_REQ_LABEL desired-state prior $TYPED_REQ_BASE taskdef unreadable, no bypass. Inspect $TYPED_REQ_PATH." >&2
+      phase_failed "$TYPED_REQ_FAIL"
+    fi
+    TYPED_REQ_CHECK="$(python3 - "$TYPED_REQ_DESC" "$TYPED_REQ_DEF_JSON" "$TYPED_REQ_TASK" "$TYPED_REQ_TASKDEF" "arn:aws:ecs:$EXPECTED_REGION:$EXPECTED_ACCOUNT:cluster/$CLUSTER_NAME" "$TYPED_REQ_TOKEN" "$TYPED_REQ_ALLOW10" 2>/dev/null <<'PYEOF'
+import json, sys
+try:
+    describe = json.load(open(sys.argv[1]))
+    defined = json.load(open(sys.argv[2]))
+except Exception:
+    sys.exit(1)
+expected_arn, expected_taskdef, expected_cluster, expected_token, allow10 = sys.argv[3:8]
+allow10 = (allow10 == "1")
+expected_names = []
+for container in (defined.get("taskDefinition", defined).get("containerDefinitions", []) or []):
+    if container.get("essential", True) and container.get("name"):
+        expected_names.append(container.get("name"))
+tasks = describe.get("tasks", [])
+failures = describe.get("failures", [])
+if failures or not tasks:
+    print("NO_TASK")
+    sys.exit(0)
+if not expected_names:
+    print("NO_EXPECTED_CONTAINERS")
+    sys.exit(0)
+task = tasks[0]
+if (task.get("taskArn", "") or "") != expected_arn:
+    print("WRONG_TASK_ARN")
+    sys.exit(0)
+if task.get("lastStatus") != "STOPPED":
+    print("NOT_STOPPED")
+    sys.exit(0)
+if (task.get("taskDefinitionArn", "") or "") != expected_taskdef:
+    print("WRONG_TASKDEF")
+    sys.exit(0)
+if (task.get("clusterArn", "") or "") != expected_cluster:
+    print("WRONG_CLUSTER")
+    sys.exit(0)
+if (task.get("startedBy", "") or "") != expected_token:
+    print("WRONG_TOKEN")
+    sys.exit(0)
+actual = task.get("containers", []) or []
+names = [(c.get("name", "?") or "?") for c in actual]
+if len(set(names)) != len(names):
+    print("DUPLICATE")
+    sys.exit(0)
+for name in sorted(set(names) - set(expected_names)):
+    print("UNEXPECTED:" + name)
+    sys.exit(0)
+for name in sorted(set(expected_names) - set(names)):
+    print("MISSING:" + name)
+    sys.exit(0)
+for container in actual:
+    code = container.get("exitCode", None)
+    if container.get("lastStatus") != "STOPPED":
+        print("EXIT_NONZERO:" + (container.get("name", "?") or "?"))
+        sys.exit(0)
+    if not isinstance(code, int) or isinstance(code, bool):
+        print("EXIT_NONZERO:" + (container.get("name", "?") or "?"))
+        sys.exit(0)
+    if code != 0 and not (allow10 and code == 10):
+        print("EXIT_NONZERO:" + (container.get("name", "?") or "?"))
+        sys.exit(0)
+print("OK")
+PYEOF
+)" || TYPED_REQ_CHECK="UNREADABLE"
+    rm -f "$TYPED_REQ_DESC" "$TYPED_REQ_DEF_JSON"
+    TYPED_REQ_CHECK="$(printf '%s' "$TYPED_REQ_CHECK" | tr -d '[:space:]')"
+    if [ "$TYPED_REQ_CHECK" = "OK" ]; then
+      if [ "$TYPED_REQ_OUTCOME" = "started" ]; then
+        rm -f "$TYPED_REQ_LIST"
+        echo "refused: $TYPED_REQ_LABEL desired-state prior $TYPED_REQ_BASE is STARTED with live STOPPED task, historical ambiguity requires separately reviewed repair, no automatic binder rerun and no relabel. Inspect $TYPED_REQ_PATH." >&2
+        phase_failed "$TYPED_REQ_FAIL"
+      fi
+      echo "$TYPED_REQ_LABEL desired-state: $TYPED_REQ_BASE live-proven STOPPED exit allowed, no recovery needed."
+      continue
+    fi
+    if [ "$TYPED_REQ_CHECK" = "NO_TASK" ]; then
+      echo "$TYPED_REQ_LABEL desired-state: $TYPED_REQ_BASE aged out NO_TASK, requiring recovery attestation."
+      attest_aged_typed_recovery "$TYPED_REQ_FAIL" "$TYPED_REQ_PATH" "$TYPED_REQ_BASE" "$TYPED_REQ_PHASE" "$TYPED_REQ_LABEL" "$TYPED_REQ_LOGICAL" "$TYPED_REQ_KIND" "$TYPED_REQ_VERIFIER" "$TYPED_REQ_CONTAINER" "$TYPED_REQ_STARTED" "$TYPED_REQ_ALLOW10"
+      echo "$TYPED_REQ_LABEL desired-state: $TYPED_REQ_BASE recovered via attestation, desired-state equivalence, not retroactive proof."
+      continue
+    fi
+    rm -f "$TYPED_REQ_LIST"
+    echo "refused: $TYPED_REQ_LABEL desired-state prior $TYPED_REQ_BASE terminal proof is $TYPED_REQ_CHECK, no bypass and no recovery for non-NO_TASK. Inspect $TYPED_REQ_PATH." >&2
+    phase_failed "$TYPED_REQ_FAIL"
+  done <"$TYPED_REQ_LIST"
+  rm -f "$TYPED_REQ_LIST"
+  echo "$TYPED_REQ_LABEL desired-state satisfied for $TYPED_REQ_FAIL: every prior live-proven or recovered, none bypassed."
+}
+
 # Run one isolated one-off task and prove its terminal state. Jobs run in the
 # public subnets with a public IP under a group with no inbound rules: the
 # database stays private, and the job can actually reach ECR, Secrets Manager,
@@ -7229,6 +9134,10 @@ PYEOF
   PREDECESSOR_TASK=""
   PREDECESSOR_OUTCOME="none"
   RECOVERED_AGED_PRIOR_INIT=0
+  RECOVERED_AGED_PRIOR_MATERIAL=0
+  RECOVERED_AGED_PRIOR_DBROLES=0
+  RECOVERED_AGED_PRIOR_MIGRATION=0
+  RECOVERED_AGED_PRIOR_VERIFY=0
   acquire_operation_lock
   # Legacy unversioned predecessor allows a different family after
   # replacement (Family omitted, so a new family may appear). It still
@@ -7402,9 +9311,16 @@ PYEOF
     LEGACY_TOKEN="$(printf '%s\n' "$LEGACY_PARSED" | awk -F'\t' '$1=="TOKEN"{print $2}' | tr -d '[:space:]')"
     LEGACY_TASK="$(printf '%s\n' "$LEGACY_PARSED" | awk -F'\t' '$1=="TASKARN"{print $2}' | tr -d '[:space:]')"
     LEGACY_TASKDEF="$(printf '%s\n' "$LEGACY_PARSED" | awk -F'\t' '$1=="TASKDEF"{print $2}' | tr -d '[:space:]')"
-    if [ "$LEGACY_OUTCOME" != "complete" ]; then
-      echo "refused: $TASK_LABEL legacy generation is $LEGACY_OUTCOME, not complete. Reconcile the prior generation to STOPPED with all essential exits 0 before any new $RELEASE_GEN launch. Legacy preserved at $LEGACY_ACTIVE_FILE, no new launch." >&2
-      phase_failed "$TASK_PHASE"
+    if [ "$TASK_LABEL" = "bootstrap" ] && [ "$TASK_PHASE" = "dbroles" ]; then
+      if [ "$LEGACY_OUTCOME" != "complete" ] && [ "$LEGACY_OUTCOME" != "started" ]; then
+        echo "refused: $TASK_LABEL legacy generation is $LEGACY_OUTCOME, not complete or started. Reconcile the prior generation before any new $RELEASE_GEN launch. Legacy preserved at $LEGACY_ACTIVE_FILE, no new launch." >&2
+        phase_failed "$TASK_PHASE"
+      fi
+    else
+      if [ "$LEGACY_OUTCOME" != "complete" ]; then
+        echo "refused: $TASK_LABEL legacy generation is $LEGACY_OUTCOME, not complete. Reconcile the prior generation to STOPPED with all essential exits 0 before any new $RELEASE_GEN launch. Legacy preserved at $LEGACY_ACTIVE_FILE, no new launch." >&2
+        phase_failed "$TASK_PHASE"
+      fi
     fi
     [ -n "$LEGACY_TASK" ] && [ "$LEGACY_TASK" != "None" ] || { echo "refused: $TASK_LABEL legacy complete has no task ARN, cannot re-prove predecessor. Inspect $LEGACY_ACTIVE_FILE." >&2; phase_failed "$TASK_PHASE"; }
     [ -n "$LEGACY_TASKDEF" ] && [ "$LEGACY_TASKDEF" != "None" ] || { echo "refused: $TASK_LABEL legacy complete has no taskdef ARN, cannot re-prove predecessor. Inspect $LEGACY_ACTIVE_FILE." >&2; phase_failed "$TASK_PHASE"; }
@@ -7578,11 +9494,43 @@ PYEOF
         PREDECESSOR_TASK="$LEGACY_TASK"
         PREDECESSOR_OUTCOME="recovered"
         RECOVERED_AGED_PRIOR_INIT=1
+      elif [ "$LEGACY_CHECK" = "NO_TASK" ] && [ "$TASK_LABEL" = "sdk-material" ] && [ "$TASK_PHASE" = "material" ]; then
+        echo "$TASK_LABEL legacy predecessor aged out NO_TASK, requiring recovery attestation before new $RELEASE_GEN launch."
+        attest_aged_typed_recovery "$TASK_PHASE" "$LEGACY_ACTIVE_FILE" "$(basename "$LEGACY_ACTIVE_FILE")" "material" "sdk-material" "SdkMaterialTaskDefinition" "material-recovery-attestation" "SdkMaterialTaskDefinition" "sdk-material" "0" "0"
+        echo "$TASK_LABEL legacy predecessor recovered via attestation, desired-state equivalence for new $RELEASE_GEN, not retroactive proof. Preserved at $LEGACY_ACTIVE_FILE."
+        PREDECESSOR_TASK="$LEGACY_TASK"
+        PREDECESSOR_OUTCOME="recovered"
+        RECOVERED_AGED_PRIOR_MATERIAL=1
+      elif [ "$LEGACY_CHECK" = "NO_TASK" ] && [ "$TASK_LABEL" = "bootstrap" ] && [ "$TASK_PHASE" = "dbroles" ]; then
+        echo "$TASK_LABEL legacy predecessor aged out NO_TASK, requiring recovery attestation before new $RELEASE_GEN launch."
+        attest_aged_typed_recovery "$TASK_PHASE" "$LEGACY_ACTIVE_FILE" "$(basename "$LEGACY_ACTIVE_FILE")" "dbroles" "bootstrap" "BootstrapTaskDefinition" "dbroles-recovery-attestation" "RoleStateTaskDefinition" "bootstrap-db-roles" "1" "1"
+        echo "$TASK_LABEL legacy predecessor recovered via attestation, desired-state equivalence for new $RELEASE_GEN, never a binder rerun and never a relabel of STARTED. Preserved at $LEGACY_ACTIVE_FILE."
+        PREDECESSOR_TASK="$LEGACY_TASK"
+        PREDECESSOR_OUTCOME="recovered"
+        RECOVERED_AGED_PRIOR_DBROLES=1
+      elif [ "$LEGACY_CHECK" = "NO_TASK" ] && [ "$TASK_LABEL" = "migration" ] && [ "$TASK_PHASE" = "migrate" ]; then
+        echo "$TASK_LABEL legacy predecessor aged out NO_TASK, requiring recovery attestation before new $RELEASE_GEN launch."
+        attest_aged_typed_recovery "$TASK_PHASE" "$LEGACY_ACTIVE_FILE" "$(basename "$LEGACY_ACTIVE_FILE")" "migrate" "migration" "MigrationTaskDefinition" "migration-recovery-attestation" "RoleStateTaskDefinition" "bootstrap-db-roles" "0" "1"
+        echo "$TASK_LABEL legacy predecessor recovered via attestation, desired-state equivalence for new $RELEASE_GEN, not retroactive proof. Preserved at $LEGACY_ACTIVE_FILE."
+        PREDECESSOR_TASK="$LEGACY_TASK"
+        PREDECESSOR_OUTCOME="recovered"
+        RECOVERED_AGED_PRIOR_MIGRATION=1
+      elif [ "$LEGACY_CHECK" = "NO_TASK" ] && [ "$TASK_LABEL" = "verify" ] && [ "$TASK_PHASE" = "migrate" ]; then
+        echo "$TASK_LABEL legacy predecessor aged out NO_TASK, requiring recovery attestation before new $RELEASE_GEN launch."
+        attest_aged_typed_recovery "$TASK_PHASE" "$LEGACY_ACTIVE_FILE" "$(basename "$LEGACY_ACTIVE_FILE")" "migrate" "verify" "VerifyTaskDefinition" "runtime-recovery-attestation" "VerifyTaskDefinition" "bootstrap-db-roles" "0" "0"
+        echo "$TASK_LABEL legacy predecessor recovered via attestation, desired-state equivalence for new $RELEASE_GEN, not retroactive proof. Preserved at $LEGACY_ACTIVE_FILE."
+        PREDECESSOR_TASK="$LEGACY_TASK"
+        PREDECESSOR_OUTCOME="recovered"
+        RECOVERED_AGED_PRIOR_VERIFY=1
       else
         echo "refused: $TASK_LABEL legacy predecessor terminal proof is $LEGACY_CHECK, no new $RELEASE_GEN launch. Inspect $LEGACY_ACTIVE_FILE." >&2
         phase_failed "$TASK_PHASE"
       fi
     else
+      if [ "$TASK_LABEL" = "bootstrap" ] && [ "$TASK_PHASE" = "dbroles" ] && [ "$LEGACY_OUTCOME" = "started" ]; then
+        echo "refused: $TASK_LABEL legacy predecessor is STARTED with live STOPPED task, historical ambiguity requires separately reviewed repair, no automatic binder rerun and no relabel. Inspect $LEGACY_ACTIVE_FILE." >&2
+        phase_failed "$TASK_PHASE"
+      fi
       PREDECESSOR_TASK="$LEGACY_TASK"
       PREDECESSOR_OUTCOME="complete"
       echo "$TASK_LABEL legacy predecessor reconciled STOPPED exit 0, preserved at $LEGACY_ACTIVE_FILE; new generation $RELEASE_GEN proceeds."
@@ -7763,6 +9711,84 @@ PYEOF
             rm -f "$ACTIVE_PRE_DESC"
           fi
         fi
+        if [ "$TASK_LABEL" = "bootstrap" ] && [ "$TASK_PHASE" = "dbroles" ]; then
+          ACTIVE_PRE_DESC="$(mktemp /tmp/launchcrew-active-pre-XXXXXX)"
+          if "$AWS_BIN" ecs describe-tasks --cluster "$CLUSTER_NAME" --tasks "$PRIOR_TASK" --region "$EXPECTED_REGION" --output json >"$ACTIVE_PRE_DESC" 2>"$TMP_ERR"; then
+            ACTIVE_PRE_CHECK="$(python3 - "$ACTIVE_PRE_DESC" 2>/dev/null <<'PYEOF'
+import json, sys
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    print("UNREADABLE")
+    sys.exit(0)
+tasks = doc.get("tasks", [])
+failures = doc.get("failures", [])
+if failures or not tasks:
+    print("NO_TASK")
+else:
+    print("PRESENT")
+PYEOF
+)" || ACTIVE_PRE_CHECK="UNREADABLE"
+            rm -f "$ACTIVE_PRE_DESC"
+            ACTIVE_PRE_CHECK="$(printf '%s' "$ACTIVE_PRE_CHECK" | tr -d '[:space:]')"
+            if [ "$ACTIVE_PRE_CHECK" = "NO_TASK" ]; then
+              echo "$TASK_LABEL prior mutating complete aged out NO_TASK, requiring recovery attestation with no binder rerun."
+              attest_aged_typed_recovery "$TASK_PHASE" "$ACTIVE_FILE" "$(basename "$ACTIVE_FILE")" "dbroles" "bootstrap" "BootstrapTaskDefinition" "dbroles-recovery-attestation" "RoleStateTaskDefinition" "bootstrap-db-roles" "1" "1"
+              echo "$TASK_LABEL already complete via recovery attestation, one-shot preserved with no new binder run-task; desired-state equivalence, never a relabel."
+              release_operation_lock
+              return 0
+            fi
+          else
+            rm -f "$ACTIVE_PRE_DESC"
+          fi
+        fi
+        if [ "$TASK_LABEL" = "migration" ] && [ "$TASK_PHASE" = "migrate" ]; then
+          ACTIVE_PRE_DESC="$(mktemp /tmp/launchcrew-active-pre-XXXXXX)"
+          if "$AWS_BIN" ecs describe-tasks --cluster "$CLUSTER_NAME" --tasks "$PRIOR_TASK" --region "$EXPECTED_REGION" --output json >"$ACTIVE_PRE_DESC" 2>"$TMP_ERR"; then
+            ACTIVE_PRE_CHECK="$(python3 - "$ACTIVE_PRE_DESC" 2>/dev/null <<'PYEOF'
+import json, sys
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    print("UNREADABLE")
+    sys.exit(0)
+tasks = doc.get("tasks", [])
+failures = doc.get("failures", [])
+if failures or not tasks:
+    print("NO_TASK")
+else:
+    print("PRESENT")
+PYEOF
+)" || ACTIVE_PRE_CHECK="UNREADABLE"
+            rm -f "$ACTIVE_PRE_DESC"
+            ACTIVE_PRE_CHECK="$(printf '%s' "$ACTIVE_PRE_CHECK" | tr -d '[:space:]')"
+            if [ "$ACTIVE_PRE_CHECK" = "NO_TASK" ]; then
+              echo "$TASK_LABEL prior mutating complete aged out NO_TASK, requiring recovery attestation with no resend."
+              attest_aged_typed_recovery "$TASK_PHASE" "$ACTIVE_FILE" "$(basename "$ACTIVE_FILE")" "migrate" "migration" "MigrationTaskDefinition" "migration-recovery-attestation" "RoleStateTaskDefinition" "bootstrap-db-roles" "0" "1"
+              MIGRATION_ACTIVE_OBS="$(python3 - "$LAUNCH_JOURNAL_DIR/recovery/$(basename "$ACTIVE_FILE").recovery.json" 2>/dev/null <<'PYEOF'
+import json, sys
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    print("UNREADABLE")
+    sys.exit(0)
+print(doc.get("observed_head", "") or "MISSING")
+PYEOF
+)" || MIGRATION_ACTIVE_OBS="UNREADABLE"
+              MIGRATION_ACTIVE_OBS="$(printf '%s' "$MIGRATION_ACTIVE_OBS" | tr -d '[:space:]')"
+              if [ "$MIGRATION_ACTIVE_OBS" = "007" ]; then
+                echo "$TASK_LABEL already complete via recovery attestation with observed head007, one-shot preserved with no new run-task; desired-state equivalence, not retroactive proof."
+                release_operation_lock
+                return 0
+              fi
+              release_operation_lock
+              echo "refused: $TASK_LABEL same-generation complete aged out but observed head is $MIGRATION_ACTIVE_OBS, not 007; ambiguous 007 attempt with no automatic resend. Inspect $ACTIVE_FILE." >&2
+              phase_failed "$TASK_PHASE"
+            fi
+          else
+            rm -f "$ACTIVE_PRE_DESC"
+          fi
+        fi
         echo "$TASK_LABEL prior mutating operation already complete, re-proving terminal state with no resend."
         prove_terminal_task
         echo "$TASK_LABEL already complete, one-shot preserved with no new run-task."
@@ -7773,8 +9799,46 @@ PYEOF
         CLIENT_TOKEN="$PRIOR_TOKEN"
         JOURNAL_FILE="$ACTIVE_FILE"
         TASK_ARN="$PRIOR_TASK"
+        ACTIVE_RO_DESC="$(mktemp /tmp/launchcrew-active-ro-XXXXXX)"
+        if "$AWS_BIN" ecs describe-tasks --cluster "$CLUSTER_NAME" --tasks "$PRIOR_TASK" --region "$EXPECTED_REGION" --output json >"$ACTIVE_RO_DESC" 2>"$TMP_ERR"; then
+          ACTIVE_RO_CHECK="$(python3 - "$ACTIVE_RO_DESC" 2>/dev/null <<'PYEOF'
+import json, sys
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    print("UNREADABLE")
+    sys.exit(0)
+tasks = doc.get("tasks", [])
+failures = doc.get("failures", [])
+if failures or not tasks:
+    print("NO_TASK")
+else:
+    print("PRESENT")
+PYEOF
+)" || ACTIVE_RO_CHECK="UNREADABLE"
+          rm -f "$ACTIVE_RO_DESC"
+          ACTIVE_RO_CHECK="$(printf '%s' "$ACTIVE_RO_CHECK" | tr -d '[:space:]')"
+          if [ "$ACTIVE_RO_CHECK" = "NO_TASK" ]; then
+            echo "$TASK_LABEL prior read-only complete aged out NO_TASK, requiring recovery attestation before fresh recheck."
+            if [ "$TASK_LABEL" = "sdk-material" ] && [ "$TASK_PHASE" = "material" ]; then
+              attest_aged_typed_recovery "$TASK_PHASE" "$ACTIVE_FILE" "$(basename "$ACTIVE_FILE")" "material" "sdk-material" "SdkMaterialTaskDefinition" "material-recovery-attestation" "SdkMaterialTaskDefinition" "sdk-material" "0" "0"
+            elif [ "$TASK_LABEL" = "verify" ] && [ "$TASK_PHASE" = "migrate" ]; then
+              attest_aged_typed_recovery "$TASK_PHASE" "$ACTIVE_FILE" "$(basename "$ACTIVE_FILE")" "migrate" "verify" "VerifyTaskDefinition" "runtime-recovery-attestation" "VerifyTaskDefinition" "bootstrap-db-roles" "0" "0"
+            else
+              echo "refused: $TASK_LABEL read-only aged out with no recovery path, no fresh recheck. Inspect $ACTIVE_FILE." >&2
+              phase_failed "$TASK_PHASE"
+            fi
+            echo "$TASK_LABEL aged prior recovered via attestation, proceeding to archive and fresh recheck."
+          fi
+        else
+          rm -f "$ACTIVE_RO_DESC"
+        fi
         echo "$TASK_LABEL prior read-only complete, re-proving terminal state before archive with no resend."
-        prove_terminal_task
+        if [ "${ACTIVE_RO_CHECK:-PRESENT}" = "NO_TASK" ]; then
+          echo "$TASK_LABEL prior read-only complete aged out but recovered via attestation, archiving original with no live re-proof and proceeding to fresh recheck."
+        else
+          prove_terminal_task
+        fi
         ARCHIVE_FILE="$LAUNCH_JOURNAL_DIR/launchcrew-$STACK_NAME-$TASK_PHASE-$TASK_LABEL-$RELEASE_GEN-complete-$PRIOR_TOKEN.json"
         if [ -L "$ARCHIVE_FILE" ] || [ -e "$ARCHIVE_FILE" ]; then echo "refused: $TASK_LABEL read-only archive path exists, no fresh recheck. Inspect $ACTIVE_FILE." >&2; phase_failed "$TASK_PHASE"; fi
         if ! python3 - "$ACTIVE_FILE" "$ARCHIVE_FILE" 2>/dev/null <<'PYEOF'
@@ -7812,6 +9876,76 @@ PYEOF
     echo "$TASK_LABEL aged prior recovered via attestation, desired-state equivalence with no new run-task; short-circuiting init with no new active journal, no Put/Export, and no migration before later gates. Preserved history, no resend."
     release_operation_lock
     return 0
+  fi
+  if [ "$TASK_LABEL" = "bootstrap" ] && [ "$TASK_PHASE" = "dbroles" ] && [ "${RECOVERED_AGED_PRIOR_DBROLES:-0}" = "1" ]; then
+    echo "$TASK_LABEL aged prior recovered via read-only role-state verifier, desired-state equivalence with no new binder run-task; short-circuiting dbroles with no new active journal, never rerunning the binder automatically and never relabel STARTED as completed. Preserved history, no resend."
+    release_operation_lock
+    return 0
+  fi
+  if [ "$TASK_LABEL" = "migration" ] && [ "$TASK_PHASE" = "migrate" ] && [ "${RECOVERED_AGED_PRIOR_MIGRATION:-0}" = "1" ]; then
+    MIGRATION_OBSERVED="$(python3 - "$LAUNCH_JOURNAL_DIR" "$STACK_NAME" 2>/dev/null <<'PYEOF'
+import json, os, sys
+directory, stack = sys.argv[1:3]
+prefix = "launchcrew-%s-migrate-migration-" % stack
+rec_dir = os.path.join(directory, "recovery")
+try:
+    names = sorted(os.listdir(rec_dir))
+except Exception:
+    print("PROOF\tLIST_FAILED")
+    sys.exit(0)
+heads = set()
+for name in names:
+    if not name.startswith(prefix) or not name.endswith(".recovery.json"):
+        continue
+    path = os.path.join(rec_dir, name)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            doc = json.load(handle)
+    except Exception:
+        print("PROOF\tUNREADABLE")
+        sys.exit(0)
+    if not isinstance(doc, dict):
+        print("PROOF\tMALFORMED")
+        sys.exit(0)
+    if doc.get("kind", "") != "migration-recovery-attestation":
+        continue
+    if doc.get("outcome", "") != "complete":
+        print("PROOF\tUNRESOLVED")
+        sys.exit(0)
+    head = doc.get("observed_head", "")
+    if head not in ("006", "007"):
+        print("PROOF\tHEAD_UNKNOWN")
+        sys.exit(0)
+    heads.add(head)
+if not heads:
+    print("PROOF\tNO_ATTESTATION")
+    sys.exit(0)
+if len(heads) != 1:
+    print("PROOF\tHEAD_MISMATCH")
+    sys.exit(0)
+print("PROOF\tOK")
+print("HEAD\t%s" % next(iter(heads)))
+PYEOF
+)" || MIGRATION_OBSERVED="PROOF\tUNREADABLE"
+    MIGRATION_OBS_PROOF="$(printf '%s\n' "$MIGRATION_OBSERVED" | awk -F'\t' '$1=="PROOF"{print $2}' | tr -d '[:space:]')"
+    MIGRATION_OBS_HEAD="$(printf '%s\n' "$MIGRATION_OBSERVED" | awk -F'\t' '$1=="HEAD"{print $2}' | tr -d '[:space:]')"
+    if [ "$MIGRATION_OBS_PROOF" != "OK" ]; then
+      release_operation_lock
+      echo "refused: migration recovery observed head proof is $MIGRATION_OBS_PROOF, no new migration and no skip without exact head. Inspect $LAUNCH_JOURNAL_DIR/recovery." >&2
+      phase_failed "$TASK_PHASE"
+    fi
+    if [ "$MIGRATION_OBS_HEAD" = "007" ]; then
+      echo "$TASK_LABEL aged prior recovered with observed head007 plus verified equivalence, skipping migration with no new run-task under typed attestation; fresh runtime verification still required. Preserved history, no resend."
+      release_operation_lock
+      return 0
+    fi
+    if [ "$MIGRATION_OBS_HEAD" = "006" ]; then
+      echo "$TASK_LABEL aged prior recovered with observed head006 plus verified equivalence, admitting at most one deliberate 007 migration after old-token and current-state checks; never automatically resending an ambiguous 007 attempt."
+    else
+      release_operation_lock
+      echo "refused: migration recovery observed head is $MIGRATION_OBS_HEAD, not 006 or 007, no migration and no skip. Inspect $LAUNCH_JOURNAL_DIR/recovery." >&2
+      phase_failed "$TASK_PHASE"
+    fi
   fi
   if ! CLIENT_TOKEN="$(python3 - 2>/dev/null <<'PYEOF'
 import uuid
@@ -7901,6 +10035,7 @@ if wants_phase material; then
     *) echo "Material precondition: init materials assumed from a previous run, verified read-only here" ;;
   esac
   require_init_desired_state material
+  require_typed_desired_state material material sdk-material SdkMaterialTaskDefinition material-recovery-attestation SdkMaterialTaskDefinition sdk-material 0 0
   check_sdk_taskdef SdkMaterialTaskDefinition SdkMaterialExecutionRole SdkMaterialTaskRole sdk-material --verify-material
   run_one_off_task SdkMaterialTaskDefinition sdk-material material
   mark_done material
@@ -7911,6 +10046,7 @@ if wants_phase dbroles; then
   echo "Phase dbroles: isolated bootstrap task binds role passwords in task memory only"
   [ "$STACK_EXISTS" -eq 1 ] || { echo "refused: no stack owns the bootstrap task; run --phase infra first" >&2; phase_failed dbroles; }
   require_init_desired_state dbroles
+  require_typed_desired_state dbroles dbroles bootstrap BootstrapTaskDefinition dbroles-recovery-attestation RoleStateTaskDefinition bootstrap-db-roles 1 1
   check_taskdef_binding BootstrapTaskDefinition BootstrapExecutionRole BootstrapTaskRole \
     "bootstrap-db-roles.MASTER_DB_PASSWORD=$MASTER_SECRET_ARN:password::" \
     "bootstrap-db-roles.RUNTIME_DB_URL=$RUNTIME_SECRET_ARN:database-url::" \
@@ -7924,6 +10060,8 @@ if wants_phase migrate; then
   echo "Phase migrate: single one-off migration task, the only schema change path"
   [ "$STACK_EXISTS" -eq 1 ] || { echo "refused: no stack owns the migration task; run --phase infra first" >&2; phase_failed migrate; }
   require_init_desired_state migrate
+  require_typed_desired_state migrate migrate migration MigrationTaskDefinition migration-recovery-attestation RoleStateTaskDefinition bootstrap-db-roles 0 1
+  require_typed_desired_state migrate migrate verify VerifyTaskDefinition runtime-recovery-attestation VerifyTaskDefinition bootstrap-db-roles 0 0
   check_taskdef_binding MigrationTaskDefinition MigrationExecutionRole MigrationTaskRole \
     "migration.DATABASE_URL=$MIGRATION_SECRET_ARN:database-url::"
   check_taskdef_binding VerifyTaskDefinition VerifyExecutionRole VerifyTaskRole \
@@ -8194,13 +10332,118 @@ PYEOF
   REPROVE_ACTIVE_FILE="$LAUNCH_JOURNAL_DIR/launchcrew-$STACK_NAME-$REPROVE_ORIGIN-$REPROVE_LABEL-$RELEASE_GEN-active.json"
   REPROVE_LEGACY_FILE="$LAUNCH_JOURNAL_DIR/launchcrew-$STACK_NAME-$REPROVE_ORIGIN-$REPROVE_LABEL-active.json"
   if [ -L "$REPROVE_ACTIVE_FILE" ]; then echo "enable re-proof $REPROVE_LABEL record is a symlink, no claim made. Inspect $REPROVE_ACTIVE_FILE." >&2; phase_failed enable; fi
+  case "$REPROVE_ORIGIN/$REPROVE_LABEL" in
+    material/sdk-material) REPROVE_KIND="material-recovery-attestation"; REPROVE_VERIFIER_LOGICAL="SdkMaterialTaskDefinition"; REPROVE_NEED_HEAD="" ;;
+    dbroles/bootstrap) REPROVE_KIND="dbroles-recovery-attestation"; REPROVE_VERIFIER_LOGICAL="RoleStateTaskDefinition"; REPROVE_NEED_HEAD="006,007" ;;
+    migrate/migration) REPROVE_KIND="migration-recovery-attestation"; REPROVE_VERIFIER_LOGICAL="RoleStateTaskDefinition"; REPROVE_NEED_HEAD="007" ;;
+    migrate/verify) REPROVE_KIND="runtime-recovery-attestation"; REPROVE_VERIFIER_LOGICAL="VerifyTaskDefinition"; REPROVE_NEED_HEAD="007" ;;
+    *) REPROVE_KIND=""; REPROVE_VERIFIER_LOGICAL=""; REPROVE_NEED_HEAD="" ;;
+  esac
   if [ ! -f "$REPROVE_ACTIVE_FILE" ]; then
-    if [ -f "$REPROVE_LEGACY_FILE" ]; then
-      echo "refused: enable re-proof needs new $RELEASE_GEN prior $REPROVE_LABEL $REPROVE_ORIGIN complete record but only a legacy old-head record exists. Run --phase $REPROVE_ORIGIN for $RELEASE_GEN first. Legacy preserved at $REPROVE_LEGACY_FILE, no new launch." >&2
-    else
+    if [ -z "$REPROVE_KIND" ]; then
       echo "refused: enable re-proof needs prior $REPROVE_LABEL $REPROVE_ORIGIN complete record $REPROVE_ACTIVE_FILE but none exists. Run --phase $REPROVE_ORIGIN first. No new launch." >&2
+      phase_failed enable
     fi
-    phase_failed enable
+    REPROVE_ATTEST_FOUND="$(python3 - "$LAUNCH_JOURNAL_DIR" "$STACK_NAME" "$REPROVE_ORIGIN" "$REPROVE_LABEL" "$REPROVE_KIND" "${RELEASE_GEN:-}" "${SOURCE_SHA:-}" "${TARGET_DB_HEAD:-007}" "$REPROVE_NEED_HEAD" 2>/dev/null <<'PYEOF'
+import hashlib, json, os, sys
+(directory, stack, phase, label, want_kind, want_gen, want_source, want_head, need_head) = sys.argv[1:10]
+prefix = "launchcrew-%s-%s-%s-" % (stack, phase, label)
+rec_dir = os.path.join(directory, "recovery")
+try:
+    names = sorted(os.listdir(rec_dir))
+except Exception:
+    print("PROOF\tLIST_FAILED")
+    sys.exit(0)
+need = set(x for x in (need_head or "").split(",") if x)
+found = None
+for name in names:
+    if not name.startswith(prefix) or not name.endswith(".recovery.json"):
+        continue
+    path = os.path.join(rec_dir, name)
+    try:
+        if os.path.islink(path):
+            print("PROOF\tSYMLINK")
+            sys.exit(0)
+        finfo = os.stat(path)
+        if (finfo.st_mode & 0o777) != 0o600:
+            continue
+        if finfo.st_uid != os.getuid():
+            continue
+        if finfo.st_size <= 0 or finfo.st_size > 10240:
+            continue
+        with open(path, encoding="utf-8") as handle:
+            doc = json.load(handle)
+    except Exception:
+        continue
+    if not isinstance(doc, dict):
+        continue
+    if doc.get("kind", "") != want_kind:
+        continue
+    if doc.get("outcome", "") != "complete":
+        continue
+    if doc.get("release_generation", "") != want_gen:
+        continue
+    if doc.get("source_sha", "") != want_source:
+        continue
+    if doc.get("target_head", "") != want_head:
+        continue
+    if doc.get("verifier_proof", "") != "OK":
+        continue
+    if doc.get("verifier_last_status", "") != "STOPPED":
+        continue
+    if doc.get("absence_proof", "") != "OK":
+        continue
+    obs = doc.get("observed_head", "") or ""
+    if need and obs not in need:
+        continue
+    if not need and want_kind == "material-recovery-attestation" and obs != "":
+        continue
+    cont = doc.get("verifier_containers", "") or ""
+    if ":STOPPED:" not in cont:
+        continue
+    try:
+        parts = [
+            doc.get("kind", ""), doc.get("verifier_task_arn", ""), doc.get("verifier_token", ""),
+            doc.get("verifier_taskdef_arn", ""), doc.get("verifier_containers", ""),
+            doc.get("verifier_last_status", ""), doc.get("original_sha256", ""),
+            doc.get("original_outcome", ""), doc.get("stack_id", ""), doc.get("runtime_arn", ""),
+            doc.get("runtime_name", ""), doc.get("runtime_version_pre", ""),
+            doc.get("runtime_version_post", ""), doc.get("migration_arn", ""),
+            doc.get("migration_name", ""), doc.get("migration_version_pre", ""),
+            doc.get("migration_version_post", ""), doc.get("tls_arn", ""),
+            doc.get("tls_name", ""), doc.get("tls_version_pre", ""),
+            doc.get("tls_version_post", ""), doc.get("cert_arn", ""),
+            doc.get("cert_domain", ""), doc.get("cert_serial_pre", ""),
+            doc.get("cert_serial_post", ""), doc.get("release_generation", ""),
+            doc.get("source_sha", ""), doc.get("target_head", ""),
+            doc.get("observed_head", ""), doc.get("original_basename", ""), doc.get("legacy_unversioned", ""),
+        ]
+        exp = hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+        if doc.get("verifier_digest", "") != exp:
+            continue
+    except Exception:
+        continue
+    found = name
+    break
+if not found:
+    print("PROOF\tNO_ATTESTATION")
+    sys.exit(0)
+print("PROOF\tOK")
+print("FILE\t%s" % found)
+PYEOF
+)" || REPROVE_ATTEST_FOUND="PROOF\tUNREADABLE"
+    REPROVE_ATTEST_PROOF="$(printf '%s\n' "$REPROVE_ATTEST_FOUND" | awk -F'\t' '$1=="PROOF"{print $2}' | tr -d '[:space:]')"
+    if [ "$REPROVE_ATTEST_PROOF" != "OK" ]; then
+      if [ -f "$REPROVE_LEGACY_FILE" ]; then
+        echo "refused: enable re-proof needs new $RELEASE_GEN prior $REPROVE_LABEL $REPROVE_ORIGIN complete record or current-release $REPROVE_KIND with observed head ${REPROVE_NEED_HEAD:-any}, but found $REPROVE_ATTEST_PROOF and only a legacy old-head record exists. Run --phase $REPROVE_ORIGIN for $RELEASE_GEN first. Legacy preserved at $REPROVE_LEGACY_FILE, no new launch." >&2
+      else
+        echo "refused: enable re-proof needs prior $REPROVE_LABEL $REPROVE_ORIGIN complete record $REPROVE_ACTIVE_FILE or current-release $REPROVE_KIND with observed head ${REPROVE_NEED_HEAD:-any}, but found $REPROVE_ATTEST_PROOF. Run --phase $REPROVE_ORIGIN first. No new launch." >&2
+      fi
+      phase_failed enable
+    fi
+    REPROVE_ATTEST_FILE="$(printf '%s\n' "$REPROVE_ATTEST_FOUND" | awk -F'\t' '$1=="FILE"{print $2}' | tr -d '[:space:]')"
+    echo "Enable re-proof: $REPROVE_LABEL prior $REPROVE_ORIGIN accepted via current-release $REPROVE_KIND $REPROVE_ATTEST_FILE with no new launch; aged file alone never passes."
+    return 0
   fi
   REPROVE_PARSED="$(python3 - "$REPROVE_ACTIVE_FILE" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$STACK_NAME" "$CLUSTER_NAME" "$REPROVE_ORIGIN" "$REPROVE_LABEL" "$REPROVE_LOGICAL" "$REPROVE_TASKDEF_ARN" "$REPROVE_CONFIG_DIGEST" "$RELEASE_GEN" "$TARGET_DB_HEAD" "${STACK_ID:-}" 2>/dev/null <<'PYEOF'
 import json, os, sys
@@ -8422,10 +10665,12 @@ if wants_phase enable; then
   # Resume guard: a standalone enable re-proves everything boot would rely
   # on, because nothing is assumed from memory. Refresh the full image
   # digest and task definition ref proof, the owned secrets and role bindings
-  # including TLS material, then re-prove the prior complete material,
-  # migration, and verify journals from the current release generation plus
-  # live describe, with no new run-task call. Standalone enable never
-  # populates, exports, binds, migrates, or launches any one-off task.
+  # including TLS material, then re-prove current-release typed attestations
+  # or fresh live terminal journals for material, roles, migration007 and
+  # runtime, all exact identities and unchanged inputs, with no new mutating
+  # run-task call. Standalone enable may refresh only read-only proofs, never
+  # bind roles, migrate, rotate, publish, populate, or export. An aged file
+  # alone never passes. Services stay zero until all gates pass.
   verify_image "$API_IMAGE" launchcrew-api ApiTaskDefinition api api
   verify_image "$WEB_IMAGE" launchcrew-web WebTaskDefinition web-app web
   verify_image "$WEB_PROXY_IMAGE" launchcrew-web-proxy WebTaskDefinition web-proxy web-proxy
@@ -8433,21 +10678,34 @@ if wants_phase enable; then
   verify_image "$BOOTSTRAP_IMAGE" launchcrew-bootstrap BootstrapTaskDefinition bootstrap-db-roles bootstrap
   verify_image "$BOOTSTRAP_IMAGE" launchcrew-bootstrap SdkInitTaskDefinition sdk-init bootstrap-sdk-init
   verify_image "$BOOTSTRAP_IMAGE" launchcrew-bootstrap SdkMaterialTaskDefinition sdk-material bootstrap-sdk-material
+  verify_image "$BOOTSTRAP_IMAGE" launchcrew-bootstrap RoleStateTaskDefinition bootstrap-db-roles bootstrap-rolestate
   check_api_taskdef_binding enable
   check_taskdef_binding WebTaskDefinition WebExecutionRole WebTaskRole \
     "web-proxy.TLS_CERT_B64=$TLS_SECRET_ARN:tls-cert-b64::" \
     "web-proxy.TLS_KEY_B64=$TLS_SECRET_ARN:tls-key-b64::"
   check_taskdef_binding VerifyTaskDefinition VerifyExecutionRole VerifyTaskRole \
     "bootstrap-db-roles.RUNTIME_DB_URL=$RUNTIME_SECRET_ARN:database-url::"
+  check_taskdef_binding BootstrapTaskDefinition BootstrapExecutionRole BootstrapTaskRole \
+    "bootstrap-db-roles.MASTER_DB_PASSWORD=$MASTER_SECRET_ARN:password::" \
+    "bootstrap-db-roles.RUNTIME_DB_URL=$RUNTIME_SECRET_ARN:database-url::" \
+    "bootstrap-db-roles.MIGRATION_DB_URL=$MIGRATION_SECRET_ARN:database-url::"
+  check_taskdef_binding MigrationTaskDefinition MigrationExecutionRole MigrationTaskRole \
+    "migration.DATABASE_URL=$MIGRATION_SECRET_ARN:database-url::"
   check_sdk_taskdef SdkMaterialTaskDefinition SdkMaterialExecutionRole SdkMaterialTaskRole sdk-material --verify-material
-  echo "Enable precheck: all five owned task definition images, secrets, and owned roles match validated values, SDK material shape proven"
+  check_rolestate_taskdef
+  echo "Enable precheck: all owned task definition images, secrets, and owned roles match validated values, SDK material and role-state shapes proven"
   RECOVERY_READONLY=1
   require_init_desired_state enable
+  require_typed_desired_state enable material sdk-material SdkMaterialTaskDefinition material-recovery-attestation SdkMaterialTaskDefinition sdk-material 0 0
+  require_typed_desired_state enable dbroles bootstrap BootstrapTaskDefinition dbroles-recovery-attestation RoleStateTaskDefinition bootstrap-db-roles 1 1
+  require_typed_desired_state enable migrate migration MigrationTaskDefinition migration-recovery-attestation RoleStateTaskDefinition bootstrap-db-roles 0 1
+  require_typed_desired_state enable migrate verify VerifyTaskDefinition runtime-recovery-attestation VerifyTaskDefinition bootstrap-db-roles 0 0
   RECOVERY_READONLY=0
   reprove_prior_one_off_readonly SdkMaterialTaskDefinition sdk-material material
+  reprove_prior_one_off_readonly BootstrapTaskDefinition bootstrap dbroles
   reprove_prior_one_off_readonly MigrationTaskDefinition migration migrate
   reprove_prior_one_off_readonly VerifyTaskDefinition verify migrate
-  echo "Enable proof: prior material, migration, and verify journals re-proved STOPPED exit 0 with no new run-task."
+  echo "Enable proof: material, roles, migration007 and runtime re-proved via current attestations or fresh journals with no new mutating run-task."
   ENABLE_OLD_API_TASKDEF=""
   ENABLE_OLD_WEB_TASKDEF=""
   if ! ENABLE_OLD_API_TASKDEF="$(stack_resource ApiTaskDefinition 2>"$TMP_ERR")"; then
