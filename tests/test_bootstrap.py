@@ -4873,6 +4873,50 @@ class InitRecoveryTests(BootstrapHarness):
         return [*self.base_args(), "--phase", "material",
                 "--release-generation", self.RELEASE]
 
+    def init_args(self):
+        return [*self.base_args(), "--phase", "init",
+                "--release-generation", self.RELEASE]
+
+    LEGACY_INIT_TOKEN = "lc-" + "d" * 30
+    LEGACY_INIT_TASK = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+                        "task/launchcrew-demo/aged-legacy-init-001")
+
+    def write_legacy_init_prior(self, journals, outcome="complete",
+                                **overrides):
+        import hashlib as _hashlib
+        import json as _json
+        name = f"launchcrew-{STACK}-init-sdk-init-active.json"
+        path = journals / name
+        doc = {
+            "version": 1,
+            "stack": STACK,
+            "phase": "init",
+            "label": "sdk-init",
+            "taskdef_logical": "SdkInitTaskDefinition",
+            "taskdef_arn": self.INIT_TASKDEF,
+            "cluster": STACK,
+            "client_token": self.LEGACY_INIT_TOKEN,
+            "config_digest": "1" * 32,
+            "region": REGION,
+            "account": ACCOUNT,
+            "outcome": outcome,
+            "task_arn": self.LEGACY_INIT_TASK if outcome == "complete" else "",
+            "updated_utc": "2026-01-01T00:00:00Z",
+        }
+        doc.update(overrides)
+        if "config_digest" not in overrides:
+            raw = "|".join([
+                doc.get("account", ""), doc.get("region", ""),
+                doc.get("stack", ""), doc.get("cluster", ""),
+                doc.get("phase", ""), doc.get("label", ""),
+                doc.get("taskdef_logical", ""), doc.get("taskdef_arn", ""),
+            ])
+            doc["config_digest"] = _hashlib.sha256(
+                raw.encode("utf-8")).hexdigest()[:32]
+        path.write_text(_json.dumps(doc), encoding="utf-8")
+        path.chmod(0o600)
+        return path
+
     def test_old_complete_no_task_recovers_via_verifier(self):
         import hashlib as _hashlib
         import json as _json
@@ -5134,8 +5178,19 @@ class InitRecoveryTests(BootstrapHarness):
                 shared_dir=shared_tmp)
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
-            self.assertIn("STATUS_EXPIRED", combined)
+            self.assertIn("prereqs certificate status", combined)
+            self.assertIn("EXPIRED", combined)
+            self.assertIn("expected ISSUED", combined)
+            self.assertIn("no ready claim", combined)
             self.assertFalse(any("run-task" in c for c in calls))
+            for banned in ("put-secret-value", "PutSecretValue",
+                           "export-certificate", "ExportCertificate",
+                           "get-secret-value", "GetSecretValue"):
+                self.assertFalse(any(banned in c for c in calls),
+                                 msg=banned)
+            recovery_dir = journals / "recovery"
+            if recovery_dir.exists():
+                self.assertEqual(list(recovery_dir.glob("*.recovery.json")), [])
 
     def test_changed_secret_version_on_restart_refuses(self):
         with tempfile.TemporaryDirectory() as shared_tmp:
@@ -5396,6 +5451,435 @@ class InitRecoveryTests(BootstrapHarness):
                            "update-secret", "rotate-secret"):
                 self.assertFalse(any(banned in c for c in calls), msg=banned)
             self.assertFalse(any("MigrationTaskDefinition" in c for c in calls))
+
+    def test_valid_attestation_with_secret_arns_reads_on_restart(self):
+        import json as _json
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            self.write_init_prior(journals)
+            first, _ = self.run_bootstrap(
+                self.material_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(first.returncode, 0,
+                             msg=first.stdout + first.stderr)
+            recovery_files = list((journals / "recovery").glob("*.recovery.json"))
+            self.assertEqual(len(recovery_files), 1)
+            doc = _json.loads(recovery_files[0].read_text(encoding="utf-8"))
+            self.assertIn(":secret:", doc.get("runtime_arn", ""))
+            self.assertIn(":secret:", doc.get("migration_arn", ""))
+            self.assertIn(":secret:", doc.get("tls_arn", ""))
+            result, calls = self.run_bootstrap(
+                self.material_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            combined = result.stdout + result.stderr
+            self.assertNotIn("SECRET_FIELD", combined)
+            self.assertIn("re-verified", combined)
+            runs = [c for c in calls if "run-task" in c]
+            self.assertEqual(len(runs), 1)
+            self.assertIn("launchcrew-demo-sdkmaterial", runs[0])
+
+    def test_injected_credential_value_in_attestation_refuses(self):
+        import json as _json
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            self.write_init_prior(journals)
+            first, _ = self.run_bootstrap(
+                self.material_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(first.returncode, 0,
+                             msg=first.stdout + first.stderr)
+            recovery_files = list((journals / "recovery").glob("*.recovery.json"))
+            self.assertEqual(len(recovery_files), 1)
+            recovery = recovery_files[0]
+            doc = _json.loads(recovery.read_text(encoding="utf-8"))
+            doc["note"] = "postgres://evil.example/db"
+            recovery.write_text(_json.dumps(doc), encoding="utf-8")
+            recovery.chmod(0o600)
+            result, calls = self.run_bootstrap(
+                self.material_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("SECRET_FIELD", combined)
+            self.assertFalse(any("run-task" in c for c in calls))
+
+    def test_injected_credential_key_in_attestation_refuses(self):
+        import json as _json
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            self.write_init_prior(journals)
+            first, _ = self.run_bootstrap(
+                self.material_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(first.returncode, 0,
+                             msg=first.stdout + first.stderr)
+            recovery_files = list((journals / "recovery").glob("*.recovery.json"))
+            self.assertEqual(len(recovery_files), 1)
+            recovery = recovery_files[0]
+            doc = _json.loads(recovery.read_text(encoding="utf-8"))
+            doc["password"] = "secret123"
+            recovery.write_text(_json.dumps(doc), encoding="utf-8")
+            recovery.chmod(0o600)
+            result, calls = self.run_bootstrap(
+                self.material_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertTrue("FOREIGN_FIELD" in combined or "SECRET_FIELD" in combined)
+            self.assertFalse(any("run-task" in c for c in calls))
+
+    def test_versioned_aged_prior_init_short_circuits_with_no_sdkinit(self):
+        import json as _json
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            self.write_init_prior(journals)
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            combined = result.stdout + result.stderr
+            self.assertIn("short-circuiting init", combined)
+            self.assertIn("no new active journal", combined)
+            self.assertIn("desired-state equivalence", combined)
+            runs = [c for c in calls if "run-task" in c]
+            self.assertEqual(len(runs), 1)
+            self.assertIn("launchcrew-demo-sdkmaterial", runs[0])
+            self.assertNotIn("launchcrew-demo-sdkinit", runs[0])
+            new_file = journals / (f"launchcrew-{STACK}-init-sdk-init-"
+                                   f"{self.RELEASE}-active.json")
+            self.assertFalse(new_file.exists())
+            for banned in ("put-secret-value", "PutSecretValue",
+                           "export-certificate", "ExportCertificate"):
+                self.assertFalse(any(banned in c for c in calls), msg=banned)
+            recovery_files = list((journals / "recovery").glob("*.recovery.json"))
+            self.assertEqual(len(recovery_files), 1)
+            doc = _json.loads(recovery_files[0].read_text(encoding="utf-8"))
+            self.assertEqual(doc.get("outcome"), "complete")
+            self.assertEqual(doc.get("legacy_unversioned"), "false")
+            self.assertTrue(doc.get("verifier_digest", ""))
+            result2, calls2 = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(result2.returncode, 0,
+                             msg=result2.stdout + result2.stderr)
+            runs2 = [c for c in calls2 if "run-task" in c]
+            self.assertEqual(len(runs2), 0)
+            self.assertFalse(new_file.exists())
+
+    def test_versioned_aged_prior_init_with_bad_prior_checks_all(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            self.write_init_prior(journals, generation="head006-abc1234",
+                                  head="006")
+            self.write_init_prior(journals, generation="head006-zzz9999",
+                                  head="006", outcome="pending")
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("UNRESOLVED", combined)
+            self.assertIn("no new launch", combined)
+            runs = [c for c in calls if "run-task" in c]
+            self.assertEqual(len(runs), 1)
+            self.assertIn("launchcrew-demo-sdkmaterial", runs[0])
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in runs))
+            new_file = journals / (f"launchcrew-{STACK}-init-sdk-init-"
+                                   f"{self.RELEASE}-active.json")
+            self.assertFalse(new_file.exists())
+
+    def test_unversioned_legacy_aged_prior_init_short_circuits(self):
+        import json as _json
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            self.write_legacy_init_prior(journals)
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            combined = result.stdout + result.stderr
+            self.assertIn("short-circuiting init", combined)
+            self.assertIn("legacy", combined.lower())
+            runs = [c for c in calls if "run-task" in c]
+            self.assertEqual(len(runs), 1)
+            self.assertIn("launchcrew-demo-sdkmaterial", runs[0])
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in runs))
+            new_file = journals / (f"launchcrew-{STACK}-init-sdk-init-"
+                                   f"{self.RELEASE}-active.json")
+            self.assertFalse(new_file.exists())
+            recovery_files = list((journals / "recovery").glob("*.recovery.json"))
+            self.assertEqual(len(recovery_files), 1)
+            doc = _json.loads(recovery_files[0].read_text(encoding="utf-8"))
+            self.assertEqual(doc.get("outcome"), "complete")
+            self.assertEqual(doc.get("legacy_unversioned"), "true")
+            self.assertIn("legacy_unversioned", doc.get("note", ""))
+            self.assertIn("current desired-state equivalence", doc.get("note", ""))
+            self.assertEqual(doc.get("original_generation"), "")
+            result2, calls2 = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(result2.returncode, 0,
+                             msg=result2.stdout + result2.stderr)
+            runs2 = [c for c in calls2 if "run-task" in c]
+            self.assertEqual(len(runs2), 0)
+
+    def test_unversioned_legacy_with_bad_prior_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            self.write_legacy_init_prior(journals)
+            self.write_init_prior(journals, generation="head006-bad9999",
+                                  head="006", outcome="pending")
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("UNRESOLVED", combined)
+            runs = [c for c in calls if "run-task" in c]
+            self.assertEqual(len(runs), 1)
+            self.assertIn("launchcrew-demo-sdkmaterial", runs[0])
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in runs))
+            new_file = journals / (f"launchcrew-{STACK}-init-sdk-init-"
+                                   f"{self.RELEASE}-active.json")
+            self.assertFalse(new_file.exists())
+
+    def test_restart_after_verifier_no_task_with_intact_proof_permits(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            self.write_init_prior(journals)
+            first, first_calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(first.returncode, 0,
+                             msg=first.stdout + first.stderr)
+            first_runs = [c for c in first_calls if "run-task" in c]
+            self.assertEqual(len(first_runs), 1)
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_DESCRIBE_TASKS": "empty"},
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            combined = result.stdout + result.stderr
+            self.assertIn("persisted one-shot terminal proof", combined)
+            self.assertIn("no live verifier claim", combined)
+            self.assertIn("no new verifier", combined)
+            self.assertNotIn("live material and verifier still prove", combined)
+            runs = [c for c in calls if "run-task" in c]
+            self.assertEqual(len(runs), 0)
+
+    def test_restart_after_verifier_no_task_with_altered_digest_refuses(self):
+        import json as _json
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            self.write_init_prior(journals)
+            first, _ = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(first.returncode, 0,
+                             msg=first.stdout + first.stderr)
+            recovery_files = list((journals / "recovery").glob("*.recovery.json"))
+            self.assertEqual(len(recovery_files), 1)
+            recovery = recovery_files[0]
+            doc = _json.loads(recovery.read_text(encoding="utf-8"))
+            doc["verifier_digest"] = "0" * 64
+            recovery.write_text(_json.dumps(doc), encoding="utf-8")
+            recovery.chmod(0o600)
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_DESCRIBE_TASKS": "empty"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("DIGEST_MISMATCH", combined)
+            self.assertFalse(any("run-task" in c for c in calls))
+
+    def test_restart_after_verifier_no_task_with_changed_material_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            self.write_init_prior(journals)
+            first, _ = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_RT_VERSION": "rt-version-1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(first.returncode, 0,
+                             msg=first.stdout + first.stderr)
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_DESCRIBE_TASKS": "empty",
+                           "FAKE_RT_VERSION": "rt-version-2"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("changed since recovery", combined)
+            self.assertFalse(any("run-task" in c for c in calls))
+
+    def test_restart_with_live_verifier_nonzero_refuses_with_no_new_run(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            self.write_init_prior(journals)
+            first, _ = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(first.returncode, 0,
+                             msg=first.stdout + first.stderr)
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_DESCRIBE_TASKS": "exit_nonzero"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("EXIT_NONZERO", combined)
+            self.assertFalse(any("run-task" in c for c in calls))
+
+    def test_restart_with_live_verifier_pending_refuses_with_no_new_run(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            self.write_init_prior(journals)
+            first, _ = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(first.returncode, 0,
+                             msg=first.stdout + first.stderr)
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_DESCRIBE_TASKS": "running"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("NOT_STOPPED", combined)
+            self.assertFalse(any("run-task" in c for c in calls))
+
+    def test_started_attestation_resumes_with_no_new_verifier(self):
+        import json as _json
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            self.write_init_prior(journals)
+            first, first_calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_DESCRIBE_TASKS": "running"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(first.returncode, 0)
+            self.assertIn("NOT_STOPPED", first.stdout + first.stderr)
+            first_runs = [c for c in first_calls if "run-task" in c]
+            self.assertEqual(len(first_runs), 1)
+            recovery_files = list((journals / "recovery").glob("*.recovery.json"))
+            self.assertEqual(len(recovery_files), 1)
+            before = _json.loads(recovery_files[0].read_text(encoding="utf-8"))
+            self.assertEqual(before.get("outcome"), "started")
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            combined = result.stdout + result.stderr
+            self.assertIn("resumed to complete", combined)
+            runs = [c for c in calls if "run-task" in c]
+            self.assertEqual(len(runs), 0)
+            after = _json.loads(recovery_files[0].read_text(encoding="utf-8"))
+            self.assertEqual(after.get("outcome"), "complete")
+            self.assertTrue(after.get("verifier_digest", ""))
+
+    def test_ambiguous_response_attestation_refuses_with_no_new_verifier(self):
+        import json as _json
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            self.write_init_prior(journals)
+            first, first_calls = self.run_bootstrap(
+                self.init_args(),
+                mode="runtask_failures",
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(first.returncode, 0)
+            first_runs = [c for c in first_calls if "run-task" in c]
+            self.assertEqual(len(first_runs), 1)
+            recovery_files = list((journals / "recovery").glob("*.recovery.json"))
+            self.assertEqual(len(recovery_files), 1)
+            before = _json.loads(recovery_files[0].read_text(encoding="utf-8"))
+            self.assertEqual(before.get("outcome"), "ambiguous_response")
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("ambiguous_response", combined)
+            self.assertIn("no new verifier", combined.lower())
+            self.assertFalse(any("run-task" in c for c in calls))
+
+    def test_release_generation_mismatch_on_restart_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            self.write_init_prior(journals)
+            first, _ = self.run_bootstrap(
+                self.material_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(first.returncode, 0,
+                             msg=first.stdout + first.stderr)
+            other_args = [*self.base_args(), "--phase", "material",
+                          "--release-generation", "head007-zzz9999"]
+            result, calls = self.run_bootstrap(
+                other_args,
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("release generation", combined.lower())
+            self.assertIn("same-release", combined)
+            self.assertFalse(any("run-task" in c for c in calls))
+
+    def test_material_arn_mismatch_on_restart_refuses(self):
+        other_rt = (f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:"
+                    "secret:launchcrew-runtime-ZzZzZz")
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            self.write_init_prior(journals)
+            first, _ = self.run_bootstrap(
+                self.material_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(first.returncode, 0,
+                             msg=first.stdout + first.stderr)
+            other_args = [*self.base_args(**{"--runtime-secret-arn": other_rt}),
+                          "--phase", "material",
+                          "--release-generation", self.RELEASE]
+            result, calls = self.run_bootstrap(
+                other_args,
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("runtime ARN", combined)
+            self.assertFalse(any("run-task" in c for c in calls))
 
 
 if __name__ == "__main__":
