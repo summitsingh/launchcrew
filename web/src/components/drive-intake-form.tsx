@@ -6,16 +6,25 @@ import { api, unwrap } from '@/lib/api';
 import {
   DRIVE_AUTHORIZE_URL,
   DRIVE_PICKER_SCRIPT,
+  DRIVE_PICKER_PHOTO_MIME_FILTER,
+  DRIVE_PHOTO_SUGGESTIONS_URL,
   driveAuthStatusFromSearch,
   driveErrorMessage,
   driveMimeLabel,
+  drivePhotoErrorMessage,
+  drivePhotoMimeLabel,
   driveStatusMessage,
   isSupportedDriveMime,
+  isSupportedDrivePhotoMime,
   toOwnerFactFromDriveSuggestion,
   toOwnerFactsFromDriveSuggestions,
+  toUnconfirmedDrivePhotoClaim,
   validateDriveFileId,
+  validateDrivePhotoApproval,
   validateDriveResourceKey,
   type DriveImportOut,
+  type DrivePhotoClaim,
+  type DrivePhotoProposalOut,
   type DrivePublicConfigOut,
   type DriveStatusOut,
   type DriveSuggestionItem,
@@ -433,6 +442,313 @@ export function DriveIntakeForm({
           onAddOne={handleAddOne}
           onAddAll={handleAddAll}
         />
+      )}
+      {pickerToken && <p className="hint">Drive session is active for this selection only.</p>}
+    </div>
+  );
+}
+
+export function DrivePhotoProposalView({
+  proposal,
+  approved,
+  onToggleApproval,
+  onAdd,
+}: {
+  proposal: DrivePhotoProposalOut;
+  approved: boolean;
+  onToggleApproval: (approved: boolean) => void;
+  onAdd: (claim: DrivePhotoClaim) => void;
+}) {
+  const claim = toUnconfirmedDrivePhotoClaim(proposal, approved);
+  return (
+    <div>
+      <p className="hint">
+        Drive photo selection produced one unconfirmed proposal. File: {proposal.file_title} (
+        {drivePhotoMimeLabel(proposal.mime_type)}). Status: unconfirmed. Parser: {proposal.parser_version}.
+      </p>
+      <ul className="scout-list">
+        <li className="scout-fact">
+          <div className="scout-row">
+            <span>Selected photo</span>
+            <span className="badge pending">Unconfirmed</span>
+          </div>
+          <p className="hint">
+            Source: Drive file ({drivePhotoMimeLabel(proposal.mime_type)}) · Selection: {proposal.selection_context} ·
+            Dimensions: {proposal.width} by {proposal.height} · Size: {proposal.byte_size} bytes · Confirmed: no ·
+            Photo use needs approval
+          </p>
+          <label htmlFor="drive-photo-approval">
+            <input
+              id="drive-photo-approval"
+              type="checkbox"
+              checked={approved}
+              onChange={e => onToggleApproval(e.target.checked)}
+            />
+            I approve using this selected photo for a later photo check. Original pixels only.
+          </label>
+          <div className="queue-actions">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!claim}
+              onClick={() => {
+                if (claim) onAdd(claim);
+              }}
+            >
+              Add photo as unconfirmed claim
+            </Button>
+          </div>
+          {!claim && <p className="hint">Approval is required before the photo can be added. Nothing is confirmed yet.</p>}
+        </li>
+      </ul>
+    </div>
+  );
+}
+
+export function DrivePhotoIntakeForm({
+  onAddPhoto,
+  disabled,
+}: {
+  onAddPhoto: (claim: DrivePhotoClaim) => void;
+  disabled?: boolean;
+}) {
+  const [pickerReady, setPickerReady] = useState(false);
+  const [scriptError, setScriptError] = useState('');
+  const [pickerToken, setPickerToken] = useState('');
+  const [proposal, setProposal] = useState<DrivePhotoProposalOut | null>(null);
+  const [approved, setApproved] = useState(false);
+  const [localError, setLocalError] = useState('');
+
+  const statusQuery = useQuery({
+    queryKey: ['drive-status'],
+    queryFn: () => unwrap(api.GET('/api/drive-import/status')),
+  });
+  const status: DriveStatusOut | undefined = statusQuery.data;
+  const available = status?.available === true && status?.configured === true;
+
+  const configQuery = useQuery({
+    queryKey: ['drive-config'],
+    queryFn: () => unwrap(api.GET('/api/drive-import/config')),
+    enabled: available,
+    retry: false,
+  });
+  const config: DrivePublicConfigOut | undefined = configQuery.data;
+
+  useEffect(() => {
+    if (!available || !config) return;
+    let cancelled = false;
+    setScriptError('');
+    loadScript(DRIVE_PICKER_SCRIPT)
+      .then(() => {
+        if (cancelled) return;
+        const gapi = window.gapi;
+        if (!gapi || typeof gapi.load !== 'function') {
+          setScriptError('Drive Picker failed to load. Pasted-text import still works.');
+          return;
+        }
+        gapi.load('picker', () => {
+          if (!cancelled) setPickerReady(true);
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setScriptError('Drive libraries failed to load. Pasted-text import still works.');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [available, config]);
+
+  const busy = statusQuery.isPending || configQuery.isPending || disabled === true;
+
+  const suggestPhoto = useMutation({
+    mutationFn: (input: { file_id: string; resource_key: string | null; drive_token: string }) =>
+      unwrap(
+        api.POST(DRIVE_PHOTO_SUGGESTIONS_URL as '/api/drive-import/suggestions', {
+          body: {
+            file_id: input.file_id,
+            resource_key: input.resource_key,
+            drive_token: input.drive_token,
+          },
+        }),
+      ) as unknown as Promise<DrivePhotoProposalOut>,
+    onSuccess: data => {
+      setProposal(data);
+      setApproved(false);
+      setLocalError('');
+      setPickerToken('');
+    },
+    onError: (error: unknown) => {
+      setPickerToken('');
+      const message = error instanceof Error ? error.message : '';
+      const match = message.match(/\((\d+)\)/);
+      const code = match ? Number(match[1]) : 0;
+      setLocalError(drivePhotoErrorMessage(code));
+    },
+  });
+
+  const claimToken = useMutation({
+    mutationFn: () => unwrap(api.POST('/api/drive-import/picker-token')),
+    onSuccess: data => {
+      const token = (data as { access_token?: unknown }).access_token;
+      if (typeof token !== 'string' || !token) {
+        setLocalError(drivePhotoErrorMessage(403));
+        return;
+      }
+      setPickerToken(token);
+      setLocalError('');
+    },
+    onError: (error: unknown) => {
+      setPickerToken('');
+      const message = error instanceof Error ? error.message : '';
+      const match = message.match(/\((\d+)\)/);
+      const code = match ? Number(match[1]) : 0;
+      setLocalError(drivePhotoErrorMessage(code));
+    },
+  });
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (driveAuthStatusFromSearch(window.location.search) !== 'authorized') return;
+    window.history.replaceState(null, '', window.location.pathname);
+    claimToken.mutate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const launchPhotoPickerWithToken = (token: string) => {
+    if (!config) {
+      setLocalError(drivePhotoErrorMessage(503));
+      return;
+    }
+    const rawPicker: unknown = (window.google as { picker?: unknown } | undefined)?.picker;
+    if (!isDrivePickerApiShape(rawPicker)) {
+      setLocalError('Drive Picker is not ready. Try again after it loads.');
+      return;
+    }
+    const PickerBuilderCtor = rawPicker.PickerBuilder;
+    const DocsViewCtor = rawPicker.DocsView;
+    const cancelAction: unknown = rawPicker.Action?.CANCEL;
+    const pickedAction: unknown = rawPicker.Action?.PICKED;
+    if (typeof pickedAction !== 'string' || !pickedAction || typeof cancelAction !== 'string' || !cancelAction) {
+      setLocalError('Drive Picker is not ready. Try again after it loads.');
+      return;
+    }
+    try {
+      const view = new DocsViewCtor();
+      if (typeof view.setMimeTypes !== 'function' || typeof view.setSelectFolderEnabled !== 'function') {
+        setLocalError('Drive Picker is not ready. Try again after it loads.');
+        return;
+      }
+      view.setMimeTypes(DRIVE_PICKER_PHOTO_MIME_FILTER);
+      view.setSelectFolderEnabled(false);
+      const picker = new PickerBuilderCtor()
+        .setOAuthToken(token)
+        .setDeveloperKey(config.api_key)
+        .setAppId(config.app_id)
+        .addView(view)
+        .setCallback((data: unknown) => {
+          const payload = data as {
+            action?: string;
+            docs?: { id?: unknown; name?: unknown; mimeType?: unknown; resourceKey?: unknown }[];
+          };
+          if (payload?.action === cancelAction) return;
+          if (payload?.action !== pickedAction || !payload?.docs?.length) {
+            setLocalError('No Drive photo was selected.');
+            return;
+          }
+          const doc = payload.docs[0];
+          const fileId = typeof doc.id === 'string' ? doc.id : '';
+          const resourceKey = typeof doc.resourceKey === 'string' ? doc.resourceKey : null;
+          const mime = typeof doc.mimeType === 'string' ? doc.mimeType : '';
+          if (validateDriveFileId(fileId).length > 0 || validateDriveResourceKey(resourceKey).length > 0) {
+            setLocalError(drivePhotoErrorMessage(422));
+            return;
+          }
+          if (!isSupportedDrivePhotoMime(mime)) {
+            setLocalError(drivePhotoErrorMessage(422));
+            return;
+          }
+          suggestPhoto.mutate({ file_id: fileId, resource_key: resourceKey, drive_token: token });
+        })
+        .build();
+      if (!picker || typeof picker.setVisible !== 'function') {
+        setLocalError('Drive Picker is not ready. Try again after it loads.');
+        return;
+      }
+      picker.setVisible(true);
+    } catch {
+      setLocalError('Drive Picker is not ready. Try again after it loads.');
+    }
+  };
+
+  const handleChoose = () => {
+    setLocalError('');
+    setProposal(null);
+    setApproved(false);
+    if (!config) {
+      setLocalError(drivePhotoErrorMessage(503));
+      return;
+    }
+    if (!pickerToken) {
+      window.location.href = DRIVE_AUTHORIZE_URL;
+      return;
+    }
+    if (!pickerReady) {
+      setLocalError('Drive Picker is not ready. Try again after it loads.');
+      return;
+    }
+    launchPhotoPickerWithToken(pickerToken);
+  };
+
+  useEffect(() => {
+    if (!pickerToken || !pickerReady || !config) return;
+    launchPhotoPickerWithToken(pickerToken);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pickerToken, pickerReady, config]);
+
+  const approvalErrors = validateDrivePhotoApproval(approved);
+
+  return (
+    <div>
+      <h3>Select a Drive photo</h3>
+      <p className="hint">
+        Optional Google Picker intake for one JPEG or PNG photo you select. Sign-in stays Google identity only. Drive
+        consent is a separate step that issues a short lived Picker token to this browser session only. The proposal
+        stays unconfirmed with Drive file provenance and needs your explicit approval before any photo check. Original
+        pixels only. Live Drive proof has not been run.
+      </p>
+      {statusQuery.isPending && <p role="status">Checking Drive intake status...</p>}
+      {status && <p role="status">{driveStatusMessage(status)}</p>}
+      {status && !available && (
+        <p className="hint">Drive photo intake is optional and unavailable. Use pasted-text import above.</p>
+      )}
+      {localError && <p role="alert">{localError}</p>}
+      {scriptError && <p role="alert">{scriptError}</p>}
+      <div className="queue-actions">
+        <Button
+          type="button"
+          variant="outline"
+          disabled={!available || busy || suggestPhoto.isPending || claimToken.isPending}
+          onClick={handleChoose}
+        >
+          {suggestPhoto.isPending
+            ? 'Reading selected photo...'
+            : claimToken.isPending
+              ? 'Connecting Drive...'
+              : pickerToken
+                ? 'Choose Drive photo'
+                : 'Connect Drive and choose photo'}
+        </Button>
+      </div>
+      {proposal && (
+        <DrivePhotoProposalView
+          proposal={proposal}
+          approved={approved}
+          onToggleApproval={setApproved}
+          onAdd={onAddPhoto}
+        />
+      )}
+      {approvalErrors.length > 0 && !proposal && (
+        <p className="hint">Photo use needs your explicit approval before any photo check. Nothing is confirmed yet.</p>
       )}
       {pickerToken && <p className="hint">Drive session is active for this selection only.</p>}
     </div>
