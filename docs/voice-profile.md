@@ -20,8 +20,10 @@ Memory kind `voice_profile` holds:
 
 Validation rejects unknown keys, wrong counts, overlong text, empty
 fields, and punctuation-only terms with HTTP 422. Memory kind is
-immutable. Malformed voice content is ignored in selection, never
-facts and never vetoes.
+immutable. Malformed selected voice content fails closed with HTTP
+422 in selection, never facts and never silent clean. A later valid
+voice in the same selection still applies; only the all-invalid case
+raises.
 
 Use synthetic samples only. Do not place real names, emails, account
 IDs, photos, secrets, or other personal data in profiles.
@@ -48,7 +50,12 @@ and term. They never verify an unverified claim.
 
 Whole-word matching is Unicode case-insensitive. Multiword terms
 match across whitespace and punctuation separators. No regular
-expressions are used.
+expressions are used. Checker and human recheck scan full post and
+full email alongside claims and sentences, so a term such as blue
+moon still blocks when written across sentence punctuation or
+newlines as Blue. Moon. Factual and policy blocks are preserved,
+and a concrete voice reason is added even when another rule already
+blocks the same candidate.
 
 ## Pipeline and receipt
 
@@ -72,20 +79,30 @@ rewrite past proof. Approval binding covers voice source, version,
 digest, counts, and banned terms plus facts, copy, policy, photo, and
 check. Tampering with voice terms invalidates the binding.
 
-Editing or deleting a selected voice marks dependent completed runs
-in the same workspace `voice_stale`, clears approvals and binding,
-appends a `voice_invalidated` audit event, and requires a new human
-revision check before export. History preserves the prior voice
-context for audit.
+Editing or deleting a selected voice marks dependent pending,
+running, and completed runs in the same workspace `voice_stale`,
+clears approvals and binding, appends a `voice_invalidated` audit
+event, and requires a new human revision check before export.
+Pending receipts carry the selected voice id plus stable version
+and digest binding at accept time under row lock, sync saves
+recheck the binding under row lock without holding a transaction
+over model calls, and async finalization preserves a concurrent
+stale marker under row lock and never silently reapproves. History
+preserves the prior voice context for audit. Failed runs stay
+untouched because they are already not approvable.
 
-## Channel variants
+## Channel variants (tested helper only)
 
-Channel candidates containing banned terms refuse with
-`needs_revision` status, a concrete voice reason, and no exported
-text. Provenance records voice title, version, and banned term count
-when enforced. Clean candidates record `voice_blocked` false.
-Candidates are presentation only and still require downstream
-current approved Checker and receipt binding.
+`channel_variants.build_channel_variants` is a tested helper with no
+backend or web production callsite. Channel candidates containing
+banned terms refuse with `needs_revision` status, a concrete voice
+reason, and no exported text. Provenance records voice title,
+version, and banned term count when enforced. Clean candidates
+record `voice_blocked` false. Candidates are presentation only and
+still require downstream current approved Checker and receipt
+binding. Still missing product integration: no run product flow,
+receipt field, API route, or UI calls the helper, so no live channel
+UI capability is claimed from helper tests.
 
 ## Receipt, Replay, and UI
 
@@ -103,9 +120,9 @@ current approved Checker and receipt binding.
 
 Voice samples stay in the actor workspace. Memory reads, run reads,
 and invalidation filter by `workspace_id`. Cross-actor fetch returns
-404. Invalidation touches only completed runs in the same workspace
-whose receipt voice id matches. Other workspaces, failed runs, and
-other voice ids are untouched.
+404. Invalidation touches only pending, running, and completed runs
+in the same workspace whose receipt voice id matches. Other
+workspaces, failed runs, and other voice ids are untouched.
 
 Existing SAM and actor boundaries are unchanged. Photo checks,
 Google auth gating, and workspace seeding keep their current

@@ -101,7 +101,8 @@ describe('voice memory controls', () => {
     expect(source).toContain('voice_profile');
     expect(source).toContain('banned_terms');
     expect(source).toContain('Use synthetic samples only, 3 to 5 pairs');
-    expect(source).toContain('Banned terms block drafts, revisions, and channel candidates');
+    expect(source).toContain('Banned terms block drafts and revisions with concrete reasons');
+    expect(source).toContain('Channel helper is tested only, no live channel UI');
   });
 
   it('accepts a synthetic voice payload as an editable object', () => {

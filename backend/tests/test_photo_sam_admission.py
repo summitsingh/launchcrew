@@ -456,7 +456,15 @@ def test_preview_suppressed_when_revision_moves_after_finalize(client, monkeypat
     body = response.json()
     assert body['check']['label'] == 'detected'
     assert body['preview'] is None
-    assert 'stale' not in json.dumps(body).lower()
+    # Photo safety: the volatile preview is suppressed when the revision
+    # moved after finalize, and no photo stale hint appears in the photo
+    # check, photo status, or photo transport. The unrelated voice_stale
+    # receipt key is excluded from this photo assertion.
+    assert 'stale' not in (body['check'].get('reason') or '').lower()
+    assert 'stale' not in json.dumps(body['receipt'].get('photo_status') or {}).lower()
+    assert 'stale' not in json.dumps(body['receipt'].get('photo_transport') or {}).lower()
+    scrubbed = json.dumps(body).lower().replace('voice_stale', '')
+    assert 'stale' not in scrubbed
 
 
 def test_forged_fields_and_stale_versions(client):

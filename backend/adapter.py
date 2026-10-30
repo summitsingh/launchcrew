@@ -26,10 +26,15 @@ def preview(profile, idea):
 def _voice_selection(memory_items):
     # First valid voice_profile in selection order wins. Examples are style
     # context only and never become facts; banned terms become Checker vetoes.
-    # Malformed voice content is ignored, never facts, never vetoes.
+    # Fail closed: when selection holds at least one voice_profile but none
+    # validates, raise instead of silently running with no enforcement.
+    # Skipping an invalid entry to reach a later valid one still enforces
+    # the later voice, so only the all-invalid case raises.
+    seen_voice = False
     for item in (memory_items or []):
         if not isinstance(item, dict) or item.get('kind') != 'voice_profile':
             continue
+        seen_voice = True
         content = item.get('content')
         if not isinstance(content, dict):
             continue
@@ -47,6 +52,8 @@ def _voice_selection(memory_items):
         maker_examples = [{'input': ex['input'], 'approved_output': ex['output']}
                           for ex in snapshot.get('examples', [])]
         return snapshot, ref, maker_examples
+    if seen_voice:
+        raise ValueError('Invalid voice profile selected; failing closed with no silent drop')
     return None, None, []
 
 

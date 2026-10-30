@@ -1,5 +1,10 @@
 """Channel presentation candidates for later integration.
 
+Tested helper only with no backend or web production callsite. No
+live channel UI capability is claimed from helper tests. Still
+missing product integration: no run product flow, receipt field, API
+route, or UI calls build_channel_variants.
+
 Pure standard library helpers. No model calls, no fetching, no
 publishing, no photo behavior.
 

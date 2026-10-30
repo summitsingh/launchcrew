@@ -40,11 +40,18 @@ def _policy_block_for_claim(claim, policies):
 
 
 def _voice_snapshot_terms(voice_snapshot):
+    if voice_snapshot is None:
+        return None
     if not isinstance(voice_snapshot, dict):
-        return None
+        raise ValueError('Invalid voice snapshot; failing closed')
     terms = voice_snapshot.get('banned_terms')
-    if not isinstance(terms, list) or not terms:
+    if not isinstance(terms, list):
+        raise ValueError('Invalid voice snapshot; failing closed')
+    if not terms:
         return None
+    for term in terms:
+        if not isinstance(term, str):
+            raise ValueError('Invalid voice snapshot; failing closed')
     return voice_snapshot
 
 
@@ -138,41 +145,60 @@ def check_pack(draft, facts, blocked_claims=None, checker_profile='standard', ch
                                       'blocked': False, 'source': 'draft_text'})
     effective_voice = _voice_snapshot_terms(voice_snapshot)
     if effective_voice is not None:
-        try:
-            already = {b['claim'] for b in blocked
-                       if isinstance(b, dict) and isinstance(b.get('claim'), str)}
-            by_claim: dict[str, int] = {}
-            for idx, entry in enumerate(claim_results):
-                if isinstance(entry, dict) and isinstance(entry.get('claim'), str):
-                    if entry['claim'] not in by_claim:
-                        by_claim[entry['claim']] = idx
-            candidates: list[str] = []
-            for claim in (draft.get('claims') or []):
-                if isinstance(claim, str) and claim.strip() and claim not in candidates:
-                    candidates.append(claim)
-            for sent in split_sentences((draft.get('post') or '') + '\n' + (draft.get('email') or '')):
-                if sent not in candidates:
-                    candidates.append(sent)
-            for cand in candidates:
-                if cand in already:
-                    continue
-                hit = voice_single_block_for_text(effective_voice, cand, voice_ref)
-                if hit is None:
-                    continue
+        already = {b['claim'] for b in blocked
+                   if isinstance(b, dict) and isinstance(b.get('claim'), str)}
+        by_claim: dict[str, int] = {}
+        for idx, entry in enumerate(claim_results):
+            if isinstance(entry, dict) and isinstance(entry.get('claim'), str):
+                if entry['claim'] not in by_claim:
+                    by_claim[entry['claim']] = idx
+        candidates: list[str] = []
+        for claim in (draft.get('claims') or []):
+            if isinstance(claim, str) and claim.strip() and claim not in candidates:
+                candidates.append(claim)
+        for sent in split_sentences((draft.get('post') or '') + '\n' + (draft.get('email') or '')):
+            if sent not in candidates:
+                candidates.append(sent)
+        for full in (draft.get('post'), draft.get('email')):
+            if isinstance(full, str) and full.strip():
+                cleaned_full = full.strip()
+                if cleaned_full not in candidates:
+                    candidates.append(cleaned_full)
+        for cand in candidates:
+            hit = voice_single_block_for_text(effective_voice, cand, voice_ref)
+            if hit is None:
+                continue
+            if cand in already:
                 blocked.append(hit)
-                already.add(cand)
                 pos = by_claim.get(cand)
                 if pos is not None:
+                    existing = claim_results[pos].get('reason')
+                    incoming = hit.get('reason')
+                    if (isinstance(existing, str) and isinstance(incoming, str)
+                            and incoming not in existing):
+                        claim_results[pos]['reason'] = existing + '; ' + incoming
                     claim_results[pos]['verified'] = False
                     claim_results[pos]['blocked'] = True
-                    claim_results[pos]['reason'] = hit['reason']
                 else:
                     claim_results.append({'claim': cand, 'verified': False,
                                           'verdict': 'unsupported', 'evidence': None,
                                           'reason': hit['reason'], 'blocked': True,
                                           'source': 'draft_text'})
-        except (TypeError, ValueError):
-            pass
+                    by_claim[cand] = len(claim_results) - 1
+                continue
+            blocked.append(hit)
+            already.add(cand)
+            pos = by_claim.get(cand)
+            if pos is not None:
+                claim_results[pos]['verified'] = False
+                claim_results[pos]['blocked'] = True
+                claim_results[pos]['reason'] = hit['reason']
+            else:
+                claim_results.append({'claim': cand, 'verified': False,
+                                      'verdict': 'unsupported', 'evidence': None,
+                                      'reason': hit['reason'], 'blocked': True,
+                                      'source': 'draft_text'})
+                by_claim[cand] = len(claim_results) - 1
     verified = sum(1 for c in draft['claims'] if c not in [b['claim'] for b in blocked])
     supported = sum(1 for r in claim_results if r['verdict'] == 'supported')
     unsupported = sum(1 for r in claim_results if r['verdict'] == 'unsupported')
@@ -379,10 +405,7 @@ def _voice_blocks_claim(claim, voice_snapshot, voice_ref):
         return False
     if _voice_snapshot_terms(voice_snapshot) is None:
         return False
-    try:
-        return voice_single_block_for_text(voice_snapshot, claim, voice_ref) is not None
-    except (TypeError, ValueError):
-        return False
+    return voice_single_block_for_text(voice_snapshot, claim, voice_ref) is not None
 
 
 def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverified_claim=False, receipt_writer=save_receipt, model_enabled=True, visual_verifier=None, memory_claims=None, blocked_claims=None, checker_profile='standard', brief=None, campaign_day=None, scout_profile=None, maker_profile=None, checker_agent=None, progress=None, stage_gate=None, product_facts=None, model_admission_factory=None, voice_snapshot=None, voice_ref=None):
@@ -452,25 +475,20 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
         normalized_voice_ref = dict(voice_ref) if isinstance(voice_ref, dict) else {}
         voice_receipt_ref = None
         if effective_voice is not None:
-            try:
-                from .voice_profile import STYLE_ONLY_NOTICE, snapshot_digest, snapshot_version
-                computed_version = snapshot_version(effective_voice)
-                if not isinstance(normalized_voice_ref.get('version'), str):
-                    normalized_voice_ref['version'] = computed_version
-                voice_receipt_ref = {
-                    'id': normalized_voice_ref.get('id'),
-                    'title': normalized_voice_ref.get('title'),
-                    'version': normalized_voice_ref.get('version'),
-                    'digest': snapshot_digest(effective_voice),
-                    'example_count': len(effective_voice.get('examples', [])),
-                    'banned_term_count': len(effective_voice.get('banned_terms', [])),
-                    'banned_terms': list(effective_voice.get('banned_terms', [])),
-                    'notice': STYLE_ONLY_NOTICE,
-                }
-            except (TypeError, ValueError):
-                effective_voice = None
-                normalized_voice_ref = {}
-                voice_receipt_ref = None
+            from .voice_profile import STYLE_ONLY_NOTICE, snapshot_digest, snapshot_version
+            computed_version = snapshot_version(effective_voice)
+            if not isinstance(normalized_voice_ref.get('version'), str):
+                normalized_voice_ref['version'] = computed_version
+            voice_receipt_ref = {
+                'id': normalized_voice_ref.get('id'),
+                'title': normalized_voice_ref.get('title'),
+                'version': normalized_voice_ref.get('version'),
+                'digest': snapshot_digest(effective_voice),
+                'example_count': len(effective_voice.get('examples', [])),
+                'banned_term_count': len(effective_voice.get('banned_terms', [])),
+                'banned_terms': list(effective_voice.get('banned_terms', [])),
+                'notice': STYLE_ONLY_NOTICE,
+            }
 
         def event(step, agent, action, profile_name=None, at=None):
             events.append({'step': step, 'agent': agent, 'profile': profile_name or agent,

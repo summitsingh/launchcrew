@@ -106,6 +106,27 @@ def mark_done(run_id):
         _workers.pop(run_id, None)
 
 
+def _merge_stored_voice_stale(stored, final):
+    if not isinstance(stored, dict) or stored.get('voice_stale') is not True:
+        return final
+    if not isinstance(final, dict):
+        return final
+    merged = dict(final)
+    merged['voice_stale'] = True
+    merged['approvals'] = []
+    merged['approved_revision'] = None
+    merged['approval_binding'] = None
+    merged['approval_state'] = 'pending_approval'
+    stored_events = (stored.get('audit') or {}).get('event_log') or []
+    invalidated = [event for event in stored_events
+                   if isinstance(event, dict) and event.get('step') == 'voice_invalidated']
+    if invalidated:
+        final_events = list((merged.get('audit') or {}).get('event_log') or [])
+        final_events.extend(invalidated)
+        merged.setdefault('audit', {})['event_log'] = final_events
+    return merged
+
+
 def _finalize_success(run_id, receipt, maker_name, actor, workspace_id=None):
     if not isinstance(receipt, dict) or receipt.get('status') != 'completed':
         raise ValueError('Refusing terminal success for a non-completed receipt')
@@ -113,6 +134,11 @@ def _finalize_success(run_id, receipt, maker_name, actor, workspace_id=None):
                 'stored': True}
     resolved = workspace_id if workspace_id is not None else store.workspace_for_actor(actor)
     with store.connect() as db:
+        stored_row = db.execute(text('SELECT receipt FROM runs WHERE id=:id AND workspace_id=:ws FOR UPDATE'),
+                                {'id': run_id, 'ws': resolved}).fetchone()
+        if stored_row is None:
+            raise ValueError('Run not found in workspace')
+        receipt = _merge_stored_voice_stale(stored_row[0], receipt)
         result = db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id AND workspace_id=:ws'),
                    {'receipt': json.dumps(receipt), 'state': receipt['approval_state'], 'id': run_id, 'ws': resolved})
         if result.rowcount == 0:
@@ -152,6 +178,11 @@ def _finalize_failure(run_id, receipt, step, error, maker_name, actor, workspace
                 'completed_steps': list(receipt.get('completed_steps') or [])}
     resolved = workspace_id if workspace_id is not None else store.workspace_for_actor(actor)
     with store.connect() as db:
+        stored_row = db.execute(text('SELECT receipt FROM runs WHERE id=:id AND workspace_id=:ws FOR UPDATE'),
+                                {'id': run_id, 'ws': resolved}).fetchone()
+        if stored_row is None:
+            raise ValueError('Run not found in workspace')
+        receipt = _merge_stored_voice_stale(stored_row[0], receipt)
         result = db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id AND workspace_id=:ws'),
                    {'receipt': json.dumps(receipt), 'state': receipt['approval_state'], 'id': run_id, 'ws': resolved})
         if result.rowcount == 0:

@@ -79,28 +79,34 @@ def failed_receipt(run_id, events, step, error):
             'audit': {'event_log': events, 'stopped_reason': step}}
 
 
-def pending_receipt(run_id, idea, stage_bindings=None):
+def pending_receipt(run_id, idea, stage_bindings=None, voice_profile=None):
     """Honest pending receipt for an accepted but unfinished run.
 
     Status is running, drafts and checks are absent, and no approval or
     export gate accepts it. It is evidence of accepted work, never of
-    success, and a later completed or failed receipt replaces it."""
+    success, and a later completed or failed receipt replaces it. When a
+    voice is selected, the pending receipt carries its id plus stable
+    version and digest binding so later edits can invalidate the running
+    run in the same workspace before finalization."""
     now = timestamp()
-    return {'receipt_version': '1.0', 'run_id': run_id, 'generated_at': now,
-            'status': 'running', 'brand': 'LaunchCrew', 'mode': 'demo_no_submit',
-            'idea': idea, 'agents_used': ['Scout', 'Maker', 'Checker', 'Maker', 'Checker'],
-            'scout': None, 'maker_draft_v1': None, 'checker_v1': None,
-            'maker_draft_v2': None, 'checker_v2': None,
-            'summary': {'submit_attempted': False, 'submit_completed': False},
-            'approvals': [], 'approval_state': 'pending_approval',
-            'visual_verification': {'checked': False, 'method': 'not_run'},
-            'audit': {'event_log': [{'step': 'accepted', 'agent': 'LaunchCrew',
-                                     'profile': 'LaunchCrew',
-                                     'action': 'Run accepted; pipeline work has not completed',
-                                     'timestamp': now}],
-                      'duplicate_submit_prevented': True, 'stopped_reason': None},
-            'model_usage': None,
-            'stage_bindings': dict(stage_bindings or {})}
+    pending = {'receipt_version': '1.0', 'run_id': run_id, 'generated_at': now,
+               'status': 'running', 'brand': 'LaunchCrew', 'mode': 'demo_no_submit',
+               'idea': idea, 'agents_used': ['Scout', 'Maker', 'Checker', 'Maker', 'Checker'],
+               'scout': None, 'maker_draft_v1': None, 'checker_v1': None,
+               'maker_draft_v2': None, 'checker_v2': None,
+               'summary': {'submit_attempted': False, 'submit_completed': False},
+               'approvals': [], 'approval_state': 'pending_approval',
+               'visual_verification': {'checked': False, 'method': 'not_run'},
+               'audit': {'event_log': [{'step': 'accepted', 'agent': 'LaunchCrew',
+                                        'profile': 'LaunchCrew',
+                                        'action': 'Run accepted; pipeline work has not completed',
+                                        'timestamp': now}],
+                         'duplicate_submit_prevented': True, 'stopped_reason': None},
+               'model_usage': None,
+               'stage_bindings': dict(stage_bindings or {})}
+    if voice_profile is not None:
+        pending['voice_profile'] = copy.deepcopy(voice_profile)
+    return pending
 
 
 def approve_receipt(receipt, approved_by, expected_revision=None):

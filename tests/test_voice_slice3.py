@@ -147,10 +147,10 @@ class VoiceCheckPackTests(unittest.TestCase):
         result = check_pack(draft, self.facts, voice_snapshot=snap, voice_ref={})
         self.assertEqual(result['blocked_count'], 0)
 
-    def test_malformed_voice_snapshot_is_ignored_not_fatal(self):
+    def test_malformed_voice_snapshot_fails_closed(self):
         draft = {'claims': ['$49'], 'post': '$49.', 'email': '$49.'}
-        result = check_pack(draft, self.facts, voice_snapshot={'banned_terms': 'not-a-list'}, voice_ref={})
-        self.assertEqual(result['blocked_count'], 0)
+        with self.assertRaises((TypeError, ValueError)):
+            check_pack(draft, self.facts, voice_snapshot={'banned_terms': 'not-a-list'}, voice_ref={})
 
 
 class VoiceAdapterTests(unittest.TestCase):
@@ -165,16 +165,14 @@ class VoiceAdapterTests(unittest.TestCase):
         self.assertEqual(len(examples), 3)
         self.assertIn('harbor', snap['banned_terms'])
 
-    def test_malformed_voice_ignored_never_facts_never_vetoes(self):
+    def test_malformed_voice_fails_closed_never_facts(self):
         items = [
             {'id': 'm1', 'kind': 'voice_profile', 'title': 'Bad', 'content': 'not-a-dict'},
             {'id': 'm2', 'kind': 'voice_profile', 'title': 'Bad2',
              'content': {'examples': [], 'banned_terms': ['harbor']}},
         ]
-        snap, ref, examples = adapter._voice_selection(items)
-        self.assertIsNone(snap)
-        self.assertIsNone(ref)
-        self.assertEqual(examples, [])
+        with self.assertRaises(ValueError):
+            adapter._voice_selection(items)
         claims, blocked, _, _, _, _ = adapter._memory_effects(items)
         self.assertEqual(claims, [])
         self.assertEqual(blocked, [])
@@ -353,6 +351,114 @@ class VoiceChannelTests(unittest.TestCase):
         for phrase in ('style references only', 'never factual', 'never bypass Checker',
                        'never become confirmed facts'):
             self.assertIn(phrase, STYLE_ONLY_NOTICE)
+
+
+class VoiceCrossSentenceTests(unittest.TestCase):
+    def setUp(self):
+        self.facts, _ = load_facts(ROOT / 'facts/demo_facts.json')
+
+    def test_check_pack_blocks_term_across_period(self):
+        snap = validate_profile(_voice_content(['blue moon']))
+        ref = {'title': 'Synthetic voice', 'version': snapshot_version(snap)}
+        draft = {'claims': [], 'post': 'Blue. Moon.', 'email': 'For Austin commuters. $49.'}
+        result = check_pack(draft, self.facts, voice_snapshot=snap, voice_ref=ref)
+        reasons = [block['reason'] for block in result['blocked_claims']]
+        self.assertTrue(any('Blocked by voice profile' in reason and 'blue moon' in reason.lower()
+                            for reason in reasons))
+        self.assertTrue(any('Synthetic voice' in reason for reason in reasons))
+
+    def test_check_pack_blocks_term_across_newline_in_email(self):
+        snap = validate_profile(_voice_content(['blue moon']))
+        ref = {'title': 'Synthetic voice', 'version': snapshot_version(snap)}
+        draft = {'claims': [], 'post': 'For Austin commuters. $49.', 'email': 'Blue\nMoon'}
+        result = check_pack(draft, self.facts, voice_snapshot=snap, voice_ref=ref)
+        reasons = [block['reason'] for block in result['blocked_claims']]
+        self.assertTrue(any('Blocked by voice profile' in reason and 'blue moon' in reason.lower()
+                            for reason in reasons))
+
+    def test_check_pack_preserves_factual_and_adds_voice_for_full(self):
+        snap = validate_profile(_voice_content(['blue moon']))
+        ref = {'title': 'Synthetic voice', 'version': snapshot_version(snap)}
+        draft = {'claims': [], 'post': 'Blue. Moon.', 'email': 'For Austin commuters. $49.'}
+        result = check_pack(draft, self.facts, voice_snapshot=snap, voice_ref=ref)
+        claims = [block['claim'] for block in result['blocked_claims']]
+        reasons = [block['reason'] for block in result['blocked_claims']]
+        self.assertIn('Blue', claims)
+        self.assertIn('Moon', claims)
+        self.assertIn('Blue. Moon.', claims)
+        self.assertTrue(any('not found' in reason.lower() or 'unsupported' in reason.lower()
+                            or 'not in approved' in reason.lower() for reason in reasons))
+        self.assertTrue(any('Blocked by voice profile' in reason for reason in reasons))
+
+    def test_check_pack_adds_voice_reason_when_sentence_already_blocked(self):
+        snap = validate_profile(_voice_content(['harbor']))
+        ref = {'title': 'Synthetic voice', 'version': snapshot_version(snap)}
+        draft = {'claims': [], 'post': 'Visit the harbor at noon.', 'email': 'For Austin commuters. $49.'}
+        result = check_pack(draft, self.facts, voice_snapshot=snap, voice_ref=ref)
+        matches = [block for block in result['blocked_claims']
+                   if block['claim'] == 'Visit the harbor at noon']
+        self.assertGreaterEqual(len(matches), 2)
+        joined = ' '.join(block['reason'] for block in matches)
+        self.assertIn('Blocked by voice profile', joined)
+        found = [entry for entry in result['claim_results']
+                 if entry.get('claim') == 'Visit the harbor at noon']
+        self.assertTrue(found)
+        self.assertIn('Blocked by voice profile', found[0]['reason'])
+        self.assertIn(';', found[0]['reason'])
+
+    def test_pipeline_v2_never_clean_with_cross_sentence_term(self):
+        brand_blue = {'id': 'mem_blue', 'kind': 'brand_fact', 'title': 'Blue fact',
+                      'content': {'claim': 'Blue'}}
+        brand_moon = {'id': 'mem_moon', 'kind': 'brand_fact', 'title': 'Moon fact',
+                      'content': {'claim': 'Moon'}}
+        voice = _voice_item('mem_cross', ['blue moon'])
+        receipt = _offline_execute('run_voice_cross_v2', [brand_blue, brand_moon, voice])
+        self.assertNotEqual(receipt.get('status'), 'completed')
+        self.assertEqual(receipt.get('status'), 'failed')
+        voice_ref = receipt.get('voice_profile') or {}
+        self.assertIn('blue moon', [term.lower() for term in voice_ref.get('banned_terms', [])])
+
+    def test_human_revision_rejects_cross_sentence_term(self):
+        receipt = _offline_execute('run_voice_cross_hr', [_voice_item('mem_hrx', ['blue moon'])])
+        with self.assertRaises(human_review.NeedsRevision) as ctx:
+            human_review.apply_revision(receipt, 'Blue. Moon.', 'For Austin commuters. $49.',
+                                        'synthetic_human', 0)
+        reasons = [block['reason'] for block in ctx.exception.check['blocked_claims']]
+        self.assertTrue(any('Blocked by voice profile' in reason and 'blue moon' in reason.lower()
+                            for reason in reasons))
+
+    def test_human_revision_preserves_factual_and_voice_overlap(self):
+        receipt = _offline_execute('run_voice_cross_overlap', [_voice_item('mem_hro', ['blue moon'])])
+        with self.assertRaises(human_review.NeedsRevision) as ctx:
+            human_review.apply_revision(receipt, 'Blue. Moon.', 'For Austin commuters. $49.',
+                                        'synthetic_human', 0)
+        claims = [block['claim'] for block in ctx.exception.check['blocked_claims']]
+        reasons = [block['reason'] for block in ctx.exception.check['blocked_claims']]
+        self.assertIn('Blue', claims)
+        self.assertIn('Blue. Moon.', claims)
+        self.assertTrue(any('Blocked by voice profile' in reason for reason in reasons))
+
+    def test_clean_voiced_revision_still_approvable_and_exportable(self):
+        receipt = _offline_execute('run_voice_cross_clean', [_voice_item('mem_hrc', ['blue moon'])])
+        revised = human_review.apply_revision(
+            receipt, 'Vegan leather wallet. Designed in Texas.', 'For Austin commuters. $49.',
+            'synthetic_human', 0)
+        self.assertEqual(revised['revision'], 1)
+        approved = human_review.approve_current(revised, 'synthetic_human', 1)
+        self.assertTrue(human_review.exportable(approved))
+        exported = human_review.record_export(approved, 'synthetic_human')
+        self.assertEqual(exported['exported_revision'], 1)
+
+    def test_human_recheck_fails_closed_on_malformed_voice(self):
+        receipt = _offline_execute('run_voice_malformed_hr', [_voice_item('mem_hrm', ['harbor'])])
+        broken = copy.deepcopy(receipt)
+        broken['voice_profile'] = {'id': 'mem_hrm', 'title': 'Synthetic voice',
+                                   'version': 'voice/v1:test', 'digest': 'd' * 64,
+                                   'example_count': 3, 'banned_term_count': 1,
+                                   'banned_terms': 'not-a-list', 'notice': STYLE_ONLY_NOTICE}
+        with self.assertRaises(ValueError):
+            human_review.recheck_text('Vegan leather wallet. Designed in Texas.',
+                                      'For Austin commuters. $49.', broken)
 
 
 if __name__ == '__main__':

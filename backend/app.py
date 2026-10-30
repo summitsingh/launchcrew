@@ -522,10 +522,10 @@ def preview_agent(name: str, body: Idea, actor: str = Depends(auth.actor)):
         return adapter.preview(get_profile(db, name, workspace_id), body.idea)
 
 
-def load_memory_selection(db, memory_ids, workspace_id):
+def load_memory_selection(db, memory_ids, workspace_id, lock=False):
     items = []
     for item_id in (memory_ids or []):
-        items.append(memory_item(db, item_id, workspace_id))
+        items.append(memory_item(db, item_id, workspace_id, lock=lock))
     return items
 
 
@@ -585,6 +585,7 @@ def create_run(body: RunInput, actor: str = Depends(auth.actor)):
                               model_admission_factory=factory)
     with store.connect() as db:
         workspace_id = store.ensure_workspace_seeded(db, actor)
+        _mark_sync_voice_stale_if_changed(db, receipt, workspace_id, actor, lock=True)
         save_run(db, receipt, maker_name, actor, workspace_id)
     return receipt
 
@@ -607,11 +608,12 @@ def create_run_async(body: RunInput, actor: str = Depends(auth.actor)):
         with store.connect() as db:
             workspace_id = store.ensure_workspace_seeded(db, actor)
             legacy, scout, maker, checker = load_stage_profiles(db, body, workspace_id)
-            items = load_memory_selection(db, body.memory_ids, workspace_id)
+            items = load_memory_selection(db, body.memory_ids, workspace_id, lock=True)
             scout_name, maker_name, checker_name = stage_names(body)
             run_id = 'run_' + uuid4().hex
             pending = receipt_mod.pending_receipt(run_id, body.idea,
-                                                  {'scout': scout_name, 'maker': maker_name, 'checker': checker_name})
+                                                  {'scout': scout_name, 'maker': maker_name, 'checker': checker_name},
+                                                  _voice_receipt_binding(items))
             db.execute(text('INSERT INTO runs(id,receipt,agent_name,state,workspace_id) VALUES (:id,CAST(:receipt AS jsonb),:agent,:state,:ws)'),
                        {'id': run_id, 'receipt': json.dumps(pending), 'agent': maker_name.lower(), 'state': pending['approval_state'], 'ws': workspace_id})
             db.execute(text('INSERT INTO memory(run_id,facts) VALUES (:id,CAST(:facts AS jsonb))'),
@@ -1002,8 +1004,8 @@ def _public_memory_item(row):
     return {key: row[key] for key in _MEMORY_PUBLIC_FIELDS}
 
 
-def memory_item(db, item_id, workspace_id):
-    row = db.execute(text('SELECT ' + _MEMORY_PUBLIC_SELECT + ' FROM memory_items WHERE id=:id AND workspace_id=:ws'), {'id': item_id, 'ws': workspace_id}).mappings().first()
+def memory_item(db, item_id, workspace_id, lock=False):
+    row = db.execute(text('SELECT ' + _MEMORY_PUBLIC_SELECT + ' FROM memory_items WHERE id=:id AND workspace_id=:ws' + (' FOR UPDATE' if lock else '')), {'id': item_id, 'ws': workspace_id}).mappings().first()
     if row is None:
         raise HTTPException(404, 'Memory item not found')
     return _public_memory_item(row)
@@ -1017,15 +1019,82 @@ def _validate_voice_content(content):
         raise HTTPException(422, 'Invalid voice profile: ' + str(error))
 
 
+def _voice_receipt_binding(items):
+    from backend import adapter as adapter_mod
+    from launchcrew.voice_profile import STYLE_ONLY_NOTICE
+    try:
+        snapshot, ref, _ = adapter_mod._voice_selection(items)
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    if snapshot is None or ref is None:
+        return None
+    return {'id': ref.get('id'), 'title': ref.get('title'),
+            'version': ref.get('version'), 'digest': ref.get('digest'),
+            'example_count': len(snapshot.get('examples', [])),
+            'banned_term_count': len(snapshot.get('banned_terms', [])),
+            'banned_terms': list(snapshot.get('banned_terms', [])),
+            'notice': STYLE_ONLY_NOTICE}
+
+
+def _mark_sync_voice_stale_if_changed(db, receipt, workspace_id, actor, lock=True):
+    if not isinstance(receipt, dict):
+        return False
+    voice = receipt.get('voice_profile')
+    if voice is None:
+        return False
+    if not isinstance(voice, dict) or not isinstance(voice.get('id'), str):
+        receipt['voice_stale'] = True
+        receipt['approvals'] = []
+        receipt['approved_revision'] = None
+        receipt['approval_binding'] = None
+        receipt['approval_state'] = 'pending_approval'
+        return True
+    voice_id = voice['id']
+    old_digest = voice.get('digest')
+    row = db.execute(text('SELECT content FROM memory_items WHERE id=:id AND workspace_id=:ws' + (' FOR UPDATE' if lock else '')),
+                     {'id': voice_id, 'ws': workspace_id}).mappings().first()
+    if row is None:
+        changed = True
+    else:
+        try:
+            from launchcrew.voice_profile import snapshot_digest, validate_profile
+            current = snapshot_digest(validate_profile(row['content']))
+        except (TypeError, ValueError):
+            changed = True
+        else:
+            changed = (current != old_digest)
+    if not changed:
+        return False
+    from launchcrew import human_review as human_review_mod
+    receipt['voice_stale'] = True
+    receipt['approvals'] = []
+    receipt['approved_revision'] = None
+    receipt['approval_binding'] = None
+    receipt['approval_state'] = 'pending_approval'
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        rev = human_review_mod.current_revision(receipt)
+    except Exception:
+        rev = 0
+    events = list((receipt.get('audit') or {}).get('event_log') or [])
+    events.append({'step': 'voice_invalidated', 'agent': 'system',
+                   'profile': actor or 'system',
+                   'action': ('Voice profile edited or deleted during pipeline; approval invalidated, '
+                              'a new human revision check is required before export'),
+                   'timestamp': now, 'revision': rev, 'voice_id': voice_id})
+    receipt.setdefault('audit', {})['event_log'] = events
+    return True
+
+
 def _invalidate_voice_runs(db, workspace_id, voice_id, actor, action):
     import copy as copy_mod
     from launchcrew import human_review
-    rows = db.execute(text("SELECT id, receipt FROM runs WHERE workspace_id=:ws AND receipt->'voice_profile'->>'id' = :vid"),
+    rows = db.execute(text("SELECT id, receipt FROM runs WHERE workspace_id=:ws AND receipt->'voice_profile'->>'id' = :vid FOR UPDATE"),
                       {'ws': workspace_id, 'vid': voice_id}).all()
     for run_id, receipt in rows:
         if not isinstance(receipt, dict):
             continue
-        if receipt.get('status') != 'completed':
+        if receipt.get('status') not in ('completed', 'running'):
             continue
         voice = receipt.get('voice_profile')
         if not isinstance(voice, dict) or voice.get('id') != voice_id:
@@ -1090,7 +1159,7 @@ def get_memory(item_id: str, actor: str = Depends(auth.actor)):
 def edit_memory(item_id: str, body: MemoryItemEdit, actor: str = Depends(auth.actor)):
     with store.connect() as db:
         workspace_id = store.ensure_workspace_seeded(db, actor)
-        item = memory_item(db, item_id, workspace_id)
+        item = memory_item(db, item_id, workspace_id, lock=True)
         if 'kind' in body.model_fields_set and body.kind != item['kind']:
             raise HTTPException(422, 'Memory kind is immutable')
         if item['kind'] == 'voice_profile':
@@ -1109,7 +1178,7 @@ def edit_memory(item_id: str, body: MemoryItemEdit, actor: str = Depends(auth.ac
 def delete_memory(item_id: str, actor: str = Depends(auth.actor)):
     with store.connect() as db:
         workspace_id = store.ensure_workspace_seeded(db, actor)
-        item = memory_item(db, item_id, workspace_id)
+        item = memory_item(db, item_id, workspace_id, lock=True)
         result = db.execute(text('DELETE FROM memory_items WHERE id=:id AND workspace_id=:ws'), {'id': item_id, 'ws': workspace_id})
         if result.rowcount == 0:
             raise HTTPException(404, 'Memory item not found')
@@ -1339,6 +1408,10 @@ def create_campaign(body: RunInput, actor: str = Depends(auth.actor)):
                                       scout_profile=scout, maker_profile=maker, checker_agent=checker,
                                       product_facts=product_facts_raw,
                                       model_admission_factory=factory)
+            # No row lock here: the outer campaign transaction already spans
+            # model calls, so a FOR UPDATE lock would be held long. Plain
+            # read still catches edits committed before each day save.
+            _mark_sync_voice_stale_if_changed(db, receipt, workspace_id, actor, lock=False)
             save_run(db, receipt, maker_name, actor, workspace_id)
             db.execute(text('INSERT INTO campaign_days(campaign_id,day,run_id,workspace_id) VALUES (:id,:day,:run,:ws)'),
                        {'id': campaign_id, 'day': day, 'run': run_id, 'ws': workspace_id})

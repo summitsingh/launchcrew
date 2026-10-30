@@ -122,20 +122,23 @@ def snapshot_profile_name(receipt, stage):
 
 
 def snapshot_voice(receipt):
-    raw = receipt.get('voice_profile') if isinstance(receipt, dict) else None
+    if not isinstance(receipt, dict):
+        return None, None
+    raw = receipt.get('voice_profile')
     if raw is None:
         return None, None
-    if not isinstance(raw, dict):
+    binding = snapshot_voice_binding(receipt)
+    if binding is None:
         return None, None
-    terms = raw.get('banned_terms')
-    if not isinstance(terms, list) or not terms:
+    terms = binding.get('banned_terms') or []
+    if not terms:
         return None, None
-    cleaned = [t for t in terms if isinstance(t, str) and t.strip()]
-    if not cleaned:
-        return None, None
-    snapshot = {'banned_terms': cleaned}
-    ref = {'id': raw.get('id'), 'title': raw.get('title'),
-           'version': raw.get('version')}
+    for term in terms:
+        if not isinstance(term, str) or not term.strip():
+            raise ValueError('Voice banned term must be a non-empty string')
+    snapshot = {'banned_terms': list(terms)}
+    ref = {'id': binding.get('id'), 'title': binding.get('title'),
+           'version': binding.get('version')}
     return snapshot, ref
 
 
@@ -546,10 +549,7 @@ def recheck_text(post, email, receipt):
     def _voice_hit_for(sentence_text):
         if voice_snapshot is None:
             return None
-        try:
-            return voice_single_block_for_text(voice_snapshot, sentence_text, voice_ref)
-        except (TypeError, ValueError):
-            return None
+        return voice_single_block_for_text(voice_snapshot, sentence_text, voice_ref)
 
     for sentence in sentences:
         if sentence in seen_blocked:
@@ -580,6 +580,18 @@ def recheck_text(post, email, receipt):
                               'reason': policy_reason(policy)})
                 seen_blocked.add(sentence)
                 break
+    for full in (post.strip(), email.strip()):
+        if not full or full in sentences:
+            continue
+        voice_hit = _voice_hit_for(full)
+        if voice_hit is None:
+            continue
+        if full in seen_blocked:
+            if not _has_voice_reason(full):
+                extra.append(voice_hit)
+            continue
+        extra.append(voice_hit)
+        seen_blocked.add(full)
     if not extra:
         return check
     blocked_claims = list(check.get('blocked_claims', [])) + extra

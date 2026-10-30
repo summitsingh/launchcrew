@@ -2099,7 +2099,8 @@
                 "type": "null"
               }
             ],
-            "description": "True when the selected voice was edited or deleted after this receipt; a new human revision check is required."
+            "description": "True when the selected voice was edited or deleted after this receipt; a new human revision check is required.",
+            "title": "Voice Stale"
           }
         },
         "required": [
