@@ -169,7 +169,10 @@ def test_failure_retains_completed_steps_and_blocks_approval_export(client, monk
     gated_start(monkeypatch, gate)
     run_id = create_async(client)
     steps, receipt = wait_until(
-        client, run_id, lambda steps, receipt: receipt['status'] == 'failed')
+        client, run_id,
+        lambda steps, receipt: receipt['status'] == 'failed' and any(
+            row.get('state') == 'failed' and row.get('stage') == 'checker_v1'
+            for row in steps['steps']))
 
     assert receipt['error_type'] == 'RuntimeError'
     assert set(receipt['completed_steps']) >= {'scout', 'maker_draft_v1'}

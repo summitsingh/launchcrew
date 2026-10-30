@@ -181,7 +181,7 @@ describe('drive intake UI flow', () => {
       />,
     );
     for (const text of [
-      '2 suggestions from Drive file selection',
+      'Drive file selection produced 2 suggestions',
       'File: Demo tote notes (Plain text)',
       'Status: unconfirmed',
       'Parser: drive-import/v1',

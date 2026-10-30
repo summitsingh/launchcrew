@@ -32,6 +32,37 @@ declare global {
   }
 }
 
+type DrivePickerView = {
+  setMimeTypes: (mimeTypes: string) => void;
+  setSelectFolderEnabled: (enabled: boolean) => void;
+};
+
+type DrivePickerBuilt = {
+  setVisible: (visible: boolean) => void;
+};
+
+type DrivePickerBuilder = {
+  setOAuthToken: (token: string) => DrivePickerBuilder;
+  setDeveloperKey: (key: string) => DrivePickerBuilder;
+  setAppId: (appId: string) => DrivePickerBuilder;
+  addView: (view: DrivePickerView) => DrivePickerBuilder;
+  setCallback: (callback: (data: unknown) => void) => DrivePickerBuilder;
+  build: () => DrivePickerBuilt;
+};
+
+type DrivePickerApiShape = {
+  PickerBuilder: new () => DrivePickerBuilder;
+  DocsView: new (viewId?: string) => DrivePickerView;
+  ViewId?: { DOCS?: string };
+  Action?: { PICKED?: string; CANCEL?: string };
+};
+
+function isDrivePickerApiShape(value: unknown): value is DrivePickerApiShape {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.PickerBuilder === 'function' && typeof candidate.DocsView === 'function';
+}
+
 function loadScript(src: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const existing = document.querySelector(`script[src="${src}"]`);
@@ -68,7 +99,7 @@ export function DriveSuggestionsList({
   return (
     <div>
       <p className="hint">
-        {result.suggestions.length} suggestion{result.suggestions.length === 1 ? '' : 's'} from Drive file selection.
+        Drive file selection produced {result.suggestions.length} suggestion{result.suggestions.length === 1 ? '' : 's'}.
         File: {result.file_title} ({driveMimeLabel(result.mime_type)}).
         Status: unconfirmed. Parser: {result.parser_version}.
         {result.truncated ? ' Truncated to the bounded list.' : ''}
@@ -229,25 +260,32 @@ export function DriveIntakeForm({
       setLocalError('Drive sign-in library is not ready. Try again after it loads.');
       return;
     }
-    const pickerApi = (window.google as unknown as { picker?: unknown })?.picker as
-      | {
-          PickerBuilder?: new () => {
-            setOAuthToken: (t: string) => unknown;
-            setDeveloperKey: (k: string) => unknown;
-            setAppId: (a: string) => unknown;
-            addView: (v: unknown) => unknown;
-            setCallback: (cb: (data: unknown) => void) => unknown;
-            build: () => { setVisible: (v: boolean) => void };
-          };
-          DocsView?: new (id?: string) => {
-            setMimeTypes: (m: string) => unknown;
-            setSelectFolderEnabled: (v: boolean) => unknown;
-          };
-          ViewId?: { DOCS?: string };
-          Action?: { PICKED?: string; CANCEL?: string };
-        }
-      | undefined;
-    if (!pickerApi || !pickerApi.PickerBuilder || !pickerApi.DocsView) {
+    const rawPicker: unknown = (window.google as { picker?: unknown } | undefined)?.picker;
+    if (!isDrivePickerApiShape(rawPicker)) {
+      setLocalError('Drive Picker is not ready. Try again after it loads.');
+      return;
+    }
+    const PickerBuilderCtor = rawPicker.PickerBuilder;
+    const DocsViewCtor = rawPicker.DocsView;
+    const viewIdContainer: unknown = rawPicker.ViewId;
+    if (viewIdContainer !== undefined && (typeof viewIdContainer !== 'object' || viewIdContainer === null)) {
+      setLocalError('Drive Picker is not ready. Try again after it loads.');
+      return;
+    }
+    const viewIdRaw: unknown = (viewIdContainer as { DOCS?: unknown } | undefined)?.DOCS;
+    if (viewIdRaw !== undefined && typeof viewIdRaw !== 'string') {
+      setLocalError('Drive Picker is not ready. Try again after it loads.');
+      return;
+    }
+    const docsViewId: string | undefined = typeof viewIdRaw === 'string' ? viewIdRaw : undefined;
+    const pickedAction: unknown = rawPicker.Action?.PICKED;
+    const cancelAction: unknown = rawPicker.Action?.CANCEL;
+    if (
+      typeof pickedAction !== 'string' ||
+      !pickedAction ||
+      typeof cancelAction !== 'string' ||
+      !cancelAction
+    ) {
       setLocalError('Drive Picker is not ready. Try again after it loads.');
       return;
     }
@@ -261,49 +299,64 @@ export function DriveIntakeForm({
           return;
         }
         setDriveToken(token);
-        const view = new pickerApi.DocsView!(pickerApi.ViewId?.DOCS);
-        view.setMimeTypes('application/vnd.google-apps.document,text/plain');
-        view.setSelectFolderEnabled(false);
-        const picker = new pickerApi.PickerBuilder!()
-          .setOAuthToken(token)
-          .setDeveloperKey(config.api_key)
-          .setAppId(config.app_id)
-          .addView(view)
-          .setCallback((data: unknown) => {
-            const payload = data as {
-              action?: string;
-              docs?: { id?: unknown; name?: unknown; mimeType?: unknown; resourceKey?: unknown }[];
-            };
-            if (payload?.action === pickerApi.Action?.CANCEL) {
-              setDriveToken('');
-              return;
-            }
-            if (payload?.action !== pickerApi.Action?.PICKED || !payload?.docs?.length) {
-              setDriveToken('');
-              setLocalError('No Drive file was selected.');
-              return;
-            }
-            const doc = payload.docs[0];
-            const fileId = typeof doc.id === 'string' ? doc.id : '';
-            const resourceKey = typeof doc.resourceKey === 'string' ? doc.resourceKey : null;
-            const title = typeof doc.name === 'string' ? doc.name : 'Drive file';
-            const mime = typeof doc.mimeType === 'string' ? doc.mimeType : '';
-            if (validateDriveFileId(fileId).length > 0 || validateDriveResourceKey(resourceKey).length > 0) {
-              setDriveToken('');
-              setLocalError(driveErrorMessage(422));
-              return;
-            }
-            if (!isSupportedDriveMime(mime)) {
-              setDriveToken('');
-              setLocalError(driveErrorMessage(422));
-              return;
-            }
-            setSelectionTitle(title);
-            setSelectionMime(mime);
-            suggest.mutate({ file_id: fileId, resource_key: resourceKey, drive_token: token });
-          })
-          .build();
-        picker.setVisible(true);
+        try {
+          const view = new DocsViewCtor(docsViewId);
+          if (typeof view.setMimeTypes !== 'function' || typeof view.setSelectFolderEnabled !== 'function') {
+            setDriveToken('');
+            setLocalError('Drive Picker is not ready. Try again after it loads.');
+            return;
+          }
+          view.setMimeTypes('application/vnd.google-apps.document,text/plain');
+          view.setSelectFolderEnabled(false);
+          const picker = new PickerBuilderCtor()
+            .setOAuthToken(token)
+            .setDeveloperKey(config.api_key)
+            .setAppId(config.app_id)
+            .addView(view)
+            .setCallback((data: unknown) => {
+              const payload = data as {
+                action?: string;
+                docs?: { id?: unknown; name?: unknown; mimeType?: unknown; resourceKey?: unknown }[];
+              };
+              if (payload?.action === cancelAction) {
+                setDriveToken('');
+                return;
+              }
+              if (payload?.action !== pickedAction || !payload?.docs?.length) {
+                setDriveToken('');
+                setLocalError('No Drive file was selected.');
+                return;
+              }
+              const doc = payload.docs[0];
+              const fileId = typeof doc.id === 'string' ? doc.id : '';
+              const resourceKey = typeof doc.resourceKey === 'string' ? doc.resourceKey : null;
+              const title = typeof doc.name === 'string' ? doc.name : 'Drive file';
+              const mime = typeof doc.mimeType === 'string' ? doc.mimeType : '';
+              if (validateDriveFileId(fileId).length > 0 || validateDriveResourceKey(resourceKey).length > 0) {
+                setDriveToken('');
+                setLocalError(driveErrorMessage(422));
+                return;
+              }
+              if (!isSupportedDriveMime(mime)) {
+                setDriveToken('');
+                setLocalError(driveErrorMessage(422));
+                return;
+              }
+              setSelectionTitle(title);
+              setSelectionMime(mime);
+              suggest.mutate({ file_id: fileId, resource_key: resourceKey, drive_token: token });
+            })
+            .build();
+          if (!picker || typeof picker.setVisible !== 'function') {
+            setDriveToken('');
+            setLocalError('Drive Picker is not ready. Try again after it loads.');
+            return;
+          }
+          picker.setVisible(true);
+        } catch {
+          setDriveToken('');
+          setLocalError('Drive Picker is not ready. Try again after it loads.');
+        }
       },
     });
     tokenClient.requestAccessToken({ prompt: '' });
