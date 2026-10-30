@@ -162,8 +162,8 @@ usage() {
   echo "  --phase foundation needs --foundation-stack-name plus --foundation-parameters-file"
   echo "  --phase prereqs needs --prereqs-stack-name plus --foundation-stack-name plus --foundation-parameters-file plus --dns-receipt-file"
   echo "  --phase quiesce needs --stack-name plus --expected-account plus --expected-region plus"
-  echo "  --quiesce-confirm <exact-StackId> plus --foundation-stack-name plus --foundation-parameters-file"
-  echo "  plus --prereqs-stack-name; it never runs as part of --phase all."
+  echo "  --quiesce-confirm <exact-StackId> plus --parameters-file plus --foundation-stack-name"
+  echo "  plus --foundation-parameters-file plus --prereqs-stack-name; it never runs as part of --phase all."
 }
 
 while [ $# -gt 0 ]; do
@@ -337,6 +337,8 @@ case "$PHASE" in
   quiesce)
     [ -n "$STACK_NAME" ] || { echo "confirm requires --stack-name with the exact stack name" >&2; exit 2; }
     [ -n "$QUIESCE_CONFIRM" ] || { echo "confirm requires --quiesce-confirm with the exact StackId for explicit maintenance" >&2; exit 2; }
+    [ -n "$PARAMETERS_FILE" ] || { echo "confirm requires --parameters-file" >&2; exit 2; }
+    [ -f "$PARAMETERS_FILE" ] || { echo "refused: parameters file not found: $PARAMETERS_FILE" >&2; exit 2; }
     require_foundation_gate_args
     [ -n "$PREREQS_STACK_NAME" ] || { echo "confirm requires --prereqs-stack-name for the ISSUED readback" >&2; exit 2; } ;;
   infra|init|material|dbroles|migrate|enable)
@@ -2530,7 +2532,7 @@ if wants_phase infra; then
     INFRA_CHANGESET="infra-$TARGET_DB_HEAD"
     echo "Infra: reviewing a bounded update diff at services 0, then executing the same reviewed change set."
     if ! python3 - "$PARAMETERS_FILE" "$AWS_BIN" "$STACK_NAME" "$INFRA_CHANGESET" "$TEMPLATE_FILE" "$EXPECTED_REGION" <<'PYEOF'
-import json, subprocess, sys
+import json, os, subprocess, sys
 params_file, aws_bin, stack, changeset, template, region = sys.argv[1:7]
 try:
     with open(params_file) as handle:
@@ -2559,9 +2561,11 @@ for entry in doc:
         raise SystemExit("parameters file value has a refused shape")
     params.append("ParameterKey=%s,ParameterValue=%s" % (key, value))
 params.append("ParameterKey=EnableServices,ParameterValue=false")
+template_abs = os.path.abspath(template)
+template_body = "file://" + template_abs
 cmd = [aws_bin, "cloudformation", "create-change-set",
        "--stack-name", stack, "--change-set-name", changeset,
-       "--change-set-type", "UPDATE", "--template-file", template,
+       "--change-set-type", "UPDATE", "--template-body", template_body,
        "--parameters"] + params + [
        "--capabilities", "CAPABILITY_NAMED_IAM",
        "--tags", "Key=Project,Value=LaunchCrew", "Key=Environment,Value=demo",

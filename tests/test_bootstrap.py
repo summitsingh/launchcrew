@@ -144,15 +144,41 @@ if [ "$1" = "cloudformation" ] && [ "$2" = "describe-stacks" ]; then
 fi
 if [ "$1" = "cloudformation" ] && [ "$2" = "create-change-set" ]; then
   case "$*" in
-    *"--use-previous-template"*|*"--template-file"*) ;;
-    *) echo "fake-aws: change set must use previous template or template file" >&2; exit 2 ;;
+    *"--template-file"*) echo "fake-aws: create-change-set must not use --template-file, use --template-body file://" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"--use-previous-template"*|*"--template-body"*) ;;
+    *) echo "fake-aws: change set must use previous template or template body" >&2; exit 2 ;;
+  esac
+  case "$*" in
+    *"--use-previous-template"*)
+      case "$*" in
+        *"--template-body"*) echo "fake-aws: template body and previous template are mutually exclusive" >&2; exit 2 ;;
+      esac ;;
   esac
   case "$*" in
     *"ParameterKey=EnableServices,ParameterValue=false"*) ;;
     *) echo "fake-aws: change set must set EnableServices=false" >&2; exit 2 ;;
   esac
   case "$*" in
-    *"--template-file"*)
+    *"--template-body"*)
+      TEMPLATE_BODY=""
+      TEMPLATE_PREV=""
+      for TEMPLATE_ARG in "$@"; do
+        if [ "$TEMPLATE_PREV" = "--template-body" ]; then TEMPLATE_BODY="$TEMPLATE_ARG"; fi
+        TEMPLATE_PREV="$TEMPLATE_ARG"
+      done
+      case "$TEMPLATE_BODY" in
+        file:///*) TEMPLATE_PATH="${TEMPLATE_BODY#file://}" ;;
+        *) echo "fake-aws: --template-body must be absolute file:// path" >&2; exit 2 ;;
+      esac
+      case "$TEMPLATE_PATH" in
+        /*) ;;
+        *) echo "fake-aws: --template-body file:// path must be absolute" >&2; exit 2 ;;
+      esac
+      if [ ! -f "$TEMPLATE_PATH" ]; then
+        echo "fake-aws: --template-body file not found" >&2; exit 2
+      fi
       if [ "${FAKE_INFRA_CREATE:-ok}" = "exists" ]; then
         echo "An error occurred (AlreadyExistsException) when calling the CreateChangeSet operation: change set infra-007 exists" >&2
         exit 254
@@ -2760,6 +2786,19 @@ class QuiesceTests(BootstrapHarness):
         self.assertIn("quiesce-confirm", result.stdout + result.stderr)
         self.assertEqual(calls, [])
 
+    def test_quiesce_requires_existing_parameters_file_before_any_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = str(Path(tmp) / "missing-params.json")
+            args = [*self.base_args(), "--phase", "quiesce",
+                    "--quiesce-confirm", self.STACK_ID,
+                    "--parameters-file", missing,
+                    "--release-generation", "head007-testabc"]
+            result, calls = self.run_bootstrap(args)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("parameters file not found",
+                          result.stdout + result.stderr)
+            self.assertEqual(calls, [])
+
     def quiesce_env(self, changeset="exact", tg="drained"):
         return {"FAKE_ENABLE": "true",
                 "FAKE_STACK_STATUS": "UPDATE_COMPLETE",
@@ -2961,7 +3000,13 @@ class InfraDiffGuardTests(BootstrapHarness):
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
         joined = " ".join(calls)
         self.assertIn("create-change-set", joined)
-        self.assertIn("--template-file", joined)
+        self.assertIn("--template-body", joined)
+        self.assertIn("file:///", joined)
+        creates = [call for call in calls if "create-change-set" in call]
+        self.assertTrue(creates)
+        for call in creates:
+            self.assertIn("--template-body", call)
+            self.assertNotIn("--template-file", call)
         self.assertIn("infra-007", joined)
         self.assertIn("describe-change-set", joined)
         self.assertIn("describe-services", joined)
@@ -2979,6 +3024,47 @@ class InfraDiffGuardTests(BootstrapHarness):
         self.assertIn("review passed", result.stdout + result.stderr)
         self.assertIn("same reviewed change set ID", result.stdout + result.stderr)
         self.assertFalse(any("run-task" in call for call in calls))
+
+    def test_infra_create_change_set_uses_template_body_file(self):
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "infra"])
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        creates = [call for call in calls if "create-change-set" in call]
+        self.assertEqual(len(creates), 1)
+        call = creates[0]
+        self.assertIn("--template-body", call)
+        self.assertNotIn("--template-file", call)
+        parts = call.split()
+        self.assertIn("--template-body", parts)
+        body = parts[parts.index("--template-body") + 1]
+        self.assertTrue(body.startswith("file://"), msg=call)
+        path = body[len("file://"):]
+        self.assertTrue(os.path.isabs(path), msg=body)
+        self.assertTrue(Path(path).is_file(), msg=body)
+        self.assertEqual(Path(path).resolve(), TEMPLATE.resolve())
+        size = Path(path).stat().st_size
+        self.assertGreater(size, 0)
+        self.assertLessEqual(size, 51200)
+        self.assertIn("ParameterKey=EnableServices,ParameterValue=false", call)
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = Path(tmp) / "fake-aws"
+            fake.write_text(FAKE_AWS, encoding="utf-8")
+            fake.chmod(fake.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            log = Path(tmp) / "calls.log"
+            log.write_text("", encoding="utf-8")
+            env = dict(os.environ)
+            env["FAKE_AWS_LOG"] = str(log)
+            env["FAKE_MODE"] = "success"
+            proc = subprocess.run(
+                [str(fake), "cloudformation", "create-change-set",
+                 "--stack-name", STACK, "--change-set-name", "infra-007",
+                 "--change-set-type", "UPDATE", "--template-file", str(TEMPLATE),
+                 "--parameters", "ParameterKey=EnableServices,ParameterValue=false",
+                 "--capabilities", "CAPABILITY_NAMED_IAM",
+                 "--region", REGION],
+                capture_output=True, text=True, env=env, check=False)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("--template-body", proc.stdout + proc.stderr)
 
     def test_infra_allows_taskdef_replacement_for_image_updates(self):
         # The exact fixture carries Replacement True on all seven owned task
