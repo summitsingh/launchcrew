@@ -6,6 +6,7 @@ import { api, unwrap } from '@/lib/api';
 import { canApproveDay, canExportDay, memoryEditPayload } from '@/lib/v2';
 import { dataModeCopy, dataModeLabel, dataModeNote } from '@/components/model-status';
 import { sourceLabel } from '@/lib/product-facts';
+import { RunOutcomesSection } from '@/components/run-outcomes';
 import type { components } from '@/lib/schema';
 
 type Receipt = components['schemas']['Receipt'];
@@ -287,7 +288,7 @@ export function ReplayView({ queue }: { queue: Receipt[] }) {
   const [a, setA] = useState('');
   const [b, setB] = useState('');
   const compare = useMutation({ mutationFn: () => unwrap(api.GET('/api/runs/{run_a}/diff/{run_b}', { params: { path: { run_a: a, run_b: b } } })) });
-  return <section aria-label="Replay"><section className="panel"><h2>Replay</h2><form onSubmit={e => { e.preventDefault(); compare.mutate(); }}><label htmlFor="replay-a">Run A id</label><input id="replay-a" value={a} onChange={e => setA(e.target.value)} required /><label htmlFor="replay-b">Run B id</label><input id="replay-b" value={b} onChange={e => setB(e.target.value)} required /><Button type="submit" disabled={!a || !b || compare.isPending}>Compare</Button></form><h3>Pick from queue</h3><p className="hint">Queue refreshes every 3 seconds.</p>{queue.map(run => <div key={run.run_id} className="queue-card"><p><RunRef id={run.run_id} /></p><p>{run.idea}</p><div className="queue-actions"><Button variant="outline" onClick={() => setA(run.run_id)}>Use as A</Button><Button variant="outline" onClick={() => setB(run.run_id)}>Use as B</Button></div></div>)}</section>{compare.error && <p role="alert">{compare.error.message}</p>}{compare.data && <DiffResult diff={compare.data} />}</section>;
+  return <section aria-label="Replay"><section className="panel"><h2>Replay</h2><form onSubmit={e => { e.preventDefault(); compare.mutate(); }}><label htmlFor="replay-a">Run A id</label><input id="replay-a" value={a} onChange={e => setA(e.target.value)} required /><label htmlFor="replay-b">Run B id</label><input id="replay-b" value={b} onChange={e => setB(e.target.value)} required /><Button type="submit" disabled={!a || !b || compare.isPending}>Compare</Button></form><h3>Pick from queue</h3><p className="hint">Queue refreshes every 3 seconds.</p>{queue.map(run => <div key={run.run_id} className="queue-card"><p><RunRef id={run.run_id} /></p><p>{run.idea}</p><div className="queue-actions"><Button variant="outline" onClick={() => setA(run.run_id)}>Use as A</Button><Button variant="outline" onClick={() => setB(run.run_id)}>Use as B</Button></div></div>)}</section>{compare.error && <p role="alert">{compare.error.message}</p>}{compare.data && <DiffResult diff={compare.data} />}{a && <RunOutcomesSection runId={a} label="Run A owner outcomes" />}{b && <RunOutcomesSection runId={b} label="Run B owner outcomes" />}</section>;
 }
 
 export function CampaignDayCard({ day, busy, approve, download, markdown, copy }: { day: Day; busy: boolean; approve: () => void; download: () => void; markdown?: () => void; copy?: () => void }) {

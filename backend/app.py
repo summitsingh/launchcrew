@@ -1,17 +1,22 @@
 """Typed FastAPI demo API over the preserved Python pipeline."""
 from contextlib import asynccontextmanager
 import json
+from datetime import date as date_cls
 from datetime import datetime, timezone
-from typing import Literal, Any
+from typing import Literal, Any, get_args
 from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, ConfigDict, Field, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from backend import adapter, store, auth
 from launchcrew import agents, receipts
+from launchcrew.outcome_log import KNOWN_CHANNELS as OUTCOME_KNOWN_CHANNELS
+from launchcrew.outcome_log import MAX_COUNT as OUTCOME_MAX_COUNT
+from launchcrew.outcome_log import MAX_NOTE_LENGTH as OUTCOME_MAX_NOTE_LENGTH
+from launchcrew.outcome_log import PROVENANCE as OUTCOME_PROVENANCE
 from launchcrew.checker_policies import FLOOR_NOTE, MATCHING_NOTE, describe_supported
 from launchcrew.model_meta import (CONTRIBUTOR_SPARK_MODELS as CONTRIBUTOR_SPARK_IDS,
                                    STANDARD_SPARK_MODELS as STANDARD_SPARK_IDS,
@@ -1636,3 +1641,173 @@ def approve_campaign_day(campaign_id: str, day: int, body: ApproveIn, actor: str
 def export_campaign_day(campaign_id: str, day: int, body: ExportIn, response: Response, actor: str = Depends(auth.actor)):
     workspace_id = store.workspace_for_actor(actor)
     return export(campaign_run(campaign_id, day, workspace_id), body, response, actor)
+
+
+# Slice 6 owner-reported outcome loop after an approved export.
+# Reuses launchcrew.outcome_log bounds; rows are immutable self-reports,
+# never provider-measured, with no ROI, auto-post, or seeding.
+
+OutcomeChannel = Literal['email', 'facebook', 'in_person', 'instagram',
+                         'linkedin', 'other', 'phone', 'sms', 'web', 'x']
+
+if set(get_args(OutcomeChannel)) != set(OUTCOME_KNOWN_CHANNELS):
+    raise RuntimeError('Outcome channels must match launchcrew.outcome_log')
+if OUTCOME_PROVENANCE != 'self_reported':
+    raise RuntimeError('Outcome provenance must stay self_reported')
+
+
+class OutcomeIn(Strict):
+    channel: OutcomeChannel
+    posted_date: str = Field(min_length=10, max_length=10)
+    likes: StrictInt = Field(ge=0, le=OUTCOME_MAX_COUNT)
+    comments: StrictInt = Field(ge=0, le=OUTCOME_MAX_COUNT)
+    clicks: StrictInt = Field(ge=0, le=OUTCOME_MAX_COUNT)
+    sales: StrictInt = Field(ge=0, le=OUTCOME_MAX_COUNT)
+    note: str = Field(min_length=1, max_length=OUTCOME_MAX_NOTE_LENGTH)
+
+    @field_validator('posted_date')
+    @classmethod
+    def _exact_posted_date(cls, value):
+        if not isinstance(value, str):
+            raise ValueError('posted_date must be a string in YYYY-MM-DD format')
+        if len(value) != 10 or value[4] != '-' or value[7] != '-':
+            raise ValueError('posted_date must be in YYYY-MM-DD format')
+        parts = value.split('-')
+        if (len(parts) != 3 or len(parts[0]) != 4 or len(parts[1]) != 2
+                or len(parts[2]) != 2
+                or not all(part.isascii() and part.isdigit() for part in parts)):
+            raise ValueError('posted_date must be in YYYY-MM-DD format')
+        year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
+        try:
+            date_cls(year, month, day)
+        except ValueError:
+            raise ValueError('posted_date is not a real calendar date')
+        return value
+
+    @field_validator('note')
+    @classmethod
+    def _safe_note(cls, value):
+        if not isinstance(value, str):
+            raise ValueError('note must be a string')
+        if not value.strip():
+            raise ValueError('note must not be empty')
+        if len(value) > OUTCOME_MAX_NOTE_LENGTH:
+            raise ValueError('note must be <= 500 characters')
+        for char in value:
+            code = ord(char)
+            if code < 32 or code == 127:
+                raise ValueError('note contains unsafe control characters')
+        return value
+
+
+class OutcomeOut(Strict):
+    id: str
+    run_id: str
+    export_revision: int
+    channel: OutcomeChannel
+    posted_date: str
+    likes: int
+    comments: int
+    clicks: int
+    sales: int
+    note: str
+    provenance: Literal['self_reported']
+    actor: str
+    created_at: datetime
+
+
+_OUTCOME_PUBLIC_FIELDS = ('id', 'run_id', 'export_revision', 'channel',
+                          'posted_date', 'likes', 'comments', 'clicks',
+                          'sales', 'note', 'provenance', 'actor',
+                          'created_at')
+_OUTCOME_PUBLIC_SELECT = ('id, run_id, export_revision, channel, posted_date, '
+                          'likes, comments, clicks, sales, note, provenance, '
+                          'actor, created_at')
+
+
+def _public_outcome(row):
+    # Project only declared OutcomeOut fields. workspace_id stays internal
+    # and Strict extra=forbid rejects any leak, so never return SELECT * dicts.
+    # posted_date leaves Postgres as a date; the contract keeps the exact
+    # YYYY-MM-DD string from launchcrew.outcome_log.
+    posted = row['posted_date']
+    if hasattr(posted, 'isoformat'):
+        posted = posted.isoformat()
+    result = {key: row[key] for key in _OUTCOME_PUBLIC_FIELDS if key != 'posted_date'}
+    result['posted_date'] = posted
+    return result
+
+
+def _outcome_export_revision(receipt):
+    from backend.photo_review import photo_block_reason
+    from launchcrew import human_review
+    if receipt.get('status') == 'failed':
+        raise HTTPException(422, 'Owner outcomes require a completed run')
+    if receipt.get('status') != 'completed':
+        raise HTTPException(409, 'Owner outcomes require a completed run; reload and retry after it completes')
+    if receipt.get('approval_state') != 'approved_for_export':
+        raise HTTPException(409, 'Owner outcomes require an approved export; approve the latest revision and export before logging outcomes')
+    current = human_review.current_revision(receipt)
+    if receipt.get('approved_revision') != current:
+        raise HTTPException(409, 'Owner outcomes require approval of the latest revision; a later edit needs fresh approval and export before new logs')
+    if receipt.get('exported_revision') != current:
+        raise HTTPException(409, 'Owner outcomes require export of the latest revision; export before logging outcomes')
+    photo_reason = photo_block_reason(receipt)
+    if photo_reason is not None:
+        raise HTTPException(422, photo_reason)
+    if not human_review.exportable(receipt):
+        raise HTTPException(409, 'Owner outcomes require a currently exportable revision; reapprove and export before logging outcomes')
+    return current
+
+
+@app.post('/api/runs/{run_id}/outcomes', response_model=OutcomeOut, status_code=201)
+def create_outcome(run_id: str, body: OutcomeIn, actor: str = Depends(auth.actor)):
+    """Log one immutable owner self-report for the current exported revision.
+
+    Owner-entered only, never provider-measured. Requires a signed-in
+    actor, an owned run, and an approved current exported revision. The
+    export revision, workspace, actor, provenance, and server timestamp
+    come from the server; the client supplies only channel, posted date,
+    metrics, and note. Historical rows keep their stored export revision
+    after later edits; new logs stay blocked until reapproval and reexport.
+    """
+    if not actor or actor == 'demo_placeholder':
+        raise HTTPException(401, 'Sign in required to log owner-reported outcomes')
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        receipt = get_receipt(db, run_id, workspace_id, True)
+        _reject_when_running(receipt)
+        export_revision = _outcome_export_revision(receipt)
+        outcome_id = 'out_' + uuid4().hex
+        db.execute(text('INSERT INTO run_outcomes(id, run_id, workspace_id, export_revision, channel, posted_date, likes, comments, clicks, sales, note, provenance, actor)'
+                        ' VALUES (:id, :run, :ws, :rev, :channel, CAST(:posted AS date), :likes, :comments, :clicks, :sales, :note, :prov, :actor)'),
+                   {'id': outcome_id, 'run': run_id, 'ws': workspace_id, 'rev': export_revision,
+                    'channel': body.channel, 'posted': body.posted_date, 'likes': body.likes,
+                    'comments': body.comments, 'clicks': body.clicks, 'sales': body.sales,
+                    'note': body.note, 'prov': OUTCOME_PROVENANCE, 'actor': actor})
+        store.audit(db, run_id, 'outcome_logged', actor, workspace_id)
+        row = db.execute(text('SELECT ' + _OUTCOME_PUBLIC_SELECT + ' FROM run_outcomes WHERE id=:id AND workspace_id=:ws'),
+                         {'id': outcome_id, 'ws': workspace_id}).mappings().first()
+        if row is None:
+            raise HTTPException(404, 'Run not found')
+        return _public_outcome(row)
+
+
+@app.get('/api/runs/{run_id}/outcomes', response_model=list[OutcomeOut])
+def list_outcomes(run_id: str, actor: str = Depends(auth.actor)):
+    """List owner self-reports for an owned run, oldest first.
+
+    Owner-entered only, never provider-measured. Reads are workspace
+    scoped and return 404 for foreign runs. Historical rows keep their
+    stored export revision after later edits; this read never gates on
+    the current approval or export state.
+    """
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        exists = db.execute(text('SELECT 1 FROM runs WHERE id=:id AND workspace_id=:ws'),
+                            {'id': run_id, 'ws': workspace_id}).fetchone()
+        if not exists:
+            raise HTTPException(404, 'Run not found')
+        rows = db.execute(text('SELECT ' + _OUTCOME_PUBLIC_SELECT + ' FROM run_outcomes WHERE run_id=:id AND workspace_id=:ws ORDER BY created_at, id'),
+                          {'id': run_id, 'ws': workspace_id}).mappings().all()
+        return [_public_outcome(row) for row in rows]

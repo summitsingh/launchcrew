@@ -1264,6 +1264,162 @@
         "title": "ModelUsage",
         "type": "object"
       },
+      "OutcomeIn": {
+        "additionalProperties": false,
+        "properties": {
+          "channel": {
+            "enum": [
+              "email",
+              "facebook",
+              "in_person",
+              "instagram",
+              "linkedin",
+              "other",
+              "phone",
+              "sms",
+              "web",
+              "x"
+            ],
+            "title": "Channel",
+            "type": "string"
+          },
+          "clicks": {
+            "maximum": 1000000.0,
+            "minimum": 0.0,
+            "title": "Clicks",
+            "type": "integer"
+          },
+          "comments": {
+            "maximum": 1000000.0,
+            "minimum": 0.0,
+            "title": "Comments",
+            "type": "integer"
+          },
+          "likes": {
+            "maximum": 1000000.0,
+            "minimum": 0.0,
+            "title": "Likes",
+            "type": "integer"
+          },
+          "note": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Note",
+            "type": "string"
+          },
+          "posted_date": {
+            "maxLength": 10,
+            "minLength": 10,
+            "title": "Posted Date",
+            "type": "string"
+          },
+          "sales": {
+            "maximum": 1000000.0,
+            "minimum": 0.0,
+            "title": "Sales",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "channel",
+          "posted_date",
+          "likes",
+          "comments",
+          "clicks",
+          "sales",
+          "note"
+        ],
+        "title": "OutcomeIn",
+        "type": "object"
+      },
+      "OutcomeOut": {
+        "additionalProperties": false,
+        "properties": {
+          "actor": {
+            "title": "Actor",
+            "type": "string"
+          },
+          "channel": {
+            "enum": [
+              "email",
+              "facebook",
+              "in_person",
+              "instagram",
+              "linkedin",
+              "other",
+              "phone",
+              "sms",
+              "web",
+              "x"
+            ],
+            "title": "Channel",
+            "type": "string"
+          },
+          "clicks": {
+            "title": "Clicks",
+            "type": "integer"
+          },
+          "comments": {
+            "title": "Comments",
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "export_revision": {
+            "title": "Export Revision",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "likes": {
+            "title": "Likes",
+            "type": "integer"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "posted_date": {
+            "title": "Posted Date",
+            "type": "string"
+          },
+          "provenance": {
+            "const": "self_reported",
+            "title": "Provenance",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "sales": {
+            "title": "Sales",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "run_id",
+          "export_revision",
+          "channel",
+          "posted_date",
+          "likes",
+          "comments",
+          "clicks",
+          "sales",
+          "note",
+          "provenance",
+          "actor",
+          "created_at"
+        ],
+        "title": "OutcomeOut",
+        "type": "object"
+      },
       "PhotoCheckIn": {
         "additionalProperties": false,
         "properties": {
@@ -4511,6 +4667,98 @@
           }
         },
         "summary": "Export"
+      }
+    },
+    "/api/runs/{run_id}/outcomes": {
+      "get": {
+        "description": "List owner self-reports for an owned run, oldest first.\n\nOwner-entered only, never provider-measured. Reads are workspace\nscoped and return 404 for foreign runs. Historical rows keep their\nstored export revision after later edits; this read never gates on\nthe current approval or export state.",
+        "operationId": "list_outcomes_api_runs__run_id__outcomes_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/OutcomeOut"
+                  },
+                  "title": "Response List Outcomes Api Runs  Run Id  Outcomes Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Outcomes"
+      },
+      "post": {
+        "description": "Log one immutable owner self-report for the current exported revision.\n\nOwner-entered only, never provider-measured. Requires a signed-in\nactor, an owned run, and an approved current exported revision. The\nexport revision, workspace, actor, provenance, and server timestamp\ncome from the server; the client supplies only channel, posted date,\nmetrics, and note. Historical rows keep their stored export revision\nafter later edits; new logs stay blocked until reapproval and reexport.",
+        "operationId": "create_outcome_api_runs__run_id__outcomes_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OutcomeIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutcomeOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Outcome"
       }
     },
     "/api/runs/{run_id}/photo": {

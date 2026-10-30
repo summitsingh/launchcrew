@@ -467,6 +467,42 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/outcomes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Outcomes
+         * @description List owner self-reports for an owned run, oldest first.
+         *
+         *     Owner-entered only, never provider-measured. Reads are workspace
+         *     scoped and return 404 for foreign runs. Historical rows keep their
+         *     stored export revision after later edits; this read never gates on
+         *     the current approval or export state.
+         */
+        get: operations["list_outcomes_api_runs__run_id__outcomes_get"];
+        put?: never;
+        /**
+         * Create Outcome
+         * @description Log one immutable owner self-report for the current exported revision.
+         *
+         *     Owner-entered only, never provider-measured. Requires a signed-in
+         *     actor, an owned run, and an approved current exported revision. The
+         *     export revision, workspace, actor, provenance, and server timestamp
+         *     come from the server; the client supplies only channel, posted date,
+         *     metrics, and note. Historical rows keep their stored export revision
+         *     after later edits; new logs stay blocked until reapproval and reexport.
+         */
+        post: operations["create_outcome_api_runs__run_id__outcomes_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/photo": {
         parameters: {
             query?: never;
@@ -1150,6 +1186,64 @@ export interface components {
             wonder_used: boolean;
         } & {
             [key: string]: unknown;
+        };
+        /** OutcomeIn */
+        OutcomeIn: {
+            /**
+             * Channel
+             * @enum {string}
+             */
+            channel: "email" | "facebook" | "in_person" | "instagram" | "linkedin" | "other" | "phone" | "sms" | "web" | "x";
+            /** Clicks */
+            clicks: number;
+            /** Comments */
+            comments: number;
+            /** Likes */
+            likes: number;
+            /** Note */
+            note: string;
+            /** Posted Date */
+            posted_date: string;
+            /** Sales */
+            sales: number;
+        };
+        /** OutcomeOut */
+        OutcomeOut: {
+            /** Actor */
+            actor: string;
+            /**
+             * Channel
+             * @enum {string}
+             */
+            channel: "email" | "facebook" | "in_person" | "instagram" | "linkedin" | "other" | "phone" | "sms" | "web" | "x";
+            /** Clicks */
+            clicks: number;
+            /** Comments */
+            comments: number;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Export Revision */
+            export_revision: number;
+            /** Id */
+            id: string;
+            /** Likes */
+            likes: number;
+            /** Note */
+            note: string;
+            /** Posted Date */
+            posted_date: string;
+            /**
+             * Provenance
+             * @constant
+             */
+            provenance: "self_reported";
+            /** Run Id */
+            run_id: string;
+            /** Sales */
+            sales: number;
         };
         /** PhotoCheckIn */
         PhotoCheckIn: {
@@ -2851,6 +2945,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Receipt"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_outcomes_api_runs__run_id__outcomes_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OutcomeOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_outcome_api_runs__run_id__outcomes_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OutcomeIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OutcomeOut"];
                 };
             };
             /** @description Validation Error */
