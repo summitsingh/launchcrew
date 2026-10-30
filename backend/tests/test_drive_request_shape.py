@@ -68,7 +68,11 @@ def _auth_header(request):
 
 
 def _resource_header(request):
-    return request.get_header(drive_intake.DRIVE_RESOURCE_KEYS_HEADER)
+    want = drive_intake.DRIVE_RESOURCE_KEYS_HEADER.lower()
+    for name, value in request.header_items():
+        if name.lower() == want:
+            return value
+    return None
 
 
 def test_metadata_url_uses_documented_query_only():
