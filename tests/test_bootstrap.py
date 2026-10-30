@@ -7805,6 +7805,25 @@ class TypedRecoveryTests(BootstrapHarness):
             runs = [c for c in calls if "run-task" in c]
             self.assertEqual(len(runs), 1)
 
+    def test_wrong_taskdef_refuses_roles_with_no_verifier(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            bad_taskdef = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:task"
+                           "-definition/launchcrew-demo-verify:1")
+            self.write_prior(
+                journals, "dbroles", "bootstrap",
+                "BootstrapTaskDefinition", self.ROLE_TOKEN, self.ROLE_TASK,
+                bad_taskdef, outcome="started")
+            result, calls = self.run_bootstrap(
+                self.dbroles_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("TASKDEF_OPERATION_MISMATCH", combined)
+            self.assertFalse(any("run-task" in c for c in calls))
+
 
 class EnableEvidenceTests(BootstrapHarness):
     RELEASE = "head007-testabc"
@@ -7862,6 +7881,93 @@ class EnableEvidenceTests(BootstrapHarness):
             self.assertEqual(result.returncode, 0,
                              msg=result.stdout + result.stderr)
             self.assertTrue(any("EnableServices=true" in c for c in calls))
+
+    def test_enable_succeeds_with_current_attestations(self):
+        import hashlib as _hashlib
+        import json as _json
+        import tempfile as _tempfile
+        stack_id = (f"arn:aws:cloudformation:{REGION}:{ACCOUNT}:"
+                    f"stack/{STACK}/abc123")
+        priors = [
+            ("material", "sdk-material", "SdkMaterialTaskDefinition",
+             "lc-" + "e" * 30,
+             (f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+              "task/launchcrew-demo/aged-material-001"),
+             (f"arn:aws:ecs:{REGION}:{ACCOUNT}:task"
+              "-definition/launchcrew-demo-sdkmaterial:1"),
+             "complete"),
+            ("dbroles", "bootstrap", "BootstrapTaskDefinition",
+             "lc-" + "f" * 30,
+             (f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+              "task/launchcrew-demo/aged-roles-001"),
+             (f"arn:aws:ecs:{REGION}:{ACCOUNT}:task"
+              "-definition/launchcrew-demo-bootstrap:1"),
+             "started"),
+            ("migrate", "migration", "MigrationTaskDefinition",
+             "lc-" + "g" * 30,
+             (f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+              "task/launchcrew-demo/aged-migration-001"),
+             (f"arn:aws:ecs:{REGION}:{ACCOUNT}:task"
+              "-definition/launchcrew-demo-migration:1"),
+             "complete"),
+            ("migrate", "verify", "VerifyTaskDefinition",
+             "lc-" + "h" * 30,
+             (f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+              "task/launchcrew-demo/aged-verify-001"),
+             (f"arn:aws:ecs:{REGION}:{ACCOUNT}:task"
+              "-definition/launchcrew-demo-verify:1"),
+             "complete"),
+        ]
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            shared = Path(shared_tmp)
+            journals = shared / "journals"
+            journals.mkdir(mode=0o700)
+            journals.chmod(0o700)
+            for phase, label, logical, token, task, taskdef, outcome in priors:
+                name = (f"launchcrew-{STACK}-{phase}-{label}-"
+                        "head006-abc1234-active.json")
+                doc = {
+                    "version": 2, "stack": STACK, "phase": phase,
+                    "label": label, "taskdef_logical": logical,
+                    "taskdef_arn": taskdef, "cluster": STACK,
+                    "client_token": token, "config_digest": "1" * 32,
+                    "region": REGION, "account": ACCOUNT,
+                    "outcome": outcome, "task_arn": task,
+                    "release_generation": "head006-abc1234",
+                    "source_sha": "abc1234", "target_head": "006",
+                    "stack_id": stack_id,
+                    "predecessor_task_arn": "",
+                    "predecessor_outcome": "none",
+                    "updated_utc": "2026-01-01T00:00:00Z",
+                }
+                raw = "|".join([
+                    doc["account"], doc["region"], doc["stack"],
+                    doc["cluster"], doc["phase"], doc["label"],
+                    doc["taskdef_logical"], doc["taskdef_arn"],
+                ])
+                doc["config_digest"] = _hashlib.sha256(
+                    raw.encode("utf-8")).hexdigest()[:32]
+                path = journals / name
+                path.write_text(_json.dumps(doc), encoding="utf-8")
+                path.chmod(0o600)
+            base = self.base_args()
+            for phase in ("material", "dbroles", "migrate"):
+                args = [*base, "--phase", phase,
+                        "--release-generation", self.RELEASE]
+                result, _ = self.run_bootstrap(
+                    args, extra_env={"FAKE_AGED_INIT": "1"},
+                    shared_dir=shared_tmp)
+                self.assertEqual(result.returncode, 0,
+                                 msg=result.stdout + result.stderr)
+            enable_args = [*base, "--phase", "enable",
+                           "--release-generation", self.RELEASE]
+            result, calls = self.run_bootstrap(
+                enable_args, extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            self.assertTrue(any("EnableServices=true" in c for c in calls))
+            self.assertFalse(any("run-task" in c for c in calls))
 
 
 class RoleStateTemplateTests(unittest.TestCase):
