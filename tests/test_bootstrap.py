@@ -5840,10 +5840,13 @@ class InitRecoveryTests(BootstrapHarness):
     def test_versioned_aged_prior_init_with_bad_prior_checks_all(self):
         with tempfile.TemporaryDirectory() as shared_tmp:
             _, journals = self.fresh_shared(shared_tmp)
-            self.write_init_prior(journals, generation="head006-abc1234",
-                                  head="006")
-            self.write_init_prior(journals, generation="head006-zzz9999",
-                                  head="006", outcome="pending")
+            complete_prior = self.write_init_prior(
+                journals, generation="head006-abc1234", head="006")
+            complete_before = complete_prior.read_bytes()
+            pending_prior = self.write_init_prior(
+                journals, generation="head006-zzz9999",
+                head="006", outcome="pending")
+            pending_before = pending_prior.read_bytes()
             result, calls = self.run_bootstrap(
                 self.init_args(),
                 extra_env={"FAKE_AGED_INIT": "1"},
@@ -5851,7 +5854,9 @@ class InitRecoveryTests(BootstrapHarness):
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
             self.assertIn("UNRESOLVED", combined)
-            self.assertIn("no bypass", combined)
+            self.assertIn("refused", combined.lower())
+            self.assertEqual(pending_prior.read_bytes(), pending_before)
+            self.assertEqual(complete_prior.read_bytes(), complete_before)
             runs = [c for c in calls if "run-task" in c]
             self.assertEqual(len(runs), 1)
             self.assertIn("launchcrew-demo-sdkmaterial", runs[0])
@@ -5859,6 +5864,9 @@ class InitRecoveryTests(BootstrapHarness):
             new_file = journals / (f"launchcrew-{STACK}-init-sdk-init-"
                                    f"{self.RELEASE}-active.json")
             self.assertFalse(new_file.exists())
+            pending_recovery = journals / "recovery" / (
+                pending_prior.name + ".recovery.json")
+            self.assertFalse(pending_recovery.exists())
 
     def test_unversioned_legacy_aged_prior_init_short_circuits(self):
         import json as _json
@@ -8158,17 +8166,47 @@ class TypedRecoveryTests(BootstrapHarness):
         import tempfile as _tempfile
         with _tempfile.TemporaryDirectory() as shared_tmp:
             _, journals = self.fresh_shared(shared_tmp)
-            prior = self.write_prior(
+            prior006 = self.write_prior(
                 journals, "migrate", "migration",
                 "MigrationTaskDefinition", self.MIG_TOKEN, self.MIG_TASK,
                 self.MIG_TASKDEF, generation="head006-abc1234",
                 head="006", outcome="complete")
-            before = prior.read_bytes()
+            before006 = prior006.read_bytes()
             new_image = image("launchcrew-migration", "new007") + "@sha256:" + "9" * 64
             old_image = image("launchcrew-migration", "old006") + "@sha256:abc123"
             args = [*self.base_args(**{"--migration-image": new_image}),
                     "--phase", "migrate",
                     "--release-generation", self.RELEASE]
+            refused, refused_calls = self.run_bootstrap(
+                args,
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_MIGRATION_IMAGE": old_image,
+                           "FAKE_ROLESTATE_EXIT": "10"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(refused.returncode, 0)
+            refused_combined = refused.stdout + refused.stderr
+            self.assertIn("separately reviewed repair", refused_combined)
+            self.assertIn("zero new migration", refused_combined.lower())
+            self.assertEqual(prior006.read_bytes(), before006)
+            refused_runs = [c for c in refused_calls if "run-task" in c]
+            self.assertFalse(any("launchcrew-demo-migration" in c
+                                 for c in refused_runs))
+            new_file = journals / (f"launchcrew-{STACK}-migrate-migration-"
+                                   f"{self.RELEASE}-active.json")
+            self.assertFalse(new_file.exists())
+            doc006_only, _ = self.read_attestation(journals, prior006.name)
+            self.assertEqual(doc006_only.get("original_target_head"), "006")
+            self.assertEqual(doc006_only.get("observed_head"), "007")
+            self.check_digest(doc006_only)
+            mig007_token = "lc-" + "i" * 30
+            mig007_task = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+                           "task/launchcrew-demo/aged-migration-002")
+            prior007 = self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", mig007_token, mig007_task,
+                self.MIG_TASKDEF, generation="head007-abc1234",
+                head="007", outcome="complete")
+            before007 = prior007.read_bytes()
             result, calls = self.run_bootstrap(
                 args,
                 extra_env={"FAKE_AGED_INIT": "1",
@@ -8179,14 +8217,128 @@ class TypedRecoveryTests(BootstrapHarness):
                              msg=result.stdout + result.stderr)
             combined = result.stdout + result.stderr
             self.assertIn("historical image", combined.lower())
-            self.assertEqual(prior.read_bytes(), before)
+            self.assertEqual(prior006.read_bytes(), before006)
+            self.assertEqual(prior007.read_bytes(), before007)
             runs = [c for c in calls if "run-task" in c]
             mig_runs = [c for c in runs
                         if "launchcrew-demo-migration" in c]
             self.assertEqual(len(mig_runs), 1)
+            doc006, _ = self.read_attestation(journals, prior006.name)
+            self.assertEqual(doc006.get("original_target_head"), "006")
+            self.assertEqual(doc006.get("observed_head"), "007")
+            self.check_digest(doc006)
+            doc007, _ = self.read_attestation(journals, prior007.name)
+            self.assertEqual(doc007.get("original_target_head"), "007")
+            self.assertEqual(doc007.get("observed_head"), "007")
+            self.check_digest(doc007)
+
+    def test_migration_mixed_aged_006_007_observed007_admits(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior006 = self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", self.MIG_TOKEN, self.MIG_TASK,
+                self.MIG_TASKDEF, generation="head006-abc1234",
+                head="006", outcome="complete")
+            before006 = prior006.read_bytes()
+            mig007_token = "lc-" + "i" * 30
+            mig007_task = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+                           "task/launchcrew-demo/aged-migration-002")
+            prior007 = self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", mig007_token, mig007_task,
+                self.MIG_TASKDEF, generation="head007-abc1234",
+                head="007", outcome="complete")
+            before007 = prior007.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.migrate_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_ROLESTATE_EXIT": "10"},
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            self.assertEqual(prior006.read_bytes(), before006)
+            self.assertEqual(prior007.read_bytes(), before007)
+            runs = [c for c in calls if "run-task" in c]
+            mig_runs = [c for c in runs
+                        if "launchcrew-demo-migration" in c]
+            self.assertEqual(len(mig_runs), 1)
+            doc006, _ = self.read_attestation(journals, prior006.name)
+            self.assertEqual(doc006.get("original_target_head"), "006")
+            self.assertEqual(doc006.get("observed_head"), "007")
+            self.check_digest(doc006)
+            doc007, _ = self.read_attestation(journals, prior007.name)
+            self.assertEqual(doc007.get("original_target_head"), "007")
+            self.assertEqual(doc007.get("observed_head"), "007")
+            self.check_digest(doc007)
+
+    def test_migration_006_only_observed007_refuses(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", self.MIG_TOKEN, self.MIG_TASK,
+                self.MIG_TASKDEF, generation="head006-abc1234",
+                head="006", outcome="complete")
+            before = prior.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.migrate_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_ROLESTATE_EXIT": "10"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("separately reviewed repair", combined)
+            self.assertIn("zero new migration", combined.lower())
+            self.assertEqual(prior.read_bytes(), before)
+            runs = [c for c in calls if "run-task" in c]
+            self.assertFalse(any("launchcrew-demo-migration" in c
+                                 for c in runs))
+            new_file = journals / (f"launchcrew-{STACK}-migrate-migration-"
+                                   f"{self.RELEASE}-active.json")
+            self.assertFalse(new_file.exists())
             doc, _ = self.read_attestation(journals, prior.name)
+            self.assertEqual(doc.get("original_target_head"), "006")
             self.assertEqual(doc.get("observed_head"), "007")
             self.check_digest(doc)
+
+    def test_migration_mixed_with_ambiguous_008_refuses(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior007 = self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", self.MIG_TOKEN, self.MIG_TASK,
+                self.MIG_TASKDEF, generation="head007-abc1234",
+                head="007", outcome="complete")
+            before007 = prior007.read_bytes()
+            mig008_token = "lc-" + "j" * 30
+            mig008_task = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+                           "task/launchcrew-demo/aged-migration-003")
+            prior008 = self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", mig008_token, mig008_task,
+                self.MIG_TASKDEF, generation="head008-abc1234",
+                head="008", outcome="started")
+            before008 = prior008.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.migrate_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_ROLESTATE_EXIT": "10"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("refused", combined.lower())
+            self.assertEqual(prior007.read_bytes(), before007)
+            self.assertEqual(prior008.read_bytes(), before008)
+            runs = [c for c in calls if "run-task" in c]
+            self.assertFalse(any("launchcrew-demo-migration" in c
+                                 for c in runs))
+            new_file = journals / (f"launchcrew-{STACK}-migrate-migration-"
+                                   f"{self.RELEASE}-active.json")
+            self.assertFalse(new_file.exists())
 
     def test_bootstrap_historical_pinned_digest_cross_release_admits(self):
         import tempfile as _tempfile

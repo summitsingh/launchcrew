@@ -10331,10 +10331,12 @@ print("HEAD\t%s" % next(iter(heads)))
 if orig_legacy:
     print("ORIG_HEAD\tLEGACY")
 else:
-    if len(orig_heads) != 1:
-        print("ORIG_HEAD\tMISMATCH")
-    else:
+    if len(orig_heads) == 1:
         print("ORIG_HEAD\t%s" % next(iter(orig_heads)))
+    else:
+        print("ORIG_HEAD\t%s" % ",".join(sorted(orig_heads)))
+print("ORIG_HAS007\t%s" % ("true" if "007" in orig_heads else "false"))
+print("ORIG_HAS008\t%s" % ("true" if "008" in orig_heads else "false"))
 print("ORIG_LEGACY\t%s" % ("true" if orig_legacy else "false"))
 print("COUNT\t%d" % len(orig_basenames))
 for _b in sorted(set(orig_basenames)):
@@ -10345,6 +10347,8 @@ PYEOF
     MIGRATION_OBS_HEAD="$(printf '%s\n' "$MIGRATION_OBSERVED" | awk -F'\t' '$1=="HEAD"{print $2}' | tr -d '[:space:]')"
     MIGRATION_ORIG_HEAD="$(printf '%s\n' "$MIGRATION_OBSERVED" | awk -F'\t' '$1=="ORIG_HEAD"{print $2}' | tr -d '[:space:]')"
     MIGRATION_ORIG_LEGACY="$(printf '%s\n' "$MIGRATION_OBSERVED" | awk -F'\t' '$1=="ORIG_LEGACY"{print $2}' | tr -d '[:space:]')"
+    MIGRATION_ORIG_HAS007="$(printf '%s\n' "$MIGRATION_OBSERVED" | awk -F'\t' '$1=="ORIG_HAS007"{print $2}' | tr -d '[:space:]')"
+    MIGRATION_ORIG_HAS008="$(printf '%s\n' "$MIGRATION_OBSERVED" | awk -F'\t' '$1=="ORIG_HAS008"{print $2}' | tr -d '[:space:]')"
     if [ "$MIGRATION_OBS_PROOF" != "OK" ]; then
       release_operation_lock
       echo "refused: migration recovery observed head proof is $MIGRATION_OBS_PROOF, no new migration and no skip without exact head. Inspect $LAUNCH_JOURNAL_DIR/recovery." >&2
@@ -10361,13 +10365,19 @@ PYEOF
         echo "refused: migration recovery observed007 with legacy unversioned original target is ambiguous, historical 008 attempt cannot be excluded, separately reviewed repair required with zero new migration RunTask. Preserved history, no resend. Inspect $LAUNCH_JOURNAL_DIR/recovery." >&2
         phase_failed "$TASK_PHASE"
       fi
-      if [ "$MIGRATION_ORIG_HEAD" != "007" ]; then
+      if [ "$MIGRATION_ORIG_HAS008" = "true" ]; then
+        release_operation_lock
+        echo "refused: migration recovery observed007 but original history includes target008 (${MIGRATION_ORIG_HEAD:-unknown}) with state regression, ambiguous prior 008 requires separately reviewed repair with zero new migration RunTask. Preserved history, no resend. Inspect $LAUNCH_JOURNAL_DIR/recovery." >&2
+        phase_failed "$TASK_PHASE"
+      fi
+      if [ "$MIGRATION_ORIG_HAS007" != "true" ]; then
         release_operation_lock
         echo "refused: migration recovery observed007 but original target is ${MIGRATION_ORIG_HEAD:-unknown}, not validated 007; ambiguous prior 008 with state regression requires separately reviewed repair with zero new migration RunTask. Preserved history, no resend. Inspect $LAUNCH_JOURNAL_DIR/recovery." >&2
         phase_failed "$TASK_PHASE"
       fi
       MIGRATION_ORIG_LIST="$(printf '%s\n' "$MIGRATION_OBSERVED" | awk -F'\t' '$1=="ORIG_BASE"{print $2}')"
       MIGRATION_ORIG_OK=1
+      MIGRATION_HAS_VALIDATED_007=0
       while IFS= read -r MIGRATION_ORIG_BASE || [ -n "$MIGRATION_ORIG_BASE" ]; do
         [ -n "$MIGRATION_ORIG_BASE" ] || continue
         case "$MIGRATION_ORIG_BASE" in
@@ -10382,15 +10392,25 @@ PYEOF
         MIGRATION_ORIG_VHEAD="$(printf '%s\n' "$MIGRATION_ORIG_VALIDATED" | awk -F'\t' '$1=="HEAD"{print $2}' | tr -d '[:space:]')"
         MIGRATION_ORIG_VLEGACY="$(printf '%s\n' "$MIGRATION_ORIG_VALIDATED" | awk -F'\t' '$1=="LEGACY"{print $2}' | tr -d '[:space:]')"
         MIGRATION_ORIG_VOUT="$(printf '%s\n' "$MIGRATION_ORIG_VALIDATED" | awk -F'\t' '$1=="OUTCOME"{print $2}' | tr -d '[:space:]')"
-        if [ "$MIGRATION_ORIG_VPROOF" != "OK" ] || [ "$MIGRATION_ORIG_VHEAD" != "007" ] || [ "$MIGRATION_ORIG_VLEGACY" = "true" ] || [ "$MIGRATION_ORIG_VOUT" != "complete" ]; then
+        if [ "$MIGRATION_ORIG_VPROOF" != "OK" ] || [ "$MIGRATION_ORIG_VLEGACY" = "true" ] || [ "$MIGRATION_ORIG_VOUT" != "complete" ]; then
           MIGRATION_ORIG_OK=0; break
         fi
+        case "$MIGRATION_ORIG_VHEAD" in
+          007) MIGRATION_HAS_VALIDATED_007=1 ;;
+          004|005|006) ;;
+          *) MIGRATION_ORIG_OK=0; break ;;
+        esac
       done <<EOF_ORIG_LIST
 $MIGRATION_ORIG_LIST
 EOF_ORIG_LIST
       if [ "$MIGRATION_ORIG_OK" != "1" ]; then
         release_operation_lock
-        echo "refused: migration recovery observed007 but validated original target007 proof failed, ambiguous prior requires separately reviewed repair with zero new migration RunTask. Preserved history, no resend. Inspect $LAUNCH_JOURNAL_DIR and $LAUNCH_JOURNAL_DIR/recovery." >&2
+        echo "refused: migration recovery observed007 but validated original history proof failed, ambiguous prior requires separately reviewed repair with zero new migration RunTask. Preserved history, no resend. Inspect $LAUNCH_JOURNAL_DIR and $LAUNCH_JOURNAL_DIR/recovery." >&2
+        phase_failed "$TASK_PHASE"
+      fi
+      if [ "$MIGRATION_HAS_VALIDATED_007" != "1" ]; then
+        release_operation_lock
+        echo "refused: migration recovery observed007 but no validated original target007 in preserved history (${MIGRATION_ORIG_HEAD:-unknown}), ambiguous prior requires separately reviewed repair with zero new migration RunTask. Preserved history, no resend. Inspect $LAUNCH_JOURNAL_DIR and $LAUNCH_JOURNAL_DIR/recovery." >&2
         phase_failed "$TASK_PHASE"
       fi
       echo "$TASK_LABEL aged prior recovered with observed head007 plus validated original target007, admitting at most one deliberate 007->008 migration after old-token and current-state checks; never automatically resending an ambiguous 008 attempt."
