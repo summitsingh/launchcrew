@@ -1244,8 +1244,10 @@ class VerifyJobTests(BindJobTests):
         self.assertEqual(self.state.connect_count, 0)
 
     def test_verify_owner_proof_uses_nonsecret_metadata(self):
-        verify_start = SCRIPT.read_text(encoding="utf-8").index("def do_verify")
-        verify_body = SCRIPT.read_text(encoding="utf-8")[verify_start:]
+        text = SCRIPT.read_text(encoding="utf-8")
+        verify_start = text.index("def do_verify():")
+        verify_end = text.index("\ndef ", verify_start + 1)
+        verify_body = text[verify_start:verify_end]
         self.assertIn("MIGRATION_USER", verify_body)
         self.assertIn("proowner", verify_body)
         self.assertIn("relowner", verify_body)
@@ -1301,8 +1303,9 @@ class StaticBoundaryTests(unittest.TestCase):
         self.assertIn("DATABASE_SSL_ROOTCERT", self.text)
 
     def test_verify_mode_never_uses_master_or_migration(self):
-        verify_start = self.text.index("def do_verify")
-        verify_body = self.text[verify_start:]
+        verify_start = self.text.index("def do_verify():")
+        verify_end = self.text.index("\ndef ", verify_start + 1)
+        verify_body = self.text[verify_start:verify_end]
         self.assertNotIn("MASTER_DB_PASSWORD", verify_body)
         self.assertNotIn("MIGRATION_DB_URL", verify_body)
         self.assertNotIn("alembic upgrade", verify_body.lower())
@@ -1333,8 +1336,9 @@ class StaticBoundaryTests(unittest.TestCase):
         self.assertIn("'v', 'm', 'f'", self.text)
 
     def test_verify_mode_never_commits(self):
-        verify_start = self.text.index("def do_verify")
-        verify_body = self.text[verify_start:]
+        verify_start = self.text.index("def do_verify():")
+        verify_end = self.text.index("\ndef ", verify_start + 1)
+        verify_body = self.text[verify_start:verify_end]
         self.assertNotIn(".commit(", verify_body)
 
     def test_verify_checks_exact_head_and_sqlstate(self):

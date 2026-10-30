@@ -210,7 +210,8 @@ WEB_SVC = "launchcrew-demo-WebService-G7H8I9J0K1L2"
 TASKDEFS = [("ApiTaskDefinition", "api"), ("WebTaskDefinition", "web"),
             ("MigrationTaskDefinition", "migration"), ("BootstrapTaskDefinition", "bootstrap"),
             ("VerifyTaskDefinition", "verify"), ("SdkInitTaskDefinition", "sdkinit"),
-            ("SdkMaterialTaskDefinition", "sdkmaterial")]
+            ("SdkMaterialTaskDefinition", "sdkmaterial"),
+            ("RoleStateTaskDefinition", "rolestate")]
 def taskdef_change(logical, repo):
     return {"Type": "Resource", "ResourceChange": {
         "Action": "Modify", "LogicalResourceId": logical,
@@ -291,13 +292,14 @@ if [ "$1" = "cloudformation" ] && [ "$2" = "describe-stack-resource" ]; then
     VerifyTaskDefinition) printf 'arn:aws:ecs:us-east-1:111122223333:task'"-definition"'/launchcrew-demo-verify:1\\n'; exit 0 ;;
     SdkInitTaskDefinition) printf 'arn:aws:ecs:us-east-1:111122223333:task'"-definition"'/launchcrew-demo-sdkinit:1\\n'; exit 0 ;;
     SdkMaterialTaskDefinition) printf 'arn:aws:ecs:us-east-1:111122223333:task'"-definition"'/launchcrew-demo-sdkmaterial:1\\n'; exit 0 ;;
+    RoleStateTaskDefinition) printf 'arn:aws:ecs:us-east-1:111122223333:task'"-definition"'/launchcrew-demo-rolestate:1\\n'; exit 0 ;;
     PublicSubnetA) printf 'subnet-aaa\\n'; exit 0 ;;
     PublicSubnetB) printf 'subnet-bbb\\n'; exit 0 ;;
     JobSecurityGroup) printf 'sg-ccc\\n'; exit 0 ;;
     Database) printf 'launchcrew-demo-db\\n'; exit 0 ;;
     ApiService) printf '%s\\n' "${FAKE_API_SERVICE:-launchcrew-demo-ApiService-A1B2C3D4E5F6}"; exit 0 ;;
     WebService) printf '%s\\n' "${FAKE_WEB_SERVICE:-launchcrew-demo-WebService-G7H8I9J0K1L2}"; exit 0 ;;
-    ApiExecutionRole|WebExecutionRole|MigrationExecutionRole|BootstrapExecutionRole|VerifyExecutionRole|SdkInitExecutionRole|SdkMaterialExecutionRole|ApiTaskRole|WebTaskRole|MigrationTaskRole|BootstrapTaskRole|VerifyTaskRole|SdkInitTaskRole|SdkMaterialTaskRole) printf '%s-physical\\n' "$RESOURCE_LOGICAL"; exit 0 ;;
+    ApiExecutionRole|WebExecutionRole|MigrationExecutionRole|BootstrapExecutionRole|VerifyExecutionRole|SdkInitExecutionRole|SdkMaterialExecutionRole|RoleStateExecutionRole|ApiTaskRole|WebTaskRole|MigrationTaskRole|BootstrapTaskRole|VerifyTaskRole|SdkInitTaskRole|SdkMaterialTaskRole|RoleStateTaskRole) printf '%s-physical\\n' "$RESOURCE_LOGICAL"; exit 0 ;;
   esac
   echo "fake-aws: unexpected resource lookup: $*" >&2
   exit 2
@@ -581,6 +583,11 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-task""-definition" ]; then
       SDK_COMMAND="--verify-material"
       if [ "$SDK_MODE" = "command" ]; then SDK_COMMAND="--bind"; fi
       printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/SdkMaterialExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/SdkMaterialTaskRole%s","containerDefinitions":[{"name":"sdk-material","essential":true,"image":"%s"%s,"command":["%s"],"environment":[{"name":"LAUNCHCREW_EXPECTED_ACCOUNT","value":"111122223333"},{"name":"LAUNCHCREW_EXPECTED_REGION","value":"us-east-1"},{"name":"LAUNCHCREW_EXPECTED_ROLE","value":"SdkMaterialTaskRole-physical"},{"name":"LAUNCHCREW_MASTER_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_RUNTIME_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_MIGRATION_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_TLS_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_CERT_ARN","value":"%s"},{"name":"LAUNCHCREW_DB_HOST","value":"%s"},{"name":"LAUNCHCREW_DB_TLS_MODE","value":"verify-full"},{"name":"DATABASE_SSL_ROOTCERT","value":"/app/rds-ca-bundle.pem"}]%s}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_BOOT" "$ENTRY_JSON" "$SDK_COMMAND" "$SEC_MASTER" "$SEC_RT" "$SEC_MG" "$SEC_TLS" "$SDK_CERT" "$SDK_HOST" "$INJECT_JSON"
+      exit 0 ;;
+    *launchcrew-demo-rolestate*)
+      RS_HOST="${FAKE_DB_HOST:-launchcrew-demo.abc123.us-east-1.rds.amazonaws.com}"
+      RS_MASTER="${FAKE_DB_USER:-launchcrew_app}"
+      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/RoleStateExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/RoleStateTaskRole%s","containerDefinitions":[{"name":"bootstrap-db-roles","essential":true,"command":["--verify-role-state"],"image":"%s","environment":[{"name":"LAUNCHCREW_DB_TLS_MODE","value":"verify-full"},{"name":"DATABASE_SSL_ROOTCERT","value":"/app/rds-ca-bundle.pem"},{"name":"DB_NAME","value":"launchcrew"},{"name":"DB_MASTER_USER","value":"%s"},{"name":"DB_HOST","value":"%s"},{"name":"APP_SCHEMA","value":"public"},{"name":"RUNTIME_USER","value":"launchcrew_runtime"},{"name":"MIGRATION_USER","value":"launchcrew_migration"}],"secrets":[{"name":"RUNTIME_DB_URL","valueFrom":"%s:database-url::"},{"name":"MIGRATION_DB_URL","valueFrom":"%s:database-url::"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_BOOT" "$RS_MASTER" "$RS_HOST" "$SEC_RT" "$SEC_MG"
       exit 0 ;;
     *) echo "fake-aws: unexpected describe task definition: $*" >&2; exit 2 ;;
   esac
@@ -930,6 +937,13 @@ class PhaseCHarness(unittest.TestCase):
                     index += 1
             if params_overrides:
                 given.update(params_overrides)
+            if "DatabaseUsername" not in given:
+                default_user = "launchcrew_app"
+                if extra_env and "FAKE_DB_USER" in extra_env:
+                    default_user = extra_env["FAKE_DB_USER"]
+                elif "FAKE_DB_USER" in os.environ:
+                    default_user = os.environ["FAKE_DB_USER"]
+                given["DatabaseUsername"] = default_user
             params = Path(tmp) / "params.json"
             params.write_text(json.dumps(
                 [{"ParameterKey": key, "ParameterValue": value}
