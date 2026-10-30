@@ -4,7 +4,7 @@ Pure stdlib helper: text in, list of hits out. No I/O, no model calls,
 no credentials. Flags three categories:
 
 * ``absolute_claim``: absolute promises such as guaranteed / always /
-  never / risk-free / 100%.
+  never / risk free / 100%.
 * ``personal_attribute``: second-person phrasing that asserts or implies
   a personal attribute (you are / are you / do you / your <noun>).
 * ``shaming_comparison``: shaming words (ugly, loser, ...) and
@@ -12,7 +12,7 @@ no credentials. Flags three categories:
 
 Whole-word matching only, case-insensitive. Tokens split on any
 non-alphanumeric character so punctuation and hyphens separate words
-(risk-free matches risk free; guaranteed! matches guaranteed).
+(no-risk matches no risk; guaranteed! matches guaranteed).
 Substrings never match (guaranteedx, whenever, yourself are clean).
 Multi-word patterns match only within the same sentence segment:
 period, exclamation, question marks, and newlines break adjacency, so

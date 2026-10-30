@@ -46,7 +46,7 @@ class AbsoluteClaimTests(unittest.TestCase):
 
     def test_risk_phrases(self):
         self.assertIn(
-            ("absolute_claim", "risk free"), _matches("Risk-free trial.")
+            ("absolute_claim", "risk free"), _matches("Risk free trial.")
         )
         self.assertIn(
             ("absolute_claim", "no risk"), _matches("No-risk purchase.")
