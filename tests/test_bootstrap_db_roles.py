@@ -88,6 +88,43 @@ class FakeCursor:
             if self.state.model_budget_missing:
                 return None
             return (self.state.model_budget_remaining,)
+        if "has_table_privilege" in lowered:
+            obj = params[0] if params and len(params) > 0 else ""
+            priv = params[1] if params and len(params) > 1 else ""
+            key = (str(obj), str(priv).upper())
+            if key in self.state.has_table_map:
+                return (self.state.has_table_map[key],)
+            table = str(obj).split(".")[-1]
+            if table in ("model_budget", "model_calls"):
+                if str(priv).upper() == "SELECT":
+                    return (True,)
+                return (False,)
+            if str(priv).upper() in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+                return (not self.state.role_partial,)
+            return (False,)
+        if "has_sequence_privilege" in lowered:
+            if self.state.role_partial:
+                return (False,)
+            return (True,)
+        if "has_schema_privilege" in lowered:
+            obj = params[0] if params and len(params) > 0 else ""
+            priv = params[1] if params and len(params) > 1 else ""
+            if str(priv).upper() == "USAGE":
+                return (True,)
+            if str(priv).upper() == "CREATE":
+                if self.user == "launchcrew_migration":
+                    return (True,)
+                return (False,)
+            return (False,)
+        if "has_function_privilege" in lowered:
+            obj = str(params[0]) if params and len(params) > 0 else ""
+            if "model_no_direct" in obj:
+                return (False,)
+            if "model_reserve_call" in obj or "model_finalize_call" in obj:
+                return (not self.state.role_partial,)
+            return (False,)
+        if "pg_get_constraintdef" in lowered:
+            return (self.state.check_def,)
         if "pg_auth_members" in lowered:
             return (1,) if self.state.role_memberships else None
         if "pg_shdescription" in lowered:
@@ -149,6 +186,11 @@ class FakeCursor:
                          False, True, False, False, 16384)]
             return []
         if "pg_default_acl" in lowered:
+            objtype = params[0] if params and len(params) > 0 else ""
+            if objtype == "r":
+                return list(self.state.table_default_acls)
+            if objtype == "S":
+                return list(self.state.sequence_default_acls)
             return list(self.state.model_default_acls)
         if "pg_class" in lowered:
             if "relkind" in lowered:
@@ -235,6 +277,18 @@ class FakeDriverState:
             "model_no_direct": [],
         }
         self.model_default_acls = []
+        self.table_default_acls = [
+            (12345, "SELECT"), (12345, "INSERT"),
+            (12345, "UPDATE"), (12345, "DELETE"),
+        ]
+        self.sequence_default_acls = [
+            (12345, "USAGE"), (12345, "SELECT"),
+        ]
+        self.has_table_map = {}
+        self.role_partial = False
+        self.check_def = ("CHECK ((kind = ANY (ARRAY['brand_fact'::text, "
+                          "'profile'::text, 'approval_example'::text, "
+                          "'blocked_rule'::text, 'voice_profile'::text])))")
         self.connect_count = 0
         self.connects = []
         self.fail_connect = False
@@ -1545,6 +1599,129 @@ class VerifyFutureFunctionProofTests(unittest.TestCase):
         self.assertIn("missed VERIFY COMPLETE", self.text)
         self.assertIn("missed revision=007", self.text)
         self.assertNotIn('*"VERIFY COMPLETE"*|*"revision=007"*', self.text)
+
+
+class RoleStateVerifierTests(unittest.TestCase):
+    def setUp(self):
+        self.state = FakeDriverState()
+        import sys
+        sys.modules["psycopg"] = FakePsycopg(self.state)
+        spec = importlib.util.spec_from_file_location(
+            "bootstrap_db_roles", str(SCRIPT))
+        self.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.module)
+        self.module._known_secrets.clear()
+        self.tmp_root = Path(os.environ.get("TMPDIR", "/tmp"))
+        self.bundle = self.tmp_root / "lc-test-ca-bundle.pem"
+        self.bundle.write_text("test bundle", encoding="utf-8")
+        self.addCleanup(lambda: self.bundle.unlink(missing_ok=True))
+        self.env = {
+            "LAUNCHCREW_DB_TLS_MODE": "verify-full",
+            "DATABASE_SSL_ROOTCERT": str(self.bundle),
+            "DB_HOST": "dbhost",
+            "DB_PORT": "5432",
+            "DB_NAME": "launchcrew",
+            "DB_MASTER_USER": "launchcrew_master",
+            "RUNTIME_DB_URL": runtime_url(),
+            "MIGRATION_DB_URL": migration_url(),
+            "RUNTIME_USER": "launchcrew_runtime",
+            "MIGRATION_USER": "launchcrew_migration",
+            "APP_SCHEMA": "public",
+        }
+        self.state.role_rows = {
+            "launchcrew_runtime": ("launchcrew_runtime", False, True,
+                                   False, False, False, False),
+            "launchcrew_migration": ("launchcrew_migration", False, True,
+                                     False, False, False, False),
+        }
+        self.state.membership_map = {
+            "launchcrew_runtime": [],
+            "launchcrew_migration": [],
+        }
+        self.state.inventory = [
+            ("workspaces", "r", "launchcrew_migration"),
+            ("alembic_version", "r", "launchcrew_migration"),
+            ("memory_items", "r", "launchcrew_migration"),
+            ("model_budget", "r", "launchcrew_migration"),
+            ("model_calls", "r", "launchcrew_migration"),
+            ("model_calls_id_seq", "S", "launchcrew_migration"),
+        ]
+        self.state.function_inventory = [
+            ("model_reserve_call", "launchcrew_migration"),
+            ("model_finalize_call", "launchcrew_migration"),
+            ("model_no_direct", "launchcrew_migration"),
+        ]
+
+    def run_main(self, mode="--verify-role-state", env_overrides=None):
+        env = dict(self.env)
+        if env_overrides:
+            env.update(env_overrides)
+        old = dict(os.environ)
+        os.environ.update(env)
+        try:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = self.module.main(["bootstrap_db_roles.py", mode])
+        finally:
+            os.environ.clear()
+            os.environ.update(old)
+        return code, out.getvalue()
+
+    def test_role_state_head007_returns_zero(self):
+        code, out = self.run_main()
+        self.assertEqual(code, 0, msg=out)
+        self.assertIn("ROLE-STATE COMPLETE", out)
+        self.assertIn("head=007", out)
+        self.assertEqual(self.state.commits, 0)
+        self.assertNotIn(RT_PW, out)
+        self.assertNotIn(MG_PW, out)
+        self.assertNotIn("postgresql://", out)
+
+    def test_role_state_head006_returns_ten(self):
+        self.state.schema_version = "006"
+        self.state.check_def = (
+            "CHECK ((kind = ANY (ARRAY['brand_fact'::text, "
+            "'profile'::text, 'approval_example'::text, "
+            "'blocked_rule'::text])))")
+        code, out = self.run_main()
+        self.assertEqual(code, 10, msg=out)
+        self.assertIn("head=006", out)
+        self.assertEqual(self.state.commits, 0)
+
+    def test_role_state_partial_grants_refuse(self):
+        self.state.role_partial = True
+        code, out = self.run_main()
+        self.assertEqual(code, 1, msg=out)
+        self.assertIn("FAIL", out)
+        self.assertIn("role-state-", out)
+        self.assertEqual(self.state.commits, 0)
+
+    def test_role_state_wrong_flags_refuse(self):
+        self.state.role_rows["launchcrew_runtime"] = (
+            "launchcrew_runtime", False, True, True, False, False, False)
+        code, out = self.run_main()
+        self.assertEqual(code, 1, msg=out)
+        self.assertIn("role-state-role-safety", out)
+
+    def test_role_state_missing_marker_refuses(self):
+        self.state.role_comment = "other-marker"
+        code, out = self.run_main()
+        self.assertEqual(code, 1, msg=out)
+        self.assertIn("role-state-role-safety", out)
+
+    def test_role_state_unknown_head_refuses(self):
+        self.state.schema_version = "005"
+        code, out = self.run_main()
+        self.assertEqual(code, 1, msg=out)
+        self.assertIn("role-state-head", out)
+
+    def test_role_state_never_uses_master_password(self):
+        text = SCRIPT.read_text(encoding="utf-8")
+        start = text.index("def do_verify_role_state")
+        end = text.index("def do_verify()")
+        body = text[start:end]
+        self.assertNotIn("MASTER_DB_PASSWORD", body)
+        self.assertNotIn(".commit(", body)
 
 
 if __name__ == "__main__":

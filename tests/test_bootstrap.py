@@ -600,6 +600,7 @@ if [ "$1" = "cloudformation" ] && [ "$2" = "describe-stack-resource" ]; then
     VerifyTaskDefinition) printf 'arn:aws:ecs:us-east-1:111122223333:task'"-definition"'/launchcrew-demo-verify:1\\n'; exit 0 ;;
     SdkInitTaskDefinition) printf 'arn:aws:ecs:us-east-1:111122223333:task'"-definition"'/launchcrew-demo-sdkinit:1\\n'; exit 0 ;;
     SdkMaterialTaskDefinition) printf 'arn:aws:ecs:us-east-1:111122223333:task'"-definition"'/launchcrew-demo-sdkmaterial:1\\n'; exit 0 ;;
+    RoleStateTaskDefinition) printf 'arn:aws:ecs:us-east-1:111122223333:task'"-definition"'/launchcrew-demo-rolestate:1\\n'; exit 0 ;;
     PublicSubnetA) printf 'subnet-aaa\\n'; exit 0 ;;
     PublicSubnetB) printf 'subnet-bbb\\n'; exit 0 ;;
     JobSecurityGroup) printf 'sg-ccc\\n'; exit 0 ;;
@@ -624,7 +625,7 @@ if [ "$1" = "cloudformation" ] && [ "$2" = "describe-stack-resource" ]; then
         printf 'launchcrew-demo-ApiGoogleAuthPolicy-FLIPPED\\n'; exit 0
       fi
       printf 'launchcrew-demo-ApiGoogleAuthPolicy-ABC123\\n'; exit 0 ;;
-    ApiExecutionRole|WebExecutionRole|MigrationExecutionRole|BootstrapExecutionRole|VerifyExecutionRole|SdkInitExecutionRole|SdkMaterialExecutionRole|ApiTaskRole|WebTaskRole|MigrationTaskRole|BootstrapTaskRole|VerifyTaskRole|SdkInitTaskRole|SdkMaterialTaskRole) printf '%s-physical\\n' "$RESOURCE_LOGICAL"; exit 0 ;;
+    ApiExecutionRole|WebExecutionRole|MigrationExecutionRole|BootstrapExecutionRole|VerifyExecutionRole|SdkInitExecutionRole|SdkMaterialExecutionRole|RoleStateExecutionRole|ApiTaskRole|WebTaskRole|MigrationTaskRole|BootstrapTaskRole|VerifyTaskRole|SdkInitTaskRole|SdkMaterialTaskRole|RoleStateTaskRole) printf '%s-physical\\n' "$RESOURCE_LOGICAL"; exit 0 ;;
   esac
   echo "fake-aws: unexpected resource lookup: $*" >&2
   exit 2
@@ -1215,6 +1216,7 @@ PYEOF
   case "$TASKDEF" in
     *migration*) if [ "$MODE" = "migrate_fail" ]; then EXIT0=1; fi ;;
     *verify*) if [ "$MODE" = "verify_fail" ]; then EXIT0=1; fi ;;
+    *rolestate*) if [ "${FAKE_ROLESTATE_EXIT:-0}" = "10" ]; then EXIT0=10; fi; if [ "${FAKE_ROLESTATE_EXIT:-0}" = "1" ]; then EXIT0=1; fi ;;
   esac
   TASK_STATUS="STOPPED"
   CONTAINER_STATUS="STOPPED"
@@ -1315,6 +1317,11 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-task""-definition" ]; then
       SDK_CERT="${FAKE_CERT_ARN:-}"
       SDK_HOST="${FAKE_DB_HOST:-}"
       printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/SdkMaterialExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/SdkMaterialTaskRole%s","containerDefinitions":[{"name":"sdk-material","essential":true,"image":"%s","entryPoint":["/opt/venv/bin/python","/app/scripts/populate_prereqs.py"],"command":["--verify-material"],"environment":[{"name":"LAUNCHCREW_EXPECTED_ACCOUNT","value":"111122223333"},{"name":"LAUNCHCREW_EXPECTED_REGION","value":"us-east-1"},{"name":"LAUNCHCREW_EXPECTED_ROLE","value":"SdkMaterialTaskRole-physical"},{"name":"LAUNCHCREW_MASTER_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_RUNTIME_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_MIGRATION_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_TLS_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_CERT_ARN","value":"%s"},{"name":"LAUNCHCREW_DB_HOST","value":"%s"},{"name":"LAUNCHCREW_DB_TLS_MODE","value":"verify-full"},{"name":"DATABASE_SSL_ROOTCERT","value":"/app/rds-ca-bundle.pem"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_BOOT" "$SEC_MASTER" "$SEC_RT" "$SEC_MG" "$SEC_TLS" "$SDK_CERT" "$SDK_HOST"
+      exit 0 ;;
+    *launchcrew-demo-rolestate*)
+      RS_HOST="${FAKE_DB_HOST:-launchcrew-demo.abc123.us-east-1.rds.amazonaws.com}"
+      RS_MASTER="${FAKE_DB_USER:-launchcrew_app}"
+      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/RoleStateExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/RoleStateTaskRole%s","containerDefinitions":[{"name":"bootstrap-db-roles","essential":true,"command":["--verify-role-state"],"image":"%s","environment":[{"name":"LAUNCHCREW_DB_TLS_MODE","value":"verify-full"},{"name":"DATABASE_SSL_ROOTCERT","value":"/app/rds-ca-bundle.pem"},{"name":"DB_NAME","value":"launchcrew"},{"name":"DB_MASTER_USER","value":"%s"},{"name":"DB_HOST","value":"%s"},{"name":"APP_SCHEMA","value":"public"},{"name":"RUNTIME_USER","value":"launchcrew_runtime"},{"name":"MIGRATION_USER","value":"launchcrew_migration"}],"secrets":[{"name":"RUNTIME_DB_URL","valueFrom":"%s:database-url::"},{"name":"MIGRATION_DB_URL","valueFrom":"%s:database-url::"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_BOOT" "$RS_MASTER" "$RS_HOST" "$SEC_RT" "$SEC_MG"
       exit 0 ;;
     *) echo "fake-aws: unexpected describe task definition: $*" >&2; exit 2 ;;
   esac
@@ -1605,6 +1612,12 @@ class BootstrapHarness(unittest.TestCase):
             material_args, shared_dir=shared_tmp)
         self.assertEqual(result_mat.returncode, 0,
                          msg=result_mat.stdout + result_mat.stderr)
+        dbroles_args = [*base, "--phase", "dbroles",
+                        "--release-generation", release]
+        result_roles, _ = self.run_bootstrap(
+            dbroles_args, shared_dir=shared_tmp)
+        self.assertEqual(result_roles.returncode, 0,
+                         msg=result_roles.stdout + result_roles.stderr)
         migrate_args = [*base, "--phase", "migrate",
                         "--release-generation", release]
         result_mig, _ = self.run_bootstrap(
@@ -7310,6 +7323,582 @@ class InitRecoveryTests(BootstrapHarness):
             stopped = [d for d in decoded if "STOPPED" in d]
             self.assertTrue(len(stopped) >= 2)
             self.assertFalse(any("startedBy" in d and "desiredStatus" in d for d in decoded))
+
+
+class TypedRecoveryTests(BootstrapHarness):
+    STACK_ID = f"arn:aws:cloudformation:{REGION}:{ACCOUNT}:stack/{STACK}/abc123"
+    RELEASE = "head007-testabc"
+    MAT_TOKEN = "lc-" + "e" * 30
+    MAT_TASK = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+                "task/launchcrew-demo/aged-material-001")
+    MAT_TASKDEF = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:task"
+                   "-definition/launchcrew-demo-sdkmaterial:1")
+    ROLE_TOKEN = "lc-" + "f" * 30
+    ROLE_TASK = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+                 "task/launchcrew-demo/aged-roles-001")
+    ROLE_TASKDEF = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:task"
+                    "-definition/launchcrew-demo-bootstrap:1")
+    MIG_TOKEN = "lc-" + "g" * 30
+    MIG_TASK = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+                "task/launchcrew-demo/aged-migration-001")
+    MIG_TASKDEF = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:task"
+                   "-definition/launchcrew-demo-migration:1")
+    VER_TOKEN = "lc-" + "h" * 30
+    VER_TASK = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+                "task/launchcrew-demo/aged-verify-001")
+    VER_TASKDEF = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:task"
+                   "-definition/launchcrew-demo-verify:1")
+
+    def write_prior(self, journals, phase, label, logical, token, task,
+                    taskdef, generation="head006-abc1234", outcome="complete",
+                    source="abc1234", head="006", **overrides):
+        import hashlib as _hashlib
+        import json as _json
+        name = (f"launchcrew-{STACK}-{phase}-{label}-{generation}-"
+                "active.json")
+        path = journals / name
+        doc = {
+            "version": 2,
+            "stack": STACK,
+            "phase": phase,
+            "label": label,
+            "taskdef_logical": logical,
+            "taskdef_arn": taskdef,
+            "cluster": STACK,
+            "client_token": token,
+            "config_digest": "1" * 32,
+            "region": REGION,
+            "account": ACCOUNT,
+            "outcome": outcome,
+            "task_arn": task,
+            "release_generation": generation,
+            "source_sha": source,
+            "target_head": head,
+            "stack_id": self.STACK_ID,
+            "predecessor_task_arn": "",
+            "predecessor_outcome": "none",
+            "updated_utc": "2026-01-01T00:00:00Z",
+        }
+        doc.update(overrides)
+        if "config_digest" not in overrides:
+            raw = "|".join([
+                doc.get("account", ""), doc.get("region", ""),
+                doc.get("stack", ""), doc.get("cluster", ""),
+                doc.get("phase", ""), doc.get("label", ""),
+                doc.get("taskdef_logical", ""), doc.get("taskdef_arn", ""),
+            ])
+            doc["config_digest"] = _hashlib.sha256(
+                raw.encode("utf-8")).hexdigest()[:32]
+        path.write_text(_json.dumps(doc), encoding="utf-8")
+        path.chmod(0o600)
+        return path
+
+    def fresh_shared(self, shared_tmp):
+        shared = Path(shared_tmp)
+        journals = shared / "journals"
+        journals.mkdir(mode=0o700)
+        journals.chmod(0o700)
+        return shared, journals
+
+    def material_args(self):
+        return [*self.base_args(), "--phase", "material",
+                "--release-generation", self.RELEASE]
+
+    def dbroles_args(self):
+        return [*self.base_args(), "--phase", "dbroles",
+                "--release-generation", self.RELEASE]
+
+    def migrate_args(self):
+        return [*self.base_args(), "--phase", "migrate",
+                "--release-generation", self.RELEASE]
+
+    def read_attestation(self, journals, orig_basename):
+        import json as _json
+        path = journals / "recovery" / (orig_basename + ".recovery.json")
+        self.assertTrue(path.is_file(), msg=str(path))
+        doc = _json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(doc.get("outcome"), "complete")
+        return doc, path
+
+    def check_digest(self, doc):
+        import hashlib as _hashlib
+        parts = [
+            doc.get("kind", ""), doc.get("verifier_task_arn", ""),
+            doc.get("verifier_token", ""),
+            doc.get("verifier_taskdef_arn", ""),
+            doc.get("verifier_containers", ""),
+            doc.get("verifier_last_status", ""),
+            doc.get("original_sha256", ""),
+            doc.get("original_outcome", ""), doc.get("stack_id", ""),
+            doc.get("runtime_arn", ""), doc.get("runtime_name", ""),
+            doc.get("runtime_version_pre", ""),
+            doc.get("runtime_version_post", ""),
+            doc.get("migration_arn", ""),
+            doc.get("migration_name", ""),
+            doc.get("migration_version_pre", ""),
+            doc.get("migration_version_post", ""),
+            doc.get("tls_arn", ""), doc.get("tls_name", ""),
+            doc.get("tls_version_pre", ""),
+            doc.get("tls_version_post", ""),
+            doc.get("cert_arn", ""), doc.get("cert_domain", ""),
+            doc.get("cert_serial_pre", ""),
+            doc.get("cert_serial_post", ""),
+            doc.get("release_generation", ""),
+            doc.get("source_sha", ""), doc.get("target_head", ""),
+            doc.get("observed_head", ""),
+            doc.get("original_basename", ""),
+            doc.get("legacy_unversioned", ""),
+        ]
+        expect = _hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+        self.assertEqual(doc.get("verifier_digest"), expect)
+
+    def test_material_aged_recovers_with_two_verifier_runs(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_prior(
+                journals, "material", "sdk-material",
+                "SdkMaterialTaskDefinition", self.MAT_TOKEN, self.MAT_TASK,
+                self.MAT_TASKDEF)
+            before = prior.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.material_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            self.assertEqual(prior.read_bytes(), before)
+            runs = [c for c in calls if "run-task" in c]
+            self.assertEqual(len(runs), 2)
+            for call in runs:
+                self.assertIn("launchcrew-demo-sdkmaterial", call)
+            doc, _ = self.read_attestation(journals, prior.name)
+            self.assertEqual(doc.get("kind"),
+                             "material-recovery-attestation")
+            self.assertEqual(doc.get("original_token"), self.MAT_TOKEN)
+            self.assertEqual(doc.get("observed_head"), "")
+            self.check_digest(doc)
+            combined = result.stdout + result.stderr
+            self.assertNotIn("PutSecretValue", combined)
+            self.assertNotIn("ExportCertificate", combined)
+
+    def test_roles_started_no_task_zero_binder_with_attestation(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_prior(
+                journals, "dbroles", "bootstrap",
+                "BootstrapTaskDefinition", self.ROLE_TOKEN, self.ROLE_TASK,
+                self.ROLE_TASKDEF, outcome="started")
+            before = prior.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.dbroles_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            self.assertEqual(prior.read_bytes(), before)
+            runs = [c for c in calls if "run-task" in c]
+            self.assertEqual(len(runs), 1)
+            self.assertIn("launchcrew-demo-rolestate", runs[0])
+            self.assertFalse(any("launchcrew-demo-bootstrap" in c
+                                 for c in runs))
+            doc, _ = self.read_attestation(journals, prior.name)
+            self.assertEqual(doc.get("kind"),
+                             "dbroles-recovery-attestation")
+            self.assertEqual(doc.get("original_outcome"), "started")
+            self.assertEqual(doc.get("observed_head"), "007")
+            self.assertIn("does not relabel", doc.get("note", ""))
+            self.assertIn("bootstrap-db-roles:STOPPED:0",
+                          doc.get("verifier_containers", ""))
+            self.check_digest(doc)
+            after = prior.read_bytes()
+            import json as _json
+            orig = _json.loads(after.decode("utf-8"))
+            self.assertEqual(orig.get("outcome"), "started")
+
+    def test_roles_partial_bind_refuses_with_no_binder(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            self.write_prior(
+                journals, "dbroles", "bootstrap",
+                "BootstrapTaskDefinition", self.ROLE_TOKEN, self.ROLE_TASK,
+                self.ROLE_TASKDEF, outcome="started")
+            result, calls = self.run_bootstrap(
+                self.dbroles_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_ROLESTATE_EXIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("EXIT_NONZERO", combined)
+            runs = [c for c in calls if "run-task" in c]
+            self.assertEqual(len(runs), 1)
+            self.assertIn("launchcrew-demo-rolestate", runs[0])
+            self.assertFalse(any("launchcrew-demo-bootstrap" in c
+                                 for c in runs))
+
+    def test_roles_head006_records_006_with_zero_binder(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_prior(
+                journals, "dbroles", "bootstrap",
+                "BootstrapTaskDefinition", self.ROLE_TOKEN, self.ROLE_TASK,
+                self.ROLE_TASKDEF, outcome="started")
+            result, calls = self.run_bootstrap(
+                self.dbroles_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_ROLESTATE_EXIT": "10"},
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            runs = [c for c in calls if "run-task" in c]
+            self.assertEqual(len(runs), 1)
+            self.assertIn("launchcrew-demo-rolestate", runs[0])
+            self.assertFalse(any("launchcrew-demo-bootstrap" in c
+                                 for c in runs))
+            doc, _ = self.read_attestation(journals, prior.name)
+            self.assertEqual(doc.get("observed_head"), "006")
+            self.assertIn("bootstrap-db-roles:STOPPED:10",
+                          doc.get("verifier_containers", ""))
+            self.check_digest(doc)
+
+    def test_migration_head007_skips_with_no_migration_run(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", self.MIG_TOKEN, self.MIG_TASK,
+                self.MIG_TASKDEF)
+            result, calls = self.run_bootstrap(
+                self.migrate_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            runs = [c for c in calls if "run-task" in c]
+            self.assertFalse(any("launchcrew-demo-migration" in c
+                                 for c in runs))
+            self.assertTrue(any("launchcrew-demo-rolestate" in c
+                                for c in runs))
+            self.assertTrue(any("launchcrew-demo-verify" in c
+                                for c in runs))
+            doc, _ = self.read_attestation(journals, prior.name)
+            self.assertEqual(doc.get("kind"),
+                             "migration-recovery-attestation")
+            self.assertEqual(doc.get("observed_head"), "007")
+            self.check_digest(doc)
+
+    def test_migration_head006_admits_single_deliberate_migration(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", self.MIG_TOKEN, self.MIG_TASK,
+                self.MIG_TASKDEF, generation="head006-abc1234", head="006")
+            result, calls = self.run_bootstrap(
+                self.migrate_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_ROLESTATE_EXIT": "10"},
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            runs = [c for c in calls if "run-task" in c]
+            mig_runs = [c for c in runs
+                        if "launchcrew-demo-migration" in c]
+            self.assertEqual(len(mig_runs), 1)
+            self.assertTrue(any("launchcrew-demo-rolestate" in c
+                                for c in runs))
+            doc, _ = self.read_attestation(journals, prior.name)
+            self.assertEqual(doc.get("observed_head"), "006")
+            self.check_digest(doc)
+
+    def test_migration_ambiguous_refuses_with_no_resend(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", self.MIG_TOKEN, self.MIG_TASK,
+                self.MIG_TASKDEF, outcome="started")
+            result, calls = self.run_bootstrap(
+                self.migrate_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("refused", combined.lower())
+            runs = [c for c in calls if "run-task" in c]
+            self.assertFalse(any("launchcrew-demo-migration" in c
+                                 for c in runs))
+
+    def test_runtime_aged_recovers_with_verify_runs(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_prior(
+                journals, "migrate", "verify",
+                "VerifyTaskDefinition", self.VER_TOKEN, self.VER_TASK,
+                self.VER_TASKDEF)
+            result, calls = self.run_bootstrap(
+                self.migrate_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            runs = [c for c in calls if "run-task" in c]
+            verify_runs = [c for c in runs
+                           if "launchcrew-demo-verify" in c]
+            self.assertTrue(len(verify_runs) >= 2)
+            doc, _ = self.read_attestation(journals, prior.name)
+            self.assertEqual(doc.get("kind"),
+                             "runtime-recovery-attestation")
+            self.assertEqual(doc.get("observed_head"), "007")
+            self.check_digest(doc)
+
+    def test_changed_material_on_restart_refuses_roles(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            self.write_prior(
+                journals, "dbroles", "bootstrap",
+                "BootstrapTaskDefinition", self.ROLE_TOKEN, self.ROLE_TASK,
+                self.ROLE_TASKDEF, outcome="started")
+            first, _ = self.run_bootstrap(
+                self.dbroles_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_RT_VERSION": "rt-version-1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(first.returncode, 0,
+                             msg=first.stdout + first.stderr)
+            result, calls = self.run_bootstrap(
+                self.dbroles_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_RT_VERSION": "rt-version-2"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("changed since recovery", combined)
+            self.assertFalse(any("run-task" in c for c in calls))
+
+    def test_changed_cert_on_restart_refuses_material(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            self.write_prior(
+                journals, "material", "sdk-material",
+                "SdkMaterialTaskDefinition", self.MAT_TOKEN, self.MAT_TASK,
+                self.MAT_TASKDEF)
+            first, _ = self.run_bootstrap(
+                self.material_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_CERT_SERIAL": "AAAABBBBCCCCDDDD"},
+                shared_dir=shared_tmp)
+            self.assertEqual(first.returncode, 0,
+                             msg=first.stdout + first.stderr)
+            result, calls = self.run_bootstrap(
+                self.material_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_CERT_SERIAL": "EEEEFFFF00001111"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("changed since recovery", combined)
+
+    def test_wrong_stack_refuses_roles_with_no_verifier(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            self.write_prior(
+                journals, "dbroles", "bootstrap",
+                "BootstrapTaskDefinition", self.ROLE_TOKEN, self.ROLE_TASK,
+                self.ROLE_TASKDEF, outcome="started", stack="other-stack")
+            result, calls = self.run_bootstrap(
+                self.dbroles_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("STACK_MISMATCH", combined)
+            self.assertFalse(any("run-task" in c for c in calls))
+
+    def test_wrong_head_refuses_migration_with_no_verifier(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", self.MIG_TOKEN, self.MIG_TASK,
+                self.MIG_TASKDEF, generation="head009-abc1234",
+                head="009")
+            result, calls = self.run_bootstrap(
+                self.migrate_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("HEAD_UNKNOWN", combined)
+            self.assertFalse(any("run-task" in c for c in calls))
+
+    def test_duplicate_roles_recovery_uses_single_attestation(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            self.write_prior(
+                journals, "dbroles", "bootstrap",
+                "BootstrapTaskDefinition", self.ROLE_TOKEN, self.ROLE_TASK,
+                self.ROLE_TASKDEF, outcome="started")
+            for _ in range(2):
+                result, _ = self.run_bootstrap(
+                    self.dbroles_args(),
+                    extra_env={"FAKE_AGED_INIT": "1"},
+                    shared_dir=shared_tmp)
+                self.assertEqual(result.returncode, 0,
+                                 msg=result.stdout + result.stderr)
+            recovery_files = list((journals / "recovery").glob(
+                "*.recovery.json"))
+            self.assertEqual(len(recovery_files), 1)
+
+    def test_ambiguous_verifier_response_refuses_restart(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            self.write_prior(
+                journals, "dbroles", "bootstrap",
+                "BootstrapTaskDefinition", self.ROLE_TOKEN, self.ROLE_TASK,
+                self.ROLE_TASKDEF, outcome="started")
+            first, _ = self.run_bootstrap(
+                self.dbroles_args(), mode="runtask_empty",
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(first.returncode, 0)
+            self.assertIn("ambiguous", (first.stdout + first.stderr).lower())
+            result, calls = self.run_bootstrap(
+                self.dbroles_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("manual review", combined.lower())
+            self.assertFalse(any("run-task" in c for c in calls))
+
+    def test_malformed_list_tasks_refuses_roles(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            self.write_prior(
+                journals, "dbroles", "bootstrap",
+                "BootstrapTaskDefinition", self.ROLE_TOKEN, self.ROLE_TASK,
+                self.ROLE_TASKDEF, outcome="started")
+            result, calls = self.run_bootstrap(
+                self.dbroles_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_LIST_FAIL": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("cannot prove absence", combined)
+            runs = [c for c in calls if "run-task" in c]
+            self.assertEqual(len(runs), 1)
+
+
+class EnableEvidenceTests(BootstrapHarness):
+    RELEASE = "head007-testabc"
+
+    def fresh_shared(self, shared_tmp):
+        shared = Path(shared_tmp)
+        journals = shared / "journals"
+        journals.mkdir(mode=0o700)
+        journals.chmod(0o700)
+        return shared, journals
+
+    def test_enable_refuses_without_any_evidence(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            _, _journals = self.fresh_shared(shared_tmp)
+            base = self.base_args()
+            enable_args = [*base, "--phase", "enable",
+                           "--release-generation", self.RELEASE]
+            result, calls = self.run_bootstrap(
+                enable_args, shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("refused", combined.lower())
+            self.assertFalse(any("EnableServices=true" in c for c in calls))
+
+    def test_enable_refuses_without_roles_evidence(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            base = self.base_args()
+            mat_args = [*base, "--phase", "material",
+                        "--release-generation", self.RELEASE]
+            result_mat, _ = self.run_bootstrap(
+                mat_args, shared_dir=shared_tmp)
+            self.assertEqual(result_mat.returncode, 0,
+                             msg=result_mat.stdout + result_mat.stderr)
+            mig_args = [*base, "--phase", "migrate",
+                        "--release-generation", self.RELEASE]
+            result_mig, _ = self.run_bootstrap(
+                mig_args, shared_dir=shared_tmp)
+            self.assertEqual(result_mig.returncode, 0,
+                             msg=result_mig.stdout + result_mig.stderr)
+            enable_args = [*base, "--phase", "enable",
+                           "--release-generation", self.RELEASE]
+            result, calls = self.run_bootstrap(
+                enable_args, shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("bootstrap", combined.lower())
+            self.assertFalse(any("EnableServices=true" in c for c in calls))
+
+    def test_enable_succeeds_with_all_fresh_evidence(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            result, calls = self.run_enable_with_priors(shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            self.assertTrue(any("EnableServices=true" in c for c in calls))
+
+
+class RoleStateTemplateTests(unittest.TestCase):
+    def template_text(self):
+        root = Path(__file__).resolve().parents[1]
+        text = (root / "deploy" / "aws" / "fargate.yaml").read_text(
+            encoding="utf-8")
+        return text
+
+    def test_rolestate_task_uses_both_urls_no_master(self):
+        text = self.template_text()
+        start = text.index("RoleStateTaskDefinition:")
+        body = text[start:start + 4000]
+        self.assertIn("RUNTIME_DB_URL", body)
+        self.assertIn("MIGRATION_DB_URL", body)
+        self.assertIn("--verify-role-state", body)
+        self.assertNotIn("MASTER_DB_PASSWORD", body)
+        self.assertNotIn("MASTER_SECRET", body)
+
+    def test_rolestate_roles_least_privilege_no_master(self):
+        text = self.template_text()
+        start = text.index("RoleStateExecutionRole:")
+        end = text.index("RoleStateTaskDefinition:")
+        roles = text[start:end]
+        self.assertIn("GetSecretValue", roles)
+        self.assertNotIn("PutSecretValue", roles)
+        self.assertNotIn("Master", roles)
+        task_start = text.index("RoleStateTaskRole:")
+        task_body = text[task_start:task_start + 1200]
+        self.assertIn("Policies: []", task_body)
+
+    def test_rolestate_image_matches_bootstrap(self):
+        text = self.template_text()
+        start = text.index("RoleStateTaskDefinition:")
+        body = text[start:start + 2000]
+        self.assertIn("BootstrapImageUri", body)
+        self.assertIn("bootstrap-db-roles", body)
 
 
 if __name__ == "__main__":

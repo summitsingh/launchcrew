@@ -1048,9 +1048,76 @@ print("42501 ok")
   [ "$AGAIN_CODE" -eq 0 ] || { printf '%s' "$AGAIN_OUT" | safe_emit >&2; fail "verify failed after restoring head 007"; }
   log "pass: old head refused, restored head proves again"
 
+  log "run actual --verify-role-state with both URLs, no master, under NOSUPERUSER admin"
+  role_state_job() {
+    LAUNCHCREW_DB_TLS_MODE=verify-full DATABASE_SSL_ROOTCERT="$CERTDIR/server.crt" \
+      DB_HOST=127.0.0.1 DB_PORT="$PORT" DB_NAME="$BIND_DB" \
+      DB_MASTER_USER="$BIND_ADMIN" \
+      RUNTIME_DB_URL="$RT_URL" MIGRATION_DB_URL="$MG_URL" \
+      RUNTIME_USER="$BIND_RT" MIGRATION_USER="$BIND_MG" \
+      APP_SCHEMA="$APP_SCHEMA" \
+      python3 "$REPO_ROOT/scripts/bootstrap_db_roles.py" --verify-role-state 2>&1
+  }
+  set +e
+  RS_OUT="$(role_state_job)"
+  RS_CODE=$?
+  set -e
+  [ "$RS_CODE" -eq 0 ] || { printf '%s' "$RS_OUT" | safe_emit >&2; fail "actual --verify-role-state failed at head 007"; }
+  case "$RS_OUT" in *"ROLE-STATE COMPLETE"*) ;; *) printf '%s' "$RS_OUT" | safe_emit >&2; fail "role-state missed ROLE-STATE COMPLETE" ;; esac
+  case "$RS_OUT" in *"head=007"*) ;; *) printf '%s' "$RS_OUT" | safe_emit >&2; fail "role-state missed head=007" ;; esac
+  case "$RS_OUT" in *"role-state-runtime-connect ok"*) ;; *) printf '%s' "$RS_OUT" | safe_emit >&2; fail "role-state missed runtime connect proof" ;; esac
+  case "$RS_OUT" in *"role-state-migration-connect ok"*) ;; *) printf '%s' "$RS_OUT" | safe_emit >&2; fail "role-state missed migration connect proof" ;; esac
+  case "$RS_OUT" in *"role-state-ownership ok"*) ;; *) printf '%s' "$RS_OUT" | safe_emit >&2; fail "role-state missed ownership proof" ;; esac
+  case "$RS_OUT" in *"role-state-grants ok"*) ;; *) printf '%s' "$RS_OUT" | safe_emit >&2; fail "role-state missed grants proof" ;; esac
+  case "$RS_OUT" in *"$BIND_RT_PW"*|*"$BIND_MG_PW"*|*"$RT_URL"*|*"$MG_URL"*) fail "role-state output leaked a synthetic secret" ;; esac
+  log "pass: actual --verify-role-state proves both auths, flags, ownership, grants at 007 with no master"
+
+  log "negative: partial grants are refused by role-state, then restored"
+  bind_as "$BIND_MG" "$BIND_MG_PW" "REVOKE INSERT ON $APP_SCHEMA.bind_items FROM \"$BIND_RT\";" >/dev/null || fail "partial revoke setup failed"
+  set +e
+  RS_PART_OUT="$(role_state_job 2>&1)"
+  RS_PART_CODE=$?
+  set -e
+  bind_as "$BIND_MG" "$BIND_MG_PW" "GRANT INSERT ON $APP_SCHEMA.bind_items TO \"$BIND_RT\";" >/dev/null || fail "partial grant restore failed"
+  [ "$RS_PART_CODE" -ne 0 ] || fail "role-state accepted partial grants"
+  case "$RS_PART_OUT" in *"FAIL"*) ;; *) printf '%s' "$RS_PART_OUT" | safe_emit >&2; fail "partial refusal left no FAIL marker" ;; esac
+  case "$RS_PART_OUT" in *"role-state-table-grant"*) ;; *) printf '%s' "$RS_PART_OUT" | safe_emit >&2; fail "partial refusal missed table-grant marker" ;; esac
+  set +e
+  RS_RESTORE_OUT="$(role_state_job 2>&1)"
+  RS_RESTORE_CODE=$?
+  set -e
+  [ "$RS_RESTORE_CODE" -eq 0 ] || { printf '%s' "$RS_RESTORE_OUT" | safe_emit >&2; fail "role-state failed after grant restore"; }
+  log "pass: partial grants refused with FAIL, restored grants prove again"
+
+  log "head006 ready path: downgrade to 006 returns 10, upgrade restores 007"
+  set +e
+  DOWN_OUT="$(cd "$REPO_ROOT" && DATABASE_URL="$MG_URL" LAUNCHCREW_DB_TLS_MODE=verify-full DATABASE_SSL_ROOTCERT="$CERTDIR/server.crt" python3 -m alembic downgrade -1 2>&1)"
+  DOWN_CODE=$?
+  set -e
+  [ "$DOWN_CODE" -eq 0 ] || { printf '%s' "$DOWN_OUT" | safe_emit >&2; fail "alembic downgrade to 006 failed"; }
+  ver006="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT version_num FROM alembic_version;" | tr -d '[:space:]')" || true
+  [ "$ver006" = "006" ] || fail "downgrade head is $ver006, expected 006"
+  set +e
+  RS006_OUT="$(role_state_job 2>&1)"
+  RS006_CODE=$?
+  set -e
+  [ "$RS006_CODE" -eq 10 ] || { printf '%s' "$RS006_OUT" | safe_emit >&2; fail "role-state at head 006 returned $RS006_CODE, expected 10"; }
+  case "$RS006_OUT" in *"head=006"*) ;; *) printf '%s' "$RS006_OUT" | safe_emit >&2; fail "role-state 006 missed head=006" ;; esac
+  set +e
+  UP_OUT="$(cd "$REPO_ROOT" && DATABASE_URL="$MG_URL" LAUNCHCREW_DB_TLS_MODE=verify-full DATABASE_SSL_ROOTCERT="$CERTDIR/server.crt" python3 -m alembic upgrade head 2>&1)"
+  UP_CODE=$?
+  set -e
+  [ "$UP_CODE" -eq 0 ] || { printf '%s' "$UP_OUT" | safe_emit >&2; fail "alembic upgrade back to 007 failed"; }
+  set +e
+  RS007_OUT="$(role_state_job 2>&1)"
+  RS007_CODE=$?
+  set -e
+  [ "$RS007_CODE" -eq 0 ] || { printf '%s' "$RS007_OUT" | safe_emit >&2; fail "role-state failed after restoring head 007"; }
+  log "pass: head006 returns 10 ready, restored 007 returns 0"
+
   bind_as "$BIND_MG" "$BIND_MG_PW" "DROP TABLE $APP_SCHEMA.bind_items;" >/dev/null || fail "owned bind table cleanup failed"
   unset ADMIN_PW BIND_RT_PW BIND_MG_PW INTR_PW RT_URL MG_URL INTR_URL
-  unset BIND_OUT VERIFY_OUT MIG_OUT INTR_OUT BYPASS_OUT FOREIGN_OUT FOREIGN_FIX_OUT GRP_OUT GRP_FIX_OUT OPTS_OUT OPTS_FIX_OUT OWN_OUT OWN_FIX_OUT VIEW_OUT VIEW_FIX_OUT EVIL_OUT EVIL_FIX_OUT OLD_OUT AGAIN_OUT REBIND_OUT POSTMIG_OUT
+  unset BIND_OUT VERIFY_OUT MIG_OUT INTR_OUT BYPASS_OUT FOREIGN_OUT FOREIGN_FIX_OUT GRP_OUT GRP_FIX_OUT OPTS_OUT OPTS_FIX_OUT OWN_OUT OWN_FIX_OUT VIEW_OUT VIEW_FIX_OUT EVIL_OUT EVIL_FIX_OUT OLD_OUT AGAIN_OUT REBIND_OUT POSTMIG_OUT RS_OUT RS_PART_OUT RS_RESTORE_OUT RS006_OUT RS007_OUT DOWN_OUT UP_OUT
   log "PASS: bind and verify job proof complete on disposable 127.0.0.1:$PORT"
   log "loopback self-signed CA only, NOT live RDS TLS proof"
   log "admin fixture proves binder logic only, NOT RDS identity proof"
