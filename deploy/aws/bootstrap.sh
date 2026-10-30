@@ -9291,6 +9291,561 @@ PYEOF
 # record for this stack, phase, and label across all prior generations is
 # enumerated and re-proven terminal before any new release work, so a new
 # empty active path never bypasses history.
+# Write one private mode 600 preflight journal atomically. Args: journal
+# path, outcome, task ARN, observed head, verifier exit, containers, last
+# status. Metadata only, no secret value, URL, or key bytes. Uses the exact
+# preflight stack, cluster, taskdef, token, config digest, release, source,
+# target, and StackId globals. Fails closed via phase_failed on write fault.
+write_preflight_journal() {
+  PREFLIGHT_JOURNAL_PATH="$1"
+  PREFLIGHT_JOURNAL_OUTCOME="$2"
+  PREFLIGHT_JOURNAL_TASK="$3"
+  PREFLIGHT_JOURNAL_OBSERVED="$4"
+  PREFLIGHT_JOURNAL_EXIT="$5"
+  PREFLIGHT_JOURNAL_CONTAINERS="$6"
+  PREFLIGHT_JOURNAL_LAST="$7"
+  (umask 077; python3 - "$PREFLIGHT_JOURNAL_PATH" "$STACK_NAME" "$PREFLIGHT_PHASE" "$PREFLIGHT_LABEL" "$PREFLIGHT_LOGICAL" "$PREFLIGHT_TASKDEF" "$CLUSTER_NAME" "$PREFLIGHT_TOKEN" "$EXPECTED_REGION" "$EXPECTED_ACCOUNT" "$PREFLIGHT_JOURNAL_OUTCOME" "$PREFLIGHT_JOURNAL_TASK" "$PREFLIGHT_CONFIG_DIGEST" "${RELEASE_GEN:-}" "${SOURCE_SHA:-}" "${TARGET_DB_HEAD:-008}" "${STACK_ID:-}" "$PREFLIGHT_JOURNAL_OBSERVED" "$PREFLIGHT_JOURNAL_EXIT" "$PREFLIGHT_JOURNAL_CONTAINERS" "$PREFLIGHT_JOURNAL_LAST" <<'PYEOF'
+import json, os, sys, tempfile
+(path, stack, phase, label, taskdef_logical, taskdef_arn, cluster,
+ token, region, account, outcome, task_arn, config_digest,
+ release_gen, source_sha, target_head, stack_id,
+ observed_head, verifier_exit, verifier_containers,
+ verifier_last) = sys.argv[1:21]
+if os.path.islink(path):
+    raise SystemExit("refused: preflight journal path is a symlink")
+try:
+    import datetime
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+except Exception:
+    stamp = ""
+doc = {
+    "version": 1,
+    "kind": "migration-role-state-preflight",
+    "stack": stack,
+    "phase": phase,
+    "label": label,
+    "taskdef_logical": taskdef_logical,
+    "taskdef_arn": taskdef_arn,
+    "cluster": cluster,
+    "client_token": token,
+    "config_digest": config_digest,
+    "region": region,
+    "account": account,
+    "outcome": outcome,
+    "task_arn": task_arn,
+    "release_generation": release_gen,
+    "source_sha": source_sha,
+    "target_head": target_head,
+    "stack_id": stack_id,
+    "observed_head": observed_head,
+    "verifier_exit": verifier_exit,
+    "verifier_containers": verifier_containers,
+    "verifier_last_status": verifier_last,
+    "updated_utc": stamp,
+}
+directory = os.path.dirname(os.path.abspath(path)) or "."
+fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".launch-preflight-")
+try:
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as out:
+        json.dump(doc, out, indent=2, sort_keys=True)
+        out.write("\n")
+    os.replace(tmp_path, path)
+    os.chmod(path, 0o600)
+except Exception:
+    try:
+        os.unlink(tmp_path)
+    except Exception:
+        pass
+    raise
+PYEOF
+) || { echo "migration preflight journal write failed, no launch attempted." >&2; phase_failed "$TASK_PHASE"; }
+  chmod 600 "$PREFLIGHT_JOURNAL_PATH" 2>/dev/null || { echo "migration preflight journal mode failed, no launch attempted." >&2; phase_failed "$TASK_PHASE"; }
+}
+# Read-only terminal check for one preflight task. Args: task ARN, token,
+# taskdef ARN. Waits for STOPPED as a hint only, then requires STOPPED
+# lastStatus, exact task and taskdef ARNs, exact owned cluster ARN, exact
+# startedBy token, and STOPPED exit 0 or 10 from every expected essential
+# container from the owned taskdef document, with all exits equal. Sets
+# PREFLIGHT_TERM_PROOF to OK:<exit>:<containers> or a fail-closed reason.
+# Never writes journals and never fails the phase; the caller decides.
+preflight_terminal_proof() {
+  PREFLIGHT_TERM_TASK="$1"
+  PREFLIGHT_TERM_TOKEN="$2"
+  PREFLIGHT_TERM_TASKDEF="$3"
+  PREFLIGHT_TERM_PROOF="UNREADABLE"
+  if ! "$AWS_BIN" ecs wait tasks-stopped --cluster "$CLUSTER_NAME" --tasks "$PREFLIGHT_TERM_TASK" --region "$EXPECTED_REGION" 2>"$TMP_ERR"; then
+    echo "migration preflight wait reported, verifying terminal state before any claim." >&2
+  fi
+  PREFLIGHT_TERM_DESC="$(mktemp /tmp/launchcrew-preflight-desc-XXXXXX)"
+  if ! "$AWS_BIN" ecs describe-tasks --cluster "$CLUSTER_NAME" --tasks "$PREFLIGHT_TERM_TASK" --region "$EXPECTED_REGION" --output json >"$PREFLIGHT_TERM_DESC" 2>"$TMP_ERR"; then
+    rm -f "$PREFLIGHT_TERM_DESC"
+    PREFLIGHT_TERM_PROOF="UNREADABLE"
+    return 0
+  fi
+  PREFLIGHT_TERM_DEF="$(mktemp /tmp/launchcrew-preflight-def-XXXXXX)"
+  if ! "$AWS_BIN" ecs "describe-task""-definition" --task"-definition" "$PREFLIGHT_TERM_TASKDEF" --region "$EXPECTED_REGION" --output json >"$PREFLIGHT_TERM_DEF" 2>"$TMP_ERR"; then
+    rm -f "$PREFLIGHT_TERM_DESC" "$PREFLIGHT_TERM_DEF"
+    PREFLIGHT_TERM_PROOF="UNREADABLE"
+    return 0
+  fi
+  PREFLIGHT_TERM_PROOF="$(python3 - "$PREFLIGHT_TERM_DESC" "$PREFLIGHT_TERM_DEF" "$PREFLIGHT_TERM_TASK" "$PREFLIGHT_TERM_TASKDEF" "arn:aws:ecs:$EXPECTED_REGION:$EXPECTED_ACCOUNT:cluster/$CLUSTER_NAME" "$PREFLIGHT_TERM_TOKEN" 2>/dev/null <<'PYEOF'
+import json, sys
+try:
+    describe = json.load(open(sys.argv[1]))
+    defined = json.load(open(sys.argv[2]))
+except Exception:
+    sys.exit(1)
+expected_arn, expected_taskdef, expected_cluster, expected_token = sys.argv[3:7]
+expected_names = []
+for container in (defined.get("taskDefinition", defined).get("containerDefinitions", []) or []):
+    if container.get("essential", True) and container.get("name"):
+        expected_names.append(container.get("name"))
+tasks = describe.get("tasks", [])
+failures = describe.get("failures", [])
+if failures or not tasks:
+    print("NO_TASK")
+    sys.exit(0)
+if not expected_names:
+    print("NO_EXPECTED_CONTAINERS")
+    sys.exit(0)
+task = tasks[0]
+if (task.get("taskArn", "") or "") != expected_arn:
+    print("WRONG_TASK_ARN")
+    sys.exit(0)
+if task.get("lastStatus") != "STOPPED":
+    print("NOT_STOPPED")
+    sys.exit(0)
+if (task.get("taskDefinitionArn", "") or "") != expected_taskdef:
+    print("WRONG_TASKDEF")
+    sys.exit(0)
+if (task.get("clusterArn", "") or "") != expected_cluster:
+    print("WRONG_CLUSTER")
+    sys.exit(0)
+if (task.get("startedBy", "") or "") != expected_token:
+    print("WRONG_TOKEN")
+    sys.exit(0)
+actual = task.get("containers", []) or []
+names = [(c.get("name", "?") or "?") for c in actual]
+if len(set(names)) != len(names):
+    print("DUPLICATE")
+    sys.exit(0)
+for name in sorted(set(names) - set(expected_names)):
+    print("UNEXPECTED:" + name)
+    sys.exit(0)
+for name in sorted(set(expected_names) - set(names)):
+    print("MISSING:" + name)
+    sys.exit(0)
+exits = set()
+parts = []
+for container in actual:
+    if container.get("lastStatus") != "STOPPED":
+        print("EXIT_NONZERO:" + (container.get("name", "?") or "?"))
+        sys.exit(0)
+    code = container.get("exitCode", None)
+    if not isinstance(code, int) or isinstance(code, bool):
+        print("EXIT_NONZERO:" + (container.get("name", "?") or "?"))
+        sys.exit(0)
+    if code != 0 and code != 10:
+        print("EXIT_NONZERO:" + (container.get("name", "?") or "?"))
+        sys.exit(0)
+    exits.add(code)
+    parts.append("%s:STOPPED:%d" % ((container.get("name", "?") or "?"), code))
+if len(exits) != 1:
+    print("EXIT_MIXED")
+    sys.exit(0)
+print("OK:%d:%s" % (next(iter(exits)), ",".join(sorted(parts))))
+PYEOF
+)" || PREFLIGHT_TERM_PROOF="UNREADABLE"
+  rm -f "$PREFLIGHT_TERM_DESC" "$PREFLIGHT_TERM_DEF"
+  PREFLIGHT_TERM_PROOF="$(printf '%s' "$PREFLIGHT_TERM_PROOF" | tr -d '[:space:]')"
+  [ -n "$PREFLIGHT_TERM_PROOF" ] || PREFLIGHT_TERM_PROOF="UNREADABLE"
+  return 0
+}
+# Durable read-only current-release role-state preflight for a live 007 to
+# 008 migration. Runs only under the migration operation lock after all
+# historical migration priors are validated with exact completed target007,
+# no historical target008, and no legacy. Uses the owned RoleState taskdef
+# proven by check_rolestate_taskdef with exact Command --verify-role-state
+# plus runtime and migration secrets only and no master. Exit 10 means exact
+# validated head007 ready, exit 0 means exact validated head008 complete.
+# Persists token and journal before RunTask with exact task ARN, cluster,
+# taskdef, container, STOPPED, all required container exits, and observed
+# head. Restart reuses one persisted token and task with no resend.
+# Ambiguous launch, pending, wrong exit, or mismatched identity fails closed
+# with no automatic resend. Sets PREFLIGHT_OBSERVED_HEAD to 007 or 008 on
+# terminal success. Never claims aged recovery and never fabricates a
+# migration receipt. No secret values in argv, files, or logs.
+migration_role_state_preflight() {
+  PREFLIGHT_PHASE="migrate"
+  PREFLIGHT_LABEL="preflight"
+  PREFLIGHT_LOGICAL="RoleStateTaskDefinition"
+  PREFLIGHT_CONTAINER="bootstrap-db-roles"
+  PREFLIGHT_OBSERVED_HEAD=""
+  if [ -z "${LAUNCH_JOURNAL_DIR:-}" ] || [ ! -d "$LAUNCH_JOURNAL_DIR" ]; then
+    release_operation_lock
+    echo "refused: migration preflight needs journal directory with live 007 history, no new migration RunTask. Preserved history, no resend." >&2
+    phase_failed "$TASK_PHASE"
+  fi
+  if [ -L "$LAUNCH_JOURNAL_DIR" ]; then
+    release_operation_lock
+    echo "migration preflight journal directory is a symlink, no new migration RunTask. Preserved history, no resend." >&2
+    phase_failed "$TASK_PHASE"
+  fi
+  case "${RELEASE_GEN:-}" in
+    ""|*"/"*|"."|".."|*[!A-Za-z0-9_.-]*)
+      release_operation_lock
+      echo "refused: migration preflight release generation is missing or malformed, no new migration RunTask. Preserved history, no resend." >&2
+      phase_failed "$TASK_PHASE" ;;
+  esac
+  PREFLIGHT_FILE="$LAUNCH_JOURNAL_DIR/launchcrew-$STACK_NAME-$PREFLIGHT_PHASE-$PREFLIGHT_LABEL-$RELEASE_GEN-active.json"
+  if [ -L "$PREFLIGHT_FILE" ]; then
+    release_operation_lock
+    echo "migration preflight record is a symlink, no new migration RunTask. Preserved history, no resend. Inspect $PREFLIGHT_FILE." >&2
+    phase_failed "$TASK_PHASE"
+  fi
+  if [ -e "$PREFLIGHT_FILE" ] && [ ! -f "$PREFLIGHT_FILE" ]; then
+    release_operation_lock
+    echo "migration preflight path exists as non-file, no new migration RunTask. Preserved history, no resend. Inspect $PREFLIGHT_FILE." >&2
+    phase_failed "$TASK_PHASE"
+  fi
+  if ! PREFLIGHT_TASKDEF="$(stack_resource "$PREFLIGHT_LOGICAL" 2>"$TMP_ERR")"; then
+    release_operation_lock
+    echo "migration preflight task definition lookup failed before any launch, no new migration RunTask. Preserved history, no resend." >&2
+    phase_failed "$TASK_PHASE"
+  fi
+  PREFLIGHT_TASKDEF="$(printf '%s' "$PREFLIGHT_TASKDEF" | tr -d '[:space:]')"
+  if [ -z "$PREFLIGHT_TASKDEF" ] || [ "$PREFLIGHT_TASKDEF" = "None" ]; then
+    release_operation_lock
+    echo "migration preflight task definition missing before any launch, no new migration RunTask. Preserved history, no resend." >&2
+    phase_failed "$TASK_PHASE"
+  fi
+  if ! PREFLIGHT_CONFIG_DIGEST="$(python3 - "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$STACK_NAME" "$CLUSTER_NAME" "$PREFLIGHT_PHASE" "$PREFLIGHT_LABEL" "$PREFLIGHT_LOGICAL" "$PREFLIGHT_TASKDEF" 2>/dev/null <<'PYEOF'
+import hashlib, sys
+raw = "|".join(sys.argv[1:9])
+print(hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32])
+PYEOF
+)"; then
+    release_operation_lock
+    echo "migration preflight config digest failed, no new migration RunTask. Preserved history, no resend." >&2
+    phase_failed "$TASK_PHASE"
+  fi
+  PREFLIGHT_CONFIG_DIGEST="$(printf '%s' "$PREFLIGHT_CONFIG_DIGEST" | tr -d '[:space:]')"
+  if [ -z "$PREFLIGHT_CONFIG_DIGEST" ]; then
+    release_operation_lock
+    echo "migration preflight config digest empty, no new migration RunTask. Preserved history, no resend." >&2
+    phase_failed "$TASK_PHASE"
+  fi
+  if [ -f "$PREFLIGHT_FILE" ]; then
+    PREFLIGHT_EXISTING="$(python3 - "$PREFLIGHT_FILE" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$STACK_NAME" "$CLUSTER_NAME" "$PREFLIGHT_PHASE" "$PREFLIGHT_LABEL" "$PREFLIGHT_LOGICAL" "$PREFLIGHT_TASKDEF" "$PREFLIGHT_CONFIG_DIGEST" "${RELEASE_GEN:-}" "${SOURCE_SHA:-}" "${TARGET_DB_HEAD:-008}" "${STACK_ID:-}" "$(basename "$PREFLIGHT_FILE")" 2>/dev/null <<'PYEOF'
+import hashlib, json, os, sys
+(path, want_account, want_region, want_stack, want_cluster,
+ want_phase, want_label, want_logical, want_taskdef, want_digest,
+ want_gen, want_source, want_head, want_stack_id, want_base) = sys.argv[1:16]
+try:
+    if os.path.islink(path):
+        print("PROOF\tSYMLINK")
+        sys.exit(0)
+    finfo = os.stat(path)
+    if (finfo.st_mode & 0o777) != 0o600:
+        print("PROOF\tMODE")
+        sys.exit(0)
+    if finfo.st_uid != os.getuid():
+        print("PROOF\tOWNER")
+        sys.exit(0)
+    if finfo.st_size <= 0 or finfo.st_size > 10240:
+        print("PROOF\tSIZE")
+        sys.exit(0)
+    with open(path, encoding="utf-8") as handle:
+        doc = json.load(handle)
+except Exception:
+    print("PROOF\tUNREADABLE")
+    sys.exit(0)
+if not isinstance(doc, dict):
+    print("PROOF\tMALFORMED")
+    sys.exit(0)
+if os.path.basename(path) != want_base:
+    print("PROOF\tPATH_MISMATCH")
+    sys.exit(0)
+allow = {"version", "kind", "stack", "phase", "label", "taskdef_logical",
+         "taskdef_arn", "cluster", "client_token", "config_digest",
+         "region", "account", "outcome", "task_arn", "release_generation",
+         "source_sha", "target_head", "stack_id", "observed_head",
+         "verifier_exit", "verifier_containers", "verifier_last_status",
+         "updated_utc"}
+for key in doc:
+    if key not in allow:
+        print("PROOF\tFOREIGN_FIELD")
+        sys.exit(0)
+if doc.get("version", 0) != 1:
+    print("PROOF\tVERSION_MISMATCH")
+    sys.exit(0)
+for _k, _v in doc.items():
+    if _k == "version":
+        if not isinstance(_v, int) or isinstance(_v, bool):
+            print("PROOF\tMALFORMED")
+            sys.exit(0)
+        continue
+    if not isinstance(_v, str):
+        print("PROOF\tMALFORMED")
+        sys.exit(0)
+for _k, _v in doc.items():
+    _kl = str(_k).lower()
+    if _kl in ("password", "database-url", "database_url",
+               "tls-cert-b64", "tls-key-b64", "tls_cert_b64", "tls_key_b64",
+               "secret_value", "secretvalue", "private_key", "privatekey",
+               "certificate_body", "certificate_chain"):
+        print("PROOF\tSECRET_FIELD")
+        sys.exit(0)
+    if isinstance(_v, str):
+        _vl = _v.lower()
+        if "://" in _vl:
+            print("PROOF\tSECRET_FIELD")
+            sys.exit(0)
+        if "-----begin" in _vl or "-----end" in _vl or "private key" in _vl:
+            print("PROOF\tSECRET_FIELD")
+            sys.exit(0)
+        if "tls-cert-b64" in _vl or "tls-key-b64" in _vl or "database-url" in _vl:
+            print("PROOF\tSECRET_FIELD")
+            sys.exit(0)
+        if "password" in _vl:
+            print("PROOF\tSECRET_FIELD")
+            sys.exit(0)
+if doc.get("kind", "") != "migration-role-state-preflight":
+    print("PROOF\tKIND_MISMATCH")
+    sys.exit(0)
+for _f, _w in (("account", want_account), ("region", want_region),
+               ("stack", want_stack), ("cluster", want_cluster),
+               ("phase", want_phase), ("label", want_label),
+               ("taskdef_logical", want_logical)):
+    if doc.get(_f, "") != _w:
+        print("PROOF\t%s_MISMATCH" % _f.upper())
+        sys.exit(0)
+if doc.get("taskdef_arn", "") != want_taskdef:
+    print("PROOF\tTASKDEF_MISMATCH")
+    sys.exit(0)
+if doc.get("config_digest", "") != want_digest:
+    print("PROOF\tCONFIG_MISMATCH")
+    sys.exit(0)
+if doc.get("release_generation", "") != want_gen:
+    print("PROOF\tGENERATION_MISMATCH")
+    sys.exit(0)
+if want_source and doc.get("source_sha", "") != want_source:
+    print("PROOF\tSOURCE_MISMATCH")
+    sys.exit(0)
+if doc.get("target_head", "") != want_head:
+    print("PROOF\tHEAD_MISMATCH")
+    sys.exit(0)
+if want_stack_id and doc.get("stack_id", "") != want_stack_id:
+    print("PROOF\tSTACKID_MISMATCH")
+    sys.exit(0)
+_token = doc.get("client_token", "")
+if not isinstance(_token, str) or len(_token) != 33 or not _token.startswith("lc-"):
+    print("PROOF\tTOKEN_MALFORMED")
+    sys.exit(0)
+_outcome = doc.get("outcome", "")
+if not isinstance(_outcome, str) or not _outcome:
+    print("PROOF\tOUTCOME_MISSING")
+    sys.exit(0)
+_task = doc.get("task_arn", "") or ""
+_obs = doc.get("observed_head", "") or ""
+_exit = doc.get("verifier_exit", "") or ""
+_cont = doc.get("verifier_containers", "") or ""
+_last = doc.get("verifier_last_status", "") or ""
+if _outcome == "complete":
+    if not _task.startswith("arn:aws:ecs:%s:%s:task/%s/" % (want_region, want_account, want_cluster)):
+        print("PROOF\tTASKARN_FOREIGN")
+        sys.exit(0)
+    if _obs == "007":
+        if _exit != "10" or _cont != "bootstrap-db-roles:STOPPED:10" or _last != "STOPPED":
+            print("PROOF\tOBSERVED_MISMATCH")
+            sys.exit(0)
+    elif _obs == "008":
+        if _exit != "0" or _cont != "bootstrap-db-roles:STOPPED:0" or _last != "STOPPED":
+            print("PROOF\tOBSERVED_MISMATCH")
+            sys.exit(0)
+    else:
+        print("PROOF\tOBSERVED_MISMATCH")
+        sys.exit(0)
+elif _outcome == "started":
+    if not _task.startswith("arn:aws:ecs:%s:%s:task/%s/" % (want_region, want_account, want_cluster)):
+        print("PROOF\tTASKARN_FOREIGN")
+        sys.exit(0)
+    if _obs or _exit or _cont or _last:
+        print("PROOF\tOBSERVED_MISMATCH")
+        sys.exit(0)
+else:
+    if _task and not _task.startswith("arn:aws:ecs:%s:%s:task/%s/" % (want_region, want_account, want_cluster)):
+        print("PROOF\tTASKARN_FOREIGN")
+        sys.exit(0)
+print("PROOF\tOK")
+print("TOKEN\t%s" % _token)
+print("TASKARN\t%s" % _task)
+print("OUTCOME\t%s" % _outcome)
+print("OBSERVED\t%s" % _obs)
+print("EXIT\t%s" % _exit)
+print("CONTAINERS\t%s" % _cont)
+print("LAST\t%s" % _last)
+PYEOF
+)" || PREFLIGHT_EXISTING="PROOF\tUNREADABLE"
+    PREFLIGHT_EXIST_PROOF="$(printf '%s\n' "$PREFLIGHT_EXISTING" | awk -F'\t' '$1=="PROOF"{print $2}' | tr -d '[:space:]')"
+    if [ "$PREFLIGHT_EXIST_PROOF" != "OK" ]; then
+      release_operation_lock
+      echo "refused: migration preflight record is $PREFLIGHT_EXIST_PROOF, no new migration RunTask and no preflight resend. Preserved history, no resend. Inspect $PREFLIGHT_FILE." >&2
+      phase_failed "$TASK_PHASE"
+    fi
+    PREFLIGHT_TOKEN="$(printf '%s\n' "$PREFLIGHT_EXISTING" | awk -F'\t' '$1=="TOKEN"{print $2}' | tr -d '[:space:]')"
+    PREFLIGHT_TASK="$(printf '%s\n' "$PREFLIGHT_EXISTING" | awk -F'\t' '$1=="TASKARN"{print $2}' | tr -d '[:space:]')"
+    PREFLIGHT_OUTCOME="$(printf '%s\n' "$PREFLIGHT_EXISTING" | awk -F'\t' '$1=="OUTCOME"{print $2}' | tr -d '[:space:]')"
+    PREFLIGHT_SAVED_OBSERVED="$(printf '%s\n' "$PREFLIGHT_EXISTING" | awk -F'\t' '$1=="OBSERVED"{print $2}' | tr -d '[:space:]')"
+    PREFLIGHT_SAVED_EXIT="$(printf '%s\n' "$PREFLIGHT_EXISTING" | awk -F'\t' '$1=="EXIT"{print $2}' | tr -d '[:space:]')"
+    case "$PREFLIGHT_TOKEN" in
+      lc-??????????????????????????????) ;;
+      *) release_operation_lock
+        echo "refused: migration preflight token malformed, no new migration RunTask and no preflight resend. Preserved history, no resend. Inspect $PREFLIGHT_FILE." >&2
+        phase_failed "$TASK_PHASE" ;;
+    esac
+    if [ "$PREFLIGHT_OUTCOME" = "complete" ]; then
+      [ -n "$PREFLIGHT_TASK" ] && [ "$PREFLIGHT_TASK" != "None" ] || {
+        release_operation_lock
+        echo "refused: migration preflight complete has no task ARN, no new migration RunTask and no preflight resend. Preserved history, no resend. Inspect $PREFLIGHT_FILE." >&2
+        phase_failed "$TASK_PHASE"
+      }
+      preflight_terminal_proof "$PREFLIGHT_TASK" "$PREFLIGHT_TOKEN" "$PREFLIGHT_TASKDEF"
+      case "$PREFLIGHT_TERM_PROOF" in
+        OK:10:bootstrap-db-roles:STOPPED:10)
+          if [ "$PREFLIGHT_SAVED_OBSERVED" != "007" ] || [ "$PREFLIGHT_SAVED_EXIT" != "10" ]; then
+            release_operation_lock
+            echo "refused: migration preflight persisted head does not match live exit 10, no new migration RunTask and no preflight resend. Preserved history, no resend. Inspect $PREFLIGHT_FILE." >&2
+            phase_failed "$TASK_PHASE"
+          fi
+          PREFLIGHT_OBSERVED_HEAD="007"
+          echo "migration preflight re-proved STOPPED exit 10 with observed head007 ready, reusing one persisted token and task with no resend."
+          return 0 ;;
+        OK:0:bootstrap-db-roles:STOPPED:0)
+          if [ "$PREFLIGHT_SAVED_OBSERVED" != "008" ] || [ "$PREFLIGHT_SAVED_EXIT" != "0" ]; then
+            release_operation_lock
+            echo "refused: migration preflight persisted head does not match live exit 0, no new migration RunTask and no preflight resend. Preserved history, no resend. Inspect $PREFLIGHT_FILE." >&2
+            phase_failed "$TASK_PHASE"
+          fi
+          PREFLIGHT_OBSERVED_HEAD="008"
+          echo "migration preflight re-proved STOPPED exit 0 with observed head008 complete, reusing one persisted token and task with no resend."
+          return 0 ;;
+        *)
+          release_operation_lock
+          echo "refused: migration preflight live terminal proof is $PREFLIGHT_TERM_PROOF, no new migration RunTask and no preflight resend. Preserved history, no resend. Inspect $PREFLIGHT_FILE." >&2
+          phase_failed "$TASK_PHASE" ;;
+      esac
+    fi
+    if [ "$PREFLIGHT_OUTCOME" = "started" ]; then
+      [ -n "$PREFLIGHT_TASK" ] && [ "$PREFLIGHT_TASK" != "None" ] || {
+        release_operation_lock
+        echo "refused: migration preflight started has no task ARN, no new migration RunTask and no preflight resend. Preserved history, no resend. Inspect $PREFLIGHT_FILE." >&2
+        phase_failed "$TASK_PHASE"
+      }
+      echo "migration preflight prior started, re-proving terminal state with no resend."
+      preflight_terminal_proof "$PREFLIGHT_TASK" "$PREFLIGHT_TOKEN" "$PREFLIGHT_TASKDEF"
+      case "$PREFLIGHT_TERM_PROOF" in
+        OK:10:bootstrap-db-roles:STOPPED:10)
+          write_preflight_journal "$PREFLIGHT_FILE" "complete" "$PREFLIGHT_TASK" "007" "10" "bootstrap-db-roles:STOPPED:10" "STOPPED"
+          PREFLIGHT_OBSERVED_HEAD="007"
+          echo "migration preflight terminal proof: STOPPED, exact owned task and cluster ARNs, every expected container exit 10 with observed head007 ready."
+          return 0 ;;
+        OK:0:bootstrap-db-roles:STOPPED:0)
+          write_preflight_journal "$PREFLIGHT_FILE" "complete" "$PREFLIGHT_TASK" "008" "0" "bootstrap-db-roles:STOPPED:0" "STOPPED"
+          PREFLIGHT_OBSERVED_HEAD="008"
+          echo "migration preflight terminal proof: STOPPED, exact owned task and cluster ARNs, every expected container exit 0 with observed head008 complete."
+          return 0 ;;
+        *)
+          release_operation_lock
+          echo "refused: migration preflight live terminal proof is $PREFLIGHT_TERM_PROOF, no new migration RunTask and no preflight resend. Preserved history, no resend. Inspect $PREFLIGHT_FILE." >&2
+          phase_failed "$TASK_PHASE" ;;
+      esac
+    fi
+    release_operation_lock
+    echo "refused: migration preflight prior $PREFLIGHT_OUTCOME is unresolved, restart uses one persisted token and task with no resend, manual review required with zero new migration RunTask. Preserved history, no resend. Inspect $PREFLIGHT_FILE." >&2
+    phase_failed "$TASK_PHASE"
+  fi
+  check_rolestate_taskdef
+  if ! PREFLIGHT_TOKEN="$(python3 - 2>/dev/null <<'PYEOF'
+import uuid
+print("lc-" + uuid.uuid4().hex[:30])
+PYEOF
+)"; then
+    release_operation_lock
+    echo "migration preflight client token generation failed, no new migration RunTask. Preserved history, no resend." >&2
+    phase_failed "$TASK_PHASE"
+  fi
+  PREFLIGHT_TOKEN="$(printf '%s' "$PREFLIGHT_TOKEN" | tr -d '[:space:]')"
+  case "$PREFLIGHT_TOKEN" in
+    lc-??????????????????????????????) ;;
+    *) release_operation_lock
+      echo "migration preflight client token malformed, no new migration RunTask. Preserved history, no resend." >&2
+      phase_failed "$TASK_PHASE" ;;
+  esac
+  PREFLIGHT_TASK=""
+  write_preflight_journal "$PREFLIGHT_FILE" "pending" "" "" "" "" ""
+  echo "migration preflight journal written before run-task: $PREFLIGHT_FILE"
+  PREFLIGHT_RUN_JSON="$(mktemp /tmp/launchcrew-preflight-run-XXXXXX)"
+  PREFLIGHT_RUN_OK=1
+  if ! "$AWS_BIN" ecs run-task --cluster "$CLUSTER_NAME" --task"-definition" "$PREFLIGHT_TASKDEF" --launch-type FARGATE --network-configuration "awsvpcConfiguration={subnets=[$SUBNET_A,$SUBNET_B],securityGroups=[$JOB_SG],assignPublicIp=ENABLED}" --client-token "$PREFLIGHT_TOKEN" --started-by "$PREFLIGHT_TOKEN" --region "$EXPECTED_REGION" --output json >"$PREFLIGHT_RUN_JSON" 2>"$TMP_ERR"; then
+    PREFLIGHT_RUN_OK=0
+  fi
+  if [ "$PREFLIGHT_RUN_OK" -eq 0 ]; then
+    rm -f "$PREFLIGHT_RUN_JSON"
+    write_preflight_journal "$PREFLIGHT_FILE" "ambiguous_call_failed" "" "" "" "" ""
+    release_operation_lock
+    echo "refused: migration preflight run-task call failed; launch is ambiguous with no automatic resend and zero new migration RunTask. Preserved history, no resend. Inspect $PREFLIGHT_FILE." >&2
+    phase_failed "$TASK_PHASE"
+  fi
+  PREFLIGHT_TASK="$(python3 - "$PREFLIGHT_RUN_JSON" 2>/dev/null <<'PYEOF'
+import json, sys
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+tasks = doc.get("tasks", [])
+failures = doc.get("failures", [])
+if failures:
+    print("FAILURES")
+elif not tasks:
+    print("EMPTY")
+elif len(tasks) != 1:
+    print("MULTIPLE")
+else:
+    arn = (tasks[0] or {}).get("taskArn", "")
+    print(arn if arn and arn != "None" else "EMPTY")
+PYEOF
+)" || PREFLIGHT_TASK="UNREADABLE"
+  rm -f "$PREFLIGHT_RUN_JSON"
+  PREFLIGHT_TASK="$(printf '%s' "$PREFLIGHT_TASK" | tr -d '[:space:]')"
+  case "$PREFLIGHT_TASK" in
+    FAILURES|EMPTY|MULTIPLE|UNREADABLE|"")
+      write_preflight_journal "$PREFLIGHT_FILE" "ambiguous_response" "" "" "" "" ""
+      release_operation_lock
+      echo "refused: migration preflight run-task response is ${PREFLIGHT_TASK:-empty}; launch is ambiguous with no automatic resend and zero new migration RunTask. Preserved history, no resend. Inspect $PREFLIGHT_FILE." >&2
+      phase_failed "$TASK_PHASE" ;;
+  esac
+  write_preflight_journal "$PREFLIGHT_FILE" "started" "$PREFLIGHT_TASK" "" "" "" ""
+  echo "migration preflight task started in isolated public subnets with no inbound: $PREFLIGHT_TASK"
+  preflight_terminal_proof "$PREFLIGHT_TASK" "$PREFLIGHT_TOKEN" "$PREFLIGHT_TASKDEF"
+  case "$PREFLIGHT_TERM_PROOF" in
+    OK:10:bootstrap-db-roles:STOPPED:10)
+      write_preflight_journal "$PREFLIGHT_FILE" "complete" "$PREFLIGHT_TASK" "007" "10" "bootstrap-db-roles:STOPPED:10" "STOPPED"
+      PREFLIGHT_OBSERVED_HEAD="007"
+      echo "migration preflight terminal proof: STOPPED, exact owned task and cluster ARNs, every expected container exit 10 with observed head007 ready."
+      return 0 ;;
+    OK:0:bootstrap-db-roles:STOPPED:0)
+      write_preflight_journal "$PREFLIGHT_FILE" "complete" "$PREFLIGHT_TASK" "008" "0" "bootstrap-db-roles:STOPPED:0" "STOPPED"
+      PREFLIGHT_OBSERVED_HEAD="008"
+      echo "migration preflight terminal proof: STOPPED, exact owned task and cluster ARNs, every expected container exit 0 with observed head008 complete."
+      return 0 ;;
+    *)
+      release_operation_lock
+      echo "refused: migration preflight terminal proof is $PREFLIGHT_TERM_PROOF, no new migration RunTask and no preflight resend. Preserved history, no resend. Inspect $PREFLIGHT_FILE." >&2
+      phase_failed "$TASK_PHASE" ;;
+  esac
+}
 run_one_off_task() {
   TASKDEF_LOGICAL="$1"
   TASK_LABEL="$2"
@@ -10600,9 +11155,18 @@ EOF_GLOBAL_LIST
         echo "refused: migration history has no validated original target007, 006-only cannot authorize008, separately reviewed repair required with zero new migration RunTask. Preserved history, no resend. Inspect $LAUNCH_JOURNAL_DIR." >&2
         phase_failed "$TASK_PHASE"
       fi
-      release_operation_lock
-      echo "refused: migration history has validated target007 with no target008 but observed head cannot be proved without recovery attestation, fail-closed separately reviewed repair required with zero new migration RunTask. Preserved history, no resend. Inspect $LAUNCH_JOURNAL_DIR." >&2
-      phase_failed "$TASK_PHASE"
+      migration_role_state_preflight
+      if [ "$PREFLIGHT_OBSERVED_HEAD" = "007" ]; then
+        echo "$TASK_LABEL live history has validated target007 with no target008 plus fresh preflight observed head007 ready, admitting at most one deliberate 007->008 migration after old-token and current-state checks; never automatically resending an ambiguous 008 attempt."
+      elif [ "$PREFLIGHT_OBSERVED_HEAD" = "008" ]; then
+        release_operation_lock
+        echo "refused: migration live history has validated target007 with no target008 but fresh preflight observed head008 complete, DB already migrated with no validated 008 migration record; separately reviewed repair required with zero new migration RunTask and no fabricated receipt. Preserved history, no resend. Inspect $LAUNCH_JOURNAL_DIR and $PREFLIGHT_FILE." >&2
+        phase_failed "$TASK_PHASE"
+      else
+        release_operation_lock
+        echo "refused: migration preflight observed head is ${PREFLIGHT_OBSERVED_HEAD:-unknown}, not 007 or 008, no new migration RunTask. Preserved history, no resend. Inspect $LAUNCH_JOURNAL_DIR and ${PREFLIGHT_FILE:-unknown}." >&2
+        phase_failed "$TASK_PHASE"
+      fi
     fi
   fi
   if ! CLIENT_TOKEN="$(python3 - 2>/dev/null <<'PYEOF'

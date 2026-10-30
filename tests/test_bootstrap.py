@@ -8681,6 +8681,390 @@ class TypedRecoveryTests(BootstrapHarness):
             self.assertFalse(any("launchcrew-demo-migration" in c
                                  for c in runs))
 
+    def test_migration_live_007_preflight_exit10_admits_one_migration(self):
+        import json as _json
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            live006_token = "lc-" + "p" * 30
+            live006_task = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+                            "task/launchcrew-demo/live-migration-006a")
+            prior006 = self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", live006_token, live006_task,
+                self.MIG_TASKDEF, generation="head006-abc1234",
+                head="006", outcome="complete")
+            before006 = prior006.read_bytes()
+            live007_token = "lc-" + "q" * 30
+            live007_task = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+                            "task/launchcrew-demo/live-migration-007a")
+            prior007 = self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", live007_token, live007_task,
+                self.MIG_TASKDEF, generation="head007-abc1234",
+                head="007", outcome="complete")
+            before007 = prior007.read_bytes()
+            (shared / "taskdefs").write_text(
+                f"{live006_task}|{self.MIG_TASKDEF}|{live006_token}\n"
+                f"{live007_task}|{self.MIG_TASKDEF}|{live007_token}\n",
+                encoding="utf-8")
+            (shared / "count").write_text("10", encoding="utf-8")
+            (shared / "token").write_text("", encoding="utf-8")
+            result, calls = self.run_bootstrap(
+                self.migrate_args(),
+                extra_env={"FAKE_ROLESTATE_EXIT": "10"},
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            self.assertEqual(prior006.read_bytes(), before006)
+            self.assertEqual(prior007.read_bytes(), before007)
+            runs = [c for c in calls if "run-task" in c]
+            mig_runs = [c for c in runs
+                        if "launchcrew-demo-migration" in c]
+            self.assertEqual(len(mig_runs), 1)
+            role_runs = [c for c in runs
+                         if "launchcrew-demo-rolestate" in c]
+            self.assertEqual(len(role_runs), 1)
+            new_file = journals / (f"launchcrew-{STACK}-migrate-migration-"
+                                   f"{self.RELEASE}-active.json")
+            self.assertTrue(new_file.is_file())
+            new_doc = _json.loads(new_file.read_text(encoding="utf-8"))
+            self.assertEqual(new_doc.get("outcome"), "complete")
+            self.assertEqual(new_doc.get("target_head"), "008")
+            preflight = journals / (f"launchcrew-{STACK}-migrate-preflight-"
+                                    f"{self.RELEASE}-active.json")
+            self.assertTrue(preflight.is_file())
+            pre_doc = _json.loads(preflight.read_text(encoding="utf-8"))
+            self.assertEqual(pre_doc.get("outcome"), "complete")
+            self.assertEqual(pre_doc.get("observed_head"), "007")
+            self.assertEqual(pre_doc.get("verifier_exit"), "10")
+            self.assertEqual(pre_doc.get("verifier_containers"),
+                             "bootstrap-db-roles:STOPPED:10")
+            self.assertEqual(oct(preflight.stat().st_mode & 0o777), "0o600")
+            combined = result.stdout + result.stderr
+            self.assertNotIn("get-secret-value", combined.lower())
+
+    def test_migration_live_006_only_refuses_with_no_preflight(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            live006_token = "lc-" + "r" * 30
+            live006_task = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+                            "task/launchcrew-demo/live-migration-006b")
+            prior006 = self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", live006_token, live006_task,
+                self.MIG_TASKDEF, generation="head006-abc1234",
+                head="006", outcome="complete")
+            before006 = prior006.read_bytes()
+            (shared / "taskdefs").write_text(
+                f"{live006_task}|{self.MIG_TASKDEF}|{live006_token}\n",
+                encoding="utf-8")
+            (shared / "count").write_text("10", encoding="utf-8")
+            (shared / "token").write_text("", encoding="utf-8")
+            result, calls = self.run_bootstrap(
+                self.migrate_args(),
+                extra_env={"FAKE_ROLESTATE_EXIT": "10"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("006-only", combined)
+            self.assertIn("separately reviewed repair", combined)
+            self.assertIn("zero new migration", combined.lower())
+            self.assertEqual(prior006.read_bytes(), before006)
+            runs = [c for c in calls if "run-task" in c]
+            self.assertEqual(len(runs), 0)
+            self.assertFalse(any("launchcrew-demo-migration" in c
+                                 for c in runs))
+            self.assertFalse(any("launchcrew-demo-rolestate" in c
+                                 for c in runs))
+            new_file = journals / (f"launchcrew-{STACK}-migrate-migration-"
+                                   f"{self.RELEASE}-active.json")
+            self.assertFalse(new_file.exists())
+            preflight = journals / (f"launchcrew-{STACK}-migrate-preflight-"
+                                    f"{self.RELEASE}-active.json")
+            self.assertFalse(preflight.exists())
+
+    def test_migration_live_007_008_refuses_with_no_preflight(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            live007_token = "lc-" + "s" * 30
+            live007_task = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+                            "task/launchcrew-demo/live-migration-007b")
+            prior007 = self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", live007_token, live007_task,
+                self.MIG_TASKDEF, generation="head007-abc1234",
+                head="007", outcome="complete")
+            before007 = prior007.read_bytes()
+            live008_token = "lc-" + "t" * 30
+            live008_task = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+                            "task/launchcrew-demo/live-migration-008b")
+            prior008 = self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", live008_token, live008_task,
+                self.MIG_TASKDEF, generation="head008-abc1234",
+                head="008", outcome="complete")
+            before008 = prior008.read_bytes()
+            (shared / "taskdefs").write_text(
+                f"{live007_task}|{self.MIG_TASKDEF}|{live007_token}\n"
+                f"{live008_task}|{self.MIG_TASKDEF}|{live008_token}\n",
+                encoding="utf-8")
+            (shared / "count").write_text("10", encoding="utf-8")
+            (shared / "token").write_text("", encoding="utf-8")
+            result, calls = self.run_bootstrap(
+                self.migrate_args(),
+                extra_env={"FAKE_ROLESTATE_EXIT": "10"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("target008", combined)
+            self.assertIn("separately reviewed repair", combined)
+            self.assertIn("zero new migration", combined.lower())
+            self.assertEqual(prior007.read_bytes(), before007)
+            self.assertEqual(prior008.read_bytes(), before008)
+            runs = [c for c in calls if "run-task" in c]
+            self.assertEqual(len(runs), 0)
+            self.assertFalse(any("launchcrew-demo-migration" in c
+                                 for c in runs))
+            self.assertFalse(any("launchcrew-demo-rolestate" in c
+                                 for c in runs))
+            new_file = journals / (f"launchcrew-{STACK}-migrate-migration-"
+                                   f"{self.RELEASE}-active.json")
+            self.assertFalse(new_file.exists())
+            preflight = journals / (f"launchcrew-{STACK}-migrate-preflight-"
+                                    f"{self.RELEASE}-active.json")
+            self.assertFalse(preflight.exists())
+            rec_dir = journals / "recovery"
+            if rec_dir.is_dir():
+                self.assertEqual(list(rec_dir.glob("*.recovery.json")), [])
+
+    def test_migration_live_007_preflight_exit0_fail_closed(self):
+        import json as _json
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            live007_token = "lc-" + "u" * 30
+            live007_task = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+                            "task/launchcrew-demo/live-migration-007c")
+            prior007 = self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", live007_token, live007_task,
+                self.MIG_TASKDEF, generation="head007-abc1234",
+                head="007", outcome="complete")
+            before007 = prior007.read_bytes()
+            (shared / "taskdefs").write_text(
+                f"{live007_task}|{self.MIG_TASKDEF}|{live007_token}\n",
+                encoding="utf-8")
+            (shared / "count").write_text("10", encoding="utf-8")
+            (shared / "token").write_text("", encoding="utf-8")
+            result, calls = self.run_bootstrap(
+                self.migrate_args(),
+                extra_env={"FAKE_ROLESTATE_EXIT": "0"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("observed head008", combined)
+            self.assertIn("no fabricated receipt", combined)
+            self.assertIn("zero new migration", combined.lower())
+            self.assertIn("separately reviewed repair", combined)
+            self.assertEqual(prior007.read_bytes(), before007)
+            runs = [c for c in calls if "run-task" in c]
+            role_runs = [c for c in runs
+                         if "launchcrew-demo-rolestate" in c]
+            self.assertEqual(len(role_runs), 1)
+            self.assertFalse(any("launchcrew-demo-migration" in c
+                                 for c in runs))
+            preflight = journals / (f"launchcrew-{STACK}-migrate-preflight-"
+                                    f"{self.RELEASE}-active.json")
+            self.assertTrue(preflight.is_file())
+            pre_doc = _json.loads(preflight.read_text(encoding="utf-8"))
+            self.assertEqual(pre_doc.get("outcome"), "complete")
+            self.assertEqual(pre_doc.get("observed_head"), "008")
+            self.assertEqual(pre_doc.get("verifier_exit"), "0")
+            self.assertEqual(pre_doc.get("verifier_containers"),
+                             "bootstrap-db-roles:STOPPED:0")
+            new_file = journals / (f"launchcrew-{STACK}-migrate-migration-"
+                                   f"{self.RELEASE}-active.json")
+            self.assertFalse(new_file.exists())
+
+    def test_migration_preflight_wrong_and_ambiguous_refuse(self):
+        import json as _json
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            live007_token = "lc-" + "v" * 30
+            live007_task = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+                            "task/launchcrew-demo/live-migration-007d")
+            prior007 = self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", live007_token, live007_task,
+                self.MIG_TASKDEF, generation="head007-abc1234",
+                head="007", outcome="complete")
+            before007 = prior007.read_bytes()
+            (shared / "taskdefs").write_text(
+                f"{live007_task}|{self.MIG_TASKDEF}|{live007_token}\n",
+                encoding="utf-8")
+            (shared / "count").write_text("10", encoding="utf-8")
+            (shared / "token").write_text("", encoding="utf-8")
+            result, calls = self.run_bootstrap(
+                self.migrate_args(),
+                extra_env={"FAKE_ROLESTATE_EXIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("EXIT_NONZERO", combined)
+            self.assertIn("zero new migration", combined.lower())
+            self.assertEqual(prior007.read_bytes(), before007)
+            runs = [c for c in calls if "run-task" in c]
+            role_runs = [c for c in runs
+                         if "launchcrew-demo-rolestate" in c]
+            self.assertEqual(len(role_runs), 1)
+            self.assertFalse(any("launchcrew-demo-migration" in c
+                                 for c in runs))
+            preflight = journals / (f"launchcrew-{STACK}-migrate-preflight-"
+                                    f"{self.RELEASE}-active.json")
+            self.assertTrue(preflight.is_file())
+            pre_doc = _json.loads(preflight.read_text(encoding="utf-8"))
+            self.assertEqual(pre_doc.get("outcome"), "started")
+            new_file = journals / (f"launchcrew-{STACK}-migrate-migration-"
+                                   f"{self.RELEASE}-active.json")
+            self.assertFalse(new_file.exists())
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            live007_token = "lc-" + "w" * 30
+            live007_task = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+                            "task/launchcrew-demo/live-migration-007e")
+            prior007 = self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", live007_token, live007_task,
+                self.MIG_TASKDEF, generation="head007-abc1234",
+                head="007", outcome="complete")
+            before007 = prior007.read_bytes()
+            (shared / "taskdefs").write_text(
+                f"{live007_task}|{self.MIG_TASKDEF}|{live007_token}\n",
+                encoding="utf-8")
+            (shared / "count").write_text("10", encoding="utf-8")
+            (shared / "token").write_text("", encoding="utf-8")
+            result, calls = self.run_bootstrap(
+                self.migrate_args(), mode="runtask_empty",
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("ambiguous", combined.lower())
+            self.assertIn("no automatic resend", combined.lower())
+            self.assertEqual(prior007.read_bytes(), before007)
+            runs = [c for c in calls if "run-task" in c]
+            role_runs = [c for c in runs
+                         if "launchcrew-demo-rolestate" in c]
+            self.assertEqual(len(role_runs), 1)
+            self.assertFalse(any("launchcrew-demo-migration" in c
+                                 for c in runs))
+            preflight = journals / (f"launchcrew-{STACK}-migrate-preflight-"
+                                    f"{self.RELEASE}-active.json")
+            self.assertTrue(preflight.is_file())
+            pre_doc = _json.loads(preflight.read_text(encoding="utf-8"))
+            self.assertEqual(pre_doc.get("outcome"), "ambiguous_response")
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            live007_token = "lc-" + "x" * 30
+            live007_task = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+                            "task/launchcrew-demo/live-migration-007f")
+            prior007 = self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", live007_token, live007_task,
+                self.MIG_TASKDEF, generation="head007-abc1234",
+                head="007", outcome="complete")
+            before007 = prior007.read_bytes()
+            (shared / "taskdefs").write_text(
+                f"{live007_task}|{self.MIG_TASKDEF}|{live007_token}\n",
+                encoding="utf-8")
+            (shared / "count").write_text("10", encoding="utf-8")
+            (shared / "token").write_text("", encoding="utf-8")
+            first, _ = self.run_bootstrap(
+                self.migrate_args(),
+                extra_env={"FAKE_ROLESTATE_EXIT": "0"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(first.returncode, 0)
+            preflight = journals / (f"launchcrew-{STACK}-migrate-preflight-"
+                                    f"{self.RELEASE}-active.json")
+            self.assertTrue(preflight.is_file())
+            pre_doc = _json.loads(preflight.read_text(encoding="utf-8"))
+            self.assertEqual(pre_doc.get("outcome"), "complete")
+            pre_doc["client_token"] = "lc-" + "z" * 30
+            preflight.write_text(_json.dumps(pre_doc), encoding="utf-8")
+            preflight.chmod(0o600)
+            tampered = preflight.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.migrate_args(),
+                extra_env={"FAKE_ROLESTATE_EXIT": "0"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("WRONG_TOKEN", combined)
+            self.assertEqual(prior007.read_bytes(), before007)
+            self.assertEqual(preflight.read_bytes(), tampered)
+            self.assertFalse(any("run-task" in c for c in calls))
+
+    def test_migration_preflight_restart_reuses_single_token(self):
+        import json as _json
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            live007_token = "lc-" + "y" * 30
+            live007_task = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+                            "task/launchcrew-demo/live-migration-007g")
+            prior007 = self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", live007_token, live007_task,
+                self.MIG_TASKDEF, generation="head007-abc1234",
+                head="007", outcome="complete")
+            before007 = prior007.read_bytes()
+            (shared / "taskdefs").write_text(
+                f"{live007_task}|{self.MIG_TASKDEF}|{live007_token}\n",
+                encoding="utf-8")
+            (shared / "count").write_text("10", encoding="utf-8")
+            (shared / "token").write_text("", encoding="utf-8")
+            first, first_calls = self.run_bootstrap(
+                self.migrate_args(),
+                extra_env={"FAKE_ROLESTATE_EXIT": "0"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(first.returncode, 0)
+            first_runs = [c for c in first_calls if "run-task" in c]
+            first_role = [c for c in first_runs
+                          if "launchcrew-demo-rolestate" in c]
+            self.assertEqual(len(first_role), 1)
+            self.assertFalse(any("launchcrew-demo-migration" in c
+                                 for c in first_runs))
+            preflight = journals / (f"launchcrew-{STACK}-migrate-preflight-"
+                                    f"{self.RELEASE}-active.json")
+            self.assertTrue(preflight.is_file())
+            first_bytes = preflight.read_bytes()
+            first_doc = _json.loads(first_bytes.decode("utf-8"))
+            self.assertEqual(first_doc.get("outcome"), "complete")
+            first_token = first_doc.get("client_token")
+            first_task = first_doc.get("task_arn")
+            self.assertTrue(first_token.startswith("lc-"))
+            self.assertIn("task/launchcrew-demo/", first_task)
+            count_after_first = (shared / "count").read_text(encoding="utf-8")
+            result, calls = self.run_bootstrap(
+                self.migrate_args(),
+                extra_env={"FAKE_ROLESTATE_EXIT": "0"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("observed head008", combined)
+            self.assertIn("no fabricated receipt", combined)
+            self.assertEqual(prior007.read_bytes(), before007)
+            self.assertEqual(preflight.read_bytes(), first_bytes)
+            second_doc = _json.loads(preflight.read_text(encoding="utf-8"))
+            self.assertEqual(second_doc.get("client_token"), first_token)
+            self.assertEqual(second_doc.get("task_arn"), first_task)
+            self.assertFalse(any("run-task" in c for c in calls))
+            count_after_second = (shared / "count").read_text(encoding="utf-8")
+            self.assertEqual(count_after_second, count_after_first)
+
 
 class EnableEvidenceTests(BootstrapHarness):
     RELEASE = "head008-testabc"
