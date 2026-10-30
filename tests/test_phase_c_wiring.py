@@ -104,20 +104,50 @@ if [ "$1" = "cloudformation" ] && [ "$2" = "describe-stacks" ]; then
 fi
 if [ "$1" = "cloudformation" ] && [ "$2" = "create-change-set" ]; then
   case "$*" in
-    *"--use-previous-template"*|*"--template-file"*) ;;
-    *) echo "fake-aws: change set must use previous template or template file" >&2; exit 2 ;;
+    *"--template-file"*) echo "fake-aws: --template-file is obsolete, use --template-body file://absolute/path or --use-previous-template" >&2; exit 2 ;;
   esac
+  HAS_PREV=0
+  HAS_BODY=0
+  case "$*" in
+    *"--use-previous-template"*) HAS_PREV=1 ;;
+  esac
+  case "$*" in
+    *"--template-body"*) HAS_BODY=1 ;;
+  esac
+  if [ "$HAS_PREV" -eq 1 ] && [ "$HAS_BODY" -eq 1 ]; then echo "fake-aws: --use-previous-template conflicts with --template-body" >&2; exit 2; fi
+  if [ "$HAS_PREV" -eq 0 ] && [ "$HAS_BODY" -eq 0 ]; then echo "fake-aws: change set must use previous template or template body file://absolute/path" >&2; exit 2; fi
+  if [ "$HAS_BODY" -eq 1 ]; then
+    TEMPLATE_BODY=""
+    TEMPLATE_PREV=""
+    for TEMPLATE_ARG in "$@"; do
+      case "$TEMPLATE_ARG" in
+        --template-body=*) TEMPLATE_BODY="${TEMPLATE_ARG#--template-body=}" ;;
+        *)
+          if [ "$TEMPLATE_PREV" = "--template-body" ]; then TEMPLATE_BODY="$TEMPLATE_ARG"; fi ;;
+      esac
+      TEMPLATE_PREV="$TEMPLATE_ARG"
+    done
+    case "$TEMPLATE_BODY" in
+      file:///*) ;;
+      *) echo "fake-aws: --template-body must be file://absolute/path" >&2; exit 2 ;;
+    esac
+    TEMPLATE_PATH="${TEMPLATE_BODY#file://}"
+    case "$TEMPLATE_PATH" in
+      /*) ;;
+      *) echo "fake-aws: --template-body must be file://absolute/path" >&2; exit 2 ;;
+    esac
+    if [ ! -f "$TEMPLATE_PATH" ]; then echo "fake-aws: --template-body file does not exist" >&2; exit 2; fi
+  fi
   case "$*" in
     *"ParameterKey=EnableServices,ParameterValue=false"*) ;;
     *) echo "fake-aws: change set must set EnableServices=false" >&2; exit 2 ;;
   esac
-  case "$*" in
-    *"--template-file"*)
-      if [ "${FAKE_INFRA_CREATE:-ok}" = "exists" ]; then
-        echo "An error occurred (AlreadyExistsException) when calling the CreateChangeSet operation: change set infra-007 exists" >&2
-        exit 254
-      fi ;;
-  esac
+  if [ "$HAS_BODY" -eq 1 ]; then
+    if [ "${FAKE_INFRA_CREATE:-ok}" = "exists" ]; then
+      echo "An error occurred (AlreadyExistsException) when calling the CreateChangeSet operation: change set infra-007 exists" >&2
+      exit 254
+    fi
+  fi
   printf '{"Id":"arn:aws:cloudformation:us-east-1:111122223333:changeSet/changeset/abc123","StackId":"arn:aws:cloudformation:us-east-1:111122223333:stack/launchcrew-demo/abc123"}\\n'
   exit 0
 fi
@@ -2047,6 +2077,101 @@ class OperationLockSourceTests(PhaseCHarness):
         self.assertIn("bounded wait", code)
         self.assertIn("JOURNAL_CREATED", code)
         self.assertNotIn("--next-token", code)
+
+
+class CreateChangeSetTemplateTests(unittest.TestCase):
+    def run_fake(self, args, extra_env=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = Path(tmp) / "fake-aws"
+            fake.write_text(FAKE_AWS, encoding="utf-8")
+            fake.chmod(fake.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            log = Path(tmp) / "calls.log"
+            log.write_text("", encoding="utf-8")
+            env = dict(os.environ)
+            env["FAKE_AWS_LOG"] = str(log)
+            if extra_env:
+                env.update(extra_env)
+            return subprocess.run(
+                [str(fake), *args], capture_output=True, text=True,
+                env=env, check=False)
+
+    def base_create(self, *template_args):
+        return [
+            "cloudformation", "create-change-set",
+            "--stack-name", STACK,
+            "--change-set-name", "infra-007",
+            "--change-set-type", "UPDATE",
+            *template_args,
+            "--parameters", "ParameterKey=EnableServices,ParameterValue=false",
+            "--capabilities", "CAPABILITY_NAMED_IAM",
+        ]
+
+    def write_template(self, directory):
+        template = Path(directory) / "template.yaml"
+        template.write_text(
+            "AWSTemplateFormatVersion: '2010-09-09'\nResources: {}\n",
+            encoding="utf-8")
+        return template
+
+    def test_rejects_obsolete_template_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            template = self.write_template(tmp)
+            for obsolete in (["--template-file", str(template)],
+                             ["--template-file=" + str(template)]):
+                with self.subTest(args=obsolete):
+                    result = self.run_fake(self.base_create(*obsolete))
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("--template-file is obsolete", result.stderr)
+
+    def test_rejects_conflicting_template_modes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            body = "file://" + str(self.write_template(tmp))
+            result = self.run_fake(self.base_create(
+                "--use-previous-template", "--template-body", body))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("conflicts with --template-body", result.stderr)
+
+    def test_requires_absolute_existing_file_uri(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            template = self.write_template(tmp)
+            good_body = "file://" + str(template)
+            bad_cases = [
+                ("file://relative/template.yaml", "file://absolute/path"),
+                (str(template), "file://absolute/path"),
+                ("file://" + str(Path(tmp) / "missing.yaml"),
+                 "--template-body file does not exist"),
+            ]
+            for value, token in bad_cases:
+                with self.subTest(value=value):
+                    result = self.run_fake(
+                        self.base_create("--template-body", value))
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(token, result.stderr)
+            for good in (["--template-body", good_body],
+                         ["--template-body=" + good_body]):
+                with self.subTest(args=good):
+                    result = self.run_fake(self.base_create(*good))
+                    self.assertEqual(
+                        result.returncode, 0,
+                        msg=result.stdout + result.stderr)
+
+    def test_accepts_previous_template_and_preserves_exists(self):
+        result = self.run_fake(
+            self.base_create("--use-previous-template"))
+        self.assertEqual(result.returncode, 0,
+                         msg=result.stdout + result.stderr)
+        with tempfile.TemporaryDirectory() as tmp:
+            body = "file://" + str(self.write_template(tmp))
+            result = self.run_fake(
+                self.base_create("--template-body", body),
+                extra_env={"FAKE_INFRA_CREATE": "exists"})
+            self.assertEqual(result.returncode, 254)
+            self.assertIn("AlreadyExists", result.stderr)
+            result = self.run_fake(
+                self.base_create("--use-previous-template"),
+                extra_env={"FAKE_INFRA_CREATE": "exists"})
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
 
 
 if __name__ == "__main__":
