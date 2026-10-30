@@ -9,12 +9,14 @@ REQUIRED_FIELDS = {'receipt_version', 'run_id', 'generated_at', 'brand', 'mode',
                    'checker_v2', 'summary', 'approvals', 'approval_state',
                    'visual_verification', 'audit', 'model_usage'}
 
+OPTIONAL_RECEIPT_FIELDS = frozenset({'readiness', 'voice_provenance'})
+
 
 def timestamp():
     return datetime.now(timezone.utc).isoformat()
 
 
-def create_receipt(run_id, idea, scout, draft_v1, checker_v1, draft_v2, checker_v2, event_log, model_usage, approve=False):
+def create_receipt(run_id, idea, scout, draft_v1, checker_v1, draft_v2, checker_v2, event_log, model_usage, approve=False, readiness=None, voice_provenance=None):
     """Create a pending completed receipt.
 
     The approve flag is accepted for compatibility but never creates an
@@ -22,6 +24,9 @@ def create_receipt(run_id, idea, scout, draft_v1, checker_v1, draft_v2, checker_
     product_facts, checker policies, stage bindings, and photo state,
     through the approve_current binding path. Historical unbound approvals
     stay nonexportable until a fresh human revision and approval.
+    Readiness and voice provenance are optional schema fields preserved
+    through serialization; they default to None until the pipeline
+    computes them on the finalized receipt.
     """
     if checker_v2['blocked_count']:
         raise ValueError('Final draft has blocked claims')
@@ -39,10 +44,15 @@ def create_receipt(run_id, idea, scout, draft_v1, checker_v1, draft_v2, checker_
             'approval_state': 'pending_approval',
             'visual_verification': {'checked': False, 'method': 'not_run'},
             'audit': {'event_log': event_log, 'duplicate_submit_prevented': True, 'stopped_reason': None},
-            'model_usage': model_usage}
+            'model_usage': model_usage,
+            'readiness': copy.deepcopy(readiness) if readiness is not None else None,
+            'voice_provenance': copy.deepcopy(voice_provenance) if voice_provenance is not None else None}
 
 
 def save_receipt(receipt, path):
+    # Optional readiness and voice_provenance are preserved verbatim when
+    # present; they are never stripped or defaulted here. The full receipt
+    # dict roundtrips through JSON, so load_receipt returns them unchanged.
     required = {'status', 'run_id', 'approval_state', 'summary', 'audit', 'error_type', 'completed_steps'} if receipt.get('status') == 'failed' else REQUIRED_FIELDS
     if not required <= receipt.keys():
         raise ValueError('Missing required receipt fields')
@@ -76,7 +86,8 @@ def failed_receipt(run_id, events, step, error):
             'approval_state': 'pending_approval', 'approvals': [],
             'submit_attempted': False, 'submit_completed': False,
             'summary': {'submit_attempted': False, 'submit_completed': False},
-            'audit': {'event_log': events, 'stopped_reason': step}}
+            'audit': {'event_log': events, 'stopped_reason': step},
+            'readiness': None, 'voice_provenance': None}
 
 
 def pending_receipt(run_id, idea, stage_bindings=None, voice_profile=None):
@@ -103,7 +114,8 @@ def pending_receipt(run_id, idea, stage_bindings=None, voice_profile=None):
                                         'timestamp': now}],
                          'duplicate_submit_prevented': True, 'stopped_reason': None},
                'model_usage': None,
-               'stage_bindings': dict(stage_bindings or {})}
+               'stage_bindings': dict(stage_bindings or {}),
+               'readiness': None, 'voice_provenance': None}
     if voice_profile is not None:
         pending['voice_profile'] = copy.deepcopy(voice_profile)
     return pending

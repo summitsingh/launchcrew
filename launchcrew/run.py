@@ -15,6 +15,8 @@ from .model_meta import (DATA_BASIS_V2, data_mode_for_attempts, sanitize_model_n
                          variant_for_attempt)
 from .spark import spark_for_agent
 from .voice_profile import voice_single_block_for_text
+from .voice_provenance import build_voice_provenance
+from .context_claims import context_blocks_for_text
 from .wonder import wonder_synthesize_for_scout
 
 
@@ -64,15 +66,76 @@ def _voice_snapshot_terms(voice_snapshot):
     return voice_snapshot
 
 
-def check_pack(draft, facts, blocked_claims=None, checker_profile='standard', checker_policies=None, checker_agent=None, voice_snapshot=None, voice_ref=None):
+def _effective_context_scope(context_scope=None, summit_scope=None, scope=None):
+    if context_scope is not None:
+        return context_scope
+    if summit_scope is not None:
+        return summit_scope
+    return scope
+
+
+def _effective_context_policy(context_policy=None, policy=None):
+    if context_policy is not None:
+        return context_policy
+    return policy
+
+
+def _context_blocks_claim(claim, facts, context_policy=None, context_scope=None):
+    if not isinstance(claim, str) or not claim.strip():
+        return False
+    blocks = context_blocks_for_text(claim, facts=facts, policy=context_policy,
+                                     scope=context_scope)
+    return bool(blocks)
+
+
+def _voice_provenance_samples(voice_samples, voice_ref):
+    if voice_samples is not None:
+        return voice_samples
+    if isinstance(voice_ref, dict):
+        vid = voice_ref.get('id')
+        title = voice_ref.get('title')
+        if isinstance(vid, str) and vid.strip() or isinstance(title, str) and title.strip():
+            return [{'id': vid, 'title': title}]
+    return []
+
+
+def _voice_provenance_version(explicit_version, voice_ref, effective_voice):
+    if isinstance(explicit_version, str) and explicit_version.strip():
+        return explicit_version.strip()
+    if isinstance(voice_ref, dict):
+        ref_version = voice_ref.get('version')
+        if isinstance(ref_version, str) and ref_version.strip():
+            return ref_version.strip()
+    if effective_voice is not None:
+        try:
+            from .voice_profile import snapshot_version
+            return snapshot_version(effective_voice)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _build_receipt_voice_provenance(effective_voice, voice_samples, voice_ref,
+                                    explicit_version=None):
+    if effective_voice is None and voice_samples is None:
+        return None
+    samples = _voice_provenance_samples(voice_samples, voice_ref)
+    version = _voice_provenance_version(explicit_version, voice_ref, effective_voice)
+    return build_voice_provenance(samples, version)
+
+
+def check_pack(draft, facts, blocked_claims=None, checker_profile='standard', checker_policies=None, checker_agent=None, voice_snapshot=None, voice_ref=None, context_policy=None, context_scope=None, summit_scope=None, scope=None, policy=None):
     # Deterministic claim safety is never skipped: blocked_claims and the
     # supported policies only add blocks, they never verify an unverified claim.
     # Voice banned terms also only add blocks with concrete voice reasons.
+    # Context-aware material and care claims also only add blocks; a disabled
+    # or unrelated scope stays inert, while an invalid enabled Summit binding
+    # raises instead of quietly allowing.
     # Legacy keys verified_count, blocked_count, blocked_claims, and
     # revision_instructions keep their exact shapes. New claim_results adds
     # per-claim verdict (supported/unsupported/conflicts) with quoted fact
     # evidence, while retaining legacy verified booleans. Verdict is factual;
-    # verified is final (factual plus blocked rules, policy, and voice).
+    # verified is final (factual plus blocked rules, policy, voice, context).
     policies = _effective_policies(checker_profile, checker_policies, checker_agent)
     blocked_names = _blocked_names(blocked_claims)
     results = check_claims(draft['claims'], facts)
@@ -239,6 +302,73 @@ def check_pack(draft, facts, blocked_claims=None, checker_profile='standard', ch
                                       'reason': hit['reason'], 'blocked': True,
                                       'source': 'draft_text'})
                 by_claim[cand] = len(claim_results) - 1
+    effective_scope = _effective_context_scope(context_scope, summit_scope, scope)
+    effective_policy = _effective_context_policy(context_policy, policy)
+    if effective_scope is not None:
+        context_candidates: list[str] = []
+        for claim in (draft.get('claims') or []):
+            if isinstance(claim, str) and claim.strip() and claim not in context_candidates:
+                context_candidates.append(claim)
+        for sent in split_sentences((draft.get('post') or '') + '\n' + (draft.get('email') or '')):
+            if sent not in context_candidates:
+                context_candidates.append(sent)
+        for full in (draft.get('post'), draft.get('email')):
+            if isinstance(full, str) and full.strip():
+                cleaned_full = full.strip()
+                if cleaned_full not in context_candidates:
+                    context_candidates.append(cleaned_full)
+        seen_context: set[tuple[str, str]] = set()
+        already_context = {b['claim'] for b in blocked
+                           if isinstance(b, dict) and isinstance(b.get('claim'), str)}
+        by_claim_context: dict[str, int] = {}
+        for idx, entry in enumerate(claim_results):
+            if isinstance(entry, dict) and isinstance(entry.get('claim'), str):
+                if entry['claim'] not in by_claim_context:
+                    by_claim_context[entry['claim']] = idx
+        for cand in context_candidates:
+            hits = context_blocks_for_text(cand, facts=facts, policy=effective_policy,
+                                           scope=effective_scope)
+            for hit in hits:
+                if not isinstance(hit, dict):
+                    continue
+                claim_text = hit.get('claim')
+                reason_text = hit.get('reason')
+                if not isinstance(claim_text, str) or not isinstance(reason_text, str):
+                    continue
+                dedupe = (claim_text, reason_text)
+                if dedupe in seen_context:
+                    continue
+                seen_context.add(dedupe)
+                entry = {'claim': claim_text, 'reason': reason_text}
+                if claim_text in already_context:
+                    blocked.append(entry)
+                    pos = by_claim_context.get(claim_text)
+                    if pos is not None:
+                        existing = claim_results[pos].get('reason')
+                        if (isinstance(existing, str) and reason_text not in existing):
+                            claim_results[pos]['reason'] = existing + '; ' + reason_text
+                        claim_results[pos]['verified'] = False
+                        claim_results[pos]['blocked'] = True
+                    else:
+                        claim_results.append({'claim': claim_text, 'verified': False,
+                                              'verdict': 'unsupported', 'evidence': None,
+                                              'reason': reason_text, 'blocked': True,
+                                              'source': 'draft_text'})
+                        by_claim_context[claim_text] = len(claim_results) - 1
+                    continue
+                blocked.append(entry)
+                already_context.add(claim_text)
+                pos = by_claim_context.get(claim_text)
+                if pos is not None:
+                    claim_results[pos]['verified'] = False
+                    claim_results[pos]['blocked'] = True
+                    claim_results[pos]['reason'] = reason_text
+                else:
+                    claim_results.append({'claim': claim_text, 'verified': False,
+                                          'verdict': 'unsupported', 'evidence': None,
+                                          'reason': reason_text, 'blocked': True,
+                                          'source': 'draft_text'})
+                    by_claim_context[claim_text] = len(claim_results) - 1
     verified = sum(1 for c in draft['claims'] if c not in [b['claim'] for b in blocked])
     supported = sum(1 for r in claim_results if r['verdict'] == 'supported')
     unsupported = sum(1 for r in claim_results if r['verdict'] == 'unsupported')
@@ -448,7 +578,7 @@ def _voice_blocks_claim(claim, voice_snapshot, voice_ref):
     return voice_single_block_for_text(voice_snapshot, claim, voice_ref) is not None
 
 
-def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverified_claim=False, receipt_writer=save_receipt, model_enabled=True, visual_verifier=None, memory_claims=None, blocked_claims=None, checker_profile='standard', brief=None, campaign_day=None, scout_profile=None, maker_profile=None, checker_agent=None, progress=None, stage_gate=None, product_facts=None, model_admission_factory=None, voice_snapshot=None, voice_ref=None):
+def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverified_claim=False, receipt_writer=save_receipt, model_enabled=True, visual_verifier=None, memory_claims=None, blocked_claims=None, checker_profile='standard', brief=None, campaign_day=None, scout_profile=None, maker_profile=None, checker_agent=None, progress=None, stage_gate=None, product_facts=None, model_admission_factory=None, voice_snapshot=None, voice_ref=None, voice_samples=None, voice_snapshot_version=None, context_policy=None, context_scope=None, summit_scope=None, scope=None, policy=None):
     """Optional progress(event) is called at real stage boundaries only: each
     call corresponds to pipeline work that already happened (completed) or
     is about to happen (started). The event dict carries stage, state,
@@ -529,6 +659,8 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
                 'banned_terms': list(effective_voice.get('banned_terms', [])),
                 'notice': STYLE_ONLY_NOTICE,
             }
+        effective_context_scope = _effective_context_scope(context_scope, summit_scope, scope)
+        effective_context_policy = _effective_context_policy(context_policy, policy)
 
         def event(step, agent, action, profile_name=None, at=None):
             events.append({'step': step, 'agent': agent, 'profile': profile_name or agent,
@@ -669,7 +801,9 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
                             and not check_pack(proposed, facts, blocked_claims,
                                                checker_profile, effective,
                                                voice_snapshot=effective_voice,
-                                               voice_ref=normalized_voice_ref)['blocked_count']):
+                                               voice_ref=normalized_voice_ref,
+                                               context_policy=effective_context_policy,
+                                               context_scope=effective_context_scope)['blocked_count']):
                         v1_claims = safe + (['best in Texas'] if seed_unverified_claim else [])
                         if seed_unverified_claim:
                             post_final = post_text.rstrip() + ' best in Texas.'
@@ -698,7 +832,9 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
                 if not check_pack(proposed, facts, blocked_claims,
                                   checker_profile, effective,
                                   voice_snapshot=effective_voice,
-                                  voice_ref=normalized_voice_ref)['blocked_count']:
+                                  voice_ref=normalized_voice_ref,
+                                  context_policy=effective_context_policy,
+                                  context_scope=effective_context_scope)['blocked_count']:
                     v1_claims = safe + (['best in Texas'] if seed_unverified_claim else [])
                     text = '. '.join(v1_claims) + '.'
                     v1 = {'post': text, 'email': text, 'claims': list(v1_claims),
@@ -721,9 +857,13 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
             # Candidate claims are checked but cannot change the actual draft verdict.
             raw_suggest = _clean_model_lines(suggestion.get('claims'))
             check_pack(make_draft(raw_suggest), facts, blocked_claims, checker_profile, effective,
-                       voice_snapshot=effective_voice, voice_ref=normalized_voice_ref)
+                       voice_snapshot=effective_voice, voice_ref=normalized_voice_ref,
+                       context_policy=effective_context_policy,
+                       context_scope=effective_context_scope)
         c1 = check_pack(v1, facts, blocked_claims, checker_profile, effective,
-                        voice_snapshot=effective_voice, voice_ref=normalized_voice_ref)
+                        voice_snapshot=effective_voice, voice_ref=normalized_voice_ref,
+                        context_policy=effective_context_policy,
+                        context_scope=effective_context_scope)
         reached('checker_v1', 'Checker', 'Checked explicit claims and draft text; blocked_count=' + str(c1['blocked_count']),
                 profiles['Checker']['name'],
                 {'blocked_count': c1.get('blocked_count'), 'verified_count': c1.get('verified_count')})
@@ -743,7 +883,9 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
                              if normalize(c) not in blocked_names
                              and _policy_block_for_claim(c, effective) is None
                              and _specificity_block_for_claim(c) is None
-                             and not _voice_blocks_claim(c, effective_voice, normalized_voice_ref)]
+                             and not _voice_blocks_claim(c, effective_voice, normalized_voice_ref)
+                             and not _context_blocks_claim(c, facts, effective_context_policy,
+                                                           effective_context_scope)]
             post_v2 = ' '.join(v1_safe_post_lines)
             email_v2 = '\n'.join(v1_safe_email_lines)
             proposed_v2 = {'post': post_v2, 'email': email_v2, 'claims': list(safe_filtered)}
@@ -751,7 +893,9 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
                     and not check_pack(proposed_v2, facts, blocked_claims,
                                        checker_profile, effective,
                                        voice_snapshot=effective_voice,
-                                       voice_ref=normalized_voice_ref)['blocked_count']):
+                                       voice_ref=normalized_voice_ref,
+                                       context_policy=effective_context_policy,
+                                       context_scope=effective_context_scope)['blocked_count']):
                 v2_claims = list(safe_filtered)
                 v2 = {'post': post_v2, 'email': email_v2, 'claims': list(v2_claims),
                       'draft_origin': 'model_safe', 'model_written': True,
@@ -762,7 +906,9 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
                          if normalize(c) not in blocked_names
                          and _policy_block_for_claim(c, effective) is None
                          and _specificity_block_for_claim(c) is None
-                         and not _voice_blocks_claim(c, effective_voice, normalized_voice_ref)]
+                         and not _voice_blocks_claim(c, effective_voice, normalized_voice_ref)
+                         and not _context_blocks_claim(c, facts, effective_context_policy,
+                                                       effective_context_scope)]
             v2 = make_draft(v2_claims)
         reached('maker_draft_v2', 'Maker', 'Revised using approved facts file claims', profiles['Maker']['name'],
                 {'claims': len(v2_claims), 'draft_chars': len(v2['post'])})
@@ -770,7 +916,9 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
         gate('checker_v2')
         note('checker_v2', 'started', profiles['Checker']['name'])
         c2 = check_pack(v2, facts, blocked_claims, checker_profile, effective,
-                        voice_snapshot=effective_voice, voice_ref=normalized_voice_ref)
+                        voice_snapshot=effective_voice, voice_ref=normalized_voice_ref,
+                        context_policy=effective_context_policy,
+                        context_scope=effective_context_scope)
         reached('checker_v2', 'Checker', 'Rechecked revised drafts; blocked_count=' + str(c2['blocked_count']), profiles['Checker']['name'],
                 {'blocked_count': c2.get('blocked_count'), 'verified_count': c2.get('verified_count')})
         if c2['blocked_count']:
@@ -795,6 +943,12 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
         receipt['memory_claims'] = list(memory_claims or [])
         receipt['blocked_claims'] = list(blocked_claims or [])
         receipt['voice_profile'] = copy.deepcopy(voice_receipt_ref) if voice_receipt_ref is not None else None
+        snapshot_for_provenance = effective_voice
+        if snapshot_for_provenance is None and isinstance(voice_snapshot, dict):
+            snapshot_for_provenance = voice_snapshot
+        receipt['voice_provenance'] = _build_receipt_voice_provenance(
+            snapshot_for_provenance, voice_samples, normalized_voice_ref,
+            voice_snapshot_version)
         receipt['seed_unverified_claim'] = _seed_marker(
             seed_unverified_claim, v1_claims, v1, v2_claims, v2)
         if brief is not None:
@@ -808,6 +962,8 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
             from .human_review import approve_current
             receipt = approve_current(receipt, 'demo_human')
             step = 'receipt'
+        from .readiness import readiness_of
+        receipt['readiness'] = readiness_of(receipt)
         receipt_writer(receipt, out)
         note('receipt', 'completed', 'LaunchCrew', {'blocked_count': c2.get('blocked_count')})
         return receipt
@@ -834,12 +990,25 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
             failure['voice_profile'] = copy.deepcopy(ref) if isinstance(ref, dict) else None
         except Exception:
             failure['voice_profile'] = None
+        try:
+            eff = locals().get('effective_voice')
+            norm_ref = locals().get('normalized_voice_ref', {})
+            snap_prov = eff if eff is not None else (voice_snapshot if isinstance(voice_snapshot, dict) else None)
+            failure['voice_provenance'] = _build_receipt_voice_provenance(
+                snap_prov, voice_samples, norm_ref, voice_snapshot_version)
+        except Exception:
+            failure['voice_provenance'] = None
         failure['seed_unverified_claim'] = _seed_marker(seed_unverified_claim)
         if product_facts is None or parsed_product is not None:
             try:
                 failure['product_facts'] = product_section(parsed_product, product_allowlist)
             except Exception:
                 pass
+        try:
+            from .readiness import readiness_of as _failure_readiness_of
+            failure['readiness'] = _failure_readiness_of(failure)
+        except Exception:
+            pass
         receipt_writer(failure, out)
         raise
 
