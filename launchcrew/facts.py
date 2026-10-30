@@ -120,6 +120,259 @@ def _word_tokens(text):
     return set(_WORD_RE.findall((text or '').lower()))
 
 
+def _ordered_tokens(text):
+    return _WORD_RE.findall((text or '').lower())
+
+
+# Generic unit aliases only, no product names. Metric and time units map
+# full and plural forms to one canonical token for quantity comparison.
+_UNIT_ALIASES = {
+    'ml': 'ml', 'milliliter': 'ml', 'milliliters': 'ml',
+    'millilitre': 'ml', 'millilitres': 'ml',
+    'l': 'l', 'liter': 'l', 'liters': 'l', 'litre': 'l', 'litres': 'l',
+    'cm': 'cm', 'centimeter': 'cm', 'centimeters': 'cm',
+    'centimetre': 'cm', 'centimetres': 'cm',
+    'mm': 'mm', 'millimeter': 'mm', 'millimeters': 'mm',
+    'millimetre': 'mm', 'millimetres': 'mm',
+    'm': 'm', 'meter': 'm', 'meters': 'm', 'metre': 'm', 'metres': 'm',
+    'kg': 'kg', 'kilogram': 'kg', 'kilograms': 'kg',
+    'g': 'g', 'gram': 'g', 'grams': 'g',
+    'inch': 'inch', 'inches': 'inch',
+    'minute': 'minute', 'minutes': 'minute',
+    'month': 'month', 'months': 'month',
+    'year': 'year', 'years': 'year',
+    'day': 'day', 'days': 'day',
+}
+
+_UNIT_DIMENSIONS = {
+    'ml': 'volume', 'l': 'volume',
+    'cm': 'length', 'mm': 'length', 'm': 'length', 'inch': 'length',
+    'kg': 'weight', 'g': 'weight',
+    'minute': 'time', 'month': 'time', 'year': 'time', 'day': 'time',
+}
+
+# Glue excluded only from same-prefix tail comparison. Articles,
+# conjunctions, and prepositions never carry the differing value.
+_TAIL_GLUE = frozenset({
+    'the', 'a', 'an', 'and', 'or', 'of', 'with',
+    'for', 'to', 'in', 'on', 'at', 'by', 'from',
+})
+
+# Narrow glue removed for single-fact paraphrase matching. Only articles
+# and 'of' for reordered possessives like shell of backpack.
+_PARAPHRASE_GLUE = frozenset({'the', 'a', 'an', 'of'})
+
+
+def _canonical_unit(word):
+    w = (word or '').lower()
+    if not w:
+        return None
+    if w in _UNIT_ALIASES:
+        return _UNIT_ALIASES[w]
+    if w.endswith('s') and len(w) > 3 and not w.endswith('ss'):
+        singular = w[:-1]
+        if singular in _UNIT_ALIASES:
+            return _UNIT_ALIASES[singular]
+        return singular
+    return w
+
+
+def _unit_dimension(canonical):
+    if canonical in _UNIT_DIMENSIONS:
+        return _UNIT_DIMENSIONS[canonical]
+    return canonical
+
+
+def _extract_quantities(text):
+    found = []
+    text = text or ''
+    for match in VALUE_PATTERN.finditer(text):
+        group = match.lastgroup
+        raw = match.group()
+        if group == 'price':
+            try:
+                num = float(raw[1:].replace(',', ''))
+            except ValueError:
+                continue
+            found.append((group, num, raw[0].lower(), raw[0].lower()))
+        elif group == 'percentage':
+            try:
+                num = float(raw[:-1])
+            except ValueError:
+                continue
+            found.append((group, num, '%', '%'))
+        elif group == 'number':
+            try:
+                num = float(raw)
+            except ValueError:
+                continue
+            after = text[match.end():match.end() + 24]
+            m = re.match(r'\s*([A-Za-z]+)', after)
+            if m:
+                unit_raw = m.group(1).lower()
+                found.append((group, num, _canonical_unit(unit_raw), unit_raw))
+            else:
+                found.append((group, num, None, None))
+    return found
+
+
+def _quantity_anchor(text):
+    toks = _ordered_tokens(text)
+    i = 0
+    while i < len(toks) and toks[i] in ('the', 'a', 'an'):
+        i += 1
+    toks = [t for t in toks[i:] if t not in ('always', 'never')]
+    return tuple(toks[:2])
+
+
+def _common_prefix_len(a, b):
+    n = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+def _find_quantity_property_conflict(text, approved):
+    # Same subject and property with a different quantity, even when the
+    # number appears in an unrelated fact with another unit. Anchor is the
+    # first two content tokens, so Box holds and Bottle holds stay distinct.
+    claim_qtys = _extract_quantities(text)
+    if not claim_qtys:
+        return None
+    claim_anchor = _quantity_anchor(text)
+    if not claim_anchor:
+        return None
+    for fact in approved:
+        if not isinstance(fact, str):
+            continue
+        if _quantity_anchor(fact) != claim_anchor:
+            continue
+        fact_qtys = _extract_quantities(fact)
+        if not fact_qtys:
+            continue
+        for c_group, c_num, c_unit, _ in claim_qtys:
+            for f_group, f_num, f_unit, _ in fact_qtys:
+                if c_group != f_group:
+                    continue
+                if c_group in ('price', 'percentage'):
+                    if c_unit == f_unit and c_num != f_num:
+                        return (fact, 'Conflicting ' + c_group + ' value for same subject')
+                elif c_group == 'number':
+                    if c_unit is not None and f_unit is not None:
+                        if c_unit == f_unit and c_num != f_num:
+                            return (fact, 'Conflicting quantity value for same subject')
+                        if c_num == f_num and c_unit != f_unit:
+                            if _unit_dimension(c_unit) == _unit_dimension(f_unit):
+                                return (fact, 'Conflicting quantity unit for same subject')
+                    elif c_unit is None and f_unit is None:
+                        if c_num != f_num:
+                            return (fact, 'Conflicting quantity value for same subject')
+    return None
+
+
+def _find_same_prefix_conflict(text, approved):
+    # Same leading subject and property with a disjoint tail value, or the
+    # same head word with differing modifiers. Skips claims with negation
+    # or absolutes so those stay unsupported unless quantity already
+    # conflicted. Unit aliases compare canonically, so ml and milliliters
+    # never conflict by form alone.
+    if _has_negation(text):
+        return None
+    if SUPERLATIVES.search(text or ''):
+        return None
+    claim_tokens = _ordered_tokens(text)
+    if len(claim_tokens) < 3:
+        return None
+    for fact in approved:
+        if not isinstance(fact, str):
+            continue
+        fact_tokens = _ordered_tokens(fact)
+        if len(fact_tokens) < 3:
+            continue
+        prefix = _common_prefix_len(claim_tokens, fact_tokens)
+        if prefix < 2:
+            continue
+        if prefix >= len(claim_tokens) or prefix >= len(fact_tokens):
+            continue
+        claim_content = [_UNIT_ALIASES.get(t, t) for t in claim_tokens[prefix:]
+                         if t not in _TAIL_GLUE]
+        fact_content = [_UNIT_ALIASES.get(t, t) for t in fact_tokens[prefix:]
+                        if t not in _TAIL_GLUE]
+        if not claim_content or not fact_content:
+            continue
+        if set(claim_content).isdisjoint(set(fact_content)):
+            return (fact, 'Conflicting property value for same subject')
+        if claim_content[-1] == fact_content[-1]:
+            claim_set = set(claim_content)
+            fact_set = set(fact_content)
+            # Same head with differing modifiers only. Subset means omission
+            # or addition, which stays unsupported, never conflicts here.
+            if claim_set - fact_set and fact_set - claim_set:
+                return (fact, 'Conflicting property value for same subject')
+    return None
+
+
+def _find_exclusive_omission_conflict(text, approved):
+    # Exclusive 'only' with the same anchor that omits a confirmed item.
+    # Omission without 'only' stays unsupported, never conflicts here.
+    claim_tokens = _ordered_tokens(text)
+    if 'only' not in claim_tokens:
+        return None
+    for fact in approved:
+        if not isinstance(fact, str):
+            continue
+        fact_tokens = _ordered_tokens(fact)
+        prefix = _common_prefix_len(claim_tokens, fact_tokens)
+        if prefix < 2:
+            continue
+        if prefix >= len(fact_tokens):
+            continue
+        fact_content = set(_UNIT_ALIASES.get(t, t) for t in fact_tokens[prefix:]
+                           if t not in _TAIL_GLUE)
+        claim_content = set(_UNIT_ALIASES.get(t, t) for t in claim_tokens[prefix:]
+                            if t not in _TAIL_GLUE)
+        if fact_content and fact_content - claim_content:
+            return (fact, 'Conflicting included items with exclusive wording')
+    return None
+
+
+def _normalize_for_paraphrase(text, contents_context):
+    out = []
+    for tok in _ordered_tokens(text):
+        if tok in _PARAPHRASE_GLUE:
+            continue
+        if tok in ('use', 'uses'):
+            out.append('is')
+        elif tok in ('contains', 'contain', 'includes', 'include'):
+            out.append('includes')
+        elif tok == 'with' and contents_context:
+            out.append('and')
+        elif tok in _UNIT_ALIASES:
+            out.append(_UNIT_ALIASES[tok])
+        else:
+            out.append(tok)
+    out.sort()
+    return out
+
+
+def _find_paraphrase_match(text, approved):
+    # Single-fact rewording with identical content words ignoring order,
+    # articles, 'of', narrow verb synonyms, and unit forms. Exact multiset
+    # match only, so extra, missing, or swapped values never match.
+    if not isinstance(text, str) or not text.strip():
+        return None
+    for fact in approved:
+        if not isinstance(fact, str) or not fact.strip():
+            continue
+        fact_words = set(_ordered_tokens(fact))
+        contents = bool(fact_words & {'includes', 'include', 'contains', 'contain'})
+        if _normalize_for_paraphrase(text, contents) == _normalize_for_paraphrase(fact, contents):
+            return fact
+    return None
+
+
 # Conservative deterministic grammar for model-authored channel copy. A
 # draft-text sentence is supported only when it consists solely of exact
 # confirmed fact spans plus wrapper words plus punctuation and whitespace,
@@ -267,7 +520,16 @@ def _find_conflict(text, approved):
     hit = _find_word_conflict(text, approved, PRODUCT_TYPE_WORDS, 'Conflicting product type')
     if hit is not None:
         return hit
-    return _find_word_conflict(text, approved, MATERIAL_WORDS, 'Conflicting material')
+    hit = _find_word_conflict(text, approved, MATERIAL_WORDS, 'Conflicting material')
+    if hit is not None:
+        return hit
+    hit = _find_quantity_property_conflict(text, approved)
+    if hit is not None:
+        return hit
+    hit = _find_same_prefix_conflict(text, approved)
+    if hit is not None:
+        return hit
+    return _find_exclusive_omission_conflict(text, approved)
 
 
 def split_sentences(draft_text):
@@ -283,8 +545,10 @@ def check_sentence(sentence, facts):
     text = sentence if isinstance(sentence, str) else ''
     # Exact allowlist equality is supported. It implies value and
     # superlative checks already pass, since the blob is built from the
-    # same allowlist. Grammar-supported wrapper lines are also supported
-    # below; everything else stays unsupported.
+    # same allowlist. Grammar-supported wrapper lines and narrow
+    # single-fact paraphrases are also supported below; everything else
+    # stays unsupported. check_claim stays exact-only and never calls
+    # the paraphrase path.
     exact = next((c for c in approved if text and normalize(text) == normalize(c)), None)
     if exact is not None and 'best in texas' not in text.lower():
         return {'claim': sentence, 'verified': True, 'verdict': SUPPORTED,
@@ -320,6 +584,10 @@ def check_sentence(sentence, facts):
                     'reason': 'Matched approved fact span with wrapper only'}
         return {'claim': sentence, 'verified': False, 'verdict': UNSUPPORTED,
                 'evidence': None, 'reason': 'Unsupported wording outside confirmed facts'}
+    paraphrased = _find_paraphrase_match(text, approved)
+    if paraphrased is not None:
+        return {'claim': sentence, 'verified': True, 'verdict': SUPPORTED,
+                'evidence': paraphrased, 'reason': 'Matched approved fact paraphrase'}
     return {'claim': sentence, 'verified': False, 'verdict': UNSUPPORTED,
             'evidence': None, 'reason': 'Sentence not in approved claims'}
 
