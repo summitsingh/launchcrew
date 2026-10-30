@@ -18,10 +18,25 @@ from launchcrew import run
 
 SYN_A = 'google:synthetic-drive-alpha-01'
 SYN_B = 'google:synthetic-drive-beta-02'
+SUB_A = 'synthetic-drive-alpha-01'
+SUB_B = 'synthetic-drive-beta-02'
+DRIVE_CLIENT = 'synthetic-drive-client'
 IDEA = 'Vegan leather wallet, $49, for Austin commuters, launch on Instagram'
 SCOPE = 'https://www.googleapis.com/auth/drive.file'
 DOC_MIME = 'application/vnd.google-apps.document'
 TEXT_MIME = 'text/plain'
+
+
+def _valid_tokeninfo(sub):
+    return {
+        'scope': SCOPE,
+        'expires_in': '3600',
+        'aud': DRIVE_CLIENT,
+        'audience': DRIVE_CLIENT,
+        'issued_to': DRIVE_CLIENT,
+        'sub': sub,
+        'user_id': sub,
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -38,7 +53,7 @@ def deterministic_pipeline():
 
 @pytest.fixture
 def drive_env(monkeypatch):
-    monkeypatch.setenv('GOOGLE_DRIVE_CLIENT_ID', 'synthetic-drive-client')
+    monkeypatch.setenv('GOOGLE_DRIVE_CLIENT_ID', DRIVE_CLIENT)
     monkeypatch.setenv('GOOGLE_DRIVE_API_KEY', 'synthetic-drive-key')
     monkeypatch.setenv('GOOGLE_DRIVE_APP_ID', 'synthetic-drive-app')
     return True
@@ -146,14 +161,15 @@ def test_status_unavailable_without_config(client, monkeypatch):
     assert client.get('/api/drive-import/config').status_code == 503
 
 
-def test_status_available_with_public_config(client, drive_env):
+def test_status_available_with_public_config(client, drive_env, monkeypatch):
+    _sign_in(client, monkeypatch, SYN_A)
     body = client.get('/api/drive-import/status').json()
     assert body['available'] is True
     assert body['configured'] is True
     assert body['live_verified'] is False
     assert body['reason'] == 'ok'
     config = client.get('/api/drive-import/config').json()
-    assert config['client_id'] == 'synthetic-drive-client'
+    assert config['client_id'] == DRIVE_CLIENT
     assert config['api_key'] == 'synthetic-drive-key'
     assert config['app_id'] == 'synthetic-drive-app'
     assert config['scope'] == SCOPE
@@ -173,8 +189,12 @@ def test_suggestions_unavailable_without_config(client, monkeypatch):
     assert fake.calls == []
 
 
-def test_text_plain_success_unconfirmed(client, drive_env):
-    fake = FakeProvider(metadata={'id': 'demo-file-01', 'name': 'Demo tote notes', 'mimeType': TEXT_MIME, 'trashed': False})
+def test_text_plain_success_unconfirmed(client, drive_env, monkeypatch):
+    _sign_in(client, monkeypatch, SYN_A)
+    fake = FakeProvider(
+        tokeninfo=_valid_tokeninfo(SUB_A),
+        metadata={'id': 'demo-file-01', 'name': 'Demo tote notes', 'mimeType': TEXT_MIME, 'trashed': False},
+    )
     _use_provider(fake)
     response = _suggest(client, file_id='demo-file-01', token='synthetic-drive-token-01')
     assert response.status_code == 200, response.text
@@ -191,10 +211,12 @@ def test_text_plain_success_unconfirmed(client, drive_env):
     assert client.get('/api/memory').json() == []
 
 
-def test_doc_export_success_unconfirmed(client, drive_env):
+def test_doc_export_success_unconfirmed(client, drive_env, monkeypatch):
+    _sign_in(client, monkeypatch, SYN_A)
     data = b'Full-grain leather\nBifold compact'
     headers = FakeHeaders({'Content-Type': 'text/plain', 'Content-Length': str(len(data))})
     fake = FakeProvider(
+        tokeninfo=_valid_tokeninfo(SUB_A),
         metadata={'id': 'demo-doc-02', 'name': 'Demo doc', 'mimeType': DOC_MIME, 'trashed': False},
         content=(data, headers, 200),
     )
@@ -208,9 +230,10 @@ def test_doc_export_success_unconfirmed(client, drive_env):
     assert fake.calls[2][3] == DOC_MIME
 
 
-def test_token_discard_no_persistence(client, drive_env):
+def test_token_discard_no_persistence(client, drive_env, monkeypatch):
+    _sign_in(client, monkeypatch, SYN_A)
     token = 'synthetic-drive-token-discard-01'
-    fake = FakeProvider()
+    fake = FakeProvider(tokeninfo=_valid_tokeninfo(SUB_A))
     _use_provider(fake)
     response = _suggest(client, file_id='demo-file-01', token=token)
     assert response.status_code == 200, response.text
@@ -219,14 +242,18 @@ def test_token_discard_no_persistence(client, drive_env):
     with store.connect() as db:
         sessions = db.execute(text('SELECT data FROM auth_sessions')).scalars().all()
         runs = db.execute(text('SELECT receipt FROM runs')).scalars().all()
-        memos = db.execute(text('SELECT content FROM memory')).scalars().all()
-    blob = json.dumps({'sessions': sessions, 'runs': runs, 'memos': memos})
+        memos = db.execute(text('SELECT facts FROM memory')).scalars().all()
+        items = db.execute(text('SELECT content FROM memory_items')).scalars().all()
+        titles = db.execute(text('SELECT title FROM memory_items')).scalars().all()
+        audits = db.execute(text('SELECT action FROM audit')).scalars().all()
+        actors = db.execute(text('SELECT actor FROM audit')).scalars().all()
+    blob = json.dumps({'sessions': sessions, 'runs': runs, 'memos': memos, 'items': items, 'titles': titles, 'audits': audits, 'actors': actors})
     assert token not in blob
     assert 'demo-file-01' not in blob
 
 
 def test_auth_required_when_enabled(client, drive_env, monkeypatch):
-    fake = FakeProvider()
+    fake = FakeProvider(tokeninfo=_valid_tokeninfo(SUB_A))
     _use_provider(fake)
     monkeypatch.setenv('AUTH_ENABLED', 'true')
     assert _suggest(client).status_code == 401
@@ -243,6 +270,7 @@ def test_two_user_denial_stateless(client, drive_env, monkeypatch):
     data_a = b'User one tote\nLarge'
     headers_a = FakeHeaders({'Content-Type': 'text/plain', 'Content-Length': str(len(data_a))})
     fake_a = FakeProvider(
+        tokeninfo=_valid_tokeninfo(SUB_A),
         metadata={'id': 'demo-file-A1', 'name': 'User one file', 'mimeType': TEXT_MIME, 'trashed': False},
         content=(data_a, headers_a, 200),
     )
@@ -258,6 +286,7 @@ def test_two_user_denial_stateless(client, drive_env, monkeypatch):
     data_b = b'User two wallet\nCompact'
     headers_b = FakeHeaders({'Content-Type': 'text/plain', 'Content-Length': str(len(data_b))})
     fake_b = FakeProvider(
+        tokeninfo=_valid_tokeninfo(SUB_B),
         metadata={'id': 'demo-file-B2', 'name': 'User two file', 'mimeType': TEXT_MIME, 'trashed': False},
         content=(data_b, headers_b, 200),
     )
@@ -272,15 +301,21 @@ def test_two_user_denial_stateless(client, drive_env, monkeypatch):
 
 def test_cross_user_token_reuse_denied_by_provider(client, drive_env, monkeypatch):
     _sign_in(client, monkeypatch, SYN_A)
-    fake = FakeProvider(error=('metadata', HTTPException(403, 'Drive file unavailable or not selected')))
+    fake = FakeProvider(
+        tokeninfo=_valid_tokeninfo(SUB_A),
+        error=('metadata', HTTPException(403, 'Drive file unavailable or not selected')),
+    )
     _use_provider(fake)
     response = _suggest(client, file_id='demo-file-A1', token='synthetic-drive-token-B2')
     assert response.status_code == 403
     assert 'synthetic-drive-token' not in response.text
 
 
-def test_missing_scope_rejected(client, drive_env):
-    fake = FakeProvider(tokeninfo={'scope': 'openid profile email', 'expires_in': '3600'})
+def test_missing_scope_rejected(client, drive_env, monkeypatch):
+    _sign_in(client, monkeypatch, SYN_A)
+    payload = _valid_tokeninfo(SUB_A)
+    payload['scope'] = 'openid profile email'
+    fake = FakeProvider(tokeninfo=payload)
     _use_provider(fake)
     response = _suggest(client)
     assert response.status_code == 403
@@ -289,30 +324,45 @@ def test_missing_scope_rejected(client, drive_env):
     assert len(fake.calls) == 1
 
 
-def test_expired_token_rejected(client, drive_env):
-    fake = FakeProvider(tokeninfo={'scope': SCOPE, 'expires_in': '0'})
+def test_expired_token_rejected(client, drive_env, monkeypatch):
+    _sign_in(client, monkeypatch, SYN_A)
+    payload = _valid_tokeninfo(SUB_A)
+    payload['expires_in'] = '0'
+    fake = FakeProvider(tokeninfo=payload)
     _use_provider(fake)
     assert _suggest(client).status_code == 403
 
 
-def test_nonselected_file_rejected(client, drive_env):
-    fake = FakeProvider(error=('metadata', HTTPException(403, 'Drive file unavailable or not selected')))
+def test_nonselected_file_rejected(client, drive_env, monkeypatch):
+    _sign_in(client, monkeypatch, SYN_A)
+    fake = FakeProvider(
+        tokeninfo=_valid_tokeninfo(SUB_A),
+        error=('metadata', HTTPException(403, 'Drive file unavailable or not selected')),
+    )
     _use_provider(fake)
     response = _suggest(client, file_id='demo-file-99')
     assert response.status_code == 403
     assert 'demo-file-99' not in response.text
 
 
-def test_returned_id_mismatch_rejected(client, drive_env):
-    fake = FakeProvider(metadata={'id': 'other-file-02', 'name': 'Other', 'mimeType': TEXT_MIME, 'trashed': False})
+def test_returned_id_mismatch_rejected(client, drive_env, monkeypatch):
+    _sign_in(client, monkeypatch, SYN_A)
+    fake = FakeProvider(
+        tokeninfo=_valid_tokeninfo(SUB_A),
+        metadata={'id': 'other-file-02', 'name': 'Other', 'mimeType': TEXT_MIME, 'trashed': False},
+    )
     _use_provider(fake)
     response = _suggest(client, file_id='demo-file-01')
     assert response.status_code == 403
 
 
-def test_unsupported_mime_rejected(client, drive_env):
+def test_unsupported_mime_rejected(client, drive_env, monkeypatch):
+    _sign_in(client, monkeypatch, SYN_A)
     for mime in ('image/jpeg', 'application/pdf', 'video/mp4', 'text/html', 'application/octet-stream'):
-        fake = FakeProvider(metadata={'id': 'demo-file-01', 'name': 'Demo file', 'mimeType': mime, 'trashed': False})
+        fake = FakeProvider(
+            tokeninfo=_valid_tokeninfo(SUB_A),
+            metadata={'id': 'demo-file-01', 'name': 'Demo file', 'mimeType': mime, 'trashed': False},
+        )
         _use_provider(fake)
         response = _suggest(client)
         assert response.status_code == 422, mime
@@ -320,54 +370,67 @@ def test_unsupported_mime_rejected(client, drive_env):
         assert client.get('/api/memory').json() == []
 
 
-def test_trashed_rejected(client, drive_env):
-    fake = FakeProvider(metadata={'id': 'demo-file-01', 'name': 'Demo file', 'mimeType': TEXT_MIME, 'trashed': True})
+def test_trashed_rejected(client, drive_env, monkeypatch):
+    _sign_in(client, monkeypatch, SYN_A)
+    fake = FakeProvider(
+        tokeninfo=_valid_tokeninfo(SUB_A),
+        metadata={'id': 'demo-file-01', 'name': 'Demo file', 'mimeType': TEXT_MIME, 'trashed': True},
+    )
     _use_provider(fake)
     assert _suggest(client).status_code == 403
 
 
-def test_oversize_metadata_rejected_before_content(client, drive_env):
-    fake = FakeProvider(metadata={'id': 'demo-file-01', 'name': 'Demo file', 'mimeType': TEXT_MIME, 'size': '200001', 'trashed': False})
+def test_oversize_metadata_rejected_before_content(client, drive_env, monkeypatch):
+    _sign_in(client, monkeypatch, SYN_A)
+    fake = FakeProvider(
+        tokeninfo=_valid_tokeninfo(SUB_A),
+        metadata={'id': 'demo-file-01', 'name': 'Demo file', 'mimeType': TEXT_MIME, 'size': '200001', 'trashed': False},
+    )
     _use_provider(fake)
     response = _suggest(client)
     assert response.status_code == 413
     assert [call[0] for call in fake.calls] == ['tokeninfo', 'metadata']
 
 
-def test_oversize_bytes_rejected(client, drive_env):
+def test_oversize_bytes_rejected(client, drive_env, monkeypatch):
+    _sign_in(client, monkeypatch, SYN_A)
     data = b'x' * 200001
     headers = FakeHeaders({'Content-Type': 'text/plain', 'Content-Length': str(len(data))})
-    fake = FakeProvider(content=(data, headers, 200))
+    fake = FakeProvider(tokeninfo=_valid_tokeninfo(SUB_A), content=(data, headers, 200))
     _use_provider(fake)
     assert _suggest(client).status_code == 413
 
 
-def test_oversize_text_chars_rejected(client, drive_env):
+def test_oversize_text_chars_rejected(client, drive_env, monkeypatch):
+    _sign_in(client, monkeypatch, SYN_A)
     data = ('y' * 10001).encode('utf-8')
     headers = FakeHeaders({'Content-Type': 'text/plain', 'Content-Length': str(len(data))})
-    fake = FakeProvider(content=(data, headers, 200))
+    fake = FakeProvider(tokeninfo=_valid_tokeninfo(SUB_A), content=(data, headers, 200))
     _use_provider(fake)
     assert _suggest(client).status_code == 413
 
 
-def test_non_text_rejected(client, drive_env):
+def test_non_text_rejected(client, drive_env, monkeypatch):
+    _sign_in(client, monkeypatch, SYN_A)
     for data in (b'\xff\xfe\x00binary', b'hello\x00world'):
         headers = FakeHeaders({'Content-Type': 'text/plain', 'Content-Length': str(len(data))})
-        fake = FakeProvider(content=(data, headers, 200))
+        fake = FakeProvider(tokeninfo=_valid_tokeninfo(SUB_A), content=(data, headers, 200))
         _use_provider(fake)
         assert _suggest(client).status_code == 422
 
 
-def test_deceptive_mime_rejected(client, drive_env):
+def test_deceptive_mime_rejected(client, drive_env, monkeypatch):
+    _sign_in(client, monkeypatch, SYN_A)
     data = b'<html>not text</html>'
     headers = FakeHeaders({'Content-Type': 'text/html; charset=utf-8', 'Content-Length': str(len(data))})
-    fake = FakeProvider(content=(data, headers, 200))
+    fake = FakeProvider(tokeninfo=_valid_tokeninfo(SUB_A), content=(data, headers, 200))
     _use_provider(fake)
     assert _suggest(client).status_code == 422
 
 
-def test_arbitrary_urls_rejected_without_provider_call(client, drive_env):
-    fake = FakeProvider()
+def test_arbitrary_urls_rejected_without_provider_call(client, drive_env, monkeypatch):
+    _sign_in(client, monkeypatch, SYN_A)
+    fake = FakeProvider(tokeninfo=_valid_tokeninfo(SUB_A))
     _use_provider(fake)
     bad_ids = [
         'https://www.googleapis.com/drive/v3/files/demo-file-01',
@@ -400,6 +463,12 @@ def test_wrong_host_and_redirect_refused():
     with pytest.raises(HTTPException) as token_host:
         drive_intake.check_tokeninfo_url('https://evil.invalid/tokeninfo')
     assert token_host.value.status_code == 502
+    with pytest.raises(HTTPException) as token_query:
+        drive_intake.check_tokeninfo_url('https://oauth2.googleapis.com/tokeninfo?access_token=synthetic')
+    assert token_query.value.status_code == 502
+    with pytest.raises(HTTPException) as drive_token_query:
+        drive_intake.check_drive_url('https://www.googleapis.com/drive/v3/files/demo-file-01?access_token=synthetic')
+    assert drive_token_query.value.status_code == 502
     drive_intake.check_drive_url('https://www.googleapis.com/drive/v3/files/demo-file-01?alt=media')
     drive_intake.check_tokeninfo_url('https://oauth2.googleapis.com/tokeninfo')
     with pytest.raises(HTTPException) as length:
@@ -411,18 +480,25 @@ def test_only_read_only_urls_built():
     meta = drive_intake.build_metadata_url('demo-file-01', None)
     assert meta.startswith('https://www.googleapis.com/drive/v3/files/demo-file-01?')
     assert 'fields=' in meta
+    assert 'access_token' not in meta.lower()
     doc = drive_intake.build_content_url('demo-file-01', None, DOC_MIME)
     assert '/export?' in doc and 'mimeType=text%2Fplain' in doc
+    assert 'access_token' not in doc.lower()
     text_url = drive_intake.build_content_url('demo-file-01', 'key-01', TEXT_MIME)
     assert 'alt=media' in text_url and 'resourceKey=key-01' in text_url
+    assert 'access_token' not in text_url.lower()
     for url in (meta, doc, text_url):
         assert '/permissions' not in url
         assert 'create' not in url.lower()
         assert 'delete' not in url.lower()
 
 
-def test_unconfirmed_drive_stays_suggestion_until_explicit_confirmation(client, drive_env):
-    fake = FakeProvider(metadata={'id': 'demo-file-01', 'name': 'Demo file', 'mimeType': TEXT_MIME, 'trashed': False})
+def test_unconfirmed_drive_stays_suggestion_until_explicit_confirmation(client, drive_env, monkeypatch):
+    _sign_in(client, monkeypatch, SYN_A)
+    fake = FakeProvider(
+        tokeninfo=_valid_tokeninfo(SUB_A),
+        metadata={'id': 'demo-file-01', 'name': 'Demo file', 'mimeType': TEXT_MIME, 'trashed': False},
+    )
     _use_provider(fake)
     intake = _suggest(client).json()
     assert [s['text'] for s in intake['suggestions']] == ['Canvas tote', 'Large', '$49']
@@ -454,9 +530,124 @@ def test_unconfirmed_drive_stays_suggestion_until_explicit_confirmation(client, 
 def test_demo_mode_unchanged_after_drive_intake(client, drive_env):
     fake = FakeProvider()
     _use_provider(fake)
-    assert _suggest(client).status_code == 200
+    assert _suggest(client).status_code == 401
+    assert fake.calls == []
     response = client.post('/api/runs', json={'idea': IDEA, 'agent_name': 'Maker'})
     assert response.status_code == 201, response.text
     receipt = response.json()
     assert receipt['product_facts']['mode'] == 'demo_template'
     assert receipt['product_facts']['template_used'] is True
+
+
+def test_owner_binding_success_exact_owner(client, drive_env, monkeypatch):
+    _sign_in(client, monkeypatch, SYN_A)
+    fake = FakeProvider(
+        tokeninfo=_valid_tokeninfo(SUB_A),
+        metadata={'id': 'demo-file-01', 'name': 'Owner notes', 'mimeType': TEXT_MIME, 'trashed': False},
+    )
+    _use_provider(fake)
+    response = _suggest(client, file_id='demo-file-01', token='synthetic-drive-token-owner-01')
+    assert response.status_code == 200, response.text
+    body = response.json()
+    _assert_unconfirmed_drive(body)
+    assert body['file_title'] == 'Owner notes'
+    assert [call[0] for call in fake.calls] == ['tokeninfo', 'metadata', 'content']
+
+
+def test_owner_binding_wrong_audience_rejected(client, drive_env, monkeypatch):
+    _sign_in(client, monkeypatch, SYN_A)
+    payload = _valid_tokeninfo(SUB_A)
+    payload['aud'] = 'other-client'
+    payload['audience'] = 'other-client'
+    payload['issued_to'] = 'other-client'
+    fake = FakeProvider(
+        tokeninfo=payload,
+        metadata={'id': 'demo-file-01', 'name': 'Demo file', 'mimeType': TEXT_MIME, 'trashed': False},
+    )
+    _use_provider(fake)
+    response = _suggest(client, file_id='demo-file-01', token='synthetic-drive-token-wrong-aud-01')
+    assert response.status_code == 403
+    assert 'synthetic-drive-token' not in response.text
+    assert [call[0] for call in fake.calls] == ['tokeninfo']
+
+
+def test_owner_binding_wrong_google_account_rejected_with_valid_file(client, drive_env, monkeypatch):
+    _sign_in(client, monkeypatch, SYN_A)
+    data = b'Other owner tote\nLarge'
+    headers = FakeHeaders({'Content-Type': 'text/plain', 'Content-Length': str(len(data))})
+    fake = FakeProvider(
+        tokeninfo=_valid_tokeninfo(SUB_B),
+        metadata={'id': 'demo-file-01', 'name': 'Demo file', 'mimeType': TEXT_MIME, 'trashed': False},
+        content=(data, headers, 200),
+    )
+    _use_provider(fake)
+    response = _suggest(client, file_id='demo-file-01', token='synthetic-drive-token-other-acct-01')
+    assert response.status_code == 403
+    assert 'synthetic-drive-token' not in response.text
+    assert [call[0] for call in fake.calls] == ['tokeninfo']
+
+
+def test_owner_binding_missing_identity_rejected(client, drive_env, monkeypatch):
+    _sign_in(client, monkeypatch, SYN_A)
+    payload = _valid_tokeninfo(SUB_A)
+    del payload['sub']
+    del payload['user_id']
+    fake = FakeProvider(tokeninfo=payload)
+    _use_provider(fake)
+    response = _suggest(client)
+    assert response.status_code == 403
+    assert len(fake.calls) == 1
+
+
+def test_owner_binding_missing_audience_rejected(client, drive_env, monkeypatch):
+    _sign_in(client, monkeypatch, SYN_A)
+    payload = _valid_tokeninfo(SUB_A)
+    del payload['aud']
+    del payload['audience']
+    del payload['issued_to']
+    fake = FakeProvider(tokeninfo=payload)
+    _use_provider(fake)
+    response = _suggest(client)
+    assert response.status_code == 403
+    assert len(fake.calls) == 1
+
+
+def test_owner_binding_ambiguous_rejected(client, drive_env, monkeypatch):
+    _sign_in(client, monkeypatch, SYN_A)
+    payload = _valid_tokeninfo(SUB_A)
+    payload['issued_to'] = 'other-client'
+    fake = FakeProvider(tokeninfo=payload)
+    _use_provider(fake)
+    assert _suggest(client).status_code == 403
+    assert len(fake.calls) == 1
+    payload2 = _valid_tokeninfo(SUB_A)
+    payload2['user_id'] = SUB_B
+    fake2 = FakeProvider(tokeninfo=payload2)
+    _use_provider(fake2)
+    assert _suggest(client).status_code == 403
+    assert len(fake2.calls) == 1
+
+
+def test_anonymous_auth_disabled_no_provider_access(client, drive_env):
+    fake = FakeProvider(tokeninfo=_valid_tokeninfo(SUB_A))
+    _use_provider(fake)
+    status = client.get('/api/drive-import/status').json()
+    assert status['available'] is False
+    assert status['configured'] is True
+    assert status['reason'] == 'auth_required'
+    assert status['live_verified'] is False
+    assert client.get('/api/drive-import/config').status_code == 401
+    assert _suggest(client).status_code == 401
+    assert fake.calls == []
+
+
+def test_non_google_actor_denied(client, drive_env, monkeypatch):
+    _sign_in(client, monkeypatch, 'facebook:synthetic-fb-01')
+    fake = FakeProvider(tokeninfo=_valid_tokeninfo(SUB_A))
+    _use_provider(fake)
+    status = client.get('/api/drive-import/status').json()
+    assert status['available'] is False
+    assert status['reason'] == 'auth_required'
+    assert client.get('/api/drive-import/config').status_code == 403
+    assert _suggest(client).status_code == 403
+    assert fake.calls == []

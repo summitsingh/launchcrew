@@ -4,7 +4,8 @@ Behavioral proof only, no string-only assertions. Uses disposable
 schemas on the existing test Postgres, like the workspace backfill
 transition test. Proves fresh upgrade allows voice_profile, legacy
 rows survive, invalid kinds still fail, and downgrade refuses while
-voice rows exist but succeeds once they are removed.
+voice rows exist but succeeds once they are removed. Targets 007
+explicitly; current head is 008.
 """
 import json
 import os
@@ -67,7 +68,7 @@ def test_migration_006_to_007_allows_voice_and_refuses_unsafe_downgrade():
                          ' VALUES (:id,:kind,:title,CAST(:content AS jsonb),NULL,:ws)'),
                     {'id': _mem_id('voice'), 'kind': 'voice_profile', 'title': 'Synthetic voice',
                      'content': json.dumps(_voice_content()), 'ws': 'demo'})
-        command.upgrade(Config('alembic.ini'), 'head')
+        command.upgrade(Config('alembic.ini'), '007')
         assert _alembic_version(db) == '007'
         with db.begin() as connection:
             for mem_id in legacy_ids:
@@ -118,7 +119,7 @@ def test_migration_006_to_007_allows_voice_and_refuses_unsafe_downgrade():
             for mem_id in legacy_ids:
                 assert connection.execute(
                     text('SELECT kind FROM memory_items WHERE id=:id'), {'id': mem_id}).scalar() is not None
-        command.upgrade(Config('alembic.ini'), 'head')
+        command.upgrade(Config('alembic.ini'), '007')
         assert _alembic_version(db) == '007'
         with db.begin() as connection:
             voice_id = _mem_id('voice3')
@@ -148,7 +149,7 @@ def test_migration_fresh_empty_006_to_007_allows_voice():
     store.engine = lambda: db
     try:
         command.upgrade(Config('alembic.ini'), '006')
-        command.upgrade(Config('alembic.ini'), 'head')
+        command.upgrade(Config('alembic.ini'), '007')
         assert _alembic_version(db) == '007'
         with db.begin() as connection:
             voice_id = _mem_id('voice')

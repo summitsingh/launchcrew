@@ -4,16 +4,17 @@ Status: source wiring only. Live Drive proof has NOT been run, is NOT claimed, a
 
 ## Complete scope
 
-This connector adds an optional Google Picker intake for one user-selected file, without replacing existing flows:
+This connector adds an optional Google Picker intake for one app-authorized file, without replacing existing flows:
 
-- Google Picker user selection with `https://www.googleapis.com/auth/drive.file` scope. Google documents this scope as per-file selected access, but the scope technically permits edits. Product code only calls read-only Drive file metadata, get, export, and download APIs. It never calls create, update, delete, or permissions APIs.
+- Google Picker user selection with `https://www.googleapis.com/auth/drive.file` scope. Google documents this scope as per-file selected access, but the scope technically permits edits. Product code only calls read-only Drive file metadata, get, export, and download APIs. It never calls create, update, delete, or permissions APIs. See [OAuth web-server](https://developers.google.com/identity/protocols/oauth2/web-server) and [Picker web guidance](https://developers.google.com/workspace/drive/picker/guides/web-picker).
 - Separate incremental Drive consent via GIS, requested only in the Drive intake UI. Ordinary sign-in stays `openid profile email` only in `backend/auth.py`. No sign-in scope is broadened.
-- Only the Picker-selected file ID and resource key may be read. The API accepts no URLs and no workspace ID. Workspace is derived server-side from the LaunchCrew actor. Anonymous use fails closed, and foreign workspace use fails closed.
+- Owner binding: the backend validates the GIS token for exact audience/client against `GOOGLE_DRIVE_CLIENT_ID` and exact user identity against the authenticated LaunchCrew actor `google:<sub>`, plus scope and expiry, via tokeninfo. Missing, ambiguous, or mismatched audience or identity fails closed. Only Google actors may use Drive; demo placeholder and non-Google actors fail closed even when Drive config exists.
+- Only the stated file ID and resource key may be read. The API accepts no URLs and no workspace ID. Workspace is derived server-side from the LaunchCrew actor. Anonymous use fails closed, and foreign workspace use fails closed. A file ID alone does not prove a fresh Picker selection server-side; `drive.file` only permits app-authorized files the user opened for this app. The latest UI selection display stays local browser behavior only.
 - Supported demo set: Google Docs export to plain text (`application/vnd.google-apps.document` exported as `text/plain`) and plain text download (`text/plain`). All other types fail closed, including photos, PDFs, HTML, video, and binary. No photos in Picker views or server handling.
 - Explicit bounds, enforced before allocation: max 200000 bytes per file, max 10000 text chars for parsing, max 3 provider requests per import (tokeninfo, metadata, content), max 20 suggestions, max 500 chars per suggestion via the shared parser. Content-Length is checked before reading. Downloads stream with a hard cap.
-- Closed refusals: arbitrary URLs, redirect following, wrong host, missing scope, expired token, nonselected file, trashed file, ID mismatch, unsupported MIME, oversize content, non-text bytes, and deceptive Content-Type.
-- No logging or persistence of provider access token, raw capability URL or key, file bytes, or personal contents. Success returns a sanitized file title, MIME label, and generic selection context for owner UI only. No provider file ID, resource key, token, or bytes appear in responses, receipts, or logs.
-- Bounded candidate facts as UNCONFIRMED with `drive_file` provenance. Never auto-confirm, never auto-add to Memory, never auto-publish, and never present provider text as verified marketing facts. The existing owner fact confirmation flow is reused. Public receipts stay free of provider identifiers.
+- Closed refusals: arbitrary URLs, redirect following, wrong host, missing scope, expired token, wrong audience, wrong Google account, missing or ambiguous audience or identity, nonselected file, trashed file, ID mismatch, unsupported MIME, oversize content, non-text bytes, and deceptive Content-Type.
+- Privacy-safe transport: provider access tokens travel only in POST bodies and Authorization Bearer headers, never in URLs. Tokeninfo uses Bearer per Google primary behavior because query strings appear in logs. No token in URL, logs, persistence, or responses. No raw capability URL or key, file bytes, or full private file body in public receipts or logs. Success returns a sanitized file title, MIME label, generic selection context, and bounded unconfirmed parsed text lines for owner UI only. No provider file ID, resource key, or token appears in responses, receipts, or logs.
+- Bounded candidate facts as UNCONFIRMED with `drive_file` provenance. Never auto-confirm, never auto-add to Memory, never auto-publish, and never present provider text as verified marketing facts. The existing owner fact confirmation flow is reused. Public receipts stay free of provider identifiers and full file bodies.
 - Public app stays keyless for this connector: no Meta calls, no model calls, no database writes. Product works without Drive configuration, with a clear optional unavailable state. Pasted-text import still works.
 
 ## Nov 3 Central planning assumption
@@ -25,10 +26,10 @@ Nov 3 is a Central planning target, not a proof date. Nov 4 is the deadline. A p
 This path uses synthetic test identities only, for example `synthetic-test-user-01` and `synthetic-test-user-02` in mocked tests. No personal names, emails, accounts, or asset filenames are used.
 
 1. Operator configures the three public Drive inputs in server environment only (see Configuration). No value goes in source, commits, logs, or docs.
-2. Owner signs in with existing Google identity sign-in when enabled, or uses demo placeholder mode when disabled. Drive intake binds to that actor and workspace.
+2. Owner signs in with existing Google identity sign-in. Demo placeholder mode and non-Google actors cannot use Drive intake; status reports unavailable with reason `auth_required`, config and suggestions require sign-in.
 3. Owner opens owner-input mode, sees Drive status, and chooses Choose Drive file. The UI loads official GIS and Picker libraries, requests a short lived GIS token for `drive.file` scope only, and shows a Picker filtered to Google Docs and plain text.
-4. Owner selects one file in Picker. The UI holds the selection ephemerally and posts only file ID, optional resource key, and GIS token to `POST /api/drive-import/suggestions`.
-5. Backend validates scope and expiry, reads metadata, enforces MIME and size bounds, downloads or exports bounded text with no redirects, parses with the shared unconfirmed parser, and returns unconfirmed suggestions with Drive file provenance and sanitized title context.
+4. Owner selects one file in Picker. The UI holds the selection ephemerally and posts only file ID, optional resource key, and GIS token in the POST body to `POST /api/drive-import/suggestions`. The selection display stays local browser behavior only.
+5. Backend validates scope, expiry, exact audience/client, and exact user identity against the signed-in Google actor, reads metadata for app-authorized files, enforces MIME and size bounds, downloads or exports bounded text with no redirects and Bearer headers only, parses with the shared unconfirmed parser, and returns bounded unconfirmed parsed lines with Drive file provenance and sanitized title context. File ID alone never proves fresh Picker selection.
 6. Owner edits suggestions and explicitly adds chosen lines as unconfirmed allowed claims, then explicitly confirms each in the existing fact form. Only confirmed values with `drive_file` source can become evidence in a later run. Unconfirmed values stay suggestions.
 
 ## External Google consent and review gate, honestly
@@ -49,28 +50,28 @@ Public Drive inputs live only in server process environment. They are never in s
 - `GOOGLE_DRIVE_APP_ID`: Cloud project number used by Picker. Served to frontend. No secret value here.
 - `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`: existing identity sign-in credentials with `openid profile email` only. Unchanged. Never broadened for Drive. Never served to frontend.
 
-When any Drive public input is missing, `GET /api/drive-import/status` reports `available` false with reason `drive_not_configured`, `GET /api/drive-import/config` returns 503, and `POST /api/drive-import/suggestions` returns 503. Pasted-text import still works.
+When any Drive public input is missing, `GET /api/drive-import/status` reports `available` false with reason `drive_not_configured`, `GET /api/drive-import/config` returns 503, and `POST /api/drive-import/suggestions` returns 503. When inputs exist but the actor is demo placeholder or non-Google, status reports `available` false with reason `auth_required`, config returns 401 for demo or 403 for non-Google, and suggestions returns 401 for demo or 403 for non-Google, with no provider calls. Pasted-text import still works.
 
 ## Bounded workflow and failure states
 
-- `GET /api/drive-import/status`: actor bound status with `available`, `configured`, `live_verified` false, `scope`, `supported_mime_types`, `max_bytes`, `max_requests`, and `reason`.
-- `GET /api/drive-import/config`: actor bound public Picker config only. 503 when unconfigured. 401 when LaunchCrew sign-in is required.
-- `POST /api/drive-import/suggestions`: body carries `file_id`, optional `resource_key`, and `drive_token`. Stateless, no database writes. Response carries `status` unconfirmed, `source` drive_file, `product_fact_source` drive_file, `file_title`, `mime_type`, `selection_context` Drive file selection, bounded `suggestions` with `confirmed` false, drop counts, and `parser_version` drive-import/v1.
-- Failure codes use generic details with no IDs, tokens, bytes, or titles: 401 for LaunchCrew sign-in required, 403 for Drive consent required or file unavailable or not selected, 413 for too large, 422 for unsupported type or invalid selection, 502 for provider error, 503 for unavailable. The UI maps these to actionable hints and always offers pasted-text import.
+- `GET /api/drive-import/status`: Google-actor bound status with `available`, `configured`, `live_verified` false, `scope`, `supported_mime_types`, `max_bytes`, `max_requests`, and `reason` (`ok`, `drive_not_configured`, or `auth_required`).
+- `GET /api/drive-import/config`: Google-actor bound public Picker config only. 503 when unconfigured. 401 when demo sign-in is required, 403 for non-Google actor.
+- `POST /api/drive-import/suggestions`: body carries `file_id`, optional `resource_key`, and `drive_token` in POST JSON only, never in URL. Stateless, no database writes. Response carries `status` unconfirmed, `source` drive_file, `product_fact_source` drive_file, `file_title` sanitized, `mime_type`, `selection_context` Drive file selection, bounded unconfirmed parsed `suggestions` with `confirmed` false, drop counts, and `parser_version` drive-import/v1.
+- Failure codes use generic details with no IDs, tokens, bytes, titles, or file bodies: 401 for LaunchCrew sign-in required, 403 for Drive consent required (including wrong audience, wrong Google account, missing or ambiguous identity) or file unavailable or not selected, 413 for too large, 422 for unsupported type or invalid selection, 502 for provider error, 503 for unavailable. The UI maps these to actionable hints and always offers pasted-text import.
 
 ## Files
 
-- `backend/drive_intake.py`: feature scoped connector, validation, read-only provider, and API routes. No Meta calls, no sign-in change, no outcome or migration change.
+- `backend/drive_intake.py`: feature scoped connector, Google owner binding, Bearer tokeninfo, read-only provider, and API routes. No Meta calls, no sign-in scope change, no outcome or migration change.
 - `backend/app.py`: additive router include plus `drive_file` in product fact source type only.
 - `launchcrew/import_suggestions.py`: additive `drive_file` source in shared unconfirmed parser.
 - `launchcrew/facts.py`: additive `drive_file` provenance label.
-- `web/src/lib/drive-intake.ts`: Drive scope, MIME, bounds, validation, and unconfirmed mapping helpers.
-- `web/src/components/drive-intake-form.tsx`: official GIS plus Picker intake with script loading, selection context, suggestions list, and failure states.
+- `web/src/lib/drive-intake.ts`: Drive scope, MIME, bounds, validation, auth-required status text, and unconfirmed mapping helpers.
+- `web/src/components/drive-intake-form.tsx`: official GIS plus Picker intake with script loading, local selection display only, suggestions list, and failure states.
 - `web/src/app/page.tsx`: mount Drive intake beside pasted-text import in owner-input mode.
 - `web/src/lib/product-facts.ts`: additive `drive_file` label.
 - `backend/openapi.json` and `web/src/lib/schema.d.ts`: regenerated contracts for Drive routes and `drive_file` provenance.
-- `backend/tests/test_drive_intake_api.py`: fake provider API tests for two-user denial, token discard, selected ID binding, MIME and size and redirect refusal, and no auto-confirm.
-- `web/tests/drive-intake.test.tsx`: fake intake UI tests for bounds, validation, mapping, title context without IDs, escaping, and no auto-confirm.
+- `backend/tests/test_drive_intake_api.py`: fake provider API tests for exact-owner success, wrong audience, wrong Google account with valid file, missing and ambiguous identity, anonymous and non-Google denial, schema-correct token discard, MIME and size and redirect refusal, and no auto-confirm.
+- `web/tests/drive-intake.test.tsx`: fake intake UI tests for bounds, validation, mapping, title context without IDs, escaping, auth-required status, and no auto-confirm.
 - `docs/drive-intake-decision.md`: this public generic decision record.
 
 No new migration is added. Intake stays ephemeral until the owner explicitly confirms in the existing fact form, so no head promotion is required.
@@ -80,10 +81,10 @@ No new migration is added. Intake stays ephemeral until the owner explicitly con
 Do not run live proof until explicit operator approval is recorded and deployment HTTPS is verified. Live proof is not in this task.
 
 - Confirm Drive API and Picker are enabled for the Cloud project, incremental `drive.file` consent is configured, and named test users are allowlisted, without recording personal identifiers.
-- Confirm `GET /api/drive-import/status` reports configured true with `live_verified` false before selection, and `GET /api/drive-import/config` returns public config only.
-- With a named test user, complete GIS consent for `drive.file` only, select one Google Doc in Picker, confirm export to text and unconfirmed suggestions with Drive file provenance, then select one plain text file and confirm download path.
-- Confirm second-actor isolation with two test subjects, consent expiry handling, re-pick after 403, oversize refusal, unsupported type refusal, and no provider identifiers in receipts or logs.
+- Confirm `GET /api/drive-import/status` reports configured true with `live_verified` false before selection for a signed-in Google owner, reports `auth_required` unavailable for demo mode, and `GET /api/drive-import/config` returns public config only to Google owners.
+- With a named test user, complete GIS consent for `drive.file` only, select one Google Doc in Picker, confirm export to text and bounded unconfirmed parsed lines with Drive file provenance and sanitized title, then select one plain text file and confirm download path. Confirm tokeninfo uses Bearer headers with no token in URL, and audience plus identity bind to the signed-in owner.
+- Confirm second-actor isolation with two test subjects, wrong-audience and wrong-account 403 without metadata calls, consent expiry handling, re-pick after 403, oversize refusal, unsupported type refusal, and no raw token, file IDs, or full file bodies in receipts or logs.
 - Confirm rollback: unset Drive public inputs to return to optional unavailable state, and confirm pasted-text import still works.
-- Confirm production review status separately before any public authorization claim.
+- Confirm production review status separately before any public authorization claim. Do not claim fresh Picker selection is proven server-side from file ID alone; only app-authorized file access is proven.
 
 What is NOT done: live Drive calls, live consent, production review, deployed status, CI execution, demo video, submission, and any external account change. This record is source-only plus fake provider tests. Do not claim tests pass, live Drive intake, production access, or deployed status from this source change.

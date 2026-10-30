@@ -529,10 +529,11 @@ export interface paths {
          * List Outcomes
          * @description List owner self-reports for an owned run, oldest first.
          *
-         *     Owner-entered only, never provider-measured. Reads are workspace
-         *     scoped and return 404 for foreign runs. Historical rows keep their
-         *     stored export revision after later edits; this read never gates on
-         *     the current approval or export state.
+         *     Owner-entered only, never provider-measured. Requires a signed-in
+         *     actor, matching POST. Reads are workspace scoped and return 404 for
+         *     foreign runs. Historical rows keep their stored export revision after
+         *     later edits; this read never gates on the current approval or export
+         *     state.
          */
         get: operations["list_outcomes_api_runs__run_id__outcomes_get"];
         put?: never;

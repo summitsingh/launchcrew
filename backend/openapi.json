@@ -4995,7 +4995,7 @@
     },
     "/api/runs/{run_id}/outcomes": {
       "get": {
-        "description": "List owner self-reports for an owned run, oldest first.\n\nOwner-entered only, never provider-measured. Reads are workspace\nscoped and return 404 for foreign runs. Historical rows keep their\nstored export revision after later edits; this read never gates on\nthe current approval or export state.",
+        "description": "List owner self-reports for an owned run, oldest first.\n\nOwner-entered only, never provider-measured. Requires a signed-in\nactor, matching POST. Reads are workspace scoped and return 404 for\nforeign runs. Historical rows keep their stored export revision after\nlater edits; this read never gates on the current approval or export\nstate.",
         "operationId": "list_outcomes_api_runs__run_id__outcomes_get",
         "parameters": [
           {

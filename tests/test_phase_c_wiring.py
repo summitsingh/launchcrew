@@ -144,7 +144,7 @@ if [ "$1" = "cloudformation" ] && [ "$2" = "create-change-set" ]; then
   esac
   if [ "$HAS_BODY" -eq 1 ]; then
     if [ "${FAKE_INFRA_CREATE:-ok}" = "exists" ]; then
-      echo "An error occurred (AlreadyExistsException) when calling the CreateChangeSet operation: change set infra-007 exists" >&2
+      echo "An error occurred (AlreadyExistsException) when calling the CreateChangeSet operation: change set infra-008 exists" >&2
       exit 254
     fi
   fi
@@ -587,7 +587,7 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-task""-definition" ]; then
     *launchcrew-demo-rolestate*)
       RS_HOST="${FAKE_DB_HOST:-launchcrew-demo.abc123.us-east-1.rds.amazonaws.com}"
       RS_MASTER="${FAKE_DB_USER:-launchcrew_app}"
-      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/RoleStateExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/RoleStateTaskRole%s","containerDefinitions":[{"name":"bootstrap-db-roles","essential":true,"command":["--verify-role-state"],"image":"%s","environment":[{"name":"LAUNCHCREW_DB_TLS_MODE","value":"verify-full"},{"name":"DATABASE_SSL_ROOTCERT","value":"/app/rds-ca-bundle.pem"},{"name":"DB_NAME","value":"launchcrew"},{"name":"DB_MASTER_USER","value":"%s"},{"name":"DB_HOST","value":"%s"},{"name":"APP_SCHEMA","value":"public"},{"name":"RUNTIME_USER","value":"launchcrew_runtime"},{"name":"MIGRATION_USER","value":"launchcrew_migration"}],"secrets":[{"name":"RUNTIME_DB_URL","valueFrom":"%s:database-url::"},{"name":"MIGRATION_DB_URL","valueFrom":"%s:database-url::"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_BOOT" "$RS_MASTER" "$RS_HOST" "$SEC_RT" "$SEC_MG"
+      printf '{"taskDefinition":{"taskDefinitionArn":"%s","executionRoleArn":"arn:aws:iam::111122223333:role/RoleStateExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/RoleStateTaskRole%s","containerDefinitions":[{"name":"bootstrap-db-roles","essential":true,"command":["--verify-role-state"],"image":"%s","environment":[{"name":"LAUNCHCREW_DB_TLS_MODE","value":"verify-full"},{"name":"DATABASE_SSL_ROOTCERT","value":"/app/rds-ca-bundle.pem"},{"name":"DB_NAME","value":"launchcrew"},{"name":"DB_MASTER_USER","value":"%s"},{"name":"DB_HOST","value":"%s"},{"name":"APP_SCHEMA","value":"public"},{"name":"RUNTIME_USER","value":"launchcrew_runtime"},{"name":"MIGRATION_USER","value":"launchcrew_migration"}],"secrets":[{"name":"RUNTIME_DB_URL","valueFrom":"%s:database-url::"},{"name":"MIGRATION_DB_URL","valueFrom":"%s:database-url::"}]}]}}\\n' "$TASKDEF" "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_BOOT" "$RS_MASTER" "$RS_HOST" "$SEC_RT" "$SEC_MG"
       exit 0 ;;
     *) echo "fake-aws: unexpected describe task definition: $*" >&2; exit 2 ;;
   esac
@@ -1022,7 +1022,7 @@ class PhaseCHarness(unittest.TestCase):
         return [call for call in calls if "run-task" in call]
 
     def run_enable_with_priors(self, shared_tmp, enable_extra_env=None,
-                               release="head007-testabc"):
+                               release="head008-testabc"):
         base = self.base_args()
         result_mat, _, _ = self.run_phase(
             [*base, "--phase", "material",
@@ -1154,7 +1154,7 @@ class ControllerOrderTests(PhaseCHarness):
         self.assertIn("desiredCount 0", result.stdout)
         self.assertIn("desiredCount 1", result.stdout)
         infra_exec = next(i for i, call in enumerate(calls)
-                          if "execute-change-set" in call and "infra-007" in call)
+                          if "execute-change-set" in call and "infra-008" in call)
         first_run = next(i for i, call in enumerate(calls) if "run-task" in call)
         deploy_true = next(i for i, call in enumerate(calls)
                            if "deploy " in call and "EnableServices=true" in call)
@@ -1679,10 +1679,10 @@ class StandalonePrereqTests(PhaseCHarness):
         self.assertIn("desiredCount 0", result.stdout)
         self.assertIn("services at 0", result.stdout)
         self.assertTrue(any("describe-services" in call for call in calls))
-        self.assertTrue(any("create-change-set" in call and "infra-007" in call
+        self.assertTrue(any("create-change-set" in call and "infra-008" in call
                             for call in calls))
         self.assertTrue(any("describe-change-set" in call for call in calls))
-        self.assertTrue(any("execute-change-set" in call and "changeSet/infra-007/" in call
+        self.assertTrue(any("execute-change-set" in call and "changeSet/infra-008/" in call
                             for call in calls))
         self.assertFalse(any("deploy " in call for call in calls))
         self.assertEqual(self.run_calls(calls), [])
@@ -2119,7 +2119,7 @@ class CreateChangeSetTemplateTests(unittest.TestCase):
         return [
             "cloudformation", "create-change-set",
             "--stack-name", STACK,
-            "--change-set-name", "infra-007",
+            "--change-set-name", "infra-008",
             "--change-set-type", "UPDATE",
             *template_args,
             "--parameters", "ParameterKey=EnableServices,ParameterValue=false",

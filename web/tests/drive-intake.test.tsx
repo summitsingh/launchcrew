@@ -103,6 +103,9 @@ describe('drive intake bounds and scope', () => {
     expect(driveStatusMessage(driveStatus({ available: false, configured: false, reason: 'drive_not_configured' }))).toContain(
       'not configured',
     );
+    expect(driveStatusMessage(driveStatus({ available: false, configured: true, reason: 'auth_required' }))).toContain(
+      'Google sign-in',
+    );
     expect(driveStatusMessage(null)).toContain('loading');
     expect(driveErrorMessage(401)).toContain('Sign in');
     expect(driveErrorMessage(403)).toContain('consent');

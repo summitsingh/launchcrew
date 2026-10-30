@@ -1,7 +1,7 @@
 """Google Drive selected-file read-only intake, optional connector.
 
-Scope: a practical named-test-user demo path for reading one user-selected
-Drive file via Picker plus GIS, returning bounded UNCONFIRMED suggestions
+Scope: a practical named-test-user demo path for reading one app-authorized
+Drive file via Picker plus GIS, returning bounded UNCONFIRMED parsed lines
 for the existing owner fact confirmation flow. This module never replaces
 Google identity sign-in (openid profile email only in backend/auth.py) and
 never replaces pasted-text import.
@@ -11,13 +11,22 @@ Drive file metadata, get, export, and download endpoints. It never calls
 create, update, delete, or permissions APIs. Picker filters to Docs and
 plain text. No photos.
 
-Consent: separate incremental drive.file scope via GIS, requested only in
-the Drive intake UI. Ordinary sign-in scopes stay narrow. The backend
-validates the GIS token for drive.file scope and expiry via tokeninfo,
-then reads only the Picker-selected file ID and resource key. Provider
-tokens are never logged, never persisted, and never returned.
+Consent and owner binding: separate incremental drive.file scope via GIS,
+requested only in the Drive intake UI. Ordinary sign-in scopes stay narrow.
+The backend validates the GIS token for drive.file scope and expiry, plus
+exact audience/client against GOOGLE_DRIVE_CLIENT_ID and exact user identity
+against the authenticated LaunchCrew actor google:<sub>, via tokeninfo.
+Missing, ambiguous, or mismatched audience or identity fails closed. The
+server then reads only the stated file ID and resource key. A file ID alone
+does not prove a fresh Picker selection server-side; drive.file scope only
+permits app-authorized files the user opened for this app. The latest UI
+selection display stays local browser behavior only. Provider tokens travel
+only in POST bodies and Authorization Bearer headers, never in URLs, logs,
+persistence, or responses.
 
-Binding: every endpoint requires the LaunchCrew actor via backend.auth.
+Binding: every endpoint requires a Google LaunchCrew actor via backend.auth.
+Demo placeholder and non-Google actors fail closed even when Drive config
+exists, so status reports unavailable, config and suggestions require sign-in.
 Workspace is derived server-side with store.workspace_for_actor. The API
 accepts no workspace ID and no URLs, so anonymous and foreign workspace
 use fails closed. Import is stateless: no database writes, no Memory
@@ -31,11 +40,11 @@ followed. Hosts are pinned to Google endpoints. Deceptive MIME, non-text,
 and overlong selections are refused.
 
 Provenance: success returns status unconfirmed, source drive_file, and
-product_fact_source drive_file, with a sanitized file title and a generic
-selection context for owner UI. No provider file ID, resource key, token,
-bytes, or personal contents are logged, persisted, or returned. Receipts
-stay free of provider identifiers. Live Drive proof has not been run;
-status live_verified stays false.
+product_fact_source drive_file, with a sanitized file title, MIME label,
+generic selection context, and bounded unconfirmed parsed text lines for
+owner UI. No provider file ID, resource key, token, bytes, or full private
+file body are logged, persisted, or returned in public receipts. Live Drive
+proof has not been run; status live_verified stays false.
 """
 import os
 import re
@@ -137,6 +146,29 @@ def drive_configured() -> bool:
         and os.getenv('GOOGLE_DRIVE_API_KEY', '').strip()
         and os.getenv('GOOGLE_DRIVE_APP_ID', '').strip()
     )
+
+
+def _google_sub(actor: object) -> str | None:
+    if not isinstance(actor, str):
+        return None
+    if not actor.startswith('google:'):
+        return None
+    sub = actor[len('google:'):]
+    if not sub or not sub.strip():
+        return None
+    for char in sub:
+        if char.isspace() or ord(char) < 33 or ord(char) > 126:
+            return None
+    return sub
+
+
+def require_google_sub(actor: object) -> str:
+    sub = _google_sub(actor)
+    if sub is not None:
+        return sub
+    if actor is None or actor == '' or actor == 'demo_placeholder':
+        raise HTTPException(401, 'Sign in required')
+    raise HTTPException(403, 'Drive consent required')
 
 
 def drive_public_config_dict() -> dict:
@@ -259,6 +291,8 @@ def check_drive_url(url: str) -> None:
         raise HTTPException(502, 'Drive provider error')
     if not parsed.path.startswith('/drive/v3/files/'):
         raise HTTPException(502, 'Drive provider error')
+    if 'access_token' in (parsed.query or '').lower():
+        raise HTTPException(502, 'Drive provider error')
 
 
 def check_tokeninfo_url(url: str) -> None:
@@ -268,7 +302,11 @@ def check_tokeninfo_url(url: str) -> None:
         raise HTTPException(502, 'Drive provider error') from None
     if parsed.scheme != 'https' or parsed.hostname != DRIVE_TOKENINFO_HOST:
         raise HTTPException(502, 'Drive provider error')
+    if parsed.username or parsed.password or parsed.fragment:
+        raise HTTPException(502, 'Drive provider error')
     if parsed.path != '/tokeninfo':
+        raise HTTPException(502, 'Drive provider error')
+    if parsed.query:
         raise HTTPException(502, 'Drive provider error')
 
 
@@ -304,10 +342,16 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def _http_get(url: str, token: str, max_bytes: int):
+    try:
+        early = urllib.parse.urlsplit(url)
+    except Exception:
+        raise HTTPException(502, 'Drive provider error') from None
+    if 'access_token' in (early.query or '').lower():
+        raise HTTPException(502, 'Drive provider error')
     check_drive_url(url) if url.startswith(DRIVE_API_BASE) else check_tokeninfo_url(url)
     opener = urllib.request.build_opener(_NoRedirect)
     request = urllib.request.Request(url, method='GET')
-    if url.startswith(DRIVE_API_BASE):
+    if url.startswith(DRIVE_API_BASE) or url.startswith(DRIVE_TOKENINFO_URL):
         request.add_header('Authorization', 'Bearer ' + token)
     try:
         response = opener.open(request, timeout=15)
@@ -340,8 +384,8 @@ def _http_get(url: str, token: str, max_bytes: int):
 
 class DriveProvider:
     def tokeninfo(self, token: str) -> dict:
-        url = DRIVE_TOKENINFO_URL + '?' + urllib.parse.urlencode({'access_token': token})
-        check_tokeninfo_url(DRIVE_TOKENINFO_URL)
+        url = DRIVE_TOKENINFO_URL
+        check_tokeninfo_url(url)
         data, _, _ = _http_get(url, token, 10000)
         import json
 
@@ -391,6 +435,37 @@ def check_token_scope(payload: dict) -> None:
         raise HTTPException(403, 'Drive consent required')
 
 
+def check_token_binding(payload: dict, actor: str) -> None:
+    expected_client = os.getenv('GOOGLE_DRIVE_CLIENT_ID', '').strip()
+    if not expected_client:
+        raise HTTPException(503, 'Drive intake unavailable')
+    expected_sub = require_google_sub(actor)
+    audiences: list[str] = []
+    for key in ('aud', 'audience', 'issued_to'):
+        value = payload.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, str) or not value.strip():
+            raise HTTPException(403, 'Drive consent required')
+        audiences.append(value.strip())
+    if not audiences:
+        raise HTTPException(403, 'Drive consent required')
+    if len(set(audiences)) != 1 or audiences[0] != expected_client:
+        raise HTTPException(403, 'Drive consent required')
+    identities: list[str] = []
+    for key in ('sub', 'user_id'):
+        value = payload.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, str) or not value.strip():
+            raise HTTPException(403, 'Drive consent required')
+        identities.append(value.strip())
+    if not identities:
+        raise HTTPException(403, 'Drive consent required')
+    if len(set(identities)) != 1 or identities[0] != expected_sub:
+        raise HTTPException(403, 'Drive consent required')
+
+
 def decode_text(data: bytes) -> str:
     try:
         text = data.decode('utf-8')
@@ -403,13 +478,14 @@ def decode_text(data: bytes) -> str:
     return text
 
 
-def import_drive_selection(file_id: str, resource_key: str | None, token: str, provider: DriveProvider) -> dict:
+def import_drive_selection(file_id: str, resource_key: str | None, token: str, provider: DriveProvider, actor: str) -> dict:
     validated_id = validate_file_id(file_id)
     check_no_url(validated_id)
     validated_key = validate_resource_key(resource_key)
     if validated_key:
         check_no_url(validated_key)
     validated_token = validate_token(token)
+    require_google_sub(actor)
     requests = 0
 
     def counted():
@@ -421,6 +497,7 @@ def import_drive_selection(file_id: str, resource_key: str | None, token: str, p
     counted()
     scope_payload = provider.tokeninfo(validated_token)
     check_token_scope(scope_payload)
+    check_token_binding(scope_payload, actor)
 
     counted()
     meta = provider.metadata(validated_id, validated_key, validated_token)
@@ -492,12 +569,28 @@ def import_drive_selection(file_id: str, resource_key: str | None, token: str, p
 @router.get('/status', response_model=DriveStatusOut)
 def drive_status(actor: str = Depends(auth.actor)):
     store.workspace_for_actor(actor)
+    if not drive_configured():
+        return drive_status_dict()
+    if _google_sub(actor) is None:
+        return {
+            'available': False,
+            'configured': True,
+            'live_verified': False,
+            'max_bytes': DRIVE_MAX_BYTES,
+            'max_requests': DRIVE_MAX_REQUESTS_PER_IMPORT,
+            'reason': 'auth_required',
+            'scope': DRIVE_SCOPE,
+            'supported_mime_types': list(SUPPORTED_MIME_TYPES),
+        }
     return drive_status_dict()
 
 
 @router.get('/config', response_model=DrivePublicConfigOut)
 def drive_config(actor: str = Depends(auth.actor)):
     store.workspace_for_actor(actor)
+    if not drive_configured():
+        raise HTTPException(503, 'Drive intake unavailable')
+    require_google_sub(actor)
     return drive_public_config_dict()
 
 
@@ -506,4 +599,5 @@ def drive_suggestions(body: DriveImportIn, actor: str = Depends(auth.actor), pro
     store.workspace_for_actor(actor)
     if not drive_configured():
         raise HTTPException(503, 'Drive intake unavailable')
-    return import_drive_selection(body.file_id, body.resource_key, provider=provider, token=body.drive_token)
+    require_google_sub(actor)
+    return import_drive_selection(body.file_id, body.resource_key, provider=provider, token=body.drive_token, actor=actor)

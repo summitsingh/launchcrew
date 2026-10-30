@@ -83,6 +83,9 @@ export function driveStatusMessage(status: DriveStatusOut | null | undefined): s
   if (status.reason === 'drive_not_configured') {
     return 'Drive intake is not configured. Pasted-text import still works.';
   }
+  if (status.reason === 'auth_required') {
+    return 'Drive intake requires Google sign-in. Pasted-text import still works.';
+  }
   return 'Drive intake is unavailable. Pasted-text import still works.';
 }
 
