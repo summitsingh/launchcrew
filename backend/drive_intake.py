@@ -60,7 +60,10 @@ writes, no model calls, no Meta calls.
 Bounds: explicit max bytes and max requests, enforced before allocation.
 Content-Length is checked before reading. Downloads stream with a hard
 cap. Text over the parser bound is refused as oversize. Only Docs export
-to text/plain and text/plain download are supported. Redirects are never
+to text/plain and text/plain download are supported. Docs export uses
+documented mimeType query only; files.get uses documented fields, alt,
+and shared-drive params only. Optional resource key travels in
+X-Goog-Drive-Resource-Keys header only, never URL. Redirects are never
 followed. Hosts are pinned to Google endpoints. Deceptive MIME, non-text,
 and overlong selections are refused.
 
@@ -116,12 +119,14 @@ DOC_MIME = 'application/vnd.google-apps.document'
 TEXT_MIME = 'text/plain'
 SUPPORTED_MIME_TYPES: tuple[str, ...] = (DOC_MIME, TEXT_MIME)
 EXPORT_MIME_FOR_DOC = 'text/plain'
+DRIVE_RESOURCE_KEYS_HEADER = 'X-Goog-Drive-Resource-Keys'
 
 DRIVE_PARSER_VERSION = 'drive-import/v1'
 SELECTION_CONTEXT = 'Drive file selection'
 
 _FILE_ID_RE = re.compile(r'^[A-Za-z0-9_-]{1,256}$')
 _RESOURCE_KEY_RE = re.compile(r'^[A-Za-z0-9_-]{1,256}$')
+_RESOURCE_KEYS_HEADER_RE = re.compile(r'^[A-Za-z0-9_-]{1,256}/[A-Za-z0-9_-]{1,256}$')
 
 router = APIRouter(prefix='/api/drive-import')
 
@@ -327,23 +332,34 @@ def check_no_url(value: object) -> None:
         raise HTTPException(422, 'Invalid Drive selection')
 
 
-def build_metadata_url(file_id: str, resource_key: str | None) -> str:
+def resource_keys_header_value(file_id: str, resource_key: str | None) -> str | None:
+    if not resource_key:
+        return None
+    validated_id = validate_file_id(file_id)
+    validated_key = validate_resource_key(resource_key)
+    if validated_key is None:
+        return None
+    return validated_id + '/' + validated_key
+
+
+def build_metadata_url(file_id: str, resource_key: str | None = None) -> str:
+    # Documented files.get query only. Resource key is sent via
+    # X-Goog-Drive-Resource-Keys header, never URL.
+    _ = resource_key
     query = {'fields': 'id,name,mimeType,size,trashed', 'supportsAllDrives': 'true'}
-    if resource_key:
-        query['resourceKey'] = resource_key
     return DRIVE_API_BASE + '/files/' + urllib.parse.quote(file_id, safe='') + '?' + urllib.parse.urlencode(query)
 
 
 def build_content_url(file_id: str, resource_key: str | None, mime: str) -> str:
+    # Documented query only. Docs export uses mimeType only. Plain-text
+    # files.get uses alt plus shared-drive params only. Resource key is
+    # sent via X-Goog-Drive-Resource-Keys header, never URL.
+    _ = resource_key
     base = DRIVE_API_BASE + '/files/' + urllib.parse.quote(file_id, safe='')
     if mime == DOC_MIME:
-        query = {'mimeType': EXPORT_MIME_FOR_DOC, 'supportsAllDrives': 'true'}
-        if resource_key:
-            query['resourceKey'] = resource_key
+        query = {'mimeType': EXPORT_MIME_FOR_DOC}
         return base + '/export?' + urllib.parse.urlencode(query)
     query = {'alt': 'media', 'supportsAllDrives': 'true'}
-    if resource_key:
-        query['resourceKey'] = resource_key
     return base + '?' + urllib.parse.urlencode(query)
 
 
@@ -358,7 +374,8 @@ def check_drive_url(url: str) -> None:
         raise HTTPException(502, 'Drive provider error')
     if not parsed.path.startswith('/drive/v3/files/'):
         raise HTTPException(502, 'Drive provider error')
-    if 'access_token' in (parsed.query or '').lower():
+    lowered = (parsed.query or '').lower()
+    if 'access_token' in lowered or 'resourcekey' in lowered or 'resource_key' in lowered:
         raise HTTPException(502, 'Drive provider error')
 
 
@@ -393,17 +410,22 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         raise HTTPException(502, 'Drive provider error')
 
 
-def _http_get(url: str, token: str, max_bytes: int):
+def _http_get(url: str, token: str, max_bytes: int, resource_keys: str | None = None):
     try:
         early = urllib.parse.urlsplit(url)
     except Exception:
         raise HTTPException(502, 'Drive provider error') from None
-    if 'access_token' in (early.query or '').lower():
+    lowered = (early.query or '').lower()
+    if 'access_token' in lowered or 'resourcekey' in lowered or 'resource_key' in lowered:
         raise HTTPException(502, 'Drive provider error')
     check_drive_url(url)
+    if resource_keys is not None and not _RESOURCE_KEYS_HEADER_RE.match(resource_keys):
+        raise HTTPException(502, 'Drive provider error')
     opener = urllib.request.build_opener(_NoRedirect)
     request = urllib.request.Request(url, method='GET')
     request.add_header('Authorization', 'Bearer ' + token)
+    if resource_keys is not None:
+        request.add_header(DRIVE_RESOURCE_KEYS_HEADER, resource_keys)
     try:
         response = opener.open(request, timeout=15)
     except HTTPException:
@@ -438,7 +460,8 @@ class DriveProvider:
         import json
 
         url = build_metadata_url(file_id, resource_key)
-        data, _, _ = _http_get(url, token, 10000)
+        header = resource_keys_header_value(file_id, resource_key)
+        data, _, _ = _http_get(url, token, 10000, resource_keys=header)
         try:
             payload = json.loads(data.decode('utf-8'))
         except Exception:
@@ -449,7 +472,8 @@ class DriveProvider:
 
     def content(self, file_id: str, resource_key: str | None, token: str, mime: str):
         url = build_content_url(file_id, resource_key, mime)
-        return _http_get(url, token, DRIVE_MAX_BYTES)
+        header = resource_keys_header_value(file_id, resource_key)
+        return _http_get(url, token, DRIVE_MAX_BYTES, resource_keys=header)
 
 
 def get_provider() -> DriveProvider:
