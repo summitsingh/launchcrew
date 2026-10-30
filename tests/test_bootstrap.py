@@ -925,6 +925,65 @@ print(bad if bad else (s+"|"+w+"|"+n))' "$LIST_INPUT_PATH" 2>/dev/null || echo M
   LIST_DESIRED="$(printf '%s' "$LIST_DECODED" | cut -d'|' -f2)"
   LIST_NEXT="$(printf '%s' "$LIST_DECODED" | cut -d'|' -f3)"
   if [ -n "$LIST_TOKEN" ]; then printf '%s' "$LIST_TOKEN" >"${FAKE_TOKEN_FILE:-/dev/null}" 2>/dev/null || true; fi
+  if [ -n "$LIST_DESIRED" ]; then
+    if [ "$LIST_DESIRED" != "STOPPED" ]; then
+      echo "An error occurred (InvalidParameterException) when calling the ListTasks operation: unsupported desiredStatus" >&2
+      exit 254
+    fi
+    if [ "${FAKE_STOPPED_FAIL:-0}" = "1" ]; then
+      echo "An error occurred (ThrottlingException) when calling the ListTasks operation: Rate exceeded" >&2
+      exit 254
+    fi
+    if [ "${FAKE_STOPPED_MALFORMED:-0}" = "1" ]; then printf 'not-json{{{'; exit 0; fi
+    if [ "${FAKE_STOPPED_NULL:-0}" = "1" ]; then printf '%s' '{"taskArns":[null]}'; exit 0; fi
+    if [ "${FAKE_STOPPED_EMPTY_STRING:-0}" = "1" ]; then printf '%s' '{"taskArns":[""]}'; exit 0; fi
+    if [ "${FAKE_STOPPED_NUMBER:-0}" = "1" ]; then printf '%s' '{"taskArns":[1]}'; exit 0; fi
+    if [ "${FAKE_STOPPED_FOREIGN:-0}" = "1" ]; then printf '%s' '{"taskArns":["arn:aws:ecs:us-east-1:999988887777:task/launchcrew-demo/foreign002"]}'; exit 0; fi
+    if [ "${FAKE_STOPPED_OBJECT:-0}" = "1" ]; then printf '%s' '{"taskArns":[{"taskArn":"arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/stopped-001"}]}'; exit 0; fi
+    if [ "${FAKE_STOPPED_DUPLICATE:-0}" = "1" ]; then printf '%s' '{"taskArns":["arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/stopped-001","arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/stopped-001"]}'; exit 0; fi
+    if [ "${FAKE_STOPPED_TRUNCATED:-0}" = "1" ]; then
+      printf '{"taskArns":[],"nextToken":"more"}'
+      exit 0
+    fi
+    if [ "${FAKE_STOPPED_PAGINATED:-0}" = "1" ]; then
+      if [ -z "$LIST_NEXT" ]; then
+        printf '{"taskArns":[],"nextToken":"page2"}'
+        exit 0
+      fi
+      printf '%s' '{"taskArns":[]}'
+      exit 0
+    fi
+    if [ "${FAKE_STOPPED_SECOND_NONEMPTY:-0}" = "1" ]; then
+      STOPPED_COUNT="$(grep -c "STOPPED" "$LOG" 2>/dev/null || echo 0)"
+      STOPPED_COUNT="$(printf '%s' "$STOPPED_COUNT" | tr -d '[:space:]')"
+      if [ -n "$STOPPED_COUNT" ] && [ "$STOPPED_COUNT" -ge 2 ] 2>/dev/null; then
+        printf '%s' '{"taskArns":["arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/stopped-001"]}'
+        exit 0
+      fi
+      if [ -n "$LIST_NEXT" ]; then printf '%s' '{"taskArns":[]}'; exit 0; fi
+      printf '%s' '{"taskArns":[]}'
+      exit 0
+    fi
+    if [ "${FAKE_STOPPED_ONE:-0}" = "1" ]; then
+      printf '%s' '{"taskArns":["arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/stopped-001"]}'
+      exit 0
+    fi
+    if [ "${FAKE_STOPPED_TWO:-0}" = "1" ]; then
+      printf '%s' '{"taskArns":["arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/stopped-001","arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/stopped-002"]}'
+      exit 0
+    fi
+    if [ -n "$LIST_NEXT" ]; then printf '%s' '{"taskArns":[]}'; exit 0; fi
+    printf '%s' '{"taskArns":[]}'
+    exit 0
+  fi
+  if [ "${FAKE_LIST_SECOND_NONEMPTY:-0}" = "1" ]; then
+    STARTEDBY_COUNT="$(grep -c "startedBy" "$LOG" 2>/dev/null || echo 0)"
+    STARTEDBY_COUNT="$(printf '%s' "$STARTEDBY_COUNT" | tr -d '[:space:]')"
+    if [ -n "$STARTEDBY_COUNT" ] && [ "$STARTEDBY_COUNT" -ge 2 ] 2>/dev/null; then
+      printf '{"taskArns":["arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/running001"]}'
+      exit 0
+    fi
+  fi
   if [ "${FAKE_LIST_FAIL:-0}" = "1" ]; then
     echo "An error occurred (ThrottlingException) when calling the ListTasks operation: Rate exceeded" >&2
     exit 254
@@ -1022,11 +1081,21 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-tasks" ]; then
   if [ "$DESCRIBE_MODE" = "failures" ]; then printf '{"tasks":[],"failures":[{"arn":"arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/missing","reason":"MISSING"}]}\\n'; exit 0; fi
   if [ "$DESCRIBE_MODE" = "error" ]; then echo "An error occurred (ThrottlingException) when calling the DescribeTasks operation: Rate exceeded" >&2; exit 254; fi
   REQUESTED=""
-  REQUESTED_PREV=""
+  REQUESTED_ALL=""
+  REQUESTED_IN=0
   for REQUESTED_ARG in "$@"; do
-    if [ "$REQUESTED_PREV" = "--tasks" ]; then REQUESTED="$REQUESTED_ARG"; fi
-    REQUESTED_PREV="$REQUESTED_ARG"
+    if [ "$REQUESTED_ARG" = "--tasks" ]; then REQUESTED_IN=1; continue; fi
+    if [ "$REQUESTED_IN" -eq 1 ]; then
+      case "$REQUESTED_ARG" in
+        --*) REQUESTED_IN=0 ;;
+        *)
+          if [ -z "$REQUESTED" ]; then REQUESTED="$REQUESTED_ARG"; fi
+          if [ -z "$REQUESTED_ALL" ]; then REQUESTED_ALL="$REQUESTED_ARG"; else REQUESTED_ALL="$REQUESTED_ALL $REQUESTED_ARG"; fi
+          ;;
+      esac
+    fi
   done
+  if [ -z "$REQUESTED_ALL" ] && [ -n "$REQUESTED" ]; then REQUESTED_ALL="$REQUESTED"; fi
   if [ "${FAKE_AGED_INIT:-0}" = "1" ]; then
     case "$REQUESTED" in
       *prior*|*legacy*|*aged*)
@@ -1071,6 +1140,66 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-tasks" ]; then
     malformed_json)
       printf 'not-json{{{'
       exit 0 ;;
+  esac
+  case "$REQUESTED_ALL" in
+    *stopped-*)
+      if [ "${FAKE_STOPPED_DESCRIBE_FAIL:-0}" = "1" ]; then
+        echo "An error occurred (ThrottlingException) when calling the DescribeTasks operation: Rate exceeded" >&2
+        exit 254
+      fi
+      if [ "${FAKE_STOPPED_DESCRIBE_MALFORMED:-0}" = "1" ]; then printf 'not-json{{{'; exit 0; fi
+      if [ "${FAKE_STOPPED_MISSING:-0}" = "1" ]; then
+        printf '%s' '{"tasks":[],"failures":[{"arn":"'"$REQUESTED"'","reason":"MISSING"}]}'
+        exit 0
+      fi
+      if [ "${FAKE_STOPPED_MULTIPLE_FAILURES:-0}" = "1" ]; then
+        printf '%s' '{"tasks":[],"failures":[{"arn":"'"$REQUESTED"'","reason":"MISSING"},{"arn":"arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/other-task-999","reason":"MISSING"}]}'
+        exit 0
+      fi
+      python3 - "$REQUESTED_ALL" "${FAKE_STOPPED_STARTEDBY:-}" "${FAKE_STOPPED_DESIRED:-STOPPED}" "${FAKE_STOPPED_LASTSTATUS:-STOPPED}" "${FAKE_STOPPED_CLUSTER_MISMATCH:-0}" "${FAKE_STOPPED_TASK_MISMATCH:-0}" "${FAKE_STOPPED_COUNT_MISMATCH:-0}" "${FAKE_STOPPED_NO_STARTEDBY:-0}" "${FAKE_STOPPED_MISSING_DESIRED:-0}" "${FAKE_STOPPED_MISSING_LAST:-0}" "${FAKE_STOPPED_FOREIGN_TASK:-0}" <<'PYEOF'
+import json, sys
+req_all = sys.argv[1]
+startedby = sys.argv[2] if len(sys.argv) > 2 else ""
+desired = sys.argv[3] if len(sys.argv) > 3 else "STOPPED"
+last = sys.argv[4] if len(sys.argv) > 4 else "STOPPED"
+cluster_mismatch = sys.argv[5] if len(sys.argv) > 5 else "0"
+task_mismatch = sys.argv[6] if len(sys.argv) > 6 else "0"
+count_mismatch = sys.argv[7] if len(sys.argv) > 7 else "0"
+no_startedby = sys.argv[8] if len(sys.argv) > 8 else "0"
+missing_desired = sys.argv[9] if len(sys.argv) > 9 else "0"
+missing_last = sys.argv[10] if len(sys.argv) > 10 else "0"
+foreign_task = sys.argv[11] if len(sys.argv) > 11 else "0"
+requested = [p for p in req_all.split() if p]
+if count_mismatch == "1" and len(requested) > 1:
+    requested_out = requested[:1]
+else:
+    requested_out = requested
+tasks = []
+for arn in requested_out:
+    task_arn = arn
+    if foreign_task == "1":
+        task_arn = "arn:aws:ecs:us-east-1:999988887777:task/launchcrew-demo/foreign002"
+    elif task_mismatch == "1":
+        task_arn = arn + "-wrong"
+    if cluster_mismatch == "1":
+        cluster_arn = "arn:aws:ecs:us-east-1:111122223333:cluster/other-cluster"
+    else:
+        cluster_arn = "arn:aws:ecs:us-east-1:111122223333:cluster/launchcrew-demo"
+    entry = {"taskArn": task_arn, "clusterArn": cluster_arn}
+    if missing_desired != "1":
+        entry["desiredStatus"] = desired
+    if missing_last != "1":
+        entry["lastStatus"] = last
+    if no_startedby != "1":
+        if startedby:
+            entry["startedBy"] = startedby
+        else:
+            entry["startedBy"] = "lc-" + "e" * 30
+    tasks.append(entry)
+print(json.dumps({"tasks": tasks, "failures": []}))
+PYEOF
+      exit 0
+      ;;
   esac
   TASK_LINE=""
   if [ -n "$REQUESTED" ] && [ -n "${FAKE_TASKDEF_FILE:-}" ] && [ -f "$FAKE_TASKDEF_FILE" ]; then
@@ -6432,6 +6561,755 @@ class InitRecoveryTests(BootstrapHarness):
             self.assertIn("UNREADABLE", combined)
             self.assertFalse(any("run-task" in c for c in calls))
             self.assertEqual(prior.read_bytes(), before)
+
+    def test_stopped_desired_running_with_old_token_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_STOPPED_ONE": "1",
+                           "FAKE_STOPPED_STARTEDBY": self.INIT_TOKEN,
+                           "FAKE_STOPPED_LASTSTATUS": "RUNNING"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("STOPPED", combined)
+            self.assertIn("still", combined.lower())
+            self.assertIn("executing", combined.lower())
+            self.assertIn("RUNNING", combined)
+            self.assertIn("cannot proceed", combined)
+            self.assertNotIn("point-in-time observation", combined)
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 1)
+            self.assertIn("launchcrew-demo-sdkmaterial", run_calls[0])
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in run_calls))
+            for call in calls:
+                if "launchcrew-demo-sdkinit" in call:
+                    parts = call.split()
+                    self.assertEqual(parts[0], "ecs")
+                    self.assertIn(parts[1], ("describe-tasks", "describe-task""-definition"))
+            for banned in ("put-secret-value", "PutSecretValue",
+                           "export-certificate", "ExportCertificate",
+                           "MigrationTaskDefinition"):
+                self.assertFalse(any(banned in c for c in calls), msg=banned)
+            self.assertEqual(prior.read_bytes(), before)
+            list_calls = [c for c in calls if "list-tasks" in c]
+            self.assertTrue(len(list_calls) >= 1)
+            for call in list_calls:
+                self.assertIn("--no-paginate", call)
+                self.assertIn("--cli-input-json", call)
+                self.assertNotIn("--started-by", call)
+                self.assertNotIn("--desired-status", call)
+                self.assertNotIn("--next-token", call)
+            decoded = [c for c in calls if "INPUT_JSON_LIST" in c]
+            self.assertTrue(any("startedBy" in d for d in decoded))
+            self.assertTrue(any("desiredStatus" in d and "STOPPED" in d for d in decoded))
+            self.assertFalse(any("startedBy" in d and "desiredStatus" in d for d in decoded))
+            stopped_descs = [c for c in calls if "describe-tasks" in c and "stopped-" in c]
+            self.assertTrue(len(stopped_descs) >= 1)
+            for call in stopped_descs:
+                parts = call.split()
+                self.assertIn("--cluster", parts)
+                self.assertIn("launchcrew-demo", parts)
+                idx = parts.index("--tasks")
+                batch = []
+                for tok in parts[idx + 1:]:
+                    if tok.startswith("--"):
+                        break
+                    batch.append(tok)
+                self.assertTrue(1 <= len(batch) <= 100)
+                for arn in batch:
+                    self.assertTrue(arn.startswith(f"arn:aws:ecs:{REGION}:{ACCOUNT}:task/{STACK}/"))
+
+    def test_stopped_desired_stopping_with_old_token_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_STOPPED_ONE": "1",
+                           "FAKE_STOPPED_STARTEDBY": self.INIT_TOKEN,
+                           "FAKE_STOPPED_LASTSTATUS": "STOPPING"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("STOPPED", combined)
+            self.assertIn("still", combined.lower())
+            self.assertIn("executing", combined.lower())
+            self.assertIn("STOPPING", combined)
+            self.assertIn("cannot proceed", combined)
+            self.assertNotIn("point-in-time observation", combined)
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 1)
+            self.assertIn("launchcrew-demo-sdkmaterial", run_calls[0])
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in run_calls))
+            for call in calls:
+                if "launchcrew-demo-sdkinit" in call:
+                    parts = call.split()
+                    self.assertEqual(parts[0], "ecs")
+                    self.assertIn(parts[1], ("describe-tasks", "describe-task""-definition"))
+            for banned in ("put-secret-value", "PutSecretValue",
+                           "export-certificate", "ExportCertificate",
+                           "MigrationTaskDefinition"):
+                self.assertFalse(any(banned in c for c in calls), msg=banned)
+            self.assertEqual(prior.read_bytes(), before)
+            decoded = [c for c in calls if "INPUT_JSON_LIST" in c]
+            self.assertTrue(any("startedBy" in d for d in decoded))
+            self.assertTrue(any("desiredStatus" in d and "STOPPED" in d for d in decoded))
+            self.assertFalse(any("startedBy" in d and "desiredStatus" in d for d in decoded))
+
+    def test_same_token_second_stopped_task_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_STOPPED_ONE": "1",
+                           "FAKE_STOPPED_STARTEDBY": self.INIT_TOKEN,
+                           "FAKE_STOPPED_LASTSTATUS": "STOPPED"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("same-token", combined)
+            self.assertIn("second", combined.lower())
+            self.assertIn("cannot proceed", combined)
+            self.assertNotIn("point-in-time observation", combined)
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 1)
+            self.assertIn("launchcrew-demo-sdkmaterial", run_calls[0])
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in run_calls))
+            for call in calls:
+                if "launchcrew-demo-sdkinit" in call:
+                    parts = call.split()
+                    self.assertEqual(parts[0], "ecs")
+                    self.assertIn(parts[1], ("describe-tasks", "describe-task""-definition"))
+            for banned in ("put-secret-value", "PutSecretValue",
+                           "export-certificate", "ExportCertificate",
+                           "MigrationTaskDefinition"):
+                self.assertFalse(any(banned in c for c in calls), msg=banned)
+            self.assertEqual(prior.read_bytes(), before)
+            decoded = [c for c in calls if "INPUT_JSON_LIST" in c]
+            self.assertTrue(any("startedBy" in d for d in decoded))
+            self.assertTrue(any("desiredStatus" in d and "STOPPED" in d for d in decoded))
+            self.assertFalse(any("startedBy" in d and "desiredStatus" in d for d in decoded))
+
+    def test_stopped_list_foreign_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_STOPPED_FOREIGN": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("STOPPED sweep", combined)
+            self.assertIn("malformed", combined.lower())
+            self.assertIn("cannot prove absence", combined)
+            self.assertNotIn("point-in-time observation", combined)
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 1)
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in run_calls))
+            for banned in ("put-secret-value", "PutSecretValue",
+                           "export-certificate", "ExportCertificate"):
+                self.assertFalse(any(banned in c for c in calls), msg=banned)
+            self.assertEqual(prior.read_bytes(), before)
+            list_calls = [c for c in calls if "list-tasks" in c]
+            for call in list_calls:
+                self.assertIn("--no-paginate", call)
+                self.assertIn("--cli-input-json", call)
+                self.assertNotIn("--started-by", call)
+                self.assertNotIn("--desired-status", call)
+
+    def test_stopped_list_malformed_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_STOPPED_MALFORMED": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("STOPPED sweep", combined)
+            self.assertIn("malformed", combined.lower())
+            self.assertIn("cannot prove absence", combined)
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 1)
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in run_calls))
+            self.assertEqual(prior.read_bytes(), before)
+
+    def test_stopped_list_paginated_empty_succeeds(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_STOPPED_PAGINATED": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            combined = result.stdout + result.stderr
+            self.assertIn("point-in-time observation", combined)
+            self.assertIn("not an absolute global or forever guarantee", combined)
+            self.assertNotIn("exhaustive", combined.lower())
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 1)
+            self.assertIn("launchcrew-demo-sdkmaterial", run_calls[0])
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in run_calls))
+            for call in calls:
+                if "launchcrew-demo-sdkinit" in call:
+                    parts = call.split()
+                    self.assertEqual(parts[0], "ecs")
+                    self.assertIn(parts[1], ("describe-tasks", "describe-task""-definition"))
+            for banned in ("put-secret-value", "PutSecretValue",
+                           "export-certificate", "ExportCertificate"):
+                self.assertFalse(any(banned in c for c in calls), msg=banned)
+            self.assertEqual(prior.read_bytes(), before)
+            decoded = [c for c in calls if "INPUT_JSON_LIST" in c]
+            stopped_lists = [d for d in decoded if "STOPPED" in d]
+            self.assertTrue(len(stopped_lists) >= 2)
+            self.assertTrue(any("startedBy" in d for d in decoded))
+            self.assertFalse(any("startedBy" in d and "desiredStatus" in d for d in decoded))
+            for call in [c for c in calls if "list-tasks" in c]:
+                self.assertIn("--no-paginate", call)
+                self.assertIn("--cli-input-json", call)
+                self.assertNotIn("--started-by", call)
+                self.assertNotIn("--desired-status", call)
+
+
+    def test_stopped_list_duplicate_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_STOPPED_DUPLICATE": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("STOPPED sweep", combined)
+            self.assertIn("malformed", combined.lower())
+            self.assertIn("cannot prove absence", combined)
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 1)
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in run_calls))
+            self.assertEqual(prior.read_bytes(), before)
+
+    def test_stopped_list_failed_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_STOPPED_FAIL": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("STOPPED sweep", combined)
+            self.assertIn("failed", combined.lower())
+            self.assertIn("API limits", combined)
+            self.assertIn("cannot prove absence", combined)
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 1)
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in run_calls))
+            self.assertEqual(prior.read_bytes(), before)
+
+    def test_stopped_list_truncated_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_STOPPED_TRUNCATED": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("STOPPED sweep", combined)
+            self.assertIn("truncated", combined.lower())
+            self.assertIn("API limits", combined)
+            self.assertIn("cannot reliably prove", combined)
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 1)
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in run_calls))
+            for banned in ("put-secret-value", "PutSecretValue",
+                           "export-certificate", "ExportCertificate"):
+                self.assertFalse(any(banned in c for c in calls), msg=banned)
+            self.assertEqual(prior.read_bytes(), before)
+            decoded = [c for c in calls if "INPUT_JSON_LIST" in c]
+            self.assertTrue(any("desiredStatus" in d and "STOPPED" in d for d in decoded))
+            self.assertFalse(any("startedBy" in d and "desiredStatus" in d for d in decoded))
+
+    def test_stopped_describe_missing_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_STOPPED_ONE": "1",
+                           "FAKE_STOPPED_MISSING": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("STOPPED describe", combined)
+            self.assertIn("failures", combined.lower())
+            self.assertIn("cannot prove absence", combined)
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 1)
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in run_calls))
+            self.assertEqual(prior.read_bytes(), before)
+            stopped_descs = [c for c in calls if "describe-tasks" in c and "stopped-" in c]
+            self.assertTrue(len(stopped_descs) >= 1)
+
+    def test_stopped_describe_multiple_failures_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_STOPPED_ONE": "1",
+                           "FAKE_STOPPED_MULTIPLE_FAILURES": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("STOPPED describe", combined)
+            self.assertIn("failures", combined.lower())
+            self.assertIn("cannot prove absence", combined)
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 1)
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in run_calls))
+            self.assertEqual(prior.read_bytes(), before)
+
+    def test_stopped_describe_cluster_mismatch_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_STOPPED_ONE": "1",
+                           "FAKE_STOPPED_CLUSTER_MISMATCH": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("STOPPED describe", combined)
+            self.assertIn("cluster", combined.lower())
+            self.assertIn("mismatch", combined.lower())
+            self.assertIn("cannot prove absence", combined)
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 1)
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in run_calls))
+            for call in calls:
+                if "launchcrew-demo-sdkinit" in call:
+                    parts = call.split()
+                    self.assertEqual(parts[0], "ecs")
+                    self.assertIn(parts[1], ("describe-tasks", "describe-task""-definition"))
+            self.assertEqual(prior.read_bytes(), before)
+
+
+    def test_stopped_describe_task_mismatch_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_STOPPED_ONE": "1",
+                           "FAKE_STOPPED_TASK_MISMATCH": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("STOPPED describe", combined)
+            self.assertIn("task", combined.lower())
+            self.assertIn("mismatch", combined.lower())
+            self.assertIn("cannot prove absence", combined)
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 1)
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in run_calls))
+            self.assertEqual(prior.read_bytes(), before)
+
+    def test_stopped_describe_desired_mismatch_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_STOPPED_ONE": "1",
+                           "FAKE_STOPPED_DESIRED": "RUNNING"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("STOPPED describe", combined)
+            self.assertIn("desiredStatus", combined)
+            self.assertIn("mismatch", combined.lower())
+            self.assertIn("cannot prove absence", combined)
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 1)
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in run_calls))
+            self.assertEqual(prior.read_bytes(), before)
+            decoded = [c for c in calls if "INPUT_JSON_LIST" in c]
+            self.assertTrue(any("desiredStatus" in d and "STOPPED" in d for d in decoded))
+            self.assertFalse(any("startedBy" in d and "desiredStatus" in d for d in decoded))
+
+    def test_stopped_describe_unknown_status_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_STOPPED_ONE": "1",
+                           "FAKE_STOPPED_LASTSTATUS": "weird"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("STOPPED describe", combined)
+            self.assertIn("unknown", combined.lower())
+            self.assertIn("cannot prove absence", combined)
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 1)
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in run_calls))
+            self.assertEqual(prior.read_bytes(), before)
+
+    def test_stopped_describe_missing_desired_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_STOPPED_ONE": "1",
+                           "FAKE_STOPPED_MISSING_DESIRED": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("STOPPED describe", combined)
+            self.assertIn("missing", combined.lower())
+            self.assertIn("cannot prove absence", combined)
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 1)
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in run_calls))
+            self.assertEqual(prior.read_bytes(), before)
+
+    def test_stopped_describe_missing_last_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_STOPPED_ONE": "1",
+                           "FAKE_STOPPED_MISSING_LAST": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("STOPPED describe", combined)
+            self.assertIn("missing", combined.lower())
+            self.assertIn("cannot prove absence", combined)
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 1)
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in run_calls))
+            self.assertEqual(prior.read_bytes(), before)
+
+    def test_stopped_describe_foreign_task_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_STOPPED_ONE": "1",
+                           "FAKE_STOPPED_FOREIGN_TASK": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("STOPPED describe", combined)
+            self.assertIn("foreign", combined.lower())
+            self.assertIn("cannot prove absence", combined)
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 1)
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in run_calls))
+            self.assertEqual(prior.read_bytes(), before)
+
+
+    def test_stopped_describe_count_mismatch_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_STOPPED_TWO": "1",
+                           "FAKE_STOPPED_COUNT_MISMATCH": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("STOPPED describe", combined)
+            self.assertIn("count", combined.lower())
+            self.assertIn("mismatch", combined.lower())
+            self.assertIn("cannot prove absence", combined)
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 1)
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in run_calls))
+            self.assertEqual(prior.read_bytes(), before)
+            stopped_descs = [c for c in calls if "describe-tasks" in c and "stopped-" in c]
+            self.assertTrue(len(stopped_descs) >= 1)
+            for call in stopped_descs:
+                parts = call.split()
+                idx = parts.index("--tasks")
+                batch = []
+                for tok in parts[idx + 1:]:
+                    if tok.startswith("--"):
+                        break
+                    batch.append(tok)
+                self.assertTrue(1 <= len(batch) <= 100)
+
+    def test_stopped_describe_failed_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_STOPPED_ONE": "1",
+                           "FAKE_STOPPED_DESCRIBE_FAIL": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("STOPPED describe", combined)
+            self.assertIn("failed", combined.lower())
+            self.assertIn("API limits", combined)
+            self.assertIn("cannot prove absence", combined)
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 1)
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in run_calls))
+            self.assertEqual(prior.read_bytes(), before)
+
+    def test_stopped_describe_malformed_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_STOPPED_ONE": "1",
+                           "FAKE_STOPPED_DESCRIBE_MALFORMED": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("STOPPED describe", combined)
+            self.assertIn("cannot prove absence", combined)
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 1)
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in run_calls))
+            self.assertEqual(prior.read_bytes(), before)
+
+    def test_stopped_valid_batch_two_succeeds(self):
+        other = "lc-" + "f" * 30
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_STOPPED_TWO": "1",
+                           "FAKE_STOPPED_STARTEDBY": other,
+                           "FAKE_STOPPED_LASTSTATUS": "STOPPED",
+                           "FAKE_STOPPED_DESIRED": "STOPPED"},
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            combined = result.stdout + result.stderr
+            self.assertIn("point-in-time observation", combined)
+            self.assertIn("not an absolute global or forever guarantee", combined)
+            self.assertNotIn("exhaustive", combined.lower())
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 1)
+            self.assertIn("launchcrew-demo-sdkmaterial", run_calls[0])
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in run_calls))
+            for call in calls:
+                if "launchcrew-demo-sdkinit" in call:
+                    parts = call.split()
+                    self.assertEqual(parts[0], "ecs")
+                    self.assertIn(parts[1], ("describe-tasks", "describe-task""-definition"))
+            for banned in ("put-secret-value", "PutSecretValue",
+                           "export-certificate", "ExportCertificate"):
+                self.assertFalse(any(banned in c for c in calls), msg=banned)
+            self.assertEqual(prior.read_bytes(), before)
+            stopped_descs = [c for c in calls if "describe-tasks" in c and "stopped-" in c]
+            self.assertTrue(len(stopped_descs) >= 1)
+            saw_two = False
+            for call in stopped_descs:
+                parts = call.split()
+                self.assertIn("--cluster", parts)
+                self.assertIn("launchcrew-demo", parts)
+                self.assertIn("--region", parts)
+                idx = parts.index("--tasks")
+                batch = []
+                for tok in parts[idx + 1:]:
+                    if tok.startswith("--"):
+                        break
+                    batch.append(tok)
+                self.assertTrue(1 <= len(batch) <= 100)
+                for arn in batch:
+                    self.assertTrue(arn.startswith(f"arn:aws:ecs:{REGION}:{ACCOUNT}:task/{STACK}/"))
+                if len(batch) == 2:
+                    saw_two = True
+                    self.assertTrue(any("stopped-001" in a for a in batch))
+                    self.assertTrue(any("stopped-002" in a for a in batch))
+            self.assertTrue(saw_two)
+            decoded = [c for c in calls if "INPUT_JSON_LIST" in c]
+            self.assertTrue(any("startedBy" in d for d in decoded))
+            self.assertTrue(any("desiredStatus" in d and "STOPPED" in d for d in decoded))
+            self.assertFalse(any("startedBy" in d and "desiredStatus" in d for d in decoded))
+
+    def test_valid_empty_stable_two_sweep_reports_point_in_time(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            combined = result.stdout + result.stderr
+            self.assertIn("point-in-time observation", combined)
+            self.assertIn("bounded", combined.lower())
+            self.assertIn("two stable rounds", combined)
+            self.assertIn("not an absolute global or forever guarantee", combined)
+            self.assertNotIn("exhaustive", combined.lower())
+            self.assertNotIn("proven: zero tasks across exhaustive", combined)
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 1)
+            self.assertIn("launchcrew-demo-sdkmaterial", run_calls[0])
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in run_calls))
+            self.assertFalse(any("launchcrew-demo-migration" in c for c in run_calls))
+            for call in calls:
+                if "launchcrew-demo-sdkinit" in call:
+                    parts = call.split()
+                    self.assertEqual(parts[0], "ecs")
+                    self.assertIn(parts[1], ("describe-tasks", "describe-task""-definition"))
+            for banned in ("put-secret-value", "PutSecretValue",
+                           "export-certificate", "ExportCertificate",
+                           "MigrationTaskDefinition"):
+                self.assertFalse(any(banned in c for c in calls), msg=banned)
+            self.assertEqual(prior.read_bytes(), before)
+            list_calls = [c for c in calls if "list-tasks" in c]
+            for call in list_calls:
+                self.assertIn("--no-paginate", call)
+                self.assertIn("--cli-input-json", call)
+                self.assertIn("file://", call)
+                self.assertNotIn("--started-by", call)
+                self.assertNotIn("--desired-status", call)
+                self.assertNotIn("--cluster ", call)
+                self.assertNotIn("--cluster=", call)
+                self.assertNotIn("--next-token", call)
+                self.assertNotIn("--starting-token", call)
+                self.assertNotIn("--max-items", call)
+            decoded = [c for c in calls if "INPUT_JSON_LIST" in c]
+            started = [d for d in decoded if "startedBy" in d]
+            stopped = [d for d in decoded if "desiredStatus" in d and "STOPPED" in d]
+            self.assertTrue(len(started) >= 2)
+            self.assertTrue(len(stopped) >= 2)
+            self.assertFalse(any("startedBy" in d and "desiredStatus" in d for d in decoded))
+            for entry in decoded:
+                self.assertIn("launchcrew-demo", entry)
+                self.assertIn("maxResults", entry)
+                self.assertNotIn("NextToken", entry)
+            missing_descs = [c for c in calls if "describe-tasks" in c and "aged-init-001" in c]
+            self.assertTrue(len(missing_descs) >= 2)
+            self.assertFalse(any("stopped-" in c for c in calls if "describe-tasks" in c))
+
+    def test_second_sweep_startedby_inconsistency_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_LIST_SECOND_NONEMPTY": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("second sweep", combined.lower())
+            self.assertIn("inconsistent", combined.lower())
+            self.assertIn("still has", combined.lower())
+            self.assertIn("cannot proceed", combined)
+            self.assertNotIn("point-in-time observation", combined)
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 1)
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in run_calls))
+            self.assertEqual(prior.read_bytes(), before)
+            decoded = [c for c in calls if "INPUT_JSON_LIST" in c]
+            started = [d for d in decoded if "startedBy" in d]
+            self.assertTrue(len(started) >= 2)
+            self.assertFalse(any("startedBy" in d and "desiredStatus" in d for d in decoded))
+
+    def test_second_sweep_stopped_inconsistency_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_STOPPED_SECOND_NONEMPTY": "1",
+                           "FAKE_STOPPED_STARTEDBY": self.INIT_TOKEN,
+                           "FAKE_STOPPED_LASTSTATUS": "RUNNING"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("second sweep", combined.lower())
+            self.assertIn("inconsistent", combined.lower())
+            self.assertIn("still", combined.lower())
+            self.assertIn("executing", combined.lower())
+            self.assertIn("RUNNING", combined)
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 1)
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in run_calls))
+            self.assertEqual(prior.read_bytes(), before)
+            decoded = [c for c in calls if "INPUT_JSON_LIST" in c]
+            stopped = [d for d in decoded if "STOPPED" in d]
+            self.assertTrue(len(stopped) >= 2)
+            self.assertFalse(any("startedBy" in d and "desiredStatus" in d for d in decoded))
 
 
 if __name__ == "__main__":

@@ -4413,9 +4413,10 @@ PYEOF
 # permissions. Admission persists before any verifier RunTask with exact
 # startedBy and token. Terminal proof derives essential names from live
 # DescribeTaskDefinition, never inventing essential on DescribeTasks.
-# Before any later mutating task, exhaustive paginated running-task absence
-# for the old startedBy is required; if AWS cannot prove absence, refuse.
-# Fresh init resend is never permitted through this route. General NO_TASK
+# Before any later mutating task, a bounded point-in-time gate for the old
+# startedBy is required with startedBy-only plus desired STOPPED sweeps and
+# recorded MISSING in two stable rounds; if AWS cannot support the proof,
+# refuse. Fresh init resend is never permitted through this route. General NO_TASK
 # is never success; only this init path with full attestation proceeds.
 ensure_recovery_dir() {
   RECOVERY_DIR="$LAUNCH_JOURNAL_DIR/recovery"
@@ -5196,19 +5197,28 @@ print("LEGACY\tfalse")
 PYEOF
 }
 
-# Exhaustive paginated running-task absence for one startedBy token.
+# Strict paginated startedBy-only sweep for one token, one round.
 # Lists by startedBy alone with raw --no-paginate plus --cli-input-json,
-# exact lowerCamel cluster, startedBy, maxResults, nextToken. Requires
-# exact JSON structure with only taskArns plus optional nextToken, zero
-# ARNs across every page with no truncation, no failure, and no malformed
-# element. Every array element must be a nonempty owned ECS task ARN for
-# the exact account, region, and cluster. Any null, number, empty, None,
-# foreign ARN, object, duplicate, failed page, truncation, or pagination
-# ambiguity refuses, never counts as absence. Args: token, context label.
-# Fails closed via phase_failed.
-prove_no_running_for_startedby() {
+# exact lowerCamel cluster, startedBy, maxResults, nextToken. Never combines
+# startedBy with desiredStatus in the same request. Requires exact JSON
+# structure with only taskArns plus optional nextToken, zero ARNs across
+# every page with no truncation, no failure, and no malformed element. Every
+# element must be a nonempty owned ECS task ARN for the exact account,
+# region, and cluster. Any null, number, empty, None, foreign ARN, object,
+# duplicate, failed page, truncation, or pagination ambiguity refuses, never
+# counts as absence. Args: token, context label, round tag ("" or "second").
+# Fails closed via phase_failed. On success returns 0 with no claim; the
+# outer gate combines this with recorded MISSING plus desired STOPPED sweep
+# and a second stable round, reporting only a point-in-time observation.
+absence_startedby_sweep_once() {
   ABSENCE_TOKEN="$1"
   ABSENCE_CONTEXT="$2"
+  ABSENCE_ROUND="${3:-}"
+  if [ "$ABSENCE_ROUND" = "second" ]; then
+    ABSENCE_PREFIX="second sweep inconsistent, possible transition: "
+  else
+    ABSENCE_PREFIX=""
+  fi
   ABSENCE_COLLECTED="$(mktemp /tmp/launchcrew-absence-XXXXXX)"
   printf '[]' >"$ABSENCE_COLLECTED"
   ABSENCE_PAGE="$(mktemp /tmp/launchcrew-absence-page-XXXXXX)"
@@ -5228,12 +5238,12 @@ with open(path, "w", encoding="utf-8") as out:
 PYEOF
     then
       rm -f "$ABSENCE_PAGE" "$ABSENCE_COLLECTED" "$ABSENCE_INPUT"
-      echo "refused: $ABSENCE_CONTEXT running absence input failed for token, cannot prove absence." >&2
+      echo "refused: $ABSENCE_CONTEXT ${ABSENCE_PREFIX}running absence input failed for token, cannot prove absence." >&2
       phase_failed "${RECOVERY_FAIL_PHASE:-init}"
     fi
     if ! "$AWS_BIN" ecs list-tasks --cli-input-json "file://$ABSENCE_INPUT" --region "$EXPECTED_REGION" --no-paginate --output json >"$ABSENCE_PAGE" 2>"$TMP_ERR"; then
       rm -f "$ABSENCE_PAGE" "$ABSENCE_COLLECTED" "$ABSENCE_INPUT"
-      echo "refused: $ABSENCE_CONTEXT running absence list failed, cannot prove absence." >&2
+      echo "refused: $ABSENCE_CONTEXT ${ABSENCE_PREFIX}running absence list failed, cannot prove absence." >&2
       phase_failed "${RECOVERY_FAIL_PHASE:-init}"
     fi
     ABSENCE_NEXT="$(python3 - "$ABSENCE_PAGE" "$ABSENCE_COLLECTED" "$EXPECTED_REGION" "$EXPECTED_ACCOUNT" "$CLUSTER_NAME" 2>/dev/null <<'PYEOF'
@@ -5317,12 +5327,12 @@ PYEOF
     ABSENCE_NEXT="$(printf '%s' "$ABSENCE_NEXT" | tr -d '[:space:]')"
     if [ "$ABSENCE_NEXT" = "MALFORMED" ]; then
       rm -f "$ABSENCE_PAGE" "$ABSENCE_COLLECTED" "$ABSENCE_INPUT"
-      echo "refused: $ABSENCE_CONTEXT running absence list malformed, cannot prove absence." >&2
+      echo "refused: $ABSENCE_CONTEXT ${ABSENCE_PREFIX}running absence list malformed, cannot prove absence." >&2
       phase_failed "${RECOVERY_FAIL_PHASE:-init}"
     fi
     if [ "$ABSENCE_NEXT" = "TOO_MANY" ]; then
       rm -f "$ABSENCE_PAGE" "$ABSENCE_COLLECTED" "$ABSENCE_INPUT"
-      echo "refused: $ABSENCE_CONTEXT running absence has too many candidates, cannot prove absence." >&2
+      echo "refused: $ABSENCE_CONTEXT ${ABSENCE_PREFIX}running absence has too many candidates, cannot prove absence." >&2
       phase_failed "${RECOVERY_FAIL_PHASE:-init}"
     fi
     if [ -z "$ABSENCE_NEXT" ] || [ "$ABSENCE_NEXT" = "END" ] || [ "$ABSENCE_NEXT" = "None" ]; then
@@ -5331,7 +5341,7 @@ PYEOF
   done
   if [ -n "$ABSENCE_NEXT" ] && [ "$ABSENCE_NEXT" != "END" ] && [ "$ABSENCE_NEXT" != "None" ]; then
     rm -f "$ABSENCE_PAGE" "$ABSENCE_COLLECTED" "$ABSENCE_INPUT"
-    echo "refused: $ABSENCE_CONTEXT running absence has truncated pages, cannot prove absence." >&2
+    echo "refused: $ABSENCE_CONTEXT ${ABSENCE_PREFIX}running absence has truncated pages, cannot prove absence." >&2
     phase_failed "${RECOVERY_FAIL_PHASE:-init}"
   fi
   rm -f "$ABSENCE_PAGE" "$ABSENCE_INPUT"
@@ -5348,14 +5358,624 @@ PYEOF
   rm -f "$ABSENCE_COLLECTED"
   ABSENCE_COUNT="$(printf '%s' "$ABSENCE_COUNT" | tr -d '[:space:]')"
   if [ "$ABSENCE_COUNT" = "MALFORMED" ]; then
-    echo "refused: $ABSENCE_CONTEXT running absence unreadable, cannot prove absence." >&2
+    echo "refused: $ABSENCE_CONTEXT ${ABSENCE_PREFIX}running absence unreadable, cannot prove absence." >&2
     phase_failed "${RECOVERY_FAIL_PHASE:-init}"
   fi
   if [ "$ABSENCE_COUNT" != "0" ]; then
-    echo "refused: $ABSENCE_CONTEXT still has $ABSENCE_COUNT running tasks for old token, cannot proceed." >&2
+    echo "refused: $ABSENCE_CONTEXT ${ABSENCE_PREFIX}still has $ABSENCE_COUNT running tasks for old token, cannot proceed." >&2
     phase_failed "${RECOVERY_FAIL_PHASE:-init}"
   fi
-  echo "$ABSENCE_CONTEXT running absence proven: zero tasks across exhaustive pages for old token."
+  return 0
+}
+
+# Direct recorded-task MISSING proof for one round, read-only.
+# Describes the exact recorded task ARN and requires well-formed zero tasks
+# with exactly one MISSING failure for that ARN. Any PRESENT, wrong reason,
+# wrong ARN, mixed task plus failure, malformed type, multiple failures,
+# empty response, call failure, or ambiguity refuses, never counts as
+# absence. Args: token (kept for clarity), recorded ARN, context, round tag
+# ("" or "second"). Fails closed via phase_failed. On success returns 0.
+absence_prove_recorded_missing_once() {
+  MISSING_TOKEN="$1"
+  MISSING_RECORDED="$2"
+  MISSING_CONTEXT="$3"
+  MISSING_ROUND="${4:-}"
+  if [ "$MISSING_ROUND" = "second" ]; then
+    MISSING_PREFIX="second sweep inconsistent, possible transition: "
+  else
+    MISSING_PREFIX=""
+  fi
+  MISSING_DESC="$(mktemp /tmp/launchcrew-missing-XXXXXX)"
+  if ! "$AWS_BIN" ecs describe-tasks --cluster "$CLUSTER_NAME" --tasks "$MISSING_RECORDED" --region "$EXPECTED_REGION" --output json >"$MISSING_DESC" 2>"$TMP_ERR"; then
+    rm -f "$MISSING_DESC"
+    echo "refused: $MISSING_CONTEXT ${MISSING_PREFIX}recorded task MISSING proof failed, cannot prove absence." >&2
+    phase_failed "${RECOVERY_FAIL_PHASE:-init}"
+  fi
+  MISSING_PRESENCE="$(python3 - "$MISSING_DESC" "$MISSING_RECORDED" 2>/dev/null <<'PYEOF'
+import json, sys
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    print("UNREADABLE")
+    sys.exit(0)
+expected = sys.argv[2] if len(sys.argv) > 2 else ""
+if not isinstance(doc, dict):
+    print("UNREADABLE")
+    sys.exit(0)
+if "tasks" not in doc or "failures" not in doc:
+    print("AMBIGUOUS_RESPONSE")
+    sys.exit(0)
+tasks = doc.get("tasks")
+failures = doc.get("failures")
+if not isinstance(tasks, list) or not isinstance(failures, list):
+    print("AMBIGUOUS_RESPONSE")
+    sys.exit(0)
+for entry in tasks:
+    if not isinstance(entry, dict):
+        print("AMBIGUOUS_RESPONSE")
+        sys.exit(0)
+for entry in failures:
+    if not isinstance(entry, dict):
+        print("AMBIGUOUS_RESPONSE")
+        sys.exit(0)
+    if not isinstance(entry.get("arn"), str) or not isinstance(entry.get("reason"), str):
+        print("AMBIGUOUS_RESPONSE")
+        sys.exit(0)
+if tasks and failures:
+    print("AMBIGUOUS_MIXED")
+    sys.exit(0)
+if tasks and not failures:
+    print("PRESENT")
+    sys.exit(0)
+if not tasks and not failures:
+    print("AMBIGUOUS_EMPTY")
+    sys.exit(0)
+if len(failures) != 1:
+    print("AMBIGUOUS_FAILURES")
+    sys.exit(0)
+single = failures[0]
+if single.get("reason") != "MISSING":
+    print("AMBIGUOUS_REASON")
+    sys.exit(0)
+if not expected or single.get("arn") != expected:
+    print("AMBIGUOUS_ARN")
+    sys.exit(0)
+print("NO_TASK")
+PYEOF
+)" || MISSING_PRESENCE="UNREADABLE"
+  rm -f "$MISSING_DESC"
+  MISSING_PRESENCE="$(printf '%s' "$MISSING_PRESENCE" | tr -d '[:space:]')"
+  if [ "$MISSING_PRESENCE" = "NO_TASK" ]; then
+    return 0
+  fi
+  if [ "$MISSING_PRESENCE" = "PRESENT" ]; then
+    echo "refused: $MISSING_CONTEXT ${MISSING_PREFIX}still has recorded task present, not MISSING, cannot proceed." >&2
+    phase_failed "${RECOVERY_FAIL_PHASE:-init}"
+  fi
+  echo "refused: $MISSING_CONTEXT ${MISSING_PREFIX}recorded task presence is $MISSING_PRESENCE, cannot prove absence." >&2
+  phase_failed "${RECOVERY_FAIL_PHASE:-init}"
+}
+
+# Strict paginated desired STOPPED sweep for one round, plus batch describe.
+# Lists all tasks in the exact owned cluster with desiredStatus STOPPED and
+# no startedBy, using raw --no-paginate plus --cli-input-json with exact
+# lowerCamel cluster, desiredStatus, maxResults, nextToken. Never combines
+# desiredStatus with startedBy in the same request. Uses bounded raw
+# pagination (10 pages, at most 100 ARNs) and validates every page, key,
+# task ARN, duplicate, foreign, and response, refusing truncation, error, or
+# ambiguous shapes. Returned STOPPED-desired tasks are described in
+# AWS-supported batches of at most 100, checking exact task ARN, cluster,
+# startedBy, desiredStatus, and lastStatus, refusing any failure, missing,
+# mismatched, or unknown status. For any task with the old recorded
+# startedBy, refuses unless the exact recorded ARN is already proven MISSING
+# and no other same-token task exists; a same-token task still RUNNING or
+# STOPPING always refuses. Args: old token, recorded ARN, context, round tag
+# ("" or "second"). Fails closed via phase_failed. On success returns 0.
+absence_stopped_sweep_once() {
+  ABSSTOP_TOKEN="$1"
+  ABSSTOP_RECORDED="$2"
+  ABSSTOP_CONTEXT="$3"
+  ABSSTOP_ROUND="${4:-}"
+  if [ "$ABSSTOP_ROUND" = "second" ]; then
+    ABSSTOP_PREFIX="second sweep inconsistent, possible transition: "
+  else
+    ABSSTOP_PREFIX=""
+  fi
+  ABSSTOP_COLLECTED="$(mktemp /tmp/launchcrew-stopabs-XXXXXX)"
+  printf '[]' >"$ABSSTOP_COLLECTED"
+  ABSSTOP_PAGE="$(mktemp /tmp/launchcrew-stopabs-page-XXXXXX)"
+  ABSSTOP_INPUT="$(mktemp /tmp/launchcrew-stopabs-in-XXXXXX)"
+  ABSSTOP_NEXT=""
+  ABSSTOP_PAGES=0
+  while [ "$ABSSTOP_PAGES" -lt 10 ]; do
+    ABSSTOP_PAGES=$((ABSSTOP_PAGES + 1))
+    if ! python3 - "$ABSSTOP_INPUT" "$CLUSTER_NAME" "$ABSSTOP_NEXT" 2>/dev/null <<'PYEOF'
+import json, sys
+path, cluster, token = sys.argv[1:4]
+doc = {"cluster": cluster, "desiredStatus": "STOPPED", "maxResults": 10}
+if token and token != "END" and token != "None":
+    doc["nextToken"] = token
+with open(path, "w", encoding="utf-8") as out:
+    json.dump(doc, out)
+PYEOF
+    then
+      rm -f "$ABSSTOP_PAGE" "$ABSSTOP_COLLECTED" "$ABSSTOP_INPUT"
+      echo "refused: $ABSSTOP_CONTEXT ${ABSSTOP_PREFIX}STOPPED sweep input failed, cannot prove absence due to ECS API limits." >&2
+      phase_failed "${RECOVERY_FAIL_PHASE:-init}"
+    fi
+    if ! "$AWS_BIN" ecs list-tasks --cli-input-json "file://$ABSSTOP_INPUT" --region "$EXPECTED_REGION" --no-paginate --output json >"$ABSSTOP_PAGE" 2>"$TMP_ERR"; then
+      rm -f "$ABSSTOP_PAGE" "$ABSSTOP_COLLECTED" "$ABSSTOP_INPUT"
+      echo "refused: $ABSSTOP_CONTEXT ${ABSSTOP_PREFIX}STOPPED sweep list failed, cannot prove absence due to ECS API limits." >&2
+      phase_failed "${RECOVERY_FAIL_PHASE:-init}"
+    fi
+    ABSSTOP_NEXT="$(python3 - "$ABSSTOP_PAGE" "$ABSSTOP_COLLECTED" "$EXPECTED_REGION" "$EXPECTED_ACCOUNT" "$CLUSTER_NAME" 2>/dev/null <<'PYEOF'
+import json, sys
+page_file, collected_file, want_region, want_account, want_cluster = sys.argv[1:6]
+try:
+    page = json.load(open(page_file))
+    collected = json.load(open(collected_file))
+except Exception:
+    print("MALFORMED")
+    sys.exit(0)
+if not isinstance(page, dict) or not isinstance(collected, list):
+    print("MALFORMED")
+    sys.exit(0)
+for key in page:
+    if key not in ("taskArns", "nextToken"):
+        print("MALFORMED")
+        sys.exit(0)
+if "taskArns" not in page:
+    print("MALFORMED")
+    sys.exit(0)
+arns = page.get("taskArns")
+if not isinstance(arns, list):
+    print("MALFORMED")
+    sys.exit(0)
+prefix = "arn:aws:ecs:%s:%s:task/%s/" % (want_region, want_account, want_cluster)
+seen = set()
+for existing in collected:
+    if not isinstance(existing, str) or not existing.startswith(prefix):
+        print("MALFORMED")
+        sys.exit(0)
+    suffix = existing[len(prefix):]
+    if not suffix or not suffix.strip() or any(c.isspace() for c in existing):
+        print("MALFORMED")
+        sys.exit(0)
+    if existing in seen:
+        print("MALFORMED")
+        sys.exit(0)
+    seen.add(existing)
+for arn in arns:
+    if not isinstance(arn, str):
+        print("MALFORMED")
+        sys.exit(0)
+    if not arn or arn == "None":
+        print("MALFORMED")
+        sys.exit(0)
+    if not arn.startswith(prefix):
+        print("MALFORMED")
+        sys.exit(0)
+    suffix = arn[len(prefix):]
+    if not suffix or not suffix.strip() or any(c.isspace() for c in arn):
+        print("MALFORMED")
+        sys.exit(0)
+    if arn in seen:
+        print("MALFORMED")
+        sys.exit(0)
+    seen.add(arn)
+    collected.append(arn)
+if len(collected) > 100:
+    print("TOO_MANY")
+    sys.exit(0)
+try:
+    with open(collected_file, "w", encoding="utf-8") as out:
+        json.dump(collected, out)
+except Exception:
+    print("MALFORMED")
+    sys.exit(0)
+if "NextToken" in page:
+    print("MALFORMED")
+    sys.exit(0)
+nxt = page.get("nextToken", "")
+if nxt is None or nxt == "None":
+    nxt = ""
+if not isinstance(nxt, str):
+    print("MALFORMED")
+    sys.exit(0)
+nxt = nxt.strip()
+print("END" if not nxt else nxt)
+PYEOF
+)" || ABSSTOP_NEXT="MALFORMED"
+    ABSSTOP_NEXT="$(printf '%s' "$ABSSTOP_NEXT" | tr -d '[:space:]')"
+    if [ "$ABSSTOP_NEXT" = "MALFORMED" ]; then
+      rm -f "$ABSSTOP_PAGE" "$ABSSTOP_COLLECTED" "$ABSSTOP_INPUT"
+      echo "refused: $ABSSTOP_CONTEXT ${ABSSTOP_PREFIX}STOPPED sweep list malformed, cannot prove absence." >&2
+      phase_failed "${RECOVERY_FAIL_PHASE:-init}"
+    fi
+    if [ "$ABSSTOP_NEXT" = "TOO_MANY" ]; then
+      rm -f "$ABSSTOP_PAGE" "$ABSSTOP_COLLECTED" "$ABSSTOP_INPUT"
+      echo "refused: $ABSSTOP_CONTEXT ${ABSSTOP_PREFIX}STOPPED sweep has too many candidates, cannot reliably prove absence due to ECS API limits." >&2
+      phase_failed "${RECOVERY_FAIL_PHASE:-init}"
+    fi
+    if [ -z "$ABSSTOP_NEXT" ] || [ "$ABSSTOP_NEXT" = "END" ] || [ "$ABSSTOP_NEXT" = "None" ]; then
+      break
+    fi
+  done
+  if [ -n "$ABSSTOP_NEXT" ] && [ "$ABSSTOP_NEXT" != "END" ] && [ "$ABSSTOP_NEXT" != "None" ]; then
+    rm -f "$ABSSTOP_PAGE" "$ABSSTOP_COLLECTED" "$ABSSTOP_INPUT"
+    echo "refused: $ABSSTOP_CONTEXT ${ABSSTOP_PREFIX}STOPPED sweep has truncated pages, cannot reliably prove absence due to ECS API limits." >&2
+    phase_failed "${RECOVERY_FAIL_PHASE:-init}"
+  fi
+  rm -f "$ABSSTOP_PAGE" "$ABSSTOP_INPUT"
+  ABSSTOP_COUNT="$(python3 - "$ABSSTOP_COLLECTED" 2>/dev/null <<'PYEOF'
+import json, sys
+try:
+    collected = json.load(open(sys.argv[1]))
+except Exception:
+    print("MALFORMED")
+    sys.exit(0)
+print(len(collected) if isinstance(collected, list) else "MALFORMED")
+PYEOF
+)" || ABSSTOP_COUNT="MALFORMED"
+  ABSSTOP_COUNT="$(printf '%s' "$ABSSTOP_COUNT" | tr -d '[:space:]')"
+  if [ "$ABSSTOP_COUNT" = "MALFORMED" ]; then
+    rm -f "$ABSSTOP_COLLECTED"
+    echo "refused: $ABSSTOP_CONTEXT ${ABSSTOP_PREFIX}STOPPED sweep unreadable, cannot prove absence." >&2
+    phase_failed "${RECOVERY_FAIL_PHASE:-init}"
+  fi
+  case "$ABSSTOP_COUNT" in
+    ''|*[!0-9]*) rm -f "$ABSSTOP_COLLECTED"
+      echo "refused: $ABSSTOP_CONTEXT ${ABSSTOP_PREFIX}STOPPED sweep unreadable, cannot prove absence." >&2
+      phase_failed "${RECOVERY_FAIL_PHASE:-init}" ;;
+  esac
+  if [ "$ABSSTOP_COUNT" -eq 0 ]; then
+    rm -f "$ABSSTOP_COLLECTED"
+    return 0
+  fi
+  if [ "$ABSSTOP_COUNT" -gt 100 ]; then
+    rm -f "$ABSSTOP_COLLECTED"
+    echo "refused: $ABSSTOP_CONTEXT ${ABSSTOP_PREFIX}STOPPED sweep has too many candidates, cannot reliably prove absence due to ECS API limits." >&2
+    phase_failed "${RECOVERY_FAIL_PHASE:-init}"
+  fi
+  ABSSTOP_ALL="$(mktemp /tmp/launchcrew-stopabs-all-XXXXXX)"
+  if ! python3 - "$ABSSTOP_COLLECTED" "$ABSSTOP_ALL" "$EXPECTED_REGION" "$EXPECTED_ACCOUNT" "$CLUSTER_NAME" 2>/dev/null <<'PYEOF'
+import json, sys
+collected_file, out_path, want_region, want_account, want_cluster = sys.argv[1:6]
+try:
+    collected = json.load(open(collected_file))
+except Exception:
+    sys.exit(1)
+if not isinstance(collected, list) or not collected:
+    sys.exit(1)
+prefix = "arn:aws:ecs:%s:%s:task/%s/" % (want_region, want_account, want_cluster)
+try:
+    with open(out_path, "w", encoding="utf-8") as out:
+        for arn in collected:
+            if not isinstance(arn, str) or not arn.startswith(prefix):
+                sys.exit(1)
+            suffix = arn[len(prefix):]
+            if not suffix or not suffix.strip() or any(c.isspace() for c in arn):
+                sys.exit(1)
+            out.write(arn + "\n")
+except SystemExit:
+    raise
+except Exception:
+    sys.exit(1)
+PYEOF
+  then
+    rm -f "$ABSSTOP_COLLECTED" "$ABSSTOP_ALL"
+    echo "refused: $ABSSTOP_CONTEXT ${ABSSTOP_PREFIX}STOPPED sweep unreadable, cannot prove absence." >&2
+    phase_failed "${RECOVERY_FAIL_PHASE:-init}"
+  fi
+  rm -f "$ABSSTOP_COLLECTED"
+  ABSSTOP_REMAINING="$(mktemp /tmp/launchcrew-stopabs-rem-XXXXXX)"
+  if ! cp "$ABSSTOP_ALL" "$ABSSTOP_REMAINING" 2>/dev/null; then
+    rm -f "$ABSSTOP_ALL" "$ABSSTOP_REMAINING"
+    echo "refused: $ABSSTOP_CONTEXT ${ABSSTOP_PREFIX}STOPPED sweep unreadable, cannot prove absence." >&2
+    phase_failed "${RECOVERY_FAIL_PHASE:-init}"
+  fi
+  rm -f "$ABSSTOP_ALL"
+  ABSSTOP_CLUSTER_ARN="arn:aws:ecs:$EXPECTED_REGION:$EXPECTED_ACCOUNT:cluster/$CLUSTER_NAME"
+  while [ -s "$ABSSTOP_REMAINING" ]; do
+    ABSSTOP_BATCH="$(mktemp /tmp/launchcrew-stopabs-batch-XXXXXX)"
+    if ! head -n 100 "$ABSSTOP_REMAINING" >"$ABSSTOP_BATCH" 2>/dev/null; then
+      rm -f "$ABSSTOP_BATCH" "$ABSSTOP_REMAINING"
+      echo "refused: $ABSSTOP_CONTEXT ${ABSSTOP_PREFIX}STOPPED sweep unreadable, cannot prove absence." >&2
+      phase_failed "${RECOVERY_FAIL_PHASE:-init}"
+    fi
+    ABSSTOP_TMP="$(mktemp /tmp/launchcrew-stopabs-tmp-XXXXXX)"
+    tail -n +101 "$ABSSTOP_REMAINING" >"$ABSSTOP_TMP" 2>/dev/null || true
+    if ! mv "$ABSSTOP_TMP" "$ABSSTOP_REMAINING" 2>/dev/null; then
+      rm -f "$ABSSTOP_BATCH" "$ABSSTOP_REMAINING" "$ABSSTOP_TMP"
+      echo "refused: $ABSSTOP_CONTEXT ${ABSSTOP_PREFIX}STOPPED sweep unreadable, cannot prove absence." >&2
+      phase_failed "${RECOVERY_FAIL_PHASE:-init}"
+    fi
+    ABSSTOP_BATCH_COUNT="$(grep -c . "$ABSSTOP_BATCH" 2>/dev/null || echo 0)"
+    ABSSTOP_BATCH_COUNT="$(printf '%s' "$ABSSTOP_BATCH_COUNT" | tr -d '[:space:]')"
+    if [ -z "$ABSSTOP_BATCH_COUNT" ]; then ABSSTOP_BATCH_COUNT=0; fi
+    case "$ABSSTOP_BATCH_COUNT" in
+      ''|*[!0-9]*) rm -f "$ABSSTOP_BATCH" "$ABSSTOP_REMAINING"
+        echo "refused: $ABSSTOP_CONTEXT ${ABSSTOP_PREFIX}STOPPED sweep unreadable, cannot prove absence." >&2
+        phase_failed "${RECOVERY_FAIL_PHASE:-init}" ;;
+    esac
+    if [ "$ABSSTOP_BATCH_COUNT" -eq 0 ] || [ "$ABSSTOP_BATCH_COUNT" -gt 100 ]; then
+      rm -f "$ABSSTOP_BATCH" "$ABSSTOP_REMAINING"
+      echo "refused: $ABSSTOP_CONTEXT ${ABSSTOP_PREFIX}STOPPED describe batch exceeds AWS limit of 100, cannot reliably prove absence due to ECS API limits." >&2
+      phase_failed "${RECOVERY_FAIL_PHASE:-init}"
+    fi
+    ABSSTOP_DESC="$(mktemp /tmp/launchcrew-stopabs-desc-XXXXXX)"
+    if ! python3 - "$ABSSTOP_BATCH" "$AWS_BIN" "$CLUSTER_NAME" "$EXPECTED_REGION" "$ABSSTOP_DESC" "$TMP_ERR" 2>/dev/null <<'PYEOF'
+import subprocess, sys
+batch_file, aws_bin, cluster, region, out_path, err_path = sys.argv[1:7]
+try:
+    with open(batch_file, encoding="utf-8") as handle:
+        arns = [line.strip() for line in handle if line.strip()]
+except Exception:
+    sys.exit(1)
+if not arns or len(arns) > 100:
+    sys.exit(1)
+for arn in arns:
+    if not arn or any(c.isspace() for c in arn):
+        sys.exit(1)
+cmd = [aws_bin, "ecs", "describe-tasks", "--cluster", cluster, "--tasks"] + arns + ["--region", region, "--output", "json"]
+try:
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+except Exception:
+    sys.exit(1)
+try:
+    with open(out_path, "w", encoding="utf-8") as out:
+        out.write(proc.stdout or "")
+except Exception:
+    sys.exit(1)
+if proc.returncode != 0:
+    try:
+        with open(err_path, "w", encoding="utf-8") as err:
+            err.write(proc.stderr or "")
+    except Exception:
+        pass
+    sys.exit(proc.returncode)
+PYEOF
+    then
+      rm -f "$ABSSTOP_BATCH" "$ABSSTOP_DESC" "$ABSSTOP_REMAINING"
+      echo "refused: $ABSSTOP_CONTEXT ${ABSSTOP_PREFIX}STOPPED describe failed, cannot prove absence due to ECS API limits." >&2
+      phase_failed "${RECOVERY_FAIL_PHASE:-init}"
+    fi
+    ABSSTOP_CHECK="$(python3 - "$ABSSTOP_DESC" "$ABSSTOP_BATCH" "$ABSSTOP_TOKEN" "$ABSSTOP_RECORDED" "$EXPECTED_REGION" "$EXPECTED_ACCOUNT" "$CLUSTER_NAME" "$ABSSTOP_CLUSTER_ARN" 2>/dev/null <<'PYEOF'
+import json, sys
+desc_file, batch_file, old_token, recorded_arn = sys.argv[1:5]
+want_region, want_account, want_cluster, want_cluster_arn = sys.argv[5:9]
+try:
+    doc = json.load(open(desc_file))
+    with open(batch_file, encoding="utf-8") as handle:
+        requested = [line.strip() for line in handle if line.strip()]
+except Exception:
+    print("MALFORMED")
+    sys.exit(0)
+if not isinstance(doc, dict):
+    print("MALFORMED")
+    sys.exit(0)
+if "tasks" not in doc or "failures" not in doc:
+    print("MALFORMED")
+    sys.exit(0)
+tasks = doc.get("tasks")
+failures = doc.get("failures")
+if not isinstance(tasks, list) or not isinstance(failures, list):
+    print("MALFORMED")
+    sys.exit(0)
+for entry in tasks:
+    if not isinstance(entry, dict):
+        print("MALFORMED")
+        sys.exit(0)
+for entry in failures:
+    if not isinstance(entry, dict):
+        print("MALFORMED")
+        sys.exit(0)
+if failures:
+    print("FAILURES")
+    sys.exit(0)
+if len(tasks) != len(requested):
+    print("COUNT_MISMATCH")
+    sys.exit(0)
+prefix = "arn:aws:ecs:%s:%s:task/%s/" % (want_region, want_account, want_cluster)
+requested_set = set()
+for arn in requested:
+    if not isinstance(arn, str) or not arn.startswith(prefix):
+        print("MALFORMED")
+        sys.exit(0)
+    suffix = arn[len(prefix):]
+    if not suffix or not suffix.strip() or any(c.isspace() for c in arn):
+        print("MALFORMED")
+        sys.exit(0)
+    if arn in requested_set:
+        print("MALFORMED")
+        sys.exit(0)
+    requested_set.add(arn)
+allowed_last = {"PROVISIONING", "PENDING", "ACTIVATING", "RUNNING", "DEACTIVATING", "STOPPING", "DEPROVISIONING", "STOPPED"}
+seen = set()
+same_token = []
+for task in tasks:
+    arn = task.get("taskArn", None)
+    if not isinstance(arn, str) or not arn.startswith(prefix):
+        print("FOREIGN")
+        sys.exit(0)
+    suffix = arn[len(prefix):]
+    if not suffix or not suffix.strip() or any(c.isspace() for c in arn):
+        print("FOREIGN")
+        sys.exit(0)
+    if arn in seen:
+        print("DUPLICATE")
+        sys.exit(0)
+    seen.add(arn)
+    if arn not in requested_set:
+        print("TASK_MISMATCH")
+        sys.exit(0)
+    if task.get("clusterArn", "") != want_cluster_arn:
+        print("CLUSTER_MISMATCH")
+        sys.exit(0)
+    desired = task.get("desiredStatus", None)
+    if not isinstance(desired, str) or not desired:
+        print("MISSING_STATUS")
+        sys.exit(0)
+    if desired != "STOPPED":
+        print("DESIRED_MISMATCH")
+        sys.exit(0)
+    last = task.get("lastStatus", None)
+    if not isinstance(last, str) or not last:
+        print("MISSING_STATUS")
+        sys.exit(0)
+    if last not in allowed_last:
+        print("UNKNOWN_STATUS")
+        sys.exit(0)
+    started = task.get("startedBy", "")
+    if started is None:
+        started = ""
+    if started != "" and not isinstance(started, str):
+        print("MALFORMED")
+        sys.exit(0)
+    if started == old_token:
+        same_token.append((arn, last))
+if seen != requested_set:
+    print("TASK_MISMATCH")
+    sys.exit(0)
+for arn, last in same_token:
+    if last != "STOPPED":
+        print("SAME_TOKEN_EXECUTING:%s" % last)
+        sys.exit(0)
+if same_token:
+    for arn, last in same_token:
+        if arn == recorded_arn:
+            print("SAME_TOKEN_RECORDED_INCONSISTENT")
+            sys.exit(0)
+    print("SAME_TOKEN_STOPPED_DUPLICATE:%d" % len(same_token))
+    sys.exit(0)
+print("OK")
+PYEOF
+)" || ABSSTOP_CHECK="MALFORMED"
+    rm -f "$ABSSTOP_DESC" "$ABSSTOP_BATCH"
+    ABSSTOP_CHECK="$(printf '%s' "$ABSSTOP_CHECK" | tr -d '[:space:]')"
+    case "$ABSSTOP_CHECK" in
+      OK) ;;
+      SAME_TOKEN_EXECUTING:*)
+        ABSSTOP_LAST="${ABSSTOP_CHECK#SAME_TOKEN_EXECUTING:}"
+        rm -f "$ABSSTOP_REMAINING"
+        echo "refused: $ABSSTOP_CONTEXT ${ABSSTOP_PREFIX}still has same-token task still executing with desired STOPPED but lastStatus ${ABSSTOP_LAST:-unknown}, cannot proceed." >&2
+        phase_failed "${RECOVERY_FAIL_PHASE:-init}" ;;
+      SAME_TOKEN_RECORDED_INCONSISTENT)
+        rm -f "$ABSSTOP_REMAINING"
+        echo "refused: $ABSSTOP_CONTEXT ${ABSSTOP_PREFIX}recorded task ARN found in STOPPED sweep despite MISSING proof, inconsistent, cannot prove absence." >&2
+        phase_failed "${RECOVERY_FAIL_PHASE:-init}" ;;
+      SAME_TOKEN_STOPPED_DUPLICATE:*)
+        ABSSTOP_DUP="${ABSSTOP_CHECK#SAME_TOKEN_STOPPED_DUPLICATE:}"
+        rm -f "$ABSSTOP_REMAINING"
+        echo "refused: $ABSSTOP_CONTEXT ${ABSSTOP_PREFIX}still has ${ABSSTOP_DUP:-1} same-token STOPPED tasks including a second task besides recorded, cannot proceed." >&2
+        phase_failed "${RECOVERY_FAIL_PHASE:-init}" ;;
+      FAILURES)
+        rm -f "$ABSSTOP_REMAINING"
+        echo "refused: $ABSSTOP_CONTEXT ${ABSSTOP_PREFIX}STOPPED describe has failures, cannot prove absence." >&2
+        phase_failed "${RECOVERY_FAIL_PHASE:-init}" ;;
+      COUNT_MISMATCH)
+        rm -f "$ABSSTOP_REMAINING"
+        echo "refused: $ABSSTOP_CONTEXT ${ABSSTOP_PREFIX}STOPPED describe count mismatched, cannot prove absence." >&2
+        phase_failed "${RECOVERY_FAIL_PHASE:-init}" ;;
+      FOREIGN)
+        rm -f "$ABSSTOP_REMAINING"
+        echo "refused: $ABSSTOP_CONTEXT ${ABSSTOP_PREFIX}STOPPED describe has foreign task ARN, cannot prove absence." >&2
+        phase_failed "${RECOVERY_FAIL_PHASE:-init}" ;;
+      DUPLICATE)
+        rm -f "$ABSSTOP_REMAINING"
+        echo "refused: $ABSSTOP_CONTEXT ${ABSSTOP_PREFIX}STOPPED describe has duplicate task ARN, cannot prove absence." >&2
+        phase_failed "${RECOVERY_FAIL_PHASE:-init}" ;;
+      CLUSTER_MISMATCH)
+        rm -f "$ABSSTOP_REMAINING"
+        echo "refused: $ABSSTOP_CONTEXT ${ABSSTOP_PREFIX}STOPPED describe cluster mismatched, cannot prove absence." >&2
+        phase_failed "${RECOVERY_FAIL_PHASE:-init}" ;;
+      TASK_MISMATCH)
+        rm -f "$ABSSTOP_REMAINING"
+        echo "refused: $ABSSTOP_CONTEXT ${ABSSTOP_PREFIX}STOPPED describe task mismatched, cannot prove absence." >&2
+        phase_failed "${RECOVERY_FAIL_PHASE:-init}" ;;
+      DESIRED_MISMATCH)
+        rm -f "$ABSSTOP_REMAINING"
+        echo "refused: $ABSSTOP_CONTEXT ${ABSSTOP_PREFIX}STOPPED describe desiredStatus mismatched, cannot prove absence." >&2
+        phase_failed "${RECOVERY_FAIL_PHASE:-init}" ;;
+      MISSING_STATUS)
+        rm -f "$ABSSTOP_REMAINING"
+        echo "refused: $ABSSTOP_CONTEXT ${ABSSTOP_PREFIX}STOPPED describe missing desired or last status, cannot prove absence." >&2
+        phase_failed "${RECOVERY_FAIL_PHASE:-init}" ;;
+      UNKNOWN_STATUS)
+        rm -f "$ABSSTOP_REMAINING"
+        echo "refused: $ABSSTOP_CONTEXT ${ABSSTOP_PREFIX}STOPPED describe has unknown lastStatus, cannot prove absence." >&2
+        phase_failed "${RECOVERY_FAIL_PHASE:-init}" ;;
+      *)
+        rm -f "$ABSSTOP_REMAINING"
+        echo "refused: $ABSSTOP_CONTEXT ${ABSSTOP_PREFIX}STOPPED describe is ${ABSSTOP_CHECK:-malformed}, cannot prove absence." >&2
+        phase_failed "${RECOVERY_FAIL_PHASE:-init}" ;;
+    esac
+  done
+  rm -f "$ABSSTOP_REMAINING"
+  return 0
+}
+
+# Point-in-time recovery gate for an aged COMPLETE init, without claiming
+# mathematical atomic absence. Preserves exact recorded task DescribeTasks
+# MISSING admission, original journal byte-for-byte, fresh read-only
+# verifier, pre and post exact material VersionIds and cert, and no old init
+# resend. First keeps a strict paginated startedBy-only sweep (ListTasks
+# with startedBy alone must be the only filter and defaults to desired
+# RUNNING; never combines startedBy with desiredStatus in the same
+# request). Then separately lists all tasks in the exact owned cluster with
+# desiredStatus STOPPED and no startedBy, using bounded raw pagination and
+# strict validation of every page, key, task ARN, duplicate, foreign, and
+# response, refusing truncation, error, or ambiguous shapes. Returned
+# STOPPED-desired tasks are described in AWS-supported batches of at most
+# 100, checking exact task ARN, cluster, startedBy, desiredStatus, and
+# lastStatus, refusing any failure, missing, mismatched, or unknown status.
+# ECS can have desired STOPPED while last is RUNNING or STOPPING, so a zero
+# startedBy list alone is not exhaustive current-execution absence. For any
+# task with the old recorded startedBy, refuses unless the exact recorded
+# ARN is already proven MISSING and no other same-token task exists; a
+# same-token task still RUNNING or STOPPING always refuses. If no currently
+# executing same-token task is observed under this bounded sweep, reports
+# accurately as a point-in-time observation, not an absolute global or
+# forever guarantee. Repeats both sweeps plus direct recorded MISSING after
+# a short bounded interval to detect transition; any inconsistency refuses.
+# Keeps all AWS calls read-only with no new init, Put, Export, or
+# migration. If ECS API limits prevent a reliable proof, fails closed with
+# a specific diagnostic instead of pretending exhaustive absence. Args:
+# old token, context label, exact recorded task ARN. Fails closed via
+# phase_failed.
+prove_no_running_for_startedby() {
+  GATE_TOKEN="$1"
+  GATE_CONTEXT="$2"
+  GATE_RECORDED="${3:-${RECOVERY_ORIG_TASK:-}}"
+  case "$GATE_TOKEN" in
+    lc-??????????????????????????????) ;;
+    *) echo "refused: $GATE_CONTEXT old token malformed, cannot prove absence." >&2; phase_failed "${RECOVERY_FAIL_PHASE:-init}" ;;
+  esac
+  if printf '%s' "$GATE_TOKEN" | grep -q '[[:space:]]' 2>/dev/null; then
+    echo "refused: $GATE_CONTEXT old token malformed, cannot prove absence." >&2
+    phase_failed "${RECOVERY_FAIL_PHASE:-init}"
+  fi
+  case "$GATE_RECORDED" in
+    "arn:aws:ecs:$EXPECTED_REGION:$EXPECTED_ACCOUNT:task/$CLUSTER_NAME/"*) ;;
+    *) echo "refused: $GATE_CONTEXT recorded task ARN foreign or malformed, cannot prove absence." >&2; phase_failed "${RECOVERY_FAIL_PHASE:-init}" ;;
+  esac
+  GATE_SUFFIX="${GATE_RECORDED##*/}"
+  if [ -z "$GATE_SUFFIX" ]; then
+    echo "refused: $GATE_CONTEXT recorded task ARN foreign or malformed, cannot prove absence." >&2
+    phase_failed "${RECOVERY_FAIL_PHASE:-init}"
+  fi
+  if printf '%s' "$GATE_RECORDED" | grep -q '[[:space:]]' 2>/dev/null; then
+    echo "refused: $GATE_CONTEXT recorded task ARN foreign or malformed, cannot prove absence." >&2
+    phase_failed "${RECOVERY_FAIL_PHASE:-init}"
+  fi
+  absence_startedby_sweep_once "$GATE_TOKEN" "$GATE_CONTEXT" ""
+  absence_prove_recorded_missing_once "$GATE_TOKEN" "$GATE_RECORDED" "$GATE_CONTEXT" ""
+  absence_stopped_sweep_once "$GATE_TOKEN" "$GATE_RECORDED" "$GATE_CONTEXT" ""
+  sleep 1 2>/dev/null || true
+  absence_startedby_sweep_once "$GATE_TOKEN" "$GATE_CONTEXT" "second"
+  absence_prove_recorded_missing_once "$GATE_TOKEN" "$GATE_RECORDED" "$GATE_CONTEXT" "second"
+  absence_stopped_sweep_once "$GATE_TOKEN" "$GATE_RECORDED" "$GATE_CONTEXT" "second"
+  echo "$GATE_CONTEXT point-in-time observation: no currently executing same-token tasks in bounded startedBy-only plus desired STOPPED sweeps (two stable rounds) with recorded task MISSING; not an absolute global or forever guarantee."
 }
 
 # Terminal proof for a recovery verifier task. Args: task ARN, token,
@@ -5481,8 +6101,9 @@ PYEOF
 # unmodified original SHA256, exact material identities, and release. On
 # restart with complete, validates immutable schema, original hash and
 # ownership, current StackId, tags, material Names, ARNs, VersionIds, cert
-# identity, generation, source, head, and exhaustive paginated absence for
-# the old startedBy. If the verifier is still live, rechecks live STOPPED
+# identity, generation, source, head, plus a bounded point-in-time gate for
+# the old startedBy with startedBy-only, recorded MISSING, and desired
+# STOPPED sweeps in two stable rounds. If the verifier is still live, rechecks live STOPPED
 # all essential exit 0; if aged out, permits only for a well-formed zero
 # tasks response with exactly one MISSING failure for the attested task
 # ARN plus intact persisted proof and fresh desired state, never claiming
@@ -6068,7 +6689,7 @@ PYEOF
       rm -f "$RECOVERY_REVERIFY_DESC"
       RECOVERY_REVERIFY_PRESENCE="$(printf '%s' "$RECOVERY_REVERIFY_PRESENCE" | tr -d '[:space:]')"
       if [ "$RECOVERY_REVERIFY_PRESENCE" = "NO_TASK" ]; then
-        prove_no_running_for_startedby "$RECOVERY_ORIG_TOKEN" "recovery re-verify"
+        prove_no_running_for_startedby "$RECOVERY_ORIG_TOKEN" "recovery re-verify" "$RECOVERY_ORIG_TASK"
         RECOVERY_ABSENCE_PROOF="OK"
         release_recovery_lock
         echo "recovery re-verified via persisted one-shot terminal proof after verifier retention expiry: original $RECOVERY_ORIG_BASENAME unchanged, fresh desired state intact, no live verifier claim, no new verifier, no resend. Not retroactive proof."
@@ -6080,7 +6701,7 @@ PYEOF
         phase_failed "$RECOVERY_FAIL_PHASE"
       fi
       prove_recovery_verifier_terminal "$RECOVERY_EXIST_VTASK" "$RECOVERY_EXIST_VTOKEN" "$RECOVERY_EXIST_VTASKDEF"
-      prove_no_running_for_startedby "$RECOVERY_ORIG_TOKEN" "recovery re-verify"
+      prove_no_running_for_startedby "$RECOVERY_ORIG_TOKEN" "recovery re-verify" "$RECOVERY_ORIG_TASK"
       RECOVERY_ABSENCE_PROOF="OK"
       release_recovery_lock
       echo "recovery re-verified: original $RECOVERY_ORIG_BASENAME unchanged, live material and verifier still prove desired-state equivalence, not retroactive proof."
@@ -6151,7 +6772,7 @@ PYEOF
       RECOVERY_VERIFIER_CONTAINERS="sdk-material:STOPPED:0"
       RECOVERY_VERIFIER_LAST_STATUS="STOPPED"
       compute_recovery_verifier_digest
-      prove_no_running_for_startedby "$RECOVERY_ORIG_TOKEN" "recovery resume"
+      prove_no_running_for_startedby "$RECOVERY_ORIG_TOKEN" "recovery resume" "$RECOVERY_ORIG_TASK"
       RECOVERY_ABSENCE_PROOF="OK"
       write_recovery_attestation "$RECOVERY_FILE" "complete"
       release_recovery_lock
@@ -6310,7 +6931,7 @@ PYEOF
   RECOVERY_VERIFIER_CONTAINERS="sdk-material:STOPPED:0"
   RECOVERY_VERIFIER_LAST_STATUS="STOPPED"
   compute_recovery_verifier_digest
-  prove_no_running_for_startedby "$RECOVERY_ORIG_TOKEN" "recovery"
+  prove_no_running_for_startedby "$RECOVERY_ORIG_TOKEN" "recovery" "$RECOVERY_ORIG_TASK"
   RECOVERY_ABSENCE_PROOF="OK"
   write_recovery_attestation "$RECOVERY_FILE" "complete"
   release_recovery_lock
