@@ -116,6 +116,85 @@ class ContainerPathHarnessTests(unittest.TestCase):
         self.assertNotIn("import requests", text)
         self.assertNotIn("os.environ", text)
 
+    def test_harness_fails_when_evidence_unwritable(self):
+        import contextlib
+        import importlib.util
+        import io
+        import sys
+        from unittest import mock
+
+        spec = importlib.util.spec_from_file_location("verify_container_path", HARNESS)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        harness = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(harness)
+
+        responses = [
+            (200, {"status": "ok", "auth": "disabled_demo", "approval_by": "demo_placeholder"}),
+            (200, {"status": "ok", "auth": "disabled_demo"}),
+            (200, [{"name": "Maker"}]),
+            (201, {"run_id": "run-plain-1", "approval_state": "pending_approval"}),
+            (200, {"run_id": "run-plain-1"}),
+            (201, {"run_id": "run-seed-1", "checker_v1": {"blocked_count": 1}}),
+            (422, {"detail": "approval required"}),
+            (200, {"approval_state": "approved_for_export", "approvals": [{"by": "demo_placeholder"}]}),
+            (200, {"approval_state": "approved_for_export", "summary": {"submit_attempted": False}}),
+            (200, [{"run_id": "run-plain-1"}, {"run_id": "run-seed-1"}]),
+        ]
+        argv = [
+            "verify-container-path.py",
+            "--api-base",
+            "http://api.invalid",
+            "--web-base",
+            "http://web.invalid",
+        ]
+        output = io.StringIO()
+        with (
+            mock.patch.object(harness, "call", side_effect=list(responses)) as call_mock,
+            mock.patch.object(harness.Path, "mkdir", return_value=None),
+            mock.patch.object(harness.Path, "write_text", side_effect=OSError("read-only evidence")),
+            mock.patch.object(sys, "argv", argv),
+            contextlib.redirect_stdout(output),
+        ):
+            with self.assertRaises(SystemExit) as exited:
+                harness.main()
+
+        self.assertNotEqual(exited.exception.code, 0)
+        text = output.getvalue()
+        self.assertIn("FAIL: cannot write container path evidence", text)
+        self.assertNotIn("PASS: container path complete", text)
+        self.assertEqual(call_mock.call_count, len(responses))
+
+
+class EvidenceRetentionTests(unittest.TestCase):
+    def test_ci_upload_allows_explicit_hidden_evidence(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("include-hidden-files: true", workflow)
+        for path in [
+            ".local/*-375.png",
+            ".local/*-768.png",
+            ".local/*-1024.png",
+            ".local/*-1440.png",
+            ".local/playwright-results.json",
+            ".local/container-diag.log",
+            ".local/container-path-evidence.json",
+            "web/test-results",
+        ]:
+            self.assertIn(path, workflow)
+
+    def test_ci_upload_does_not_broaden_hidden_capture(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        lines = [line.strip() for line in workflow.splitlines()]
+        self.assertNotIn(".local/**", workflow)
+        self.assertNotIn(".local", lines)
+        self.assertNotIn(".local/*", lines)
+        self.assertNotIn(".env", lines)
+
+    def test_ci_missing_evidence_fails_but_diagnostics_retained(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("if-no-files-found: error", workflow)
+        self.assertIn("if: always()", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

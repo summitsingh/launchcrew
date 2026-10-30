@@ -109,8 +109,9 @@ def main():
         Path(".local").mkdir(exist_ok=True)
         Path(".local/container-path-evidence.json").write_text(
             json.dumps(evidence, indent=2) + "\n", encoding="utf-8")
-    except OSError:
-        pass
+    except OSError as exc:
+        print("FAIL: cannot write container path evidence: " + str(exc))
+        raise SystemExit(1)
     print("PASS: container path complete, no model calls, nothing submitted")
 
 

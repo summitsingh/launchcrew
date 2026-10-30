@@ -95,6 +95,11 @@ jobs:
         if: always()
         with:
           name: verification-evidence
+          # upload-artifact v4 excludes dot-dir files unless explicitly
+          # allowed. Keep the path list explicit and safe; do not broaden
+          # to whole dot-dir trees, env dumps, credentials, or raw secret logs.
+          include-hidden-files: true
+          if-no-files-found: error
           path: |
             .local/*-375.png
             .local/*-768.png
