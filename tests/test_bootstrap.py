@@ -4172,7 +4172,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             shared, journals = self.fresh_shared(shared_tmp)
             prior = self.write_prior(
                 journals, generation="head007-new1111",
-                outcome="complete", archived=True)
+                outcome="complete", archived=True, target_head="007")
             before = prior.read_text(encoding="utf-8")
             self.seed_live_prior(shared)
             result, calls = self.run_bootstrap(
@@ -4201,7 +4201,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             shared, journals = self.fresh_shared(shared_tmp)
             prior = self.write_prior(
                 journals, generation="head007-new1111",
-                outcome="complete", archived=True)
+                outcome="complete", archived=True, target_head="007")
             before = prior.read_text(encoding="utf-8")
             self.seed_live_prior(shared)
             result, calls = self.run_bootstrap(
@@ -4226,7 +4226,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             shared, journals = self.fresh_shared(shared_tmp)
             prior = self.write_prior(
                 journals, generation="head007-new1111",
-                outcome="complete", archived=True)
+                outcome="complete", archived=True, target_head="007")
             before = prior.read_text(encoding="utf-8")
             self.seed_live_prior(shared)
             result, calls = self.run_bootstrap(
@@ -4251,7 +4251,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             shared, journals = self.fresh_shared(shared_tmp)
             prior = self.write_prior(
                 journals, generation="head007-new1111",
-                outcome="complete", archived=True)
+                outcome="complete", archived=True, target_head="007")
             before = prior.read_text(encoding="utf-8")
             self.seed_live_prior(shared)
             result, calls = self.run_bootstrap(
@@ -4276,7 +4276,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             shared, journals = self.fresh_shared(shared_tmp)
             prior = self.write_prior(
                 journals, generation="head007-new1111",
-                outcome="complete", archived=True)
+                outcome="complete", archived=True, target_head="007")
             before = prior.read_text(encoding="utf-8")
             self.seed_live_prior(shared)
             result, calls = self.run_bootstrap(
