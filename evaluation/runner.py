@@ -22,6 +22,9 @@ PRODUCTION_SUPPORTED = "supported"
 PRODUCTION_UNSUPPORTED = "unsupported"
 PRODUCTION_CONFLICTS = "conflicts"
 
+MALFORMED_OBSERVED = "malformed"
+OBSERVED_VERDICTS = PRODUCTION_VERDICTS + (MALFORMED_OBSERVED,)
+
 EXPECTED_TO_PRODUCTION = {
     "Supported": "supported",
     "Not in confirmed facts": "unsupported",
@@ -34,11 +37,16 @@ CATEGORY_NOTE = (
     "Not in confirmed facts to unsupported, "
     "Conflicts with confirmed facts to conflicts. "
     "Observed verdict is the exact production enum from "
-    "launchcrew.facts.check_sentence with strict verified pairing "
-    "(verified True only with supported, verified False only with "
-    "unsupported or conflicts). Malformed, unknown, or contradictory "
-    "outputs fail closed to blocked and never count as correct. "
-    "Confusion rows are expected production enum, columns observed."
+    "launchcrew.facts.check_sentence for valid outputs, or malformed "
+    "for malformed, unknown, or contradictory outputs with strict "
+    "verified pairing (verified True only with supported, verified "
+    "False only with unsupported or conflicts). Malformed outputs fail "
+    "closed to blocked and never count as correct, and never use a "
+    "fallback production enum as the observed verdict. "
+    "Confusion rows are expected production enum, columns are observed "
+    "(supported, unsupported, conflicts, malformed). Valid diagonal "
+    "sum equals correct_total; malformed column sum equals "
+    "malformed_total; confusion sum equals total."
 )
 
 BASELINE_NOTE = (
@@ -101,11 +109,13 @@ def validate_checker_result(result):
     """Validate one production Checker result, fail closed per case.
 
     Returns (verified, verdict, malformed, reason). verified is bool,
-    verdict is exact production enum. malformed is True when verdict enum
-    is unknown, verified is not bool, or the pairing contradicts production
-    (verified True only with supported). Malformed outputs fail closed to
-    verified False and a blocked verdict, never to supported. Non-dict
-    results raise RuntimeError.
+    verdict is the exact production enum for valid outputs or malformed
+    for malformed outputs. malformed is True when verdict enum is
+    unknown, verified is not bool, or the pairing contradicts production
+    (verified True only with supported, verified False only with
+    unsupported or conflicts). Malformed outputs fail closed to verified
+    False and the malformed observed category, never to a fallback
+    production enum. Non-dict results raise RuntimeError.
     """
     if not isinstance(result, dict):
         raise RuntimeError(
@@ -130,15 +140,11 @@ def validate_checker_result(result):
             consistent = True
     if verified_valid and verdict_valid and consistent:
         return (verified_raw, verdict_raw, False, reason)
-    if verdict_valid and verdict_raw in (PRODUCTION_UNSUPPORTED, PRODUCTION_CONFLICTS):
-        fail_verdict = verdict_raw
-    else:
-        fail_verdict = PRODUCTION_UNSUPPORTED
-    return (False, fail_verdict, True, reason)
+    return (False, MALFORMED_OBSERVED, True, reason)
 
 
 def observe_with_checker(case, checker_fn):
-    """Run one candidate claim through the Checker. Returns three-way outcome."""
+    """Run one candidate claim through the Checker. Returns outcome with exact production verdict or malformed."""
     facts = build_checker_facts(case)
     result = checker_fn(case["candidate_claim"], facts)
     verified, verdict, malformed, reason = validate_checker_result(result)
@@ -207,17 +213,22 @@ def compute_category_metrics(cases, observed_verdict_by_id, malformed_by_id=None
     """Compute three-way category accuracy, confusion, IDs, and per-class recall.
 
     cases is a list of dataset cases with id and expected_verdict.
-    observed_verdict_by_id maps case id to production enum (supported,
-    unsupported, conflicts). Unknown or missing observed values fail closed
-    to unsupported and mismatch, never to correct.
-    malformed_by_id optionally maps case id to True when Checker output was
-    malformed or contradictory; those cases never count as correct, even
-    when the fail-closed verdict matches expected.
-    Confusion is expected-row by observed-column over production enum.
+    observed_verdict_by_id maps case id to the exact production enum
+    (supported, unsupported, conflicts) for valid outputs, or malformed
+    for malformed outputs. Unknown, missing, or malformed-flagged
+    observed values go to the separate malformed observed column and
+    mismatch, never to a fallback production enum and never to correct.
+    malformed_by_id optionally maps case id to True when Checker output
+    was malformed or contradictory; those cases go to the malformed
+    column even when the raw observed value matches expected.
+    Confusion rows are expected production enum, columns are observed
+    (supported, unsupported, conflicts, malformed). Valid diagonal sum
+    equals correct_total; malformed column sum equals malformed_total;
+    confusion sum equals total.
     """
     if malformed_by_id is None:
         malformed_by_id = {}
-    confusion = {exp: {obs: 0 for obs in PRODUCTION_VERDICTS} for exp in PRODUCTION_VERDICTS}
+    confusion = {exp: {obs: 0 for obs in OBSERVED_VERDICTS} for exp in PRODUCTION_VERDICTS}
     correct_ids = []
     mismatch_ids = []
     malformed_ids = []
@@ -230,9 +241,9 @@ def compute_category_metrics(cases, observed_verdict_by_id, malformed_by_id=None
         expected_totals[expected_enum] += 1
         raw_observed = observed_verdict_by_id.get(case_id)
         flagged = bool(malformed_by_id.get(case_id))
-        if raw_observed not in PRODUCTION_VERDICTS:
+        if flagged or raw_observed not in PRODUCTION_VERDICTS:
             flagged = True
-            observed_enum = PRODUCTION_UNSUPPORTED
+            observed_enum = MALFORMED_OBSERVED
         else:
             observed_enum = raw_observed
         confusion[expected_enum][observed_enum] += 1
@@ -274,6 +285,33 @@ def compute_category_metrics(cases, observed_verdict_by_id, malformed_by_id=None
     }
 
 
+def validate_dataset_cases(cases):
+    """Validate dataset rows before any checker calls and before metrics.
+
+    Requires a nonempty list of dict rows with unique nonempty string
+    IDs and supported expected labels. Raises ValueError on non-dict
+    rows, missing or empty or non-string IDs, duplicate IDs, or unknown
+    expected_verdict. Callers must call this before checker calls so an
+    invalid dataset never triggers checker work and observations keyed
+    by case id cannot overwrite or fabricate metrics.
+    """
+    if not isinstance(cases, list) or not cases:
+        raise ValueError("Dataset has no cases list")
+    seen = set()
+    for index, case in enumerate(cases):
+        if not isinstance(case, dict):
+            raise ValueError("Dataset case at index %d is not an object" % index)
+        case_id = case.get("id")
+        if not isinstance(case_id, str) or not case_id.strip():
+            raise ValueError(
+                "Dataset case at index %d has missing or empty id" % index
+            )
+        if case_id in seen:
+            raise ValueError("Duplicate dataset case id %r" % (case_id,))
+        seen.add(case_id)
+        map_expected_to_production(case.get("expected_verdict"), case_id)
+
+
 def get_source_sha(explicit=None):
     """Accept explicit SHA or record git HEAD without fabricating one."""
     if explicit:
@@ -296,14 +334,17 @@ def get_source_sha(explicit=None):
 
 
 def evaluate(dataset_path, source_sha=None, checker_fn=None):
-    """Evaluate the versioned dataset with the production Checker."""
+    """Evaluate the versioned dataset with the production Checker.
+
+    Validates actual input rows for unique nonempty IDs and supported
+    expected labels before any checker calls and before metrics.
+    """
     dataset_path = Path(dataset_path)
     data = load_dataset_bytes(dataset_path)
     digest = hash_dataset_bytes(data)
     dataset = parse_dataset(data)
     cases = dataset.get("cases", [])
-    if not isinstance(cases, list) or not cases:
-        raise ValueError("Dataset has no cases list")
+    validate_dataset_cases(cases)
     if checker_fn is None:
         checker_fn = get_checker_entrypoint()
     observed_by_id = {}
