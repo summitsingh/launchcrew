@@ -338,7 +338,19 @@ def _find_exclusive_omission_conflict(text, approved):
     return None
 
 
-def _normalize_for_paraphrase(text, contents_context):
+# Generic predicate heads for role-preserving paraphrase. Closed-class
+# copula, possession, inclusion, and measure verbs only, no product names.
+# Used solely to locate the subject/predicate/object split so safe
+# reorderings stay within one role. Unknown verbs fall back to strict
+# ordered equality and fail closed.
+_PARAPHRASE_PREDICATES = frozenset({
+    'is', 'are', 'was', 'were', 'be', 'been',
+    'includes', 'hold', 'holds', 'has', 'have',
+    'weigh', 'weighs', 'measure', 'measures',
+})
+
+
+def _ordered_paraphrase_tokens(text, contents_context):
     out = []
     for tok in _ordered_tokens(text):
         if tok in _PARAPHRASE_GLUE:
@@ -353,14 +365,46 @@ def _normalize_for_paraphrase(text, contents_context):
             out.append(_UNIT_ALIASES[tok])
         else:
             out.append(tok)
-    out.sort()
     return out
 
 
+def _normalize_for_paraphrase(text, contents_context):
+    return sorted(_ordered_paraphrase_tokens(text, contents_context))
+
+
+def _paraphrase_roles_match(claim_ordered, fact_ordered):
+    # Ordered equality preserves roles trivially. Otherwise allow only
+    # within-role reorder: one shared predicate head at the same index,
+    # same subject multiset, same object multiset. Any cross-role swap
+    # such as reversed subject and object blocks.
+    if claim_ordered == fact_ordered:
+        return True
+    if sorted(claim_ordered) != sorted(fact_ordered):
+        return False
+    claim_preds = [i for i, t in enumerate(claim_ordered)
+                   if t in _PARAPHRASE_PREDICATES]
+    fact_preds = [i for i, t in enumerate(fact_ordered)
+                  if t in _PARAPHRASE_PREDICATES]
+    if len(claim_preds) != 1 or len(fact_preds) != 1:
+        return False
+    ci = claim_preds[0]
+    fi = fact_preds[0]
+    if ci != fi:
+        return False
+    if claim_ordered[ci] != fact_ordered[fi]:
+        return False
+    if sorted(claim_ordered[:ci]) != sorted(fact_ordered[:fi]):
+        return False
+    if sorted(claim_ordered[ci + 1:]) != sorted(fact_ordered[fi + 1:]):
+        return False
+    return True
+
+
 def _find_paraphrase_match(text, approved):
-    # Single-fact rewording with identical content words ignoring order,
-    # articles, 'of', narrow verb synonyms, and unit forms. Exact multiset
-    # match only, so extra, missing, or swapped values never match.
+    # Single-fact rewording with identical content words, narrow verb
+    # synonyms, and unit forms, preserving subject/predicate/object roles.
+    # Exact ordered match or same-role multiset match only, so extra,
+    # missing, swapped values, or reversed subject/object never match.
     if not isinstance(text, str) or not text.strip():
         return None
     for fact in approved:
@@ -368,7 +412,9 @@ def _find_paraphrase_match(text, approved):
             continue
         fact_words = set(_ordered_tokens(fact))
         contents = bool(fact_words & {'includes', 'include', 'contains', 'contain'})
-        if _normalize_for_paraphrase(text, contents) == _normalize_for_paraphrase(fact, contents):
+        claim_ordered = _ordered_paraphrase_tokens(text, contents)
+        fact_ordered = _ordered_paraphrase_tokens(fact, contents)
+        if _paraphrase_roles_match(claim_ordered, fact_ordered):
             return fact
     return None
 

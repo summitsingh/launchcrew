@@ -4,10 +4,11 @@ Socket-free and offline only. No model calls, no credentials.
 
 Covers narrow fail-closed improvements: same subject and property value
 swaps, included-item exclusivity, per-property quantities with unit forms,
-negation and absolutes, and safe single-fact paraphrases. Uses fictional
-products and values distinct from the frozen evaluation to prove generic
-behavior. check_claim stays exact-only; only check_sentence allows the
-narrow paraphrase path. Verified pairing stays strict and evidence stays
+negation and absolutes, reversed subject/object roles, and safe
+single-fact paraphrases. Uses fictional products and values distinct from
+the frozen evaluation to prove generic behavior. check_claim stays
+exact-only; only check_sentence allows the narrow role-preserving
+paraphrase path. Verified pairing stays strict and evidence stays
 confirmed-facts-only.
 """
 import unittest
@@ -237,6 +238,48 @@ class SafeParaphraseTests(unittest.TestCase):
         blocked = check_sentence('The seat of the stool sits 35 centimeters high', facts)
         assert_blocked(self, blocked)
         self.assertEqual(blocked['verdict'], 'unsupported')
+
+
+class ReversedRoleTests(unittest.TestCase):
+    def test_reversed_inclusion_subject_object_blocked(self):
+        facts = owner_facts(['Crate includes spoon and ladle'])
+        result = check_sentence('Spoon includes crate and ladle', facts)
+        assert_blocked(self, result)
+        self.assertEqual(result['verdict'], 'unsupported')
+        exact_only = check_claim('Spoon includes crate and ladle', facts)
+        assert_blocked(self, exact_only)
+
+    def test_reversed_inclusion_two_entity_blocked(self):
+        facts = owner_facts(['Crate includes carafe and stopper'])
+        result = check_sentence('Carafe includes crate and stopper', facts)
+        assert_blocked(self, result)
+        self.assertEqual(result['verdict'], 'unsupported')
+
+    def test_reversed_material_subject_object_blocked(self):
+        facts = owner_facts(['Vessel shell is recycled copper mesh'])
+        result = check_sentence('Recycled copper mesh is vessel shell', facts)
+        assert_blocked(self, result)
+        self.assertEqual(result['verdict'], 'unsupported')
+
+    def test_reversed_quantity_holds_blocked(self):
+        facts = owner_facts(['Carafe holds 900 ml'])
+        result = check_sentence('900 milliliters holds carafe', facts)
+        assert_blocked(self, result)
+        self.assertEqual(result['verdict'], 'unsupported')
+
+    def test_reversed_quantity_is_blocked(self):
+        facts = owner_facts(['Stool seat height is 35 cm'])
+        result = check_sentence('35 centimeters is stool seat height', facts)
+        assert_blocked(self, result)
+        self.assertEqual(result['verdict'], 'unsupported')
+
+    def test_safe_inclusion_item_order_still_supported_sentence_only(self):
+        facts = owner_facts(['Crate includes spoon and ladle'])
+        supported = check_sentence('Crate includes ladle and spoon', facts)
+        assert_supported(self, supported, 'Crate includes spoon and ladle')
+        exact_only = check_claim('Crate includes ladle and spoon', facts)
+        assert_blocked(self, exact_only)
+        self.assertEqual(exact_only['verdict'], 'unsupported')
 
 
 class ProvenancePairingTests(unittest.TestCase):
