@@ -1,0 +1,53 @@
+{
+  "template_id": "quickstart_mobile_app",
+  "title": "Fictional mobile app starter",
+  "kind": "mobile_app",
+  "fictional": true,
+  "confirmation_required": true,
+  "fictional_note": "Fictional example only. Every value below is an unconfirmed suggestion, including the first-person founder note. Review each example, replace it with the owner fact, and confirm each checkbox yourself. Never confirm an unchanged example value as a real fact unless you explicitly attest it is your own fact with genuine provenance. Nothing here is verified or approved.",
+  "description": "Example starter for an invented daily habit tracker app. No real app is named.",
+  "approved_claims": [],
+  "sources": [
+    "quickstart_mobile_app.json (fictional quick-start template)",
+    "unconfirmed suggestions only; not evidence"
+  ],
+  "suggested_facts": {
+    "material": {
+      "value": "Fernway habit tracker app for daily routines",
+      "confirmed": false,
+      "source": "demo_template"
+    },
+    "contents": {
+      "value": "Daily check-ins, streaks, and gentle reminders",
+      "confirmed": false,
+      "source": "demo_template"
+    },
+    "size": {
+      "value": "Phone app that works offline",
+      "confirmed": false,
+      "source": "demo_template"
+    },
+    "price": {
+      "value": "$4 per month after a free week",
+      "confirmed": false,
+      "source": "demo_template"
+    },
+    "allowed_claims": [
+      {
+        "value": "Streak view for daily check-ins",
+        "confirmed": false,
+        "source": "demo_template"
+      },
+      {
+        "value": "Reminder tones stay off by default",
+        "confirmed": false,
+        "source": "demo_template"
+      }
+    ],
+    "founder_note": {
+      "value": "I built Fernway to keep my own evening routine steady.",
+      "confirmed": false,
+      "source": "demo_template"
+    }
+  }
+}

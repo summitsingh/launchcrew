@@ -1,0 +1,53 @@
+{
+  "template_id": "quickstart_food",
+  "title": "Fictional food product starter",
+  "kind": "food",
+  "fictional": true,
+  "confirmation_required": true,
+  "fictional_note": "Fictional example only. Every value below is an unconfirmed suggestion, including the first-person founder note. Review each example, replace it with the owner fact, and confirm each checkbox yourself. Never confirm an unchanged example value as a real fact unless you explicitly attest it is your own fact with genuine provenance. Nothing here is verified or approved.",
+  "description": "Example starter for an invented oat snack bar. No real brand is named.",
+  "approved_claims": [],
+  "sources": [
+    "quickstart_food.json (fictional quick-start template)",
+    "unconfirmed suggestions only; not evidence"
+  ],
+  "suggested_facts": {
+    "material": {
+      "value": "Oats, honey, and sunflower seeds",
+      "confirmed": false,
+      "source": "demo_template"
+    },
+    "contents": {
+      "value": "Twelve baked oat bars per box",
+      "confirmed": false,
+      "source": "demo_template"
+    },
+    "size": {
+      "value": "Box of 12 bars, 40 g each",
+      "confirmed": false,
+      "source": "demo_template"
+    },
+    "price": {
+      "value": "$18 per box",
+      "confirmed": false,
+      "source": "demo_template"
+    },
+    "allowed_claims": [
+      {
+        "value": "Baked in small batches in the Harborlight kitchen",
+        "confirmed": false,
+        "source": "demo_template"
+      },
+      {
+        "value": "Recyclable cardboard box",
+        "confirmed": false,
+        "source": "demo_template"
+      }
+    ],
+    "founder_note": {
+      "value": "I started Harborlight snacks for weekend trail walks.",
+      "confirmed": false,
+      "source": "demo_template"
+    }
+  }
+}
