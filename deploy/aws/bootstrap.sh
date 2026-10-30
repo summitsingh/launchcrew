@@ -5797,9 +5797,8 @@ PYEOF
         QUIESCE_PARAM_ARGS="$QUIESCE_PARAM_ARGS ParameterKey=$QUIESCE_KEY,UsePreviousValue=true"
       fi
     done <"$QUIESCE_ARGS_FILE"
-    QUIESCE_KEYS_CSV="$(sort -u "$QUIESCE_ARGS_FILE" 2>/dev/null | tr '\n' ',' || true)"
-    rm -f "$QUIESCE_ARGS_FILE" "$QUIESCE_STACK_JSON"
-    [ -n "$QUIESCE_PARAM_ARGS" ] || { rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON"; echo "refused: quiesce parameters empty, no change made" >&2; phase_failed quiesce; }
+    rm -f "$QUIESCE_ARGS_FILE"
+    [ -n "$QUIESCE_PARAM_ARGS" ] || { rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON" "$QUIESCE_STACK_JSON"; echo "refused: quiesce parameters empty, no change made" >&2; phase_failed quiesce; }
     echo "Quiesce change set uses the existing deployed template with all existing values except EnableServices=false"
     QUIESCE_RESUMED=0
     # shellcheck disable=SC2086
@@ -5811,7 +5810,7 @@ PYEOF
           echo "Quiesce: same-name change set $QUIESCE_CHANGESET already exists, attempting safe resume with read-only proof, never deleting or recreating."
           ;;
         *)
-          rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON"
+          rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON" "$QUIESCE_STACK_JSON"
           echo "refused: quiesce change set create failed; an existing same-name change set is never deleted or replaced, inspect $QUIESCE_CHANGESET manually after review. No change made." >&2; phase_failed quiesce
           ;;
       esac
@@ -5836,14 +5835,14 @@ PYEOF
       then
         rm -f "$QUIESCE_INPUT"
         rm -rf "$QUIESCE_PAGES_DIR"
-        rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON"
+        rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON" "$QUIESCE_STACK_JSON"
         echo "refused: quiesce change set describe input failed, no change made. Pending change set $QUIESCE_CHANGESET preserved for inspection." >&2
         phase_failed quiesce
       fi
       if ! "$AWS_BIN" cloudformation describe-change-set --cli-input-json "file://$QUIESCE_INPUT" --no-paginate --region "$EXPECTED_REGION" --output json >"$QUIESCE_PAGE_FILE" 2>"$TMP_ERR"; then
         rm -f "$QUIESCE_INPUT"
         rm -rf "$QUIESCE_PAGES_DIR"
-        rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON"
+        rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON" "$QUIESCE_STACK_JSON"
         echo "refused: quiesce change set $QUIESCE_CHANGESET unreadable, no change made. Pending change set preserved for inspection." >&2
         phase_failed quiesce
       fi
@@ -5874,7 +5873,7 @@ PYEOF
             continue
           else
             rm -rf "$QUIESCE_PAGES_DIR"
-            rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON"
+            rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON" "$QUIESCE_STACK_JSON"
             echo "refused: quiesce change set $QUIESCE_CHANGESET still $QUIESCE_WAIT_STATUS after bounded wait, no execute made. Pending change set preserved for inspection." >&2
             phase_failed quiesce
           fi
@@ -5905,7 +5904,7 @@ PYEOF
       QUIESCE_NEXT="$(printf '%s' "$QUIESCE_NEXT" | tr -d '[:space:]')"
       if [ "$QUIESCE_NEXT" = "MALFORMED" ]; then
         rm -rf "$QUIESCE_PAGES_DIR"
-        rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON"
+        rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON" "$QUIESCE_STACK_JSON"
         echo "refused: quiesce change set page $QUIESCE_PAGE_NUM malformed, no change made. Pending change set $QUIESCE_CHANGESET preserved for inspection." >&2
         phase_failed quiesce
       fi
@@ -5916,15 +5915,45 @@ PYEOF
     done
     if [ -n "$QUIESCE_NEXT" ]; then
       rm -rf "$QUIESCE_PAGES_DIR"
-      rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON"
+      rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON" "$QUIESCE_STACK_JSON"
       echo "refused: quiesce change set has unreviewed pages after 3, no change made. Pending change set $QUIESCE_CHANGESET preserved for inspection." >&2
       phase_failed quiesce
     fi
-    QUIESCE_RAW="$(python3 - "$QUIESCE_PAGES_DIR" "$STACK_NAME" "$STACK_ID" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$QUIESCE_CHANGESET" "$QUIESCE_KEYS_CSV" 2>/dev/null <<'PYEOF'
+    QUIESCE_RAW="$(python3 - "$QUIESCE_PAGES_DIR" "$STACK_NAME" "$STACK_ID" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$QUIESCE_CHANGESET" "$QUIESCE_STACK_JSON" 2>/dev/null <<'PYEOF'
 import glob, json, os, sys
 pages_dir, want_stack, want_id = sys.argv[1:4]
-want_account, want_region, want_name, want_keys_csv = sys.argv[4:8]
-want_keys = set(part for part in want_keys_csv.split(",") if part)
+want_account, want_region, want_name, stack_params_path = sys.argv[4:8]
+try:
+    stack_doc = json.load(open(stack_params_path))
+except Exception:
+    print("PARAMS_STACK_KEYS")
+    sys.exit(0)
+stacks = stack_doc.get("Stacks", None)
+if not isinstance(stacks, list) or len(stacks) != 1 or not isinstance(stacks[0], dict):
+    print("PARAMS_STACK_KEYS")
+    sys.exit(0)
+live_params = stacks[0].get("Parameters", None)
+if not isinstance(live_params, list) or not live_params:
+    print("PARAMS_STACK_KEYS")
+    sys.exit(0)
+expected_live = {}
+for live_entry in live_params:
+    if not isinstance(live_entry, dict):
+        print("PARAMS_STACK_KEYS")
+        sys.exit(0)
+    live_key = live_entry.get("ParameterKey", "")
+    live_value = live_entry.get("ParameterValue", None)
+    if not isinstance(live_key, str) or not live_key:
+        print("PARAMS_STACK_KEYS")
+        sys.exit(0)
+    if live_key in expected_live:
+        print("PARAMS_STACK_KEYS")
+        sys.exit(0)
+    if not isinstance(live_value, str):
+        print("PARAMS_STACK_KEYS")
+        sys.exit(0)
+    expected_live[live_key] = live_value
+want_keys = set(expected_live)
 pages = sorted(glob.glob(os.path.join(pages_dir, "page-*.json")))
 if not pages:
     print("MALFORMED")
@@ -6061,7 +6090,14 @@ for item in got_params:
     if not isinstance(item, dict):
         print("PARAMS_MALFORMED")
         sys.exit(0)
-    key = item.get("ParameterKey", "") or ""
+    for json_key in item.keys():
+        if json_key not in ("ParameterKey", "ParameterValue", "UsePreviousValue", "ResolvedValue"):
+            print("PARAMS_MALFORMED")
+            sys.exit(0)
+    key = item.get("ParameterKey", "")
+    if not isinstance(key, str):
+        print("PARAMS_MALFORMED")
+        sys.exit(0)
     if not key or key in seen_params:
         print("PARAMS_DUP_%s" % (key or "EMPTY"))
         sys.exit(0)
@@ -6069,20 +6105,47 @@ for item in got_params:
     if key not in want_keys:
         print("PARAMS_FOREIGN_%s" % key)
         sys.exit(0)
+    if "UsePreviousValue" in item and not isinstance(item.get("UsePreviousValue"), bool):
+        print("PARAMS_MALFORMED")
+        sys.exit(0)
+    if "ResolvedValue" in item and not isinstance(item.get("ResolvedValue"), str):
+        print("PARAMS_MALFORMED")
+        sys.exit(0)
+    use_prev = item.get("UsePreviousValue", False)
+    if not isinstance(use_prev, bool):
+        print("PARAMS_MALFORMED")
+        sys.exit(0)
+    has_value = "ParameterValue" in item
+    raw_value = item.get("ParameterValue", "")
+    if has_value and not isinstance(raw_value, str):
+        print("PARAMS_MALFORMED")
+        sys.exit(0)
     if key == "EnableServices":
-        if item.get("UsePreviousValue", False):
+        if use_prev:
             print("PARAMS_PREVIOUS_EnableServices")
             sys.exit(0)
-        if (item.get("ParameterValue", "") or "") != "false":
+        if not has_value:
+            print("PARAMS_VALUE_EnableServices")
+            sys.exit(0)
+        if raw_value != "false":
             print("PARAMS_VALUE_EnableServices")
             sys.exit(0)
     else:
-        if not item.get("UsePreviousValue", False):
-            print("PARAMS_PREVIOUS_%s" % key)
+        live_expect = expected_live.get(key, None)
+        if not isinstance(live_expect, str):
+            print("PARAMS_STACK_KEYS")
             sys.exit(0)
-        if (item.get("ParameterValue", "") or "") != "":
-            print("PARAMS_VALUE_%s" % key)
-            sys.exit(0)
+        if use_prev:
+            if has_value and raw_value != "":
+                print("PARAMS_VALUE_%s" % key)
+                sys.exit(0)
+        else:
+            if not has_value:
+                print("PARAMS_VALUE_%s" % key)
+                sys.exit(0)
+            if raw_value != live_expect:
+                print("PARAMS_VALUE_%s" % key)
+                sys.exit(0)
 if seen_params != want_keys:
     print("PARAMS_INCOMPLETE")
     sys.exit(0)
@@ -6110,13 +6173,14 @@ PYEOF
     QUIESCE_REVIEW="$(printf '%s\n' "$QUIESCE_RAW" | head -n 1 | tr -d '[:space:]')"
     if [ "$QUIESCE_REVIEW" != "OK" ]; then
       rm -rf "$QUIESCE_PAGES_DIR"
-      rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON"
+      rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON" "$QUIESCE_STACK_JSON"
       echo "refused: quiesce change set proof is $QUIESCE_REVIEW, expected only ApiService and WebService DesiredCount to 0 with no replacement and no other property, tag, or resource change. Pending change set $QUIESCE_CHANGESET preserved for inspection, no execute made, no delete made." >&2
       phase_failed quiesce
     fi
     QUIESCE_CHANGESET_ID="$(printf '%s\n' "$QUIESCE_RAW" | awk -F'\t' '$1=="ID"{print $2}')"
     QUIESCE_CHANGESET_ID="$(printf '%s' "$QUIESCE_CHANGESET_ID" | tr -d '[:space:]')"
     rm -rf "$QUIESCE_PAGES_DIR"
+    rm -f "$QUIESCE_STACK_JSON"
     [ -n "$QUIESCE_CHANGESET_ID" ] || { rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON"; echo "refused: quiesce reviewed change set ID missing, no execute made." >&2; phase_failed quiesce; }
     if [ "$QUIESCE_RESUMED" -eq 1 ]; then
       echo "Quiesce: resuming existing exact same-name change set $QUIESCE_CHANGESET with reviewed ID after read-only identity, status, stack, parameter, tag, and diff proof."
