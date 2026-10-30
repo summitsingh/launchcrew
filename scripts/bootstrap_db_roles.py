@@ -1253,8 +1253,11 @@ def do_verify_role_state():
                 except Exception:
                     pass
                 return _fail("role-state-model-functions")
-            for proname in (MODEL_RESERVE_FUNC, MODEL_FINALIZE_FUNC):
-                qfunc = "%s.%s" % (schema, proname)
+            for proname, sig in ((MODEL_RESERVE_FUNC, MODEL_RESERVE_SIG),
+                                 (MODEL_FINALIZE_FUNC,
+                                  MODEL_FINALIZE_SIG)):
+                qfunc = "%s.%s%s" % (_quote_ident(schema),
+                                     _quote_ident(proname), sig)
                 if not _has_priv(gcur, "has_function_privilege",
                                  qfunc, "EXECUTE"):
                     try:
@@ -1262,7 +1265,9 @@ def do_verify_role_state():
                     except Exception:
                         pass
                     return _fail("role-state-model-functions")
-            qtrig = "%s.%s" % (schema, MODEL_TRIGGER_FUNC)
+            qtrig = "%s.%s%s" % (_quote_ident(schema),
+                                 _quote_ident(MODEL_TRIGGER_FUNC),
+                                 MODEL_TRIGGER_SIG)
             if _has_priv(gcur, "has_function_privilege", qtrig, "EXECUTE"):
                 try:
                     gconn.rollback()

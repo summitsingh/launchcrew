@@ -119,8 +119,21 @@ class FakeCursor:
         if "has_function_privilege" in lowered:
             obj = str(params[0]) if params and len(params) > 0 else ""
             if "model_no_direct" in obj:
+                if '"model_no_direct"()' not in obj:
+                    raise FakeError("function public.model_no_direct() "
+                                    "does not exist")
                 return (False,)
-            if "model_reserve_call" in obj or "model_finalize_call" in obj:
+            if "model_reserve_call" in obj:
+                if ('"model_reserve_call"(TEXT, TEXT, TEXT, TEXT, '
+                        'INTEGER, INTEGER, INTEGER)') not in obj:
+                    raise FakeError("function public.model_reserve_call"
+                                    "(TEXT,...) does not exist")
+                return (not self.state.role_partial,)
+            if "model_finalize_call" in obj:
+                if ('"model_finalize_call"(TEXT, TEXT, TEXT, INTEGER, '
+                        'INTEGER, INTEGER)') not in obj:
+                    raise FakeError("function public.model_finalize_call"
+                                    "(TEXT,...) does not exist")
                 return (not self.state.role_partial,)
             return (False,)
         if "pg_get_constraintdef" in lowered:
@@ -1720,6 +1733,38 @@ class RoleStateVerifierTests(unittest.TestCase):
         code, out = self.run_main()
         self.assertEqual(code, 1, msg=out)
         self.assertIn("role-state-head", out)
+
+    def test_role_state_function_checks_use_signature_identity(self):
+        code, out = self.run_main()
+        self.assertEqual(code, 0, msg=out)
+        func_objs = [params[0] for sql, params in self.state.statements
+                     if "has_function_privilege" in sql.lower()]
+        self.assertEqual(len(func_objs), 3)
+        expected = (
+            (self.module.MODEL_RESERVE_FUNC,
+             self.module.MODEL_RESERVE_SIG),
+            (self.module.MODEL_FINALIZE_FUNC,
+             self.module.MODEL_FINALIZE_SIG),
+            (self.module.MODEL_TRIGGER_FUNC,
+             self.module.MODEL_TRIGGER_SIG),
+        )
+        for proname, sig in expected:
+            needle = '"%s"%s' % (proname, sig)
+            self.assertTrue(any(needle in str(obj) for obj in func_objs),
+                            msg="missing %s" % needle)
+        for obj in func_objs:
+            self.assertIn('"public".', str(obj))
+
+    def test_role_state_bare_function_identity_refused(self):
+        cur = FakeCursor(self.state, user="launchcrew_runtime",
+                         dbname="launchcrew")
+        for bare in ("public.model_reserve_call",
+                     "public.model_finalize_call",
+                     "public.model_no_direct"):
+            cur.execute("SELECT has_function_privilege(%s, %s)",
+                        (bare, "EXECUTE"))
+            with self.assertRaises(FakeError, msg=bare):
+                cur.fetchone()
 
     def test_role_state_never_uses_master_password(self):
         text = SCRIPT.read_text(encoding="utf-8")
