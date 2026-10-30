@@ -121,6 +121,23 @@ SUPPORTED_MIME_TYPES: tuple[str, ...] = (DOC_MIME, TEXT_MIME)
 EXPORT_MIME_FOR_DOC = 'text/plain'
 DRIVE_RESOURCE_KEYS_HEADER = 'X-Goog-Drive-Resource-Keys'
 
+# Slice 6 photo foundation: owner-selected Drive photos as unconfirmed
+# suggestions. Same selected-file consent and original pixels only. No
+# auto-confirmation, no pixel generation or alteration, no persistence of
+# bytes. Owner must explicitly approve each photo before any photo-check
+# use. Live Drive proof has not been run.
+DRIVE_JPEG_MIME = 'image/jpeg'
+DRIVE_PNG_MIME = 'image/png'
+SUPPORTED_PHOTO_MIME_TYPES: tuple[str, ...] = (DRIVE_JPEG_MIME, DRIVE_PNG_MIME)
+DRIVE_PICKER_MIME_TYPES: tuple[str, ...] = (DOC_MIME, TEXT_MIME, DRIVE_JPEG_MIME, DRIVE_PNG_MIME)
+DRIVE_MAX_PHOTO_BYTES = 1024 * 1024
+DRIVE_MAX_PHOTO_PIXELS = 8_000_000
+DRIVE_PHOTO_PARSER_VERSION = 'drive-photo/v1'
+DRIVE_PHOTO_HANDOFF_TTL_SECONDS = 300
+DRIVE_MAX_PHOTO_HANDOFFS = 32
+_DRIVE_PNG_MAGIC = b'\x89PNG\r\n\x1a\n'
+_DRIVE_JPEG_MAGIC = b'\xff\xd8\xff'
+
 DRIVE_PARSER_VERSION = 'drive-import/v1'
 SELECTION_CONTEXT = 'Drive file selection'
 
@@ -147,6 +164,9 @@ class DriveStatusOut(Strict):
     reason: str
     scope: str
     supported_mime_types: list[str]
+    supported_photo_mime_types: list[str] = [DRIVE_JPEG_MIME, DRIVE_PNG_MIME]
+    max_photo_bytes: int = DRIVE_MAX_PHOTO_BYTES
+    max_photo_pixels: int = DRIVE_MAX_PHOTO_PIXELS
 
 
 class DrivePublicConfigOut(Strict):
@@ -155,6 +175,9 @@ class DrivePublicConfigOut(Strict):
     max_bytes: int
     scope: str
     supported_mime_types: list[str]
+    supported_photo_mime_types: list[str] = [DRIVE_JPEG_MIME, DRIVE_PNG_MIME]
+    max_photo_bytes: int = DRIVE_MAX_PHOTO_BYTES
+    max_photo_pixels: int = DRIVE_MAX_PHOTO_PIXELS
 
 
 class DriveImportIn(Strict):
@@ -176,6 +199,22 @@ class DriveSuggestionItem(Strict):
     status: Literal['unconfirmed'] = 'unconfirmed'
     confirmed: Literal[False] = False
     index: int
+
+
+class DrivePhotoProposalOut(Strict):
+    status: Literal['unconfirmed'] = 'unconfirmed'
+    source: Literal['drive_file'] = 'drive_file'
+    product_fact_source: Literal['drive_file'] = 'drive_file'
+    file_title: str
+    mime_type: str
+    selection_context: str
+    width: int
+    height: int
+    byte_size: int
+    sha256: str
+    confirmed: Literal[False] = False
+    requires_approval: Literal[True] = True
+    parser_version: str
 
 
 class DriveImportOut(Strict):
@@ -256,6 +295,9 @@ def drive_public_config_dict() -> dict:
         'max_bytes': DRIVE_MAX_BYTES,
         'scope': DRIVE_SCOPE,
         'supported_mime_types': list(SUPPORTED_MIME_TYPES),
+        'supported_photo_mime_types': list(SUPPORTED_PHOTO_MIME_TYPES),
+        'max_photo_bytes': DRIVE_MAX_PHOTO_BYTES,
+        'max_photo_pixels': DRIVE_MAX_PHOTO_PIXELS,
     }
 
 
@@ -270,6 +312,9 @@ def drive_status_dict() -> dict:
         'reason': 'ok' if configured else 'drive_not_configured',
         'scope': DRIVE_SCOPE,
         'supported_mime_types': list(SUPPORTED_MIME_TYPES),
+        'supported_photo_mime_types': list(SUPPORTED_PHOTO_MIME_TYPES),
+        'max_photo_bytes': DRIVE_MAX_PHOTO_BYTES,
+        'max_photo_pixels': DRIVE_MAX_PHOTO_PIXELS,
     }
 
 
@@ -313,6 +358,79 @@ def normalize_mime(value: object) -> str:
     if cleaned not in SUPPORTED_MIME_TYPES:
         raise HTTPException(422, 'Unsupported Drive file type')
     return cleaned
+
+
+def normalize_photo_mime(value: object) -> str:
+    if not isinstance(value, str):
+        raise HTTPException(422, 'Unsupported Drive photo type')
+    cleaned = value.strip().lower()
+    if cleaned not in SUPPORTED_PHOTO_MIME_TYPES:
+        raise HTTPException(422, 'Unsupported Drive photo type')
+    return cleaned
+
+
+def is_photo_mime(value: object) -> bool:
+    return isinstance(value, str) and value.strip().lower() in SUPPORTED_PHOTO_MIME_TYPES
+
+
+def check_photo_magic(raw: bytes, mime: str) -> None:
+    if mime == DRIVE_PNG_MIME and not bytes(raw).startswith(_DRIVE_PNG_MAGIC):
+        raise HTTPException(422, 'Unsupported Drive photo type')
+    if mime == DRIVE_JPEG_MIME and not bytes(raw).startswith(_DRIVE_JPEG_MAGIC):
+        raise HTTPException(422, 'Unsupported Drive photo type')
+
+
+def validated_drive_photo_dimensions(raw: bytes, mime: str) -> tuple[int, int]:
+    from PIL import Image
+
+    expected = 'PNG' if mime == DRIVE_PNG_MIME else 'JPEG'
+    try:
+        import io as _io
+
+        with Image.open(_io.BytesIO(bytes(raw))) as img:
+            if (img.format or '').upper() != expected:
+                raise HTTPException(422, 'Unsupported Drive photo type')
+            if getattr(img, 'is_animated', False) or getattr(img, 'n_frames', 1) != 1:
+                raise HTTPException(422, 'Unsupported Drive photo type')
+            width, height = img.size
+            try:
+                orientation = img.getexif().get(274)
+            except Exception:
+                orientation = None
+            if orientation in frozenset({5, 6, 7, 8}):
+                width, height = height, width
+            if width <= 0 or height <= 0:
+                raise HTTPException(422, 'Unsupported Drive photo type')
+            if width * height > DRIVE_MAX_PHOTO_PIXELS:
+                raise HTTPException(413, 'Drive photo too large')
+            try:
+                img.load()
+            except Image.DecompressionBombError:
+                raise HTTPException(413, 'Drive photo too large') from None
+            except Exception:
+                raise HTTPException(422, 'Unsupported Drive photo type') from None
+            from PIL import ImageOps
+
+            oriented = ImageOps.exif_transpose(img)
+            width, height = oriented.size
+    except HTTPException:
+        raise
+    except Image.DecompressionBombError:
+        raise HTTPException(413, 'Drive photo too large') from None
+    except Exception:
+        raise HTTPException(422, 'Unsupported Drive photo type') from None
+    if width <= 0 or height <= 0:
+        raise HTTPException(422, 'Unsupported Drive photo type')
+    if width * height > DRIVE_MAX_PHOTO_PIXELS:
+        raise HTTPException(413, 'Drive photo too large')
+    return width, height
+
+
+def build_photo_content_url(file_id: str, resource_key: str | None = None) -> str:
+    _ = resource_key
+    base = DRIVE_API_BASE + '/files/' + urllib.parse.quote(file_id, safe='')
+    query = {'alt': 'media', 'supportsAllDrives': 'true'}
+    return base + '?' + urllib.parse.urlencode(query)
 
 
 def sanitize_title(value: object) -> str:
@@ -475,9 +593,110 @@ class DriveProvider:
         header = resource_keys_header_value(file_id, resource_key)
         return _http_get(url, token, DRIVE_MAX_BYTES, resource_keys=header)
 
+    def photo_content(self, file_id: str, resource_key: str | None, token: str, mime: str):
+        # Bounded photo transport: documented files.get download query
+        # only, resource key via header only, hard photo byte cap.
+        # Redirects are never followed; hosts are pinned by check_drive_url.
+        url = build_photo_content_url(file_id, resource_key)
+        header = resource_keys_header_value(file_id, resource_key)
+        return _http_get(url, token, DRIVE_MAX_PHOTO_BYTES, resource_keys=header)
+
+
+def fetch_photo_content(provider: object, file_id: str, resource_key: str | None, token: str, mime: str):
+    """Fetch photo bytes through the bounded photo transport.
+
+    Prefers ``photo_content`` (photo byte cap, documented download URL).
+    Test doubles that only implement the text-era ``content`` method still
+    work, with the photo cap enforced here on the returned bytes.
+    """
+    fetch = getattr(provider, 'photo_content', None)
+    if callable(fetch):
+        return fetch(file_id, resource_key, token, mime)
+    result = provider.content(file_id, resource_key, token, mime)  # type: ignore[union-attr]
+    if not isinstance(result, tuple) or len(result) != 3:
+        raise HTTPException(502, 'Drive provider error')
+    data, headers, status = result
+    if isinstance(data, (bytes, bytearray)) and len(bytes(data)) > DRIVE_MAX_PHOTO_BYTES:
+        raise HTTPException(413, 'Drive photo too large')
+    return result
+
 
 def get_provider() -> DriveProvider:
     return DriveProvider()
+
+
+# Owner-bound one-time photo handoff: original pixels approved for a later
+# photo check, held in process memory only. Keyed by exact owner, session,
+# and byte digest; the workspace is recorded at store time and rechecked
+# at claim time. One claim consumes the bytes. Expiry or restart fails
+# closed and needs a fresh Picker selection. Bytes are never logged,
+# persisted, or returned in any API response.
+_PHOTO_HANDOFFS: dict[tuple[str, str, str], dict] = {}
+_PHOTO_HANDOFFS_LOCK = threading.Lock()
+
+
+def _prune_photo_handoffs_locked(now: float | None = None) -> None:
+    at = now if now is not None else time.time()
+    expired = [key for key, record in _PHOTO_HANDOFFS.items() if record.get('expiry_ts', 0) <= at]
+    for key in expired:
+        _PHOTO_HANDOFFS.pop(key, None)
+
+
+def _store_photo_handoff(actor: str, session_hash: str, workspace: str, digest: str, raw: bytes, mime: str, width: int, height: int, title: str) -> None:
+    with _PHOTO_HANDOFFS_LOCK:
+        _prune_photo_handoffs_locked()
+        if len(_PHOTO_HANDOFFS) >= DRIVE_MAX_PHOTO_HANDOFFS:
+            raise HTTPException(503, 'Drive intake unavailable')
+        _PHOTO_HANDOFFS[(actor, session_hash, digest)] = {
+            'raw': bytes(raw),
+            'mime': mime,
+            'width': width,
+            'height': height,
+            'title': title,
+            'workspace': workspace,
+            'expiry_ts': time.time() + DRIVE_PHOTO_HANDOFF_TTL_SECONDS,
+        }
+
+
+def claim_drive_photo_for_check(*, actor: str, session_hash: str, digest: str) -> dict:
+    """Claim approved Drive photo bytes for one photo check, exactly once.
+
+    Server-side seam for the photo-check writer: derive ``actor`` and the
+    session hash from the signed-in request server-side (same helpers as
+    the suggestions route), pass the exact ``sha256`` from the approved
+    unconfirmed proposal, and receive ``{'raw', 'mime', 'width',
+    'height', 'title', 'workspace'}`` with the ORIGINAL pixels. The
+    record is consumed before it is returned: a second claim, a wrong
+    digest, a different owner, session, or workspace, or an expiry or
+    restart fails closed with no bytes. Never call this with
+    client-supplied actor or session values, and never log, persist, or
+    echo the bytes.
+    """
+    require_google_sub(actor)
+    if not session_hash or not isinstance(digest, str) or not digest:
+        raise HTTPException(403, 'Drive consent required')
+    workspace = store.workspace_for_actor(actor)
+    with _PHOTO_HANDOFFS_LOCK:
+        _prune_photo_handoffs_locked()
+        record = _PHOTO_HANDOFFS.pop((actor, session_hash, digest), None)
+    if record is None:
+        raise HTTPException(403, 'Drive photo handoff expired or already claimed')
+    if record.get('workspace') != workspace:
+        raise HTTPException(403, 'Drive photo handoff expired or already claimed')
+    raw = record.get('raw')
+    if not isinstance(raw, (bytes, bytearray)) or not raw:
+        raise HTTPException(502, 'Drive provider error')
+    raw = bytes(raw)
+    if hashlib.sha256(raw).hexdigest() != digest:
+        raise HTTPException(502, 'Drive provider error')
+    return {
+        'raw': raw,
+        'mime': record.get('mime'),
+        'width': record.get('width'),
+        'height': record.get('height'),
+        'title': record.get('title'),
+        'workspace': workspace,
+    }
 
 
 def token_digest(token: str) -> str:
@@ -733,6 +952,9 @@ def drive_status(actor: str = Depends(auth.actor)):
             'reason': 'auth_required',
             'scope': DRIVE_SCOPE,
             'supported_mime_types': list(SUPPORTED_MIME_TYPES),
+            'supported_photo_mime_types': list(SUPPORTED_PHOTO_MIME_TYPES),
+            'max_photo_bytes': DRIVE_MAX_PHOTO_BYTES,
+            'max_photo_pixels': DRIVE_MAX_PHOTO_PIXELS,
         }
     return drive_status_dict()
 
@@ -853,6 +1075,96 @@ async def drive_callback(request: Request, actor: str = Depends(auth.actor)):
     return RedirectResponse('/?drive=authorized', status_code=303)
 
 
+def import_drive_photo_selection(
+    file_id: str,
+    resource_key: str | None,
+    token: str,
+    provider: DriveProvider,
+    actor: str,
+    session_hash: str,
+) -> dict:
+    """Read one owner-selected Drive photo as an UNCONFIRMED proposal.
+
+    Same selected-file consent as text intake: exact owner, session, and
+    workspace binding with the one-time server-issued grant consumed
+    before provider I/O. At most metadata plus content requests. Original
+    pixels only: bytes are never resized, recoded, generated, persisted,
+    logged, or returned. The response carries metadata only and always
+    requires explicit owner approval before any photo-check use.
+    """
+    validated_id = validate_file_id(file_id)
+    check_no_url(validated_id)
+    validated_key = validate_resource_key(resource_key)
+    if validated_key:
+        check_no_url(validated_key)
+    validated_token = validate_token(token)
+    require_google_sub(actor)
+    if not session_hash:
+        raise HTTPException(401, 'Sign in required')
+    _verify_and_consume_grant(actor, session_hash, validated_token)
+    requests = 0
+
+    def counted():
+        nonlocal requests
+        requests += 1
+        if requests > DRIVE_MAX_REQUESTS_PER_IMPORT:
+            raise HTTPException(502, 'Drive provider error')
+
+    counted()
+    meta = provider.metadata(validated_id, validated_key, validated_token)
+    if not isinstance(meta, dict):
+        raise HTTPException(502, 'Drive provider error')
+    if meta.get('trashed') is True:
+        raise HTTPException(403, 'Drive file unavailable or not selected')
+    returned_id = meta.get('id')
+    if returned_id is not None and returned_id != validated_id:
+        raise HTTPException(403, 'Drive file unavailable or not selected')
+    mime = normalize_photo_mime(meta.get('mimeType', ''))
+    title = sanitize_title(meta.get('name', ''))
+    size_raw = meta.get('size')
+    if size_raw is not None:
+        try:
+            size = int(str(size_raw).strip())
+        except Exception:
+            raise HTTPException(502, 'Drive provider error') from None
+        if size < 0 or size > DRIVE_MAX_PHOTO_BYTES:
+            raise HTTPException(413, 'Drive photo too large')
+    counted()
+    result = fetch_photo_content(provider, validated_id, validated_key, validated_token, mime)
+    if not isinstance(result, tuple) or len(result) != 3:
+        raise HTTPException(502, 'Drive provider error')
+    data, headers, _ = result
+    if not isinstance(data, (bytes, bytearray)):
+        raise HTTPException(502, 'Drive provider error')
+    raw = bytes(data)
+    if len(raw) > DRIVE_MAX_PHOTO_BYTES:
+        raise HTTPException(413, 'Drive photo too large')
+    if len(raw) == 0:
+        raise HTTPException(422, 'Unsupported Drive photo type')
+    seen = response_mime(headers)
+    if seen != mime:
+        raise HTTPException(422, 'Unsupported Drive photo type')
+    check_photo_magic(raw, mime)
+    width, height = validated_drive_photo_dimensions(raw, mime)
+    digest = hashlib.sha256(raw).hexdigest()
+    _store_photo_handoff(actor, session_hash, store.workspace_for_actor(actor), digest, raw, mime, width, height, title)
+    return {
+        'status': 'unconfirmed',
+        'source': 'drive_file',
+        'product_fact_source': 'drive_file',
+        'file_title': title,
+        'mime_type': mime,
+        'selection_context': SELECTION_CONTEXT,
+        'width': width,
+        'height': height,
+        'byte_size': len(raw),
+        'sha256': digest,
+        'confirmed': False,
+        'requires_approval': True,
+        'parser_version': DRIVE_PHOTO_PARSER_VERSION,
+    }
+
+
 @router.post('/picker-token', response_model=DrivePickerTokenOut)
 def drive_picker_token(request: Request, actor: str = Depends(auth.actor)):
     store.workspace_for_actor(actor)
@@ -876,3 +1188,15 @@ def drive_suggestions(body: DriveImportIn, request: Request, actor: str = Depend
     if not session_hash:
         raise HTTPException(401, 'Sign in required')
     return import_drive_selection(body.file_id, body.resource_key, provider=provider, token=body.drive_token, actor=actor, session_hash=session_hash)
+
+
+@router.post('/photo-suggestions', response_model=DrivePhotoProposalOut)
+def drive_photo_suggestions(body: DriveImportIn, request: Request, actor: str = Depends(auth.actor), provider: DriveProvider = Depends(get_provider)):
+    store.workspace_for_actor(actor)
+    if not drive_configured():
+        raise HTTPException(503, 'Drive intake unavailable')
+    require_google_sub(actor)
+    _, session_hash = _session_parts(request)
+    if not session_hash:
+        raise HTTPException(401, 'Sign in required')
+    return import_drive_photo_selection(body.file_id, body.resource_key, provider=provider, token=body.drive_token, actor=actor, session_hash=session_hash)

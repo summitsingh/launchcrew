@@ -1,24 +1,36 @@
 import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { DriveIntakeForm, DriveSuggestionsList } from '../src/components/drive-intake-form';
+import { DriveIntakeForm, DrivePhotoIntakeForm, DrivePhotoProposalView, DriveSuggestionsList } from '../src/components/drive-intake-form';
 import {
   DRIVE_AUTHORIZE_URL,
   DRIVE_MAX_BYTES,
+  DRIVE_MAX_PHOTO_BYTES,
+  DRIVE_MAX_PHOTO_PIXELS,
   DRIVE_MAX_REQUESTS,
+  DRIVE_PHOTO_PARSER_VERSION,
+  DRIVE_PHOTO_SUGGESTIONS_URL,
+  DRIVE_PICKER_PHOTO_MIME_FILTER,
   DRIVE_PICKER_TOKEN_URL,
   DRIVE_SCOPE,
   DRIVE_SUPPORTED_MIME_TYPES,
+  DRIVE_SUPPORTED_PHOTO_MIME_TYPES,
   driveAuthStatusFromSearch,
   driveErrorMessage,
   driveMimeLabel,
+  drivePhotoErrorMessage,
+  drivePhotoMimeLabel,
   driveStatusMessage,
   isSupportedDriveMime,
+  isSupportedDrivePhotoMime,
   toOwnerFactFromDriveSuggestion,
   toOwnerFactsFromDriveSuggestions,
+  toUnconfirmedDrivePhotoClaim,
   validateDriveFileId,
+  validateDrivePhotoApproval,
   validateDriveResourceKey,
   type DriveImportOut,
+  type DrivePhotoProposalOut,
   type DriveStatusOut,
 } from '../src/lib/drive-intake';
 import {
@@ -233,6 +245,108 @@ describe('drive intake UI flow', () => {
     expect(html).toContain('&lt;img');
     expect(html).not.toContain('<img src=x');
   });
+
+describe('drive photo intake foundation', () => {
+  function photoProposal(): DrivePhotoProposalOut {
+    return {
+      status: 'unconfirmed',
+      source: 'drive_file',
+      product_fact_source: 'drive_file',
+      file_title: 'Campsite photo',
+      mime_type: 'image/png',
+      selection_context: 'Drive file selection',
+      width: 24,
+      height: 12,
+      byte_size: 1234,
+      sha256: 'a'.repeat(64),
+      confirmed: false,
+      requires_approval: true,
+      parser_version: DRIVE_PHOTO_PARSER_VERSION,
+    };
+  }
+
+  it('advertises photo bounds with original-pixels-only policy', () => {
+    expect([...DRIVE_SUPPORTED_PHOTO_MIME_TYPES]).toEqual(['image/jpeg', 'image/png']);
+    expect(DRIVE_MAX_PHOTO_BYTES).toBe(1048576);
+    expect(DRIVE_MAX_PHOTO_PIXELS).toBe(8000000);
+    expect(DRIVE_PICKER_PHOTO_MIME_FILTER).toBe('image/jpeg,image/png');
+    expect(DRIVE_PHOTO_SUGGESTIONS_URL).toBe('/api/drive-import/photo-suggestions');
+    expect(isSupportedDrivePhotoMime('image/jpeg')).toBe(true);
+    expect(isSupportedDrivePhotoMime('image/png')).toBe(true);
+    expect(isSupportedDrivePhotoMime('image/gif')).toBe(false);
+    expect(isSupportedDrivePhotoMime('video/mp4')).toBe(false);
+    expect(isSupportedDrivePhotoMime('application/pdf')).toBe(false);
+    expect(isSupportedDriveMime('image/png')).toBe(false);
+    expect(drivePhotoMimeLabel('image/jpeg')).toBe('JPEG photo');
+    expect(drivePhotoMimeLabel('image/png')).toBe('PNG photo');
+    expect(drivePhotoErrorMessage(413)).toContain('1 MiB');
+    expect(drivePhotoErrorMessage(422)).toContain('JPEG or PNG');
+  });
+
+  it('requires explicit approval and never confirms a photo claim', () => {
+    const proposal = photoProposal();
+    expect(validateDrivePhotoApproval(false)).not.toEqual([]);
+    expect(validateDrivePhotoApproval(true)).toEqual([]);
+    expect(toUnconfirmedDrivePhotoClaim(proposal, false)).toBe(null);
+    const claim = toUnconfirmedDrivePhotoClaim(proposal, true);
+    expect(claim).toEqual({
+      fileTitle: 'Campsite photo',
+      mimeType: 'image/png',
+      width: 24,
+      height: 12,
+      sha256: 'a'.repeat(64),
+      approved: true,
+      confirmed: false,
+      source: 'drive_file',
+    });
+    expect(toUnconfirmedDrivePhotoClaim({ ...proposal, sha256: 'short' }, true)).toBe(null);
+    expect(toUnconfirmedDrivePhotoClaim({ ...proposal, mime_type: 'image/gif' }, true)).toBe(null);
+  });
+
+  it('renders the photo form with approval gate and no pixel bytes', () => {
+    const html = renderToStaticMarkup(
+      <QueryClientProvider client={new QueryClient()}>
+        <DrivePhotoIntakeForm onAddPhoto={() => {}} />
+      </QueryClientProvider>,
+    );
+    for (const text of [
+      'Select a Drive photo',
+      'JPEG or PNG photo you select',
+      'stay unconfirmed',
+      'explicit approval before any photo check',
+      'Original pixels only',
+      'Live Drive proof has not been run',
+      'Connect Drive and choose photo',
+    ]) {
+      expect(html).toContain(text);
+    }
+    expect(html).not.toContain('data:image');
+    expect(html).not.toContain('drive_token');
+    expect(html).not.toContain('file_id');
+  });
+
+  it('renders a photo proposal with title, dimensions, and approval checkbox', () => {
+    const html = renderToStaticMarkup(
+      <DrivePhotoProposalView proposal={photoProposal()} approved={false} onToggleApproval={() => {}} onAdd={() => {}} />,
+    );
+    for (const text of [
+      'Drive photo selection produced one unconfirmed proposal',
+      'File: Campsite photo (PNG photo)',
+      'Status: unconfirmed',
+      'Parser: drive-photo/v1',
+      'Dimensions: 24 by 12',
+      'Confirmed: no',
+      'Photo use needs approval',
+      'Add photo as unconfirmed claim',
+    ]) {
+      expect(html).toContain(text);
+    }
+    expect(html).toContain('Unconfirmed');
+    expect(html).not.toContain('Verified');
+    expect(html).not.toContain('data:image');
+    expect(html).not.toContain('demo-photo');
+  });
+});
 
   it('flows from Drive result through fact form to unconfirmed product facts', () => {
     const result = driveResult();

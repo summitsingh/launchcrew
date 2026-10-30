@@ -69,9 +69,13 @@ def deterministic_pipeline():
 def clear_grants():
     with drive_intake._GRANTS_LOCK:
         drive_intake._GRANTS.clear()
+    with drive_intake._PHOTO_HANDOFFS_LOCK:
+        drive_intake._PHOTO_HANDOFFS.clear()
     yield
     with drive_intake._GRANTS_LOCK:
         drive_intake._GRANTS.clear()
+    with drive_intake._PHOTO_HANDOFFS_LOCK:
+        drive_intake._PHOTO_HANDOFFS.clear()
 
 
 @pytest.fixture
@@ -112,6 +116,14 @@ class FakeProvider:
         data = b'Canvas tote\nLarge\n$49'
         headers = FakeHeaders({'Content-Type': 'text/plain; charset=utf-8', 'Content-Length': str(len(data))})
         return (data, headers, 200)
+
+    def photo_content(self, file_id, resource_key, token, mime):
+        self.calls.append(('photo_content', file_id, resource_key, mime))
+        if self.error and self.error[0] == 'photo_content':
+            raise self.error[1]
+        if self.content_payload is not None:
+            return self.content_payload
+        raise AssertionError('photo tests must supply explicit photo bytes')
 
 
 def _use_provider(fake):
@@ -682,3 +694,365 @@ def test_drive_callback_nonce_mismatch_fails_closed(client, drive_env, monkeypat
     assert fake.calls == []
     with drive_intake._GRANTS_LOCK:
         assert drive_intake._GRANTS == {}
+
+
+def _photo_bytes(width=24, height=12):
+    import io
+
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new('RGB', (width, height), (30, 120, 200)).save(buffer, format='PNG')
+    return buffer.getvalue()
+
+
+def _suggest_photo(client, file_id='demo-photo-01', token='synthetic-drive-token-01', resource_key=None):
+    body = {'file_id': file_id, 'drive_token': token}
+    if resource_key is not None:
+        body['resource_key'] = resource_key
+    return client.post('/api/drive-import/photo-suggestions', json=body)
+
+
+def _assert_unconfirmed_photo(body):
+    assert body['status'] == 'unconfirmed'
+    assert body['source'] == 'drive_file'
+    assert body['product_fact_source'] == 'drive_file'
+    assert body['selection_context'] == 'Drive file selection'
+    assert body['confirmed'] is False
+    assert body['requires_approval'] is True
+    assert body['mime_type'] in ('image/jpeg', 'image/png')
+    assert body['parser_version'] == 'drive-photo/v1'
+    assert isinstance(body['file_title'], str) and body['file_title']
+    assert isinstance(body['width'], int) and body['width'] > 0
+    assert isinstance(body['height'], int) and body['height'] > 0
+    assert body['width'] * body['height'] <= drive_intake.DRIVE_MAX_PHOTO_PIXELS
+    assert body['byte_size'] > 0
+    assert body['byte_size'] <= drive_intake.DRIVE_MAX_PHOTO_BYTES
+    blob = json.dumps(body).lower()
+    assert 'synthetic-drive-token' not in blob
+    assert 'demo-photo' not in blob
+    assert 'data:image' not in blob
+
+
+def test_photo_success_unconfirmed_with_approval_gate(client, drive_env, monkeypatch):
+    raw = _photo_bytes()
+    token = _full_grant(client, monkeypatch, SYN_A, SUB_A, 'synthetic-drive-token-photo-01')
+    headers = FakeHeaders({'Content-Type': 'image/png', 'Content-Length': str(len(raw))})
+    fake = FakeProvider(
+        metadata={'id': 'demo-photo-01', 'name': 'Campsite photo', 'mimeType': 'image/png', 'trashed': False},
+        content=(raw, headers, 200),
+    )
+    _use_provider(fake)
+    response = _suggest_photo(client, token=token)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    _assert_unconfirmed_photo(body)
+    assert body['file_title'] == 'Campsite photo'
+    assert body['width'] == 24 and body['height'] == 12
+    assert [call[0] for call in fake.calls] == ['metadata', 'photo_content']
+    assert client.get('/api/queue').json() == []
+    assert client.get('/api/memory').json() == []
+
+
+def test_photo_one_time_grant_and_two_user_denial(client, drive_env, monkeypatch):
+    raw = _photo_bytes()
+    headers = FakeHeaders({'Content-Type': 'image/png', 'Content-Length': str(len(raw))})
+    token = _full_grant(client, monkeypatch, SYN_A, SUB_A, 'synthetic-drive-token-photo-once')
+    fake = FakeProvider(
+        metadata={'id': 'demo-photo-01', 'name': 'Owner photo', 'mimeType': 'image/png', 'trashed': False},
+        content=(raw, headers, 200),
+    )
+    _use_provider(fake)
+    assert _suggest_photo(client, token=token).status_code == 200
+    assert [call[0] for call in fake.calls] == ['metadata', 'photo_content']
+    replay = _suggest_photo(client, token=token)
+    assert replay.status_code == 403
+    assert len(fake.calls) == 2
+    _sign_in(client, monkeypatch, SYN_B)
+    assert client.post('/api/drive-import/picker-token').status_code == 403
+    assert _suggest_photo(client, token=token).status_code == 403
+
+
+def test_photo_anonymous_demo_denied_before_provider(client, drive_env, monkeypatch):
+    fake = FakeProvider()
+    _use_provider(fake)
+    assert _suggest_photo(client).status_code == 401
+    assert fake.calls == []
+    _sign_in(client, monkeypatch, 'facebook:synthetic-fb-01')
+    assert _suggest_photo(client).status_code == 403
+    assert fake.calls == []
+
+
+def test_photo_mime_magic_and_size_refused(client, drive_env, monkeypatch):
+    raw = _photo_bytes()
+    good_headers = FakeHeaders({'Content-Type': 'image/png', 'Content-Length': str(len(raw))})
+    token = _full_grant(client, monkeypatch, SYN_A, SUB_A, 'synthetic-drive-token-photo-doc')
+    fake_doc = FakeProvider(
+        metadata={'id': 'demo-photo-01', 'name': 'Doc file', 'mimeType': DOC_MIME, 'trashed': False},
+        content=(b'text', FakeHeaders({'Content-Type': 'text/plain'}), 200),
+    )
+    _use_provider(fake_doc)
+    assert _suggest_photo(client, token=token).status_code == 422
+    assert [call[0] for call in fake_doc.calls] == ['metadata']
+    token2 = _full_grant(client, monkeypatch, SYN_A, SUB_A, 'synthetic-drive-token-photo-magic', state='synthetic-drive-state-photo-magic')
+    fake_magic = FakeProvider(
+        metadata={'id': 'demo-photo-01', 'name': 'Fake photo', 'mimeType': 'image/png', 'trashed': False},
+        content=(b'not a png at all', FakeHeaders({'Content-Type': 'image/png'}), 200),
+    )
+    _use_provider(fake_magic)
+    assert _suggest_photo(client, token=token2).status_code == 422
+    token3 = _full_grant(client, monkeypatch, SYN_A, SUB_A, 'synthetic-drive-token-photo-deceptive', state='synthetic-drive-state-photo-deceptive')
+    fake_deceptive = FakeProvider(
+        metadata={'id': 'demo-photo-01', 'name': 'Photo file', 'mimeType': 'image/png', 'trashed': False},
+        content=(raw, FakeHeaders({'Content-Type': 'text/html'}), 200),
+    )
+    _use_provider(fake_deceptive)
+    assert _suggest_photo(client, token=token3).status_code == 422
+    token4 = _full_grant(client, monkeypatch, SYN_A, SUB_A, 'synthetic-drive-token-photo-big', state='synthetic-drive-state-photo-big')
+    fake_big = FakeProvider(
+        metadata={'id': 'demo-photo-01', 'name': 'Big photo', 'mimeType': 'image/png', 'size': '2000000', 'trashed': False},
+        content=(raw, good_headers, 200),
+    )
+    _use_provider(fake_big)
+    assert _suggest_photo(client, token=token4).status_code == 413
+    assert [call[0] for call in fake_big.calls] == ['metadata']
+    with pytest.raises(HTTPException):
+        drive_intake.check_photo_magic(b'not pixels', 'image/png')
+    with pytest.raises(HTTPException):
+        drive_intake.normalize_photo_mime('application/pdf')
+    assert drive_intake.normalize_photo_mime('image/jpeg') == 'image/jpeg'
+    assert drive_intake.DRIVE_MAX_PHOTO_BYTES == 1048576
+    assert drive_intake.DRIVE_MAX_PHOTO_PIXELS == 8000000
+    url = drive_intake.build_photo_content_url('demo-photo-01', None)
+    assert url.startswith('https://www.googleapis.com/drive/v3/files/demo-photo-01?')
+    assert 'access_token' not in url.lower()
+
+
+class _OpenerHeaders(dict):
+    def get(self, key, default=None):
+        return super().get(key, default)
+
+
+class _OpenerResponse:
+    def __init__(self, data, headers=None, status=200):
+        self._data = bytes(data)
+        self.headers = headers if headers is not None else _OpenerHeaders({})
+        self.status = status
+
+    def read(self, size=-1):
+        if size is None or size < 0:
+            return self._data
+        return self._data[:size]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+class _FakeOpener:
+    def __init__(self, response=None, error=None):
+        self.response = response
+        self.error = error
+        self.requests = []
+
+    def open(self, request, timeout=None):
+        self.requests.append(request)
+        if self.error is not None:
+            raise self.error
+        return self.response
+
+
+def _photo_shape_token():
+    return 'synthetic-drive-token-shape-01'
+
+
+def _photo_request_shape(request):
+    import urllib.parse
+
+    parsed = urllib.parse.urlsplit(request.full_url)
+    assert parsed.scheme == 'https'
+    assert parsed.hostname == drive_intake.DRIVE_API_HOST
+    assert parsed.path.startswith('/drive/v3/files/')
+    query = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
+    lowered = request.full_url.lower()
+    assert 'access_token' not in lowered
+    assert 'resourcekey' not in lowered
+    assert 'resource_key' not in lowered
+    assert request.get_header('Authorization') == 'Bearer ' + _photo_shape_token()
+    headers = {name.lower(): value for name, value in request.header_items()}
+    return query, headers
+
+
+def test_photo_transport_uses_documented_url_header_and_photo_cap():
+    import urllib.parse
+
+    raw = _photo_bytes()
+    for key in (None, 'synthetic-resource-key-01'):
+        headers = _OpenerHeaders({'Content-Type': 'image/png', 'Content-Length': str(len(raw))})
+        opener = _FakeOpener(response=_OpenerResponse(raw, headers, 200))
+        with patch.object(drive_intake.urllib.request, 'build_opener', return_value=opener):
+            out, seen, status = drive_intake.DriveProvider().photo_content(
+                'demo-photo-01', key, _photo_shape_token(), 'image/png')
+        assert bytes(out) == raw
+        assert status == 200
+        assert len(opener.requests) == 1
+        query, sent = _photo_request_shape(opener.requests[0])
+        assert set(query) == {'alt', 'supportsAllDrives'}
+        assert query['alt'] == 'media'
+        assert query['supportsAllDrives'] == 'true'
+        assert 'mimetype' not in urllib.parse.urlsplit(opener.requests[0].full_url).query.lower()
+        expected = None if key is None else 'demo-photo-01/' + key
+        assert sent.get(drive_intake.DRIVE_RESOURCE_KEYS_HEADER.lower()) == expected
+
+
+def test_photo_transport_over_limit_and_redirect_refused():
+    import urllib.error
+
+    big_length = _OpenerHeaders({'Content-Type': 'image/png', 'Content-Length': str(drive_intake.DRIVE_MAX_PHOTO_BYTES + 1)})
+    opener = _FakeOpener(response=_OpenerResponse(b'x', big_length, 200))
+    with patch.object(drive_intake.urllib.request, 'build_opener', return_value=opener):
+        with pytest.raises(HTTPException) as too_large:
+            drive_intake.DriveProvider().photo_content('demo-photo-01', None, _photo_shape_token(), 'image/png')
+    assert too_large.value.status_code == 413
+    body = b'\x89PNG\r\n\x1a\n' + b'x' * drive_intake.DRIVE_MAX_PHOTO_BYTES
+    small_length = _OpenerHeaders({'Content-Type': 'image/png', 'Content-Length': '16'})
+    opener = _FakeOpener(response=_OpenerResponse(body, small_length, 200))
+    with patch.object(drive_intake.urllib.request, 'build_opener', return_value=opener):
+        with pytest.raises(HTTPException) as streamed:
+            drive_intake.DriveProvider().photo_content('demo-photo-01', None, _photo_shape_token(), 'image/png')
+    assert streamed.value.status_code == 413
+    redirect = urllib.error.HTTPError(
+        drive_intake.build_photo_content_url('demo-photo-01', None), 302, 'Found', _OpenerHeaders({}), None)
+    opener = _FakeOpener(error=redirect)
+    with patch.object(drive_intake.urllib.request, 'build_opener', return_value=opener):
+        with pytest.raises(HTTPException) as moved:
+            drive_intake.DriveProvider().photo_content('demo-photo-01', None, _photo_shape_token(), 'image/png')
+    assert moved.value.status_code == 502
+    with pytest.raises(HTTPException) as leaked:
+        drive_intake.check_drive_url(
+            'https://www.googleapis.com/drive/v3/files/demo-photo-01?alt=media&resourceKey=synthetic')
+    assert leaked.value.status_code == 502
+
+
+def test_photo_fetch_fallback_enforces_photo_cap_without_photo_method():
+    class TextEraProvider:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def metadata(self, file_id, resource_key, token):
+            return {'id': file_id, 'name': 'Legacy photo', 'mimeType': 'image/png', 'trashed': False}
+
+        def content(self, file_id, resource_key, token, mime):
+            return self.payload
+
+    raw = _photo_bytes()
+    headers = FakeHeaders({'Content-Type': 'image/png', 'Content-Length': str(len(raw))})
+    out, _, _ = drive_intake.fetch_photo_content(TextEraProvider((raw, headers, 200)), 'demo-photo-01', None, 't', 'image/png')
+    assert bytes(out) == raw
+    oversize = b'\x89PNG\r\n\x1a\n' + b'x' * drive_intake.DRIVE_MAX_PHOTO_BYTES
+    with pytest.raises(HTTPException) as capped:
+        drive_intake.fetch_photo_content(
+            TextEraProvider((oversize, FakeHeaders({'Content-Type': 'image/png'}), 200)),
+            'demo-photo-01', None, 't', 'image/png')
+    assert capped.value.status_code == 413
+
+
+def _photo_grant_with_session(client, monkeypatch, actor, sub, token_str, state):
+    _sign_in(client, monkeypatch, actor)
+    opaque = client.cookies.get(auth.COOKIE)
+    session_hash = auth.session_key(opaque)
+    token = _valid_token(sub, token_str)
+    redirect, exchange = _oauth_mocks(state=state, token=token)
+    with patch('backend.drive_intake.drive_oauth_client') as factory:
+        factory.return_value.authorize_redirect = AsyncMock(side_effect=redirect)
+        factory.return_value.authorize_access_token = AsyncMock(side_effect=exchange)
+        assert client.get('/api/drive-import/authorize', follow_redirects=False).status_code == 302
+        callback = client.get(f'/api/drive-import/callback?code=synthetic-code-photo&state={state}', follow_redirects=False)
+        assert callback.status_code == 303, callback.text
+    claimed = client.post('/api/drive-import/picker-token')
+    assert claimed.status_code == 200, claimed.text
+    return token_str, session_hash
+
+
+def test_photo_handoff_claim_once_returns_original_bytes(client, drive_env, monkeypatch):
+    import hashlib
+
+    raw = _photo_bytes()
+    token, session_hash = _photo_grant_with_session(
+        client, monkeypatch, SYN_A, SUB_A, 'synthetic-drive-token-photo-handoff', 'synthetic-drive-state-handoff')
+    headers = FakeHeaders({'Content-Type': 'image/png', 'Content-Length': str(len(raw))})
+    fake = FakeProvider(
+        metadata={'id': 'demo-photo-01', 'name': 'Handoff photo', 'mimeType': 'image/png', 'trashed': False},
+        content=(raw, headers, 200),
+    )
+    _use_provider(fake)
+    response = _suggest_photo(client, token=token)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body['sha256'] == hashlib.sha256(raw).hexdigest()
+    assert 'data:image' not in response.text
+    claimed = drive_intake.claim_drive_photo_for_check(actor=SYN_A, session_hash=session_hash, digest=body['sha256'])
+    assert claimed['raw'] == raw
+    assert claimed['mime'] == 'image/png'
+    assert (claimed['width'], claimed['height']) == (24, 12)
+    assert hashlib.sha256(claimed['raw']).hexdigest() == body['sha256']
+    with drive_intake._PHOTO_HANDOFFS_LOCK:
+        assert drive_intake._PHOTO_HANDOFFS == {}
+    with pytest.raises(HTTPException) as replay:
+        drive_intake.claim_drive_photo_for_check(actor=SYN_A, session_hash=session_hash, digest=body['sha256'])
+    assert replay.value.status_code == 403
+
+
+def test_photo_handoff_wrong_digest_actor_session_denied(client, drive_env, monkeypatch):
+    raw = _photo_bytes()
+    token, session_hash = _photo_grant_with_session(
+        client, monkeypatch, SYN_A, SUB_A, 'synthetic-drive-token-photo-bind', 'synthetic-drive-state-bind')
+    headers = FakeHeaders({'Content-Type': 'image/png', 'Content-Length': str(len(raw))})
+    fake = FakeProvider(
+        metadata={'id': 'demo-photo-01', 'name': 'Bound photo', 'mimeType': 'image/png', 'trashed': False},
+        content=(raw, headers, 200),
+    )
+    _use_provider(fake)
+    body = _suggest_photo(client, token=token).json()
+    digest = body['sha256']
+    with pytest.raises(HTTPException) as wrong_digest:
+        drive_intake.claim_drive_photo_for_check(actor=SYN_A, session_hash=session_hash, digest='0' * 64)
+    assert wrong_digest.value.status_code == 403
+    with pytest.raises(HTTPException) as wrong_session:
+        drive_intake.claim_drive_photo_for_check(actor=SYN_A, session_hash='deadbeef', digest=digest)
+    assert wrong_session.value.status_code == 403
+    _sign_in(client, monkeypatch, SYN_B)
+    with pytest.raises(HTTPException) as foreign:
+        drive_intake.claim_drive_photo_for_check(actor=SYN_B, session_hash=auth.session_key(client.cookies.get(auth.COOKIE)), digest=digest)
+    assert foreign.value.status_code == 403
+    claimed = drive_intake.claim_drive_photo_for_check(actor=SYN_A, session_hash=session_hash, digest=digest)
+    assert claimed['raw'] == raw
+
+
+def test_photo_handoff_expiry_and_db_silence(client, drive_env, monkeypatch):
+    raw = _photo_bytes()
+    token, session_hash = _photo_grant_with_session(
+        client, monkeypatch, SYN_A, SUB_A, 'synthetic-drive-token-photo-expire', 'synthetic-drive-state-expire')
+    headers = FakeHeaders({'Content-Type': 'image/png', 'Content-Length': str(len(raw))})
+    fake = FakeProvider(
+        metadata={'id': 'demo-photo-01', 'name': 'Expiring photo', 'mimeType': 'image/png', 'trashed': False},
+        content=(raw, headers, 200),
+    )
+    _use_provider(fake)
+    body = _suggest_photo(client, token=token).json()
+    with drive_intake._PHOTO_HANDOFFS_LOCK:
+        for record in drive_intake._PHOTO_HANDOFFS.values():
+            record['expiry_ts'] = time.time() - 1
+    with pytest.raises(HTTPException) as expired:
+        drive_intake.claim_drive_photo_for_check(actor=SYN_A, session_hash=session_hash, digest=body['sha256'])
+    assert expired.value.status_code == 403
+    with store.connect() as db:
+        sessions = db.execute(text('SELECT data FROM auth_sessions')).scalars().all()
+        runs = db.execute(text('SELECT receipt FROM runs')).scalars().all()
+        memos = db.execute(text('SELECT facts FROM memory')).scalars().all()
+        items = db.execute(text('SELECT content FROM memory_items')).scalars().all()
+    blob = json.dumps({'sessions': sessions, 'runs': runs, 'memos': memos, 'items': items})
+    assert body['sha256'] not in blob
+    assert 'data:image' not in blob
