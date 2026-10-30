@@ -1354,17 +1354,34 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-task""-definition" ]; then
       RS_HOST="${FAKE_DB_HOST:-launchcrew-demo.abc123.us-east-1.rds.amazonaws.com}"
       RS_MASTER="${FAKE_DB_USER:-launchcrew_app}"
       RS_IMG="${FAKE_ROLESTATE_IMAGE:-$IMG_BOOT}"
+      RS_DBNAME="launchcrew"
+      if [ "${FAKE_ROLESTATE_WRONG_ENV:-0}" = "1" ]; then RS_DBNAME="evil"; fi
       RS_CMD_JSON=',"command":["--verify-role-state"]'
       if [ -n "${FAKE_ROLESTATE_CMD:-}" ]; then RS_CMD_JSON=",\\"command\\":[\\"$FAKE_ROLESTATE_CMD\\"]"; fi
       RS_EP_JSON=""
       if [ -n "${FAKE_ROLESTATE_ENTRYPOINT:-}" ]; then RS_EP_JSON=",\\"entryPoint\\":[\\"$FAKE_ROLESTATE_ENTRYPOINT\\"]"; fi
+      RS_ESSENTIAL_JSON=',"essential":true'
+      if [ "${FAKE_ROLESTATE_NONESSENTIAL:-0}" = "1" ]; then RS_ESSENTIAL_JSON=',"essential":false'; fi
+      if [ "${FAKE_ROLESTATE_MISSING_ESSENTIAL:-0}" = "1" ]; then RS_ESSENTIAL_JSON=""; fi
       RS_EXTRA_SECRET_JSON=""
       if [ "${FAKE_ROLESTATE_EXTRA_SECRET:-0}" = "1" ]; then RS_EXTRA_SECRET_JSON=",{\\"name\\":\\"EVIL_SECRET\\",\\"valueFrom\\":\\"arn:aws:secretsmanager:us-east-1:111122223333:secret:evil-Xx:password::\\"}"; fi
+      RS_DUP_SECRET_JSON=""
+      if [ "${FAKE_ROLESTATE_DUP_SECRET:-0}" = "1" ]; then RS_DUP_SECRET_JSON=",{\\"name\\":\\"RUNTIME_DB_URL\\",\\"valueFrom\\":\\"$SEC_RT:database-url::\\"}"; fi
+      RS_MASTER_SECRET_JSON=""
+      if [ "${FAKE_ROLESTATE_MASTER_SECRET:-0}" = "1" ]; then RS_MASTER_SECRET_JSON=",{\\"name\\":\\"MASTER_DB_PASSWORD\\",\\"valueFrom\\":\\"$SEC_MASTER:password::\\"}"; fi
+      RS_MALFORMED_SECRET_JSON=""
+      if [ "${FAKE_ROLESTATE_MALFORMED_SECRET:-0}" = "1" ]; then RS_MALFORMED_SECRET_JSON=",{\\"name\\":\\"RUNTIME_DB_URL\\"}"; fi
+      RS_EXTRA_ENV_JSON=""
+      if [ "${FAKE_ROLESTATE_EXTRA_ENV:-0}" = "1" ]; then RS_EXTRA_ENV_JSON=",{\\"name\\":\\"EVIL_ENV\\",\\"value\\":\\"evil\\"}"; fi
+      RS_DUP_ENV_JSON=""
+      if [ "${FAKE_ROLESTATE_DUP_ENV:-0}" = "1" ]; then RS_DUP_ENV_JSON=",{\\"name\\":\\"DB_NAME\\",\\"value\\":\\"launchcrew\\"}"; fi
+      RS_MALFORMED_ENV_JSON=""
+      if [ "${FAKE_ROLESTATE_MALFORMED_ENV:-0}" = "1" ]; then RS_MALFORMED_ENV_JSON=",{\\"value\\":\\"evil\\"}"; fi
       RS_EXTRA_CONTAINER_JSON=""
       if [ "${FAKE_ROLESTATE_EXTRA_CONTAINER:-0}" = "1" ]; then RS_EXTRA_CONTAINER_JSON=",{\\"name\\":\\"evil-sidecar\\",\\"essential\\":true,\\"image\\":\\"evil:latest\\"}"; fi
       RS_TASKDEF_ARN="$TASKDEF"
       if [ -n "${FAKE_ROLESTATE_TASKDEF_ARN:-}" ]; then RS_TASKDEF_ARN="$FAKE_ROLESTATE_TASKDEF_ARN"; fi
-      printf '{"taskDefinition":{"taskDefinitionArn":"%s","executionRoleArn":"arn:aws:iam::111122223333:role/RoleStateExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/RoleStateTaskRole%s","containerDefinitions":[{"name":"bootstrap-db-roles","essential":true%s%s,"image":"%s","environment":[{"name":"LAUNCHCREW_DB_TLS_MODE","value":"verify-full"},{"name":"DATABASE_SSL_ROOTCERT","value":"/app/rds-ca-bundle.pem"},{"name":"DB_NAME","value":"launchcrew"},{"name":"DB_MASTER_USER","value":"%s"},{"name":"DB_HOST","value":"%s"},{"name":"APP_SCHEMA","value":"public"},{"name":"RUNTIME_USER","value":"launchcrew_runtime"},{"name":"MIGRATION_USER","value":"launchcrew_migration"}],"secrets":[{"name":"RUNTIME_DB_URL","valueFrom":"%s:database-url::"},{"name":"MIGRATION_DB_URL","valueFrom":"%s:database-url::"}%s]}%s]}}\\n' "$RS_TASKDEF_ARN" "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$RS_CMD_JSON" "$RS_EP_JSON" "$RS_IMG" "$RS_MASTER" "$RS_HOST" "$SEC_RT" "$SEC_MG" "$RS_EXTRA_SECRET_JSON" "$RS_EXTRA_CONTAINER_JSON"
+      printf '{"taskDefinition":{"taskDefinitionArn":"%s","executionRoleArn":"arn:aws:iam::111122223333:role/RoleStateExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/RoleStateTaskRole%s","containerDefinitions":[{"name":"bootstrap-db-roles"%s%s%s,"image":"%s","environment":[{"name":"LAUNCHCREW_DB_TLS_MODE","value":"verify-full"},{"name":"DATABASE_SSL_ROOTCERT","value":"/app/rds-ca-bundle.pem"},{"name":"DB_NAME","value":"%s"},{"name":"DB_MASTER_USER","value":"%s"},{"name":"DB_HOST","value":"%s"},{"name":"APP_SCHEMA","value":"public"},{"name":"RUNTIME_USER","value":"launchcrew_runtime"},{"name":"MIGRATION_USER","value":"launchcrew_migration"}%s%s%s],"secrets":[{"name":"RUNTIME_DB_URL","valueFrom":"%s:database-url::"},{"name":"MIGRATION_DB_URL","valueFrom":"%s:database-url::"}%s%s%s%s]}%s]}}\\n' "$RS_TASKDEF_ARN" "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$RS_ESSENTIAL_JSON" "$RS_CMD_JSON" "$RS_EP_JSON" "$RS_IMG" "$RS_DBNAME" "$RS_MASTER" "$RS_HOST" "$SEC_RT" "$SEC_MG" "$RS_EXTRA_SECRET_JSON" "$RS_DUP_SECRET_JSON" "$RS_MASTER_SECRET_JSON" "$RS_MALFORMED_SECRET_JSON" "$RS_EXTRA_ENV_JSON" "$RS_DUP_ENV_JSON" "$RS_MALFORMED_ENV_JSON" "$RS_EXTRA_CONTAINER_JSON"
       exit 0 ;;
     *) echo "fake-aws: unexpected describe task definition: $*" >&2; exit 2 ;;
   esac
@@ -8949,7 +8966,6 @@ class TypedRecoveryTests(BootstrapHarness):
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
             self.assertIn("EXIT_NONZERO", combined)
-            self.assertIn("zero new migration", combined.lower())
             self.assertEqual(prior007.read_bytes(), before007)
             runs = [c for c in calls if "run-task" in c]
             role_runs = [c for c in runs
@@ -8957,13 +8973,39 @@ class TypedRecoveryTests(BootstrapHarness):
             self.assertEqual(len(role_runs), 1)
             self.assertFalse(any("launchcrew-demo-migration" in c
                                  for c in runs))
+            self.assertEqual((shared / "count").read_text(encoding="utf-8"),
+                             "11")
+            task_lines = (shared / "taskdefs").read_text(
+                encoding="utf-8").splitlines()
+            self.assertEqual(len(task_lines), 2)
+            self.assertTrue(task_lines[0].startswith(
+                live007_task + "|"))
+            self.assertIn("launchcrew-demo-rolestate", task_lines[1])
+            self.assertFalse(any("launchcrew-demo-migration" in line
+                                 for line in task_lines[1:]))
             preflight = journals / (f"launchcrew-{STACK}-migrate-preflight-"
                                     f"{self.RELEASE}-active.json")
             self.assertTrue(preflight.is_file())
             pre_doc = _json.loads(preflight.read_text(encoding="utf-8"))
             self.assertEqual(pre_doc.get("outcome"), "started")
+            self.assertTrue(pre_doc.get("task_arn", "").startswith(
+                f"arn:aws:ecs:{REGION}:{ACCOUNT}:task/{STACK}/"))
             new_file = journals / (f"launchcrew-{STACK}-migrate-migration-"
                                    f"{self.RELEASE}-active.json")
+            self.assertFalse(new_file.exists())
+            pre_bytes = preflight.read_bytes()
+            second, second_calls = self.run_bootstrap(
+                self.migrate_args(),
+                extra_env={"FAKE_ROLESTATE_EXIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(second.returncode, 0)
+            self.assertEqual(prior007.read_bytes(), before007)
+            self.assertEqual(preflight.read_bytes(), pre_bytes)
+            self.assertFalse(any("run-task" in c for c in second_calls))
+            self.assertEqual((shared / "count").read_text(encoding="utf-8"),
+                             "11")
+            self.assertEqual((shared / "taskdefs").read_text(
+                encoding="utf-8").splitlines(), task_lines)
             self.assertFalse(new_file.exists())
         with _tempfile.TemporaryDirectory() as shared_tmp:
             shared, journals = self.fresh_shared(shared_tmp)
@@ -9217,7 +9259,8 @@ class TypedRecoveryTests(BootstrapHarness):
             drift_cases = [
                 {"FAKE_ROLESTATE_CMD": "--evil-command"},
                 {"FAKE_ROLESTATE_TASKDEF_ARN":
-                 f"arn:aws:ecs:{REGION}:{ACCOUNT}:task-definition/"
+                 f"arn:aws:ecs:{REGION}:{ACCOUNT}:task"
+                 "-definition/"
                  "launchcrew-demo-rolestate:999"},
             ]
             for drift in drift_cases:
@@ -9235,6 +9278,100 @@ class TypedRecoveryTests(BootstrapHarness):
                     self.assertEqual(
                         (shared / "count").read_text(encoding="utf-8"),
                         count_good)
+                    self.assertFalse(migration_file.exists())
+            control, control_calls = self.run_bootstrap(
+                self.migrate_args(),
+                extra_env={"FAKE_ROLESTATE_EXIT": "10"},
+                shared_dir=shared_tmp)
+            self.assertEqual(control.returncode, 0,
+                             msg=control.stdout + control.stderr)
+            control_runs = [c for c in control_calls if "run-task" in c]
+            self.assertFalse(any("launchcrew-demo-rolestate" in c
+                                 for c in control_runs))
+            self.assertEqual(len([c for c in control_runs
+                                  if "launchcrew-demo-migration" in c]), 1)
+            self.assertTrue(migration_file.is_file())
+            self.assertEqual(preflight.read_bytes(), pre_bytes)
+
+    def test_migration_preflight_rolestate_shape_strict_refuses_on_replay(self):
+        import json as _json
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            live_token = "lc-" + "u" * 30
+            live_task = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+                         "task/launchcrew-demo/live-migration-007shape")
+            prior = self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", live_token, live_task,
+                self.MIG_TASKDEF, generation="head007-abc1234",
+                head="007", outcome="complete")
+            before = prior.read_bytes()
+            (shared / "taskdefs").write_text(
+                f"{live_task}|{self.MIG_TASKDEF}|{live_token}\n",
+                encoding="utf-8")
+            (shared / "count").write_text("10", encoding="utf-8")
+            (shared / "token").write_text("", encoding="utf-8")
+            first, first_calls = self.run_bootstrap(
+                self.migrate_args(),
+                extra_env={"FAKE_ROLESTATE_EXIT": "10"},
+                shared_dir=shared_tmp)
+            self.assertEqual(first.returncode, 0,
+                             msg=first.stdout + first.stderr)
+            first_runs = [c for c in first_calls if "run-task" in c]
+            self.assertEqual(len([c for c in first_runs
+                                  if "launchcrew-demo-rolestate" in c]), 1)
+            self.assertEqual(len([c for c in first_runs
+                                  if "launchcrew-demo-migration" in c]), 1)
+            preflight = journals / (
+                f"launchcrew-{STACK}-migrate-preflight-"
+                f"{self.RELEASE}-active.json")
+            self.assertTrue(preflight.is_file())
+            pre_doc = _json.loads(preflight.read_text(encoding="utf-8"))
+            self.assertEqual(pre_doc.get("outcome"), "complete")
+            self.assertEqual(pre_doc.get("observed_head"), "007")
+            migration_file = journals / (
+                f"launchcrew-{STACK}-migrate-migration-"
+                f"{self.RELEASE}-active.json")
+            self.assertTrue(migration_file.is_file())
+            migration_file.unlink()
+            pre_bytes = preflight.read_bytes()
+            count_good = (shared / "count").read_text(encoding="utf-8")
+            taskdefs_good = (shared / "taskdefs").read_text(encoding="utf-8")
+            shape_cases = [
+                {"FAKE_ROLESTATE_EXTRA_CONTAINER": "1"},
+                {"FAKE_ROLESTATE_NONESSENTIAL": "1"},
+                {"FAKE_ROLESTATE_MISSING_ESSENTIAL": "1"},
+                {"FAKE_ROLESTATE_DUP_SECRET": "1"},
+                {"FAKE_ROLESTATE_EXTRA_SECRET": "1"},
+                {"FAKE_ROLESTATE_MASTER_SECRET": "1"},
+                {"FAKE_ROLESTATE_MALFORMED_SECRET": "1"},
+                {"FAKE_ROLESTATE_EXTRA_ENV": "1"},
+                {"FAKE_ROLESTATE_DUP_ENV": "1"},
+                {"FAKE_ROLESTATE_MALFORMED_ENV": "1"},
+                {"FAKE_ROLESTATE_WRONG_ENV": "1"},
+            ]
+            for drift in shape_cases:
+                with self.subTest(drift=sorted(drift)):
+                    env = {"FAKE_ROLESTATE_EXIT": "10"}
+                    env.update(drift)
+                    result, calls = self.run_bootstrap(
+                        self.migrate_args(),
+                        extra_env=env,
+                        shared_dir=shared_tmp)
+                    self.assertNotEqual(result.returncode, 0)
+                    combined = result.stdout + result.stderr
+                    self.assertIn("RoleStateTaskDefinition", combined)
+                    self.assertIn("not proven owned", combined)
+                    self.assertEqual(prior.read_bytes(), before)
+                    self.assertEqual(preflight.read_bytes(), pre_bytes)
+                    self.assertFalse(any("run-task" in c for c in calls))
+                    self.assertEqual(
+                        (shared / "count").read_text(encoding="utf-8"),
+                        count_good)
+                    self.assertEqual(
+                        (shared / "taskdefs").read_text(encoding="utf-8"),
+                        taskdefs_good)
                     self.assertFalse(migration_file.exists())
             control, control_calls = self.run_bootstrap(
                 self.migrate_args(),

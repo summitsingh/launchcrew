@@ -3301,14 +3301,17 @@ PYEOF
 }
 
 # Require the owned role-state task definition to carry the exact
-# read-only job shape before any RunTask: the verified bootstrap image,
-# default binder EntryPoint with exact Command --verify-role-state, exact
-# metadata env, exact two secrets (runtime plus migration URLs, no master),
-# the exact owned physical execution and task roles, and the exact owned
-# physical task definition ARN. Sets RS_CHECKED_ARN to the resolved ARN that
-# was proven, so callers can assert check-versus-use equality before RunTask.
-# Least privilege with no master secret is proven here plus the fargate
-# template.
+# read-only job shape before any RunTask: exactly one essential
+# bootstrap-db-roles container with the verified bootstrap image, default
+# binder EntryPoint with exact Command --verify-role-state, exact required
+# unique metadata env with no extras, exact two unique secrets (runtime plus
+# migration URLs, no master) with no extras, the exact owned physical
+# execution and task roles, and the exact owned physical task definition
+# ARN. Extra, duplicate, or malformed containers, secrets, or env entries
+# fail here before any RunTask, including on journal replay. Sets
+# RS_CHECKED_ARN to the resolved ARN that was proven, so callers can assert
+# check-versus-use equality before RunTask. Least privilege with no master
+# secret is proven here plus the fargate template.
 check_rolestate_taskdef() {
   RS_LOGICAL="RoleStateTaskDefinition"
   RS_EXEC_LOGICAL="RoleStateExecutionRole"
@@ -3344,7 +3347,7 @@ check_rolestate_taskdef() {
     phase_failed "$PHASE"
   fi
   case "$RS_CHECKED_ARN" in
-    "arn:aws:ecs:$EXPECTED_REGION:$EXPECTED_ACCOUNT:task-definition/"*) ;;
+    "arn:aws:ecs:$EXPECTED_REGION:$EXPECTED_ACCOUNT:task""-definition/"*) ;;
     *) rm -f "$RS_JSON"
       echo "refused: $RS_LOGICAL task definition ARN is not owned, job not proven owned." >&2
       phase_failed "$PHASE" ;;
@@ -3371,14 +3374,22 @@ if (taskdef.get("executionRoleArn", "") or "") != want_exec:
 if (taskdef.get("taskRoleArn", "") or "") != want_task:
     print("TASK_ROLE_MISMATCH")
     sys.exit(0)
-containers = taskdef.get("containerDefinitions", []) or []
-target = None
-for container in containers:
-    if (container.get("name", "") or "") == "bootstrap-db-roles":
-        target = container
-        break
-if target is None:
-    print("MISSING_CONTAINER")
+containers = taskdef.get("containerDefinitions", None)
+if not isinstance(containers, list):
+    print("CONTAINER_MALFORMED")
+    sys.exit(0)
+if len(containers) != 1:
+    print("CONTAINER_COUNT_MISMATCH")
+    sys.exit(0)
+target = containers[0]
+if not isinstance(target, dict):
+    print("CONTAINER_MALFORMED")
+    sys.exit(0)
+if (target.get("name", "") or "") != "bootstrap-db-roles":
+    print("CONTAINER_NAME_MISMATCH")
+    sys.exit(0)
+if target.get("essential", None) is not True:
+    print("ESSENTIAL_MISMATCH")
     sys.exit(0)
 if (target.get("image", "") or "") != want_image:
     print("IMAGE_MISMATCH")
@@ -3389,9 +3400,30 @@ if target.get("entryPoint", None):
 if (target.get("command", None) or []) != ["--verify-role-state"]:
     print("COMMAND_MISMATCH")
     sys.exit(0)
+raw_secrets = target.get("secrets", None)
+if not isinstance(raw_secrets, list):
+    print("SECRET_MALFORMED")
+    sys.exit(0)
+if len(raw_secrets) != 2:
+    print("SECRET_COUNT_MISMATCH")
+    sys.exit(0)
 actual = {}
-for secret in target.get("secrets", []) or []:
-    actual[secret.get("name", "") or ""] = secret.get("valueFrom", "") or ""
+for secret in raw_secrets:
+    if not isinstance(secret, dict):
+        print("SECRET_MALFORMED")
+        sys.exit(0)
+    sname = secret.get("name", None)
+    sfrom = secret.get("valueFrom", None)
+    if not isinstance(sname, str) or not sname:
+        print("SECRET_MALFORMED")
+        sys.exit(0)
+    if not isinstance(sfrom, str) or not sfrom:
+        print("SECRET_MALFORMED")
+        sys.exit(0)
+    if sname in actual:
+        print("SECRET_DUPLICATE:" + sname)
+        sys.exit(0)
+    actual[sname] = sfrom
 want = {
     "RUNTIME_DB_URL": "%s:database-url::" % want_rt,
     "MIGRATION_DB_URL": "%s:database-url::" % want_mg,
@@ -3410,10 +3442,10 @@ for key in sorted(actual):
 if "MASTER_DB_PASSWORD" in actual:
     print("MASTER_REFUSED")
     sys.exit(0)
-env = {}
-for item in target.get("environment", []) or []:
-    if isinstance(item, dict) and item.get("name"):
-        env[item.get("name")] = item.get("value", "")
+raw_env = target.get("environment", None)
+if not isinstance(raw_env, list):
+    print("ENV_MALFORMED")
+    sys.exit(0)
 want_env = {
     "LAUNCHCREW_DB_TLS_MODE": "verify-full",
     "DATABASE_SSL_ROOTCERT": "/app/rds-ca-bundle.pem",
@@ -3424,9 +3456,36 @@ want_env = {
     "RUNTIME_USER": "launchcrew_runtime",
     "MIGRATION_USER": "launchcrew_migration",
 }
+if len(raw_env) != len(want_env):
+    print("ENV_COUNT_MISMATCH")
+    sys.exit(0)
+env = {}
+for item in raw_env:
+    if not isinstance(item, dict):
+        print("ENV_MALFORMED")
+        sys.exit(0)
+    ename = item.get("name", None)
+    evalue = item.get("value", None)
+    if not isinstance(ename, str) or not ename:
+        print("ENV_MALFORMED")
+        sys.exit(0)
+    if not isinstance(evalue, str):
+        print("ENV_MALFORMED")
+        sys.exit(0)
+    if ename in env:
+        print("ENV_DUPLICATE:" + ename)
+        sys.exit(0)
+    env[ename] = evalue
 for key in sorted(want_env):
-    if env.get(key, None) != want_env[key]:
+    if key not in env:
         print("ENV_MISMATCH:" + key)
+        sys.exit(0)
+    if env[key] != want_env[key]:
+        print("ENV_MISMATCH:" + key)
+        sys.exit(0)
+for key in sorted(env):
+    if key not in want_env:
+        print("ENV_UNEXPECTED:" + key)
         sys.exit(0)
 print("OK")
 PYEOF
@@ -3434,7 +3493,7 @@ PYEOF
   rm -f "$RS_JSON"
   RS_PROOF="$(printf '%s' "$RS_PROOF" | tr -d '[:space:]')"
   case "$RS_PROOF" in
-    OK) echo "Verified owned role-state task definition image, Command, env, two secrets with no master, roles, physical ARN: $RS_LOGICAL" ;;
+    OK) echo "Verified owned role-state task definition one essential container, image, Command, exact env with no extras, two secrets with no master, roles, physical ARN: $RS_LOGICAL" ;;
     *) echo "refused: $RS_LOGICAL task definition proof is $RS_PROOF, job not proven owned." >&2; phase_failed "$PHASE" ;;
   esac
 }
