@@ -64,6 +64,35 @@ class ProductFactsInput(Strict):
     founder_note: FounderNoteField | None = None
 
 
+ImportSource = Literal['listing', 'instagram_bio', 'instagram_caption']
+
+
+class ImportSuggestionsIn(Strict):
+    text: str = Field(max_length=10000)
+    source: ImportSource
+
+
+class ImportSuggestionItem(Strict):
+    text: str
+    source: ImportSource
+    product_fact_source: ProductFactSource
+    status: Literal['unconfirmed'] = 'unconfirmed'
+    confirmed: Literal[False] = False
+    index: int
+
+
+class ImportSuggestionsOut(Strict):
+    status: Literal['unconfirmed'] = 'unconfirmed'
+    source: ImportSource
+    product_fact_source: ProductFactSource
+    suggestions: list[ImportSuggestionItem]
+    truncated: bool
+    dropped_duplicates: int
+    dropped_overlong: int
+    dropped_empty: int
+    parser_version: str
+
+
 class RunInput(Idea):
     agent_name: str = Field(description='Legacy Maker selector. Preserved for compatibility. Maker stage uses maker_name when provided, else agent_name.')
     scout_name: str | None = Field(default=None, description='Scout stage agent name. Defaults to built-in Scout.')
@@ -458,6 +487,33 @@ def _capability_snapshot():
 @app.get('/api/model-capabilities', response_model=ModelCapabilities)
 def model_capabilities(actor: str = Depends(auth.actor)):
     return _capability_snapshot()
+
+
+@app.post('/api/import-suggestions', response_model=ImportSuggestionsOut)
+def import_suggestions(body: ImportSuggestionsIn, actor: str = Depends(auth.actor)):
+    """Parse pasted listing or social text into unconfirmed suggestions.
+
+    Stateless owner intake: deterministic stdlib parse only, no database
+    writes, no memory writes, no model calls, no network. Every suggestion
+    returns confirmed false with provenance; explicit product-facts
+    confirmation is still required before any evidence use.
+    """
+    from launchcrew.import_suggestions import parse_import_text
+    result = parse_import_text(body.text, body.source)
+    mapping = {'listing': 'listing', 'instagram_bio': 'pasted_text',
+               'instagram_caption': 'pasted_text'}
+    product_source = mapping[body.source]
+    suggestions = [{'text': item['text'], 'source': item['source'],
+                    'product_fact_source': product_source,
+                    'status': 'unconfirmed', 'confirmed': False,
+                    'index': item['index']} for item in result['suggestions']]
+    return {'status': 'unconfirmed', 'source': result['source'],
+            'product_fact_source': product_source,
+            'suggestions': suggestions, 'truncated': result['truncated'],
+            'dropped_duplicates': result['dropped_duplicates'],
+            'dropped_overlong': result['dropped_overlong'],
+            'dropped_empty': result['dropped_empty'],
+            'parser_version': result['parser_version']}
 
 
 @app.get('/api/agents', response_model=list[Profile])

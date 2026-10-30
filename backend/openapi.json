@@ -795,6 +795,156 @@
         "title": "Idea",
         "type": "object"
       },
+      "ImportSuggestionItem": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed": {
+            "const": false,
+            "default": false,
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "index": {
+            "title": "Index",
+            "type": "integer"
+          },
+          "product_fact_source": {
+            "enum": [
+              "owner",
+              "pasted_text",
+              "memory",
+              "listing",
+              "campaign_brief",
+              "demo_template"
+            ],
+            "title": "Product Fact Source",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "listing",
+              "instagram_bio",
+              "instagram_caption"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "const": "unconfirmed",
+            "default": "unconfirmed",
+            "title": "Status",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "source",
+          "product_fact_source",
+          "index"
+        ],
+        "title": "ImportSuggestionItem",
+        "type": "object"
+      },
+      "ImportSuggestionsIn": {
+        "additionalProperties": false,
+        "properties": {
+          "source": {
+            "enum": [
+              "listing",
+              "instagram_bio",
+              "instagram_caption"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 10000,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "source"
+        ],
+        "title": "ImportSuggestionsIn",
+        "type": "object"
+      },
+      "ImportSuggestionsOut": {
+        "additionalProperties": false,
+        "properties": {
+          "dropped_duplicates": {
+            "title": "Dropped Duplicates",
+            "type": "integer"
+          },
+          "dropped_empty": {
+            "title": "Dropped Empty",
+            "type": "integer"
+          },
+          "dropped_overlong": {
+            "title": "Dropped Overlong",
+            "type": "integer"
+          },
+          "parser_version": {
+            "title": "Parser Version",
+            "type": "string"
+          },
+          "product_fact_source": {
+            "enum": [
+              "owner",
+              "pasted_text",
+              "memory",
+              "listing",
+              "campaign_brief",
+              "demo_template"
+            ],
+            "title": "Product Fact Source",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "listing",
+              "instagram_bio",
+              "instagram_caption"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "const": "unconfirmed",
+            "default": "unconfirmed",
+            "title": "Status",
+            "type": "string"
+          },
+          "suggestions": {
+            "items": {
+              "$ref": "#/components/schemas/ImportSuggestionItem"
+            },
+            "title": "Suggestions",
+            "type": "array"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "source",
+          "product_fact_source",
+          "suggestions",
+          "truncated",
+          "dropped_duplicates",
+          "dropped_overlong",
+          "dropped_empty",
+          "parser_version"
+        ],
+        "title": "ImportSuggestionsOut",
+        "type": "object"
+      },
       "LearnMemory": {
         "additionalProperties": false,
         "properties": {
@@ -3797,6 +3947,45 @@
           }
         },
         "summary": "Health"
+      }
+    },
+    "/api/import-suggestions": {
+      "post": {
+        "description": "Parse pasted listing or social text into unconfirmed suggestions.\n\nStateless owner intake: deterministic stdlib parse only, no database\nwrites, no memory writes, no model calls, no network. Every suggestion\nreturns confirmed false with provenance; explicit product-facts\nconfirmation is still required before any evidence use.",
+        "operationId": "import_suggestions_api_import_suggestions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportSuggestionsIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportSuggestionsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Import Suggestions"
       }
     },
     "/api/memory": {

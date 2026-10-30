@@ -245,6 +245,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/import-suggestions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import Suggestions
+         * @description Parse pasted listing or social text into unconfirmed suggestions.
+         *
+         *     Stateless owner intake: deterministic stdlib parse only, no database
+         *     writes, no memory writes, no model calls, no network. Every suggestion
+         *     returns confirmed false with provenance; explicit product-facts
+         *     confirmation is still required before any evidence use.
+         */
+        post: operations["import_suggestions_api_import_suggestions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/memory": {
         parameters: {
             query?: never;
@@ -865,6 +890,76 @@ export interface components {
         Idea: {
             /** Idea */
             idea: string;
+        };
+        /** ImportSuggestionItem */
+        ImportSuggestionItem: {
+            /**
+             * Confirmed
+             * @default false
+             * @constant
+             */
+            confirmed: false;
+            /** Index */
+            index: number;
+            /**
+             * Product Fact Source
+             * @enum {string}
+             */
+            product_fact_source: "owner" | "pasted_text" | "memory" | "listing" | "campaign_brief" | "demo_template";
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "listing" | "instagram_bio" | "instagram_caption";
+            /**
+             * Status
+             * @default unconfirmed
+             * @constant
+             */
+            status: "unconfirmed";
+            /** Text */
+            text: string;
+        };
+        /** ImportSuggestionsIn */
+        ImportSuggestionsIn: {
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "listing" | "instagram_bio" | "instagram_caption";
+            /** Text */
+            text: string;
+        };
+        /** ImportSuggestionsOut */
+        ImportSuggestionsOut: {
+            /** Dropped Duplicates */
+            dropped_duplicates: number;
+            /** Dropped Empty */
+            dropped_empty: number;
+            /** Dropped Overlong */
+            dropped_overlong: number;
+            /** Parser Version */
+            parser_version: string;
+            /**
+             * Product Fact Source
+             * @enum {string}
+             */
+            product_fact_source: "owner" | "pasted_text" | "memory" | "listing" | "campaign_brief" | "demo_template";
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "listing" | "instagram_bio" | "instagram_caption";
+            /**
+             * Status
+             * @default unconfirmed
+             * @constant
+             */
+            status: "unconfirmed";
+            /** Suggestions */
+            suggestions: components["schemas"]["ImportSuggestionItem"][];
+            /** Truncated */
+            truncated: boolean;
         };
         /** LearnMemory */
         LearnMemory: {
@@ -2310,6 +2405,39 @@ export interface operations {
                     "application/json": {
                         [key: string]: string;
                     };
+                };
+            };
+        };
+    };
+    import_suggestions_api_import_suggestions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImportSuggestionsIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportSuggestionsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
