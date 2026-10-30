@@ -3425,7 +3425,7 @@ class QuiesceExplicitValuesTests(BootstrapHarness):
             args += ["--quiesce-confirm", self.STACK_ID]
         elif confirm != "":
             args += ["--quiesce-confirm", confirm]
-        args += ["--release-generation", "head006-testabc"]
+        args += ["--release-generation", "head007-testabc"]
         return args
 
     def quiesce_env(self, changeset="explicit_ok", extra=None):
@@ -3457,7 +3457,7 @@ class QuiesceExplicitValuesTests(BootstrapHarness):
         self.assertIn("describe-change-set", joined)
         executes = [call for call in calls if "execute-change-set" in call]
         self.assertEqual(len(executes), 1)
-        self.assertIn("changeSet/quiesce-006/", executes[0])
+        self.assertIn("changeSet/quiesce-007/", executes[0])
         describes = [call for call in calls if "describe-change-set" in call]
         self.assertTrue(describes)
         for call in describes:
