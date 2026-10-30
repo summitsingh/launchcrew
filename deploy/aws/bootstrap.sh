@@ -5199,9 +5199,13 @@ PYEOF
 # Exhaustive paginated running-task absence for one startedBy token.
 # Lists by startedBy alone with raw --no-paginate plus --cli-input-json,
 # exact lowerCamel cluster, startedBy, maxResults, nextToken. Requires
-# zero ARNs across every page with no truncation, no failure, and no
-# malformed page. Any task, truncation, failure, or ambiguity refuses.
-# Args: token, context label. Fails closed via phase_failed.
+# exact JSON structure with only taskArns plus optional nextToken, zero
+# ARNs across every page with no truncation, no failure, and no malformed
+# element. Every array element must be a nonempty owned ECS task ARN for
+# the exact account, region, and cluster. Any null, number, empty, None,
+# foreign ARN, object, duplicate, failed page, truncation, or pagination
+# ambiguity refuses, never counts as absence. Args: token, context label.
+# Fails closed via phase_failed.
 prove_no_running_for_startedby() {
   ABSENCE_TOKEN="$1"
   ABSENCE_CONTEXT="$2"
@@ -5232,9 +5236,9 @@ PYEOF
       echo "refused: $ABSENCE_CONTEXT running absence list failed, cannot prove absence." >&2
       phase_failed "${RECOVERY_FAIL_PHASE:-init}"
     fi
-    ABSENCE_NEXT="$(python3 - "$ABSENCE_PAGE" "$ABSENCE_COLLECTED" 2>/dev/null <<'PYEOF'
+    ABSENCE_NEXT="$(python3 - "$ABSENCE_PAGE" "$ABSENCE_COLLECTED" "$EXPECTED_REGION" "$EXPECTED_ACCOUNT" "$CLUSTER_NAME" 2>/dev/null <<'PYEOF'
 import json, sys
-page_file, collected_file = sys.argv[1:3]
+page_file, collected_file, want_region, want_account, want_cluster = sys.argv[1:6]
 try:
     page = json.load(open(page_file))
     collected = json.load(open(collected_file))
@@ -5244,13 +5248,49 @@ except Exception:
 if not isinstance(page, dict) or not isinstance(collected, list):
     print("MALFORMED")
     sys.exit(0)
-arns = page.get("taskArns", None)
+for key in page:
+    if key not in ("taskArns", "nextToken"):
+        print("MALFORMED")
+        sys.exit(0)
+if "taskArns" not in page:
+    print("MALFORMED")
+    sys.exit(0)
+arns = page.get("taskArns")
 if not isinstance(arns, list):
     print("MALFORMED")
     sys.exit(0)
+prefix = "arn:aws:ecs:%s:%s:task/%s/" % (want_region, want_account, want_cluster)
+seen = set()
+for existing in collected:
+    if not isinstance(existing, str) or not existing.startswith(prefix):
+        print("MALFORMED")
+        sys.exit(0)
+    suffix = existing[len(prefix):]
+    if not suffix or not suffix.strip() or any(c.isspace() for c in existing):
+        print("MALFORMED")
+        sys.exit(0)
+    if existing in seen:
+        print("MALFORMED")
+        sys.exit(0)
+    seen.add(existing)
 for arn in arns:
-    if not isinstance(arn, str) or not arn or arn == "None":
-        continue
+    if not isinstance(arn, str):
+        print("MALFORMED")
+        sys.exit(0)
+    if not arn or arn == "None":
+        print("MALFORMED")
+        sys.exit(0)
+    if not arn.startswith(prefix):
+        print("MALFORMED")
+        sys.exit(0)
+    suffix = arn[len(prefix):]
+    if not suffix or not suffix.strip() or any(c.isspace() for c in arn):
+        print("MALFORMED")
+        sys.exit(0)
+    if arn in seen:
+        print("MALFORMED")
+        sys.exit(0)
+    seen.add(arn)
     collected.append(arn)
 if len(collected) > 20:
     print("TOO_MANY")
@@ -5442,10 +5482,14 @@ PYEOF
 # restart with complete, validates immutable schema, original hash and
 # ownership, current StackId, tags, material Names, ARNs, VersionIds, cert
 # identity, generation, source, head, and exhaustive paginated absence for
-# the old startedBy. If the verifier is still live, rechecks live; if aged
-# out, permits only when the persisted proof and fresh desired state are
-# both intact, never claiming live status after expiry or retroactive old
-# init exit. No new verifier or init resend on restart. Legacy unversioned
+# the old startedBy. If the verifier is still live, rechecks live STOPPED
+# all essential exit 0; if aged out, permits only for a well-formed zero
+# tasks response with exactly one MISSING failure for the attested task
+# ARN plus intact persisted proof and fresh desired state, never claiming
+# live status after expiry or retroactive old init exit. Any other reason,
+# foreign ARN, mixed task plus failure, malformed type, multiple failures,
+# empty response, or ambiguity refuses. No new verifier or init resend on
+# restart. Legacy unversioned
 # originals use an exact 14-key branch, never fabricate StackId, head, or
 # generation, and mark legacy_unversioned. Never Put, Export, bind, or
 # migration through this route. Returns 0 on recovered, else fails.
@@ -5969,19 +6013,56 @@ PYEOF
         echo "refused: recovery verifier terminal state unreadable, not treated as success. Inspect $RECOVERY_FILE." >&2
         phase_failed "$RECOVERY_FAIL_PHASE"
       fi
-      RECOVERY_REVERIFY_PRESENCE="$(python3 - "$RECOVERY_REVERIFY_DESC" 2>/dev/null <<'PYEOF'
+      RECOVERY_REVERIFY_PRESENCE="$(python3 - "$RECOVERY_REVERIFY_DESC" "$RECOVERY_EXIST_VTASK" 2>/dev/null <<'PYEOF'
 import json, sys
 try:
     doc = json.load(open(sys.argv[1]))
 except Exception:
     print("UNREADABLE")
     sys.exit(0)
-tasks = doc.get("tasks", [])
-failures = doc.get("failures", [])
-if failures or not tasks:
-    print("NO_TASK")
-else:
+expected = sys.argv[2] if len(sys.argv) > 2 else ""
+if not isinstance(doc, dict):
+    print("UNREADABLE")
+    sys.exit(0)
+if "tasks" not in doc or "failures" not in doc:
+    print("AMBIGUOUS_RESPONSE")
+    sys.exit(0)
+tasks = doc.get("tasks")
+failures = doc.get("failures")
+if not isinstance(tasks, list) or not isinstance(failures, list):
+    print("AMBIGUOUS_RESPONSE")
+    sys.exit(0)
+for entry in tasks:
+    if not isinstance(entry, dict):
+        print("AMBIGUOUS_RESPONSE")
+        sys.exit(0)
+for entry in failures:
+    if not isinstance(entry, dict):
+        print("AMBIGUOUS_RESPONSE")
+        sys.exit(0)
+    if not isinstance(entry.get("arn"), str) or not isinstance(entry.get("reason"), str):
+        print("AMBIGUOUS_RESPONSE")
+        sys.exit(0)
+if tasks and failures:
+    print("AMBIGUOUS_MIXED")
+    sys.exit(0)
+if tasks and not failures:
     print("PRESENT")
+    sys.exit(0)
+if not tasks and not failures:
+    print("AMBIGUOUS_EMPTY")
+    sys.exit(0)
+if len(failures) != 1:
+    print("AMBIGUOUS_FAILURES")
+    sys.exit(0)
+single = failures[0]
+if single.get("reason") != "MISSING":
+    print("AMBIGUOUS_REASON")
+    sys.exit(0)
+if not expected or single.get("arn") != expected:
+    print("AMBIGUOUS_ARN")
+    sys.exit(0)
+print("NO_TASK")
 PYEOF
 )" || RECOVERY_REVERIFY_PRESENCE="UNREADABLE"
       rm -f "$RECOVERY_REVERIFY_DESC"

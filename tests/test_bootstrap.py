@@ -930,6 +930,11 @@ print(bad if bad else (s+"|"+w+"|"+n))' "$LIST_INPUT_PATH" 2>/dev/null || echo M
     exit 254
   fi
   if [ "${FAKE_LIST_MALFORMED:-0}" = "1" ]; then printf 'not-json{{{'; exit 0; fi
+  if [ "${FAKE_LIST_NULL:-0}" = "1" ]; then printf '%s' '{"taskArns":[null]}'; exit 0; fi
+  if [ "${FAKE_LIST_EMPTY_STRING:-0}" = "1" ]; then printf '%s' '{"taskArns":[""]}'; exit 0; fi
+  if [ "${FAKE_LIST_NUMBER:-0}" = "1" ]; then printf '%s' '{"taskArns":[1]}'; exit 0; fi
+  if [ "${FAKE_LIST_FOREIGN:-0}" = "1" ]; then printf '%s' '{"taskArns":["arn:aws:ecs:us-east-1:999988887777:task/launchcrew-demo/foreign001"]}'; exit 0; fi
+  if [ "${FAKE_LIST_OBJECT:-0}" = "1" ]; then printf '%s' '{"taskArns":[{"taskArn":"arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/running001"}]}'; exit 0; fi
   if [ "${FAKE_LIST_NONEMPTY:-0}" = "1" ]; then
     printf '{"taskArns":["arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/running001"]}'
     exit 0
@@ -1029,6 +1034,44 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-tasks" ]; then
         exit 0 ;;
     esac
   fi
+  case "${FAKE_REVERIFY:-}" in
+    missing_exact)
+      printf '{"tasks":[],"failures":[{"arn":"%s","reason":"MISSING"}]}\\n' "$REQUESTED"
+      exit 0 ;;
+    wrong_reason)
+      printf '{"tasks":[],"failures":[{"arn":"%s","reason":"OTHER"}]}\\n' "$REQUESTED"
+      exit 0 ;;
+    wrong_arn)
+      printf '{"tasks":[],"failures":[{"arn":"arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/other-task-999","reason":"MISSING"}]}\\n'
+      exit 0 ;;
+    mixed)
+      printf '{"tasks":[{"taskArn":"%s"}],"failures":[{"arn":"%s","reason":"MISSING"}]}\\n' "$REQUESTED" "$REQUESTED"
+      exit 0 ;;
+    tasks_not_list)
+      printf '{"tasks":"not-a-list","failures":[]}\\n'
+      exit 0 ;;
+    failures_not_list)
+      printf '{"tasks":[],"failures":"not-a-list"}\\n'
+      exit 0 ;;
+    tasks_null_element)
+      printf '{"tasks":[null],"failures":[]}\\n'
+      exit 0 ;;
+    failures_null_element)
+      printf '{"tasks":[],"failures":[null]}\\n'
+      exit 0 ;;
+    multiple)
+      printf '{"tasks":[],"failures":[{"arn":"%s","reason":"MISSING"},{"arn":"arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/other-task-999","reason":"MISSING"}]}\\n' "$REQUESTED"
+      exit 0 ;;
+    empty_ambiguous)
+      printf '{"tasks":[],"failures":[]}\\n'
+      exit 0 ;;
+    missing_keys)
+      printf '{}\\n'
+      exit 0 ;;
+    malformed_json)
+      printf 'not-json{{{'
+      exit 0 ;;
+  esac
   TASK_LINE=""
   if [ -n "$REQUESTED" ] && [ -n "${FAKE_TASKDEF_FILE:-}" ] && [ -f "$FAKE_TASKDEF_FILE" ]; then
     TASK_LINE="$(grep -F "$REQUESTED|" "$FAKE_TASKDEF_FILE" 2>/dev/null | tail -n 1 || true)"
@@ -5674,7 +5717,7 @@ class InitRecoveryTests(BootstrapHarness):
             result, calls = self.run_bootstrap(
                 self.init_args(),
                 extra_env={"FAKE_AGED_INIT": "1",
-                           "FAKE_DESCRIBE_TASKS": "empty"},
+                           "FAKE_REVERIFY": "missing_exact"},
                 shared_dir=shared_tmp)
             self.assertEqual(result.returncode, 0,
                              msg=result.stdout + result.stderr)
@@ -5880,6 +5923,425 @@ class InitRecoveryTests(BootstrapHarness):
             combined = result.stdout + result.stderr
             self.assertIn("runtime ARN", combined)
             self.assertFalse(any("run-task" in c for c in calls))
+
+    def test_running_absence_null_element_refuses_with_no_new_tasks(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            first, _ = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(first.returncode, 0,
+                             msg=first.stdout + first.stderr)
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_REVERIFY": "missing_exact",
+                           "FAKE_LIST_NULL": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("cannot prove absence", combined)
+            runs = [c for c in calls if "run-task" in c]
+            self.assertEqual(len(runs), 0)
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in calls))
+            for banned in ("put-secret-value", "PutSecretValue",
+                           "export-certificate", "ExportCertificate",
+                           "launchcrew-demo-migration", "MigrationTaskDefinition"):
+                self.assertFalse(any(banned in c for c in calls), msg=banned)
+            self.assertEqual(prior.read_bytes(), before)
+
+    def test_running_absence_empty_string_refuses_with_no_new_tasks(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            first, _ = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(first.returncode, 0,
+                             msg=first.stdout + first.stderr)
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_REVERIFY": "missing_exact",
+                           "FAKE_LIST_EMPTY_STRING": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("cannot prove absence", combined)
+            runs = [c for c in calls if "run-task" in c]
+            self.assertEqual(len(runs), 0)
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in calls))
+            for banned in ("put-secret-value", "PutSecretValue",
+                           "export-certificate", "ExportCertificate",
+                           "launchcrew-demo-migration", "MigrationTaskDefinition"):
+                self.assertFalse(any(banned in c for c in calls), msg=banned)
+            self.assertEqual(prior.read_bytes(), before)
+
+    def test_running_absence_number_element_refuses_with_no_new_tasks(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            first, _ = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(first.returncode, 0,
+                             msg=first.stdout + first.stderr)
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_REVERIFY": "missing_exact",
+                           "FAKE_LIST_NUMBER": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("cannot prove absence", combined)
+            runs = [c for c in calls if "run-task" in c]
+            self.assertEqual(len(runs), 0)
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in calls))
+            for banned in ("put-secret-value", "PutSecretValue",
+                           "export-certificate", "ExportCertificate",
+                           "launchcrew-demo-migration", "MigrationTaskDefinition"):
+                self.assertFalse(any(banned in c for c in calls), msg=banned)
+            self.assertEqual(prior.read_bytes(), before)
+
+    def test_running_absence_foreign_arn_refuses_with_no_new_tasks(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            first, _ = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(first.returncode, 0,
+                             msg=first.stdout + first.stderr)
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_REVERIFY": "missing_exact",
+                           "FAKE_LIST_FOREIGN": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("cannot prove absence", combined)
+            runs = [c for c in calls if "run-task" in c]
+            self.assertEqual(len(runs), 0)
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in calls))
+            for banned in ("put-secret-value", "PutSecretValue",
+                           "export-certificate", "ExportCertificate",
+                           "launchcrew-demo-migration", "MigrationTaskDefinition"):
+                self.assertFalse(any(banned in c for c in calls), msg=banned)
+            self.assertEqual(prior.read_bytes(), before)
+
+    def test_running_absence_malformed_object_refuses_with_no_new_tasks(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            first, _ = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(first.returncode, 0,
+                             msg=first.stdout + first.stderr)
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_REVERIFY": "missing_exact",
+                           "FAKE_LIST_OBJECT": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("cannot prove absence", combined)
+            runs = [c for c in calls if "run-task" in c]
+            self.assertEqual(len(runs), 0)
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in calls))
+            for banned in ("put-secret-value", "PutSecretValue",
+                           "export-certificate", "ExportCertificate",
+                           "launchcrew-demo-migration", "MigrationTaskDefinition"):
+                self.assertFalse(any(banned in c for c in calls), msg=banned)
+            self.assertEqual(prior.read_bytes(), before)
+
+    def test_reverify_missing_exact_permits_material_restart(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            first, first_calls = self.run_bootstrap(
+                self.material_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(first.returncode, 0,
+                             msg=first.stdout + first.stderr)
+            first_runs = [c for c in first_calls if "run-task" in c]
+            self.assertEqual(len(first_runs), 2)
+            result, calls = self.run_bootstrap(
+                self.material_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_REVERIFY": "missing_exact"},
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            combined = result.stdout + result.stderr
+            self.assertIn("persisted one-shot terminal proof", combined)
+            self.assertIn("no live verifier claim", combined)
+            self.assertIn("no new verifier", combined)
+            runs = [c for c in calls if "run-task" in c]
+            self.assertEqual(len(runs), 1)
+            self.assertIn("launchcrew-demo-sdkmaterial", runs[0])
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in runs))
+            self.assertEqual(prior.read_bytes(), before)
+
+    def test_reverify_wrong_reason_refuses_with_no_new_tasks(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            first, _ = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(first.returncode, 0,
+                             msg=first.stdout + first.stderr)
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_REVERIFY": "wrong_reason"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("AMBIGUOUS_REASON", combined)
+            self.assertFalse(any("run-task" in c for c in calls))
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in calls))
+            self.assertEqual(prior.read_bytes(), before)
+
+    def test_reverify_wrong_arn_refuses_with_no_new_tasks(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            first, _ = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(first.returncode, 0,
+                             msg=first.stdout + first.stderr)
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_REVERIFY": "wrong_arn"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("AMBIGUOUS_ARN", combined)
+            self.assertFalse(any("run-task" in c for c in calls))
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in calls))
+            self.assertEqual(prior.read_bytes(), before)
+
+    def test_reverify_mixed_task_and_failure_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            first, _ = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(first.returncode, 0,
+                             msg=first.stdout + first.stderr)
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_REVERIFY": "mixed"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("AMBIGUOUS_MIXED", combined)
+            self.assertFalse(any("run-task" in c for c in calls))
+            self.assertEqual(prior.read_bytes(), before)
+
+    def test_reverify_tasks_not_list_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            first, _ = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(first.returncode, 0,
+                             msg=first.stdout + first.stderr)
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_REVERIFY": "tasks_not_list"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("AMBIGUOUS_RESPONSE", combined)
+            self.assertFalse(any("run-task" in c for c in calls))
+            self.assertEqual(prior.read_bytes(), before)
+
+    def test_reverify_failures_not_list_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            first, _ = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(first.returncode, 0,
+                             msg=first.stdout + first.stderr)
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_REVERIFY": "failures_not_list"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("AMBIGUOUS_RESPONSE", combined)
+            self.assertFalse(any("run-task" in c for c in calls))
+            self.assertEqual(prior.read_bytes(), before)
+
+    def test_reverify_tasks_null_element_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            first, _ = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(first.returncode, 0,
+                             msg=first.stdout + first.stderr)
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_REVERIFY": "tasks_null_element"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("AMBIGUOUS_RESPONSE", combined)
+            self.assertFalse(any("run-task" in c for c in calls))
+            self.assertEqual(prior.read_bytes(), before)
+
+    def test_reverify_failures_null_element_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            first, _ = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(first.returncode, 0,
+                             msg=first.stdout + first.stderr)
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_REVERIFY": "failures_null_element"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("AMBIGUOUS_RESPONSE", combined)
+            self.assertFalse(any("run-task" in c for c in calls))
+            self.assertEqual(prior.read_bytes(), before)
+
+    def test_reverify_multiple_failures_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            first, _ = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(first.returncode, 0,
+                             msg=first.stdout + first.stderr)
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_REVERIFY": "multiple"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("AMBIGUOUS_FAILURES", combined)
+            self.assertFalse(any("run-task" in c for c in calls))
+            self.assertEqual(prior.read_bytes(), before)
+
+    def test_reverify_empty_response_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            first, _ = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(first.returncode, 0,
+                             msg=first.stdout + first.stderr)
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_REVERIFY": "empty_ambiguous"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("AMBIGUOUS_EMPTY", combined)
+            self.assertFalse(any("run-task" in c for c in calls))
+            self.assertEqual(prior.read_bytes(), before)
+
+    def test_reverify_missing_keys_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            first, _ = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(first.returncode, 0,
+                             msg=first.stdout + first.stderr)
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_REVERIFY": "missing_keys"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("AMBIGUOUS_RESPONSE", combined)
+            self.assertFalse(any("run-task" in c for c in calls))
+            self.assertEqual(prior.read_bytes(), before)
+
+    def test_reverify_malformed_json_refuses(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            first, _ = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(first.returncode, 0,
+                             msg=first.stdout + first.stderr)
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_REVERIFY": "malformed_json"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("UNREADABLE", combined)
+            self.assertFalse(any("run-task" in c for c in calls))
+            self.assertEqual(prior.read_bytes(), before)
 
 
 if __name__ == "__main__":
