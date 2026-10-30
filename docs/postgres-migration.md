@@ -1,6 +1,6 @@
 # Postgres ownership and migration
 
-The new FastAPI stack uses SQLAlchemy with the psycopg driver. Alembic revision 001 is the only active baseline. db/001_init.sql is retained as the recovered partial schema for provenance, explicitly superseded. Startup never runs that SQL file or creates tables implicitly. Run `uv run alembic upgrade head` before starting the API. The API container performs this migration before serving.
+The new FastAPI stack uses SQLAlchemy with the psycopg driver. Alembic revisions 001 through 007 are the active chain with head 007_voice_profile. db/001_init.sql is retained as the recovered partial schema for provenance, explicitly superseded. Startup never runs that SQL file or creates tables implicitly. Run `uv run alembic upgrade head` before starting the API. The API container performs this migration before serving. Revision 007 widens the memory_items kind CHECK to exactly the four preexisting kinds plus voice_profile; its downgrade refuses while any voice_profile row exists.
 
 New runs live in Postgres. The adapter imports launchcrew.run, launchcrew.agents, and launchcrew.receipts and passes a capture callback to the existing pipeline. It does not write new receipts under runs/. Temporary profile and export serialization files are short-lived, inside .local, and never authoritative. Preview validates the profile without files or model calls. Existing pipeline behavior, claim normalization, substring checks, allowlist, unverified fact exclusion, Checker revisions, and receipt export gates remain in the existing modules.
 

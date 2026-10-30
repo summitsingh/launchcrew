@@ -354,7 +354,7 @@ bind_verify_live() {
   python3 -c "import psycopg" 2>/dev/null || fail "python3 psycopg is required for stage 2, no database driver means no invented pass"
   python3 -c "import alembic, sqlalchemy" 2>/dev/null || fail "python3 alembic and sqlalchemy are required for stage 2, no migration run without them means no invented pass"
   (cd "$REPO_ROOT" && python3 -c "import backend.store" 2>/dev/null) || fail "backend.store must import for the alembic run in stage 2"
-  head_expected="$(grep -E "^revision = " "$REPO_ROOT/backend/migrations/versions/006_workspace_isolation.py" | cut -d"'" -f2)" || true
+  head_expected="$(grep -E "^revision = " "$REPO_ROOT/backend/migrations/versions/007_voice_profile.py" | cut -d"'" -f2)" || true
   head_script="$(grep -E "^EXPECTED_HEAD = " "$REPO_ROOT/scripts/bootstrap_db_roles.py" | cut -d'"' -f2)" || true
   [ -n "$head_expected" ] || fail "migration head unreadable, no invented pass"
   [ "$head_expected" = "$head_script" ] || fail "EXPECTED_HEAD $head_script does not match migration head $head_expected"
@@ -528,7 +528,7 @@ sys.stdout.write(text[:2000])
   model_checks() {
     m_label="$1"
     m_prefix="$2"
-    log "model 006 $m_label: tables owned, functions secdef pinned, no PUBLIC"
+    log "model 007 $m_label: tables owned, functions secdef pinned, no PUBLIC"
     for m_tbl in model_budget model_calls; do
       m_own="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT pg_get_userbyid(c.relowner) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = '$APP_SCHEMA' AND c.relname = '$m_tbl';" | tr -d '[:space:]')" || true
       [ "$m_own" = "$BIND_MG" ] || fail "model $m_tbl owner is $m_own, expected $BIND_MG ($m_label)"
@@ -728,9 +728,9 @@ print("model ok")
 ' 2>&1)"
     MODEL_CODE=$?
     set -e
-    [ "$MODEL_CODE" -eq 0 ] || { printf '%s' "$MODEL_OUT" | safe_emit >&2; fail "model 006 $m_label proof failed"; }
+    [ "$MODEL_CODE" -eq 0 ] || { printf '%s' "$MODEL_OUT" | safe_emit >&2; fail "model 007 $m_label proof failed"; }
     unset MODEL_OUT MODEL_CODE
-    log "pass: model 006 $m_label direct fails 42501, functions allowed, no resend, scope ok"
+    log "pass: model 007 $m_label direct fails 42501, functions allowed, no resend, scope ok"
   }
 
   log "password auth with the bound password works, a wrong one fails"
@@ -751,10 +751,10 @@ print("model ok")
   set -e
   [ "$MIG_CODE" -eq 0 ] || { printf '%s' "$MIG_OUT" | safe_emit >&2; fail "alembic upgrade head failed"; }
   ver="$(bind_as "$BIND_MG" "$BIND_MG_PW" "SELECT version_num FROM alembic_version;" | tr -d '[:space:]')" || true
-  [ "$ver" = "006" ] || fail "alembic head is $ver, expected 006"
+  [ "$ver" = "007" ] || fail "alembic head is $ver, expected 007"
   alembic_owner="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT pg_get_userbyid(c.relowner) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = '$APP_SCHEMA' AND c.relname = 'alembic_version';" | tr -d '[:space:]')" || true
   [ "$alembic_owner" = "$BIND_MG" ] || fail "alembic owner is $alembic_owner, expected $BIND_MG"
-  log "pass: alembic head 006 applied via the migration role and owned by it"
+  log "pass: alembic head 007 applied via the migration role and owned by it"
 
   model_checks "pre-rebind" "mpre"
 
@@ -783,16 +783,16 @@ print("model ok")
   VERIFY_OUT="$(verify_job)"
   VERIFY_CODE=$?
   set -e
-  [ "$VERIFY_CODE" -eq 0 ] || { printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify failed at head 006"; }
+  [ "$VERIFY_CODE" -eq 0 ] || { printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify failed at head 007"; }
   case "$VERIFY_OUT" in *"VERIFY COMPLETE"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed VERIFY COMPLETE" ;; esac
-  case "$VERIFY_OUT" in *"revision=006"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed revision=006" ;; esac
+  case "$VERIFY_OUT" in *"revision=007"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed revision=007" ;; esac
   case "$VERIFY_OUT" in *"verify-model-budget-zero ok"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed model budget proof" ;; esac
   case "$VERIFY_OUT" in *"verify-model-no-direct ok"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed model direct DML proof" ;; esac
   case "$VERIFY_OUT" in *"verify-model-functions ok"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed model function proof" ;; esac
   case "$VERIFY_OUT" in *"verify-model-owners ok"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed model owner proof" ;; esac
   case "$VERIFY_OUT" in *"verify-model-defaults ok"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed model defaults proof" ;; esac
   case "$VERIFY_OUT" in *"$BIND_RT_PW"*|*"$RT_URL"*) fail "verify output leaked a synthetic secret" ;; esac
-  log "pass: actual --verify proves 006, identity, rolled-back write, DDL refusal, model guards"
+  log "pass: actual --verify proves 007, identity, rolled-back write, DDL refusal, model guards"
 
   log "bind roles repeat the CRUD and sequence split directly"
   bind_as "$BIND_MG" "$BIND_MG_PW" "CREATE TABLE $APP_SCHEMA.bind_items (id SERIAL PRIMARY KEY, note TEXT);" >/dev/null || fail "migration role cannot create"
@@ -1038,14 +1038,14 @@ print("42501 ok")
   OLD_OUT="$(verify_job 2>&1)"
   OLD_CODE=$?
   set -e
-  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "UPDATE alembic_version SET version_num='006';" >/dev/null
+  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "UPDATE alembic_version SET version_num='007';" >/dev/null
   [ "$OLD_CODE" -ne 0 ] || fail "verify accepted the old head 004"
   case "$OLD_OUT" in *"FAIL"*) ;; *) printf '%s' "$OLD_OUT" | safe_emit >&2; fail "old head refusal left no FAIL marker" ;; esac
   set +e
   AGAIN_OUT="$(verify_job 2>&1)"
   AGAIN_CODE=$?
   set -e
-  [ "$AGAIN_CODE" -eq 0 ] || { printf '%s' "$AGAIN_OUT" | safe_emit >&2; fail "verify failed after restoring head 006"; }
+  [ "$AGAIN_CODE" -eq 0 ] || { printf '%s' "$AGAIN_OUT" | safe_emit >&2; fail "verify failed after restoring head 007"; }
   log "pass: old head refused, restored head proves again"
 
   bind_as "$BIND_MG" "$BIND_MG_PW" "DROP TABLE $APP_SCHEMA.bind_items;" >/dev/null || fail "owned bind table cleanup failed"

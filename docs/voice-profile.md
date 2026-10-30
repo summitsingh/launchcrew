@@ -83,13 +83,22 @@ Editing or deleting a selected voice marks dependent pending,
 running, and completed runs in the same workspace `voice_stale`,
 clears approvals and binding, appends a `voice_invalidated` audit
 event, and requires a new human revision check before export.
-Pending receipts carry the selected voice id plus stable version
-and digest binding at accept time under row lock, sync saves
-recheck the binding under row lock without holding a transaction
-over model calls, and async finalization preserves a concurrent
-stale marker under row lock and never silently reapproves. History
-preserves the prior voice context for audit. Failed runs stay
-untouched because they are already not approvable.
+Selection binds title plus content digest plus edit generation
+(`updated_at` and row `xmin`) at accept time. Title-only edits
+invalidate via title, returned content (A->B->A) invalidates via
+generation even when digest matches, and deletes invalidate via
+missing row. Sync saves recheck that binding under a short row
+lock without holding a transaction over model calls. Campaign
+commits a pending run per day before each model call in short
+transactions, then finalizes each day under short locks in
+memory-then-run order, merging a concurrent stale marker so edits
+in flight mark each affected day. Async finalization preserves a
+concurrent stale marker under row lock and never silently
+reapproves. No transaction spans model HTTP and no model call is
+retried automatically. History preserves the prior voice context
+for audit. Failed runs stay not approvable; invalidation skips
+already failed stored runs but failed finalization still merges a
+concurrent stale marker for audit.
 
 ## Channel variants (tested helper only)
 

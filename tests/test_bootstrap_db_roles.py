@@ -210,7 +210,7 @@ class FakeDriverState:
         self.refuse_ddl = True
         self.ddl_sqlstate = "42501"
         self.schema_present = True
-        self.schema_version = "006"
+        self.schema_version = "007"
         self.current_identity = "launchcrew_runtime"
         self.runtime_oid = 12345
         self.model_budget_remaining = 0
@@ -1089,7 +1089,7 @@ class VerifyJobTests(BindJobTests):
                        "verify-model-defaults ok",
                        "VERIFY COMPLETE"):
             self.assertIn(marker, out)
-        self.assertIn("revision=006", out)
+        self.assertIn("revision=007", out)
 
     def test_verify_fails_when_runtime_can_write(self):
         self.state.refuse_ddl = False
@@ -1541,10 +1541,10 @@ class VerifyFutureFunctionProofTests(unittest.TestCase):
 
     def test_verify_completion_requires_both_signals(self):
         self.assertIn('*"VERIFY COMPLETE"*', self.text)
-        self.assertIn('*"revision=006"*', self.text)
+        self.assertIn('*"revision=007"*', self.text)
         self.assertIn("missed VERIFY COMPLETE", self.text)
-        self.assertIn("missed revision=006", self.text)
-        self.assertNotIn('*"VERIFY COMPLETE"*|*"revision=006"*', self.text)
+        self.assertIn("missed revision=007", self.text)
+        self.assertNotIn('*"VERIFY COMPLETE"*|*"revision=007"*', self.text)
 
 
 if __name__ == "__main__":

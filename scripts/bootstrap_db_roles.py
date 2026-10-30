@@ -30,8 +30,8 @@ Modes, selected by argv flag only (no secret ever appears in argv):
             takeover risk. The only permitted membership is the exact
             native Postgres 16 creator administration row. Idempotent:
             safe to rerun; reports each completed phase.
-  --verify  read-only proof with the runtime URL only at head 006: SELECT
-            works, the alembic schema version equals 006, the connected
+  --verify  read-only proof with the runtime URL only at head 007: SELECT
+            works, the alembic schema version equals 007, the connected
             identity equals the runtime role, a rolled-back write proves DML
             without committing, runtime CREATE/ALTER/DROP each fail with
             SQLSTATE 42501, the global model budget reads zero, runtime
@@ -69,7 +69,7 @@ NATIVE_BOOTSTRAP_OID = 10
 PHASES_BIND = ("db-ensure", "password-binding", "schema-acls",
                "runtime-grants", "default-privileges")
 ROOTCERT_ENV = "DATABASE_SSL_ROOTCERT"
-EXPECTED_HEAD = "006"
+EXPECTED_HEAD = "007"
 MODEL_TABLES = ("model_budget", "model_calls")
 MODEL_RESERVE_FUNC = "model_reserve_call"
 MODEL_RESERVE_SIG = "(TEXT, TEXT, TEXT, TEXT, INTEGER, INTEGER, INTEGER)"
@@ -1158,7 +1158,7 @@ def do_verify():
         except Exception:
             pass
     print("bootstrap-db-roles: VERIFY COMPLETE runtime read-only, "
-          "schema 006, DDL refused, model guards ok", flush=True)
+          "schema 007, DDL refused, model guards ok", flush=True)
     return 0
 
 
