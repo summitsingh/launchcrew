@@ -5,7 +5,9 @@ provider network calls, no real credentials, no live Drive proof. All
 states, tokens, file IDs, titles, and contents are synthetic.
 """
 import json
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -27,6 +29,8 @@ CALLBACK_URI = PUBLIC_BASE + '/api/drive-import/callback'
 IDEA = 'Vegan leather wallet, $49, for Austin commuters, launch on Instagram'
 SCOPE = 'https://www.googleapis.com/auth/drive.file'
 OAUTH_SCOPE = 'openid profile email https://www.googleapis.com/auth/drive.file'
+CANONICAL_SCOPE = 'openid https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/drive.file'
+BROAD_SUFFIX = 'https://www.googleapis.com/auth/drive'
 DOC_MIME = 'application/vnd.google-apps.document'
 TEXT_MIME = 'text/plain'
 
@@ -63,9 +67,11 @@ def deterministic_pipeline():
 
 @pytest.fixture(autouse=True)
 def clear_grants():
-    drive_intake._GRANTS.clear()
+    with drive_intake._GRANTS_LOCK:
+        drive_intake._GRANTS.clear()
     yield
-    drive_intake._GRANTS.clear()
+    with drive_intake._GRANTS_LOCK:
+        drive_intake._GRANTS.clear()
 
 
 @pytest.fixture
@@ -441,7 +447,8 @@ def test_one_time_grant_claim_and_suggest(client, drive_env, monkeypatch):
     replay = _suggest(client, token=token)
     assert replay.status_code == 403
     assert len(fake.calls) == 2
-    drive_intake._GRANTS.clear()
+    with drive_intake._GRANTS_LOCK:
+        drive_intake._GRANTS.clear()
     assert _suggest(client, token='synthetic-drive-token-once-01').status_code == 403
 
 
@@ -516,3 +523,162 @@ def test_unconfirmed_stays_suggestion_until_explicit_confirmation(client, drive_
     assert 'Canvas tote' in receipt['maker_draft_v2']['post']
     assert 'Large' not in receipt['maker_draft_v2']['post']
     assert client.get('/api/memory').json() == []
+
+
+def _grant_unclaimed(client, monkeypatch, actor, sub, token_str, state):
+    _sign_in(client, monkeypatch, actor)
+    token = _valid_token(sub, token_str)
+    redirect, exchange = _oauth_mocks(state=state, token=token)
+    with patch('backend.drive_intake.drive_oauth_client') as factory:
+        factory.return_value.authorize_redirect = AsyncMock(side_effect=redirect)
+        factory.return_value.authorize_access_token = AsyncMock(side_effect=exchange)
+        authz = client.get('/api/drive-import/authorize', follow_redirects=False)
+        assert authz.status_code == 302, authz.text
+        callback = client.get(f'/api/drive-import/callback?code=synthetic-code-race&state={state}', follow_redirects=False)
+        assert callback.status_code == 303, callback.text
+    return token_str
+
+
+def test_concurrent_picker_claim_single_winner(client, drive_env, monkeypatch):
+    token_str = _grant_unclaimed(client, monkeypatch, SYN_A, SUB_A, 'synthetic-drive-token-race-claim', 'synthetic-drive-state-race-claim')
+    barrier = threading.Barrier(2)
+    outcomes = [None, None]
+
+    def one(index):
+        try:
+            barrier.wait(timeout=30)
+            response = client.post('/api/drive-import/picker-token')
+            outcomes[index] = (response.status_code, response.text)
+        except Exception as error:
+            outcomes[index] = ('error', repr(error))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(one, [0, 1]))
+    codes = sorted(out[0] for out in outcomes)
+    assert codes == [200, 403]
+    winners = [out for out in outcomes if out[0] == 200]
+    losers = [out for out in outcomes if out[0] == 403]
+    assert len(winners) == 1
+    assert len(losers) == 1
+    assert token_str in winners[0][1]
+    assert token_str not in losers[0][1]
+    assert client.post('/api/drive-import/picker-token').status_code == 403
+    with drive_intake._GRANTS_LOCK:
+        assert len(drive_intake._GRANTS) == 1
+        grant = next(iter(drive_intake._GRANTS.values()))
+        assert grant.get('delivered') is True
+        assert grant.get('plaintext') is None
+
+
+def test_concurrent_suggestions_single_read(client, drive_env, monkeypatch):
+    token = _full_grant(client, monkeypatch, SYN_A, SUB_A, 'synthetic-drive-token-race-read', 'synthetic-drive-state-race-read')
+    fake = FakeProvider(metadata={'id': 'demo-file-race', 'name': 'Race file', 'mimeType': TEXT_MIME, 'trashed': False})
+    _use_provider(fake)
+    barrier = threading.Barrier(2)
+    outcomes = [None, None]
+
+    def one(index):
+        try:
+            barrier.wait(timeout=30)
+            response = _suggest(client, file_id='demo-file-race', token=token)
+            outcomes[index] = (response.status_code, response.text)
+        except Exception as error:
+            outcomes[index] = ('error', repr(error))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(one, [0, 1]))
+    codes = sorted(out[0] for out in outcomes)
+    assert codes == [200, 403]
+    assert [call[0] for call in fake.calls] == ['metadata', 'content']
+    winners = [out for out in outcomes if out[0] == 200]
+    assert 'Canvas tote' in winners[0][1]
+    losers = [out for out in outcomes if out[0] == 403]
+    assert 'Canvas tote' not in losers[0][1]
+    assert _suggest(client, file_id='demo-file-race', token=token).status_code == 403
+    assert len(fake.calls) == 2
+
+
+def test_canonical_identity_scopes_accepted(client, drive_env, monkeypatch):
+    _sign_in(client, monkeypatch, SYN_A)
+    token_str = 'synthetic-drive-token-canonical'
+    token = _valid_token(SUB_A, token_str)
+    token['scope'] = CANONICAL_SCOPE
+    state = 'synthetic-drive-state-canonical'
+    redirect, exchange = _oauth_mocks(state=state, token=token)
+    with patch('backend.drive_intake.drive_oauth_client') as factory:
+        factory.return_value.authorize_redirect = AsyncMock(side_effect=redirect)
+        factory.return_value.authorize_access_token = AsyncMock(side_effect=exchange)
+        assert client.get('/api/drive-import/authorize', follow_redirects=False).status_code == 302
+        callback = client.get(f'/api/drive-import/callback?code=synthetic-code-canonical&state={state}', follow_redirects=False)
+        assert callback.status_code == 303, callback.text
+    claimed = client.post('/api/drive-import/picker-token')
+    assert claimed.status_code == 200, claimed.text
+    assert claimed.json()['access_token'] == token_str
+    fake = FakeProvider(metadata={'id': 'demo-file-01', 'name': 'Canonical file', 'mimeType': TEXT_MIME, 'trashed': False})
+    _use_provider(fake)
+    response = _suggest(client, file_id='demo-file-01', token=token_str)
+    assert response.status_code == 200, response.text
+    _assert_unconfirmed_drive(response.json())
+
+
+def test_canonical_plus_broad_scope_rejected(client, drive_env, monkeypatch):
+    _sign_in(client, monkeypatch, SYN_A)
+    token = _valid_token(SUB_A, 'synthetic-drive-token-canonical-broad')
+    token['scope'] = CANONICAL_SCOPE + ' ' + BROAD_SUFFIX
+    state = 'synthetic-drive-state-canonical-broad'
+    redirect, exchange = _oauth_mocks(state=state, token=token)
+    with patch('backend.drive_intake.drive_oauth_client') as factory:
+        factory.return_value.authorize_redirect = AsyncMock(side_effect=redirect)
+        factory.return_value.authorize_access_token = AsyncMock(side_effect=exchange)
+        assert client.get('/api/drive-import/authorize', follow_redirects=False).status_code == 302
+        response = client.get(f'/api/drive-import/callback?code=synthetic-code-broad&state={state}', follow_redirects=False)
+        assert response.status_code == 403
+    assert client.post('/api/drive-import/picker-token').status_code == 403
+    fake = FakeProvider()
+    _use_provider(fake)
+    assert _suggest(client, token='synthetic-drive-token-canonical-broad').status_code == 403
+    assert fake.calls == []
+
+
+def test_duplicate_and_ambiguous_scopes_rejected(client, drive_env, monkeypatch):
+    cases = [
+        OAUTH_SCOPE + ' openid',
+        'openid profile email email ' + SCOPE,
+        'openid profile email ' + SCOPE + ' ' + SCOPE,
+        'openid email ' + drive_intake.DRIVE_EMAIL_CANONICAL + ' profile ' + SCOPE,
+        'openid profile ' + drive_intake.DRIVE_PROFILE_CANONICAL + ' email ' + SCOPE,
+    ]
+    for idx, scope in enumerate(cases):
+        _sign_in(client, monkeypatch, SYN_A)
+        token = _valid_token(SUB_A, f'synthetic-drive-token-scope-{idx}')
+        token['scope'] = scope
+        state = f'synthetic-drive-state-scope-{idx}'
+        redirect, exchange = _oauth_mocks(state=state, token=token)
+        with patch('backend.drive_intake.drive_oauth_client') as factory:
+            factory.return_value.authorize_redirect = AsyncMock(side_effect=redirect)
+            factory.return_value.authorize_access_token = AsyncMock(side_effect=exchange)
+            assert client.get('/api/drive-import/authorize', follow_redirects=False).status_code == 302
+            response = client.get(f'/api/drive-import/callback?code=c-scope-{idx}&state={state}', follow_redirects=False)
+            assert response.status_code == 403, scope
+        assert client.post('/api/drive-import/picker-token').status_code == 403
+        fake = FakeProvider()
+        _use_provider(fake)
+        assert _suggest(client, token=token['access_token']).status_code == 403
+        assert fake.calls == []
+
+
+def test_drive_callback_nonce_mismatch_fails_closed(client, drive_env, monkeypatch):
+    _sign_in(client, monkeypatch, SYN_A)
+    response, _ = _authorize(client, token=_valid_token(SUB_A))
+    assert response.status_code == 302
+    with patch('backend.drive_intake.drive_oauth_client') as factory:
+        factory.return_value.authorize_access_token = AsyncMock(side_effect=ValueError('nonce mismatch'))
+        denied = client.get('/api/drive-import/callback?code=x&state=synthetic-drive-state-01', follow_redirects=False)
+        assert denied.status_code == 403
+    assert client.post('/api/drive-import/picker-token').status_code == 403
+    fake = FakeProvider()
+    _use_provider(fake)
+    assert _suggest(client, token='synthetic-drive-token-01').status_code == 403
+    assert fake.calls == []
+    with drive_intake._GRANTS_LOCK:
+        assert drive_intake._GRANTS == {}

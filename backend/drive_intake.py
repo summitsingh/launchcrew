@@ -17,13 +17,18 @@ an extra authorized redirect URI in the Google console. Picker still needs
 a transient browser access token per official web-picker guidance; Drive API
 accepts Authorization Bearer header. No tokeninfo introspection is used.
 
-Binding: Drive state and nonce are bound to the current opaque signed-in
-session and actor. The authorize step preserves the actor session without
-rotation and without demo replacement. The callback rejects state, actor,
-session, code, audience, issuer, expiry, subject, or granted scope
-mismatches before any file read. Authlib validated ID token and userinfo
-are used, plus explicit exact audience and subject checks. Arbitrary
-client-supplied tokeninfo is never authoritative.
+Binding: Drive state is bound to the current opaque signed-in session and
+actor. The authorize step preserves the actor session without rotation and
+without demo replacement. The callback rejects state, actor, session, code,
+audience, issuer, expiry, subject, or granted scope mismatches before any
+file read. OpenID nonce is validated by Authlib authorize_access_token from
+saved state during ID token parsing; source does no separate nonce
+comparison. Authlib validated ID token and userinfo are used, plus explicit
+exact audience and subject checks. Arbitrary client-supplied tokeninfo is
+never authoritative. Granted scope accepts only openid, email or canonical
+userinfo email form, profile or canonical userinfo profile form, plus exact
+drive file scope; unrelated, broad, duplicate, or ambiguous alias pairs fail
+closed.
 
 Grant: the short-lived access token is returned to the same signed-in
 browser ONLY to drive official Picker, over a no-store same-origin
@@ -32,12 +37,16 @@ fragment, log, cookie, persistent DB, localStorage, sessionStorage, or
 public receipts. Browser holds the token in memory only. The backend keeps
 a tightly bounded ephemeral in-memory grant (plaintext only until first
 claim, then a nonreversible digest bound to actor, session, and expiry)
-and consumes it on one selected-file POST. A restart fails closed and
-requires reauthorization. The selected-file POST proves its token is the
-exact server-issued token for this client and current actor and session;
-subject-only userinfo or a browser-supplied token from another client is
-insufficient. Mismatched, expired, or replayed grants are refused before
-Drive API calls.
+and consumes it on one selected-file POST. A per-process lock atomically
+claims and consumes the grant before provider work and never spans
+provider I/O. Grants live in process memory only. A restart or a rolling
+update that routes authorize and claim to different tasks fails closed
+with consent required and needs reauthorization via Connect Drive and
+choose file again. No sticky routing is claimed. The selected-file POST
+proves its token is the exact server-issued token for this client and
+current actor and session; subject-only userinfo or a browser-supplied
+token from another client is insufficient. Mismatched, expired, or
+replayed grants are refused before Drive API calls.
 
 Binding: every endpoint requires a Google LaunchCrew actor via backend.auth.
 Demo placeholder and non-Google actors fail closed even when Drive config
@@ -61,11 +70,14 @@ generic selection context, and bounded unconfirmed parsed text lines for
 owner UI. No provider file ID, resource key, token, bytes, or full private
 file body are logged, persisted, or returned in public receipts. Live Drive
 proof has not been run; status live_verified stays false. Browser holds a
-transient Picker token in memory only during selection.
+transient Picker token in memory only during selection. Fake OAuth in tests
+bypasses Authlib nonce validation; live consent must prove mismatch fails
+closed. Rolling update overlap and canonical scope return stay live gates.
 """
 import hashlib
 import os
 import re
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -81,7 +93,9 @@ from backend import auth, store
 
 DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file'
 DRIVE_OAUTH_SCOPE = 'openid profile email https://www.googleapis.com/auth/drive.file'
-DRIVE_ALLOWED_SCOPES = frozenset({'openid', 'profile', 'email', DRIVE_SCOPE})
+DRIVE_EMAIL_CANONICAL = 'https://www.googleapis.com/auth/userinfo.email'
+DRIVE_PROFILE_CANONICAL = 'https://www.googleapis.com/auth/userinfo.profile'
+DRIVE_ALLOWED_SCOPES = frozenset({'openid', 'profile', 'email', DRIVE_SCOPE, DRIVE_EMAIL_CANONICAL, DRIVE_PROFILE_CANONICAL})
 DRIVE_ISSUERS = ('https://accounts.google.com', 'accounts.google.com')
 DRIVE_CALLBACK_PATH = '/api/drive-import/callback'
 DRIVE_API_HOST = 'www.googleapis.com'
@@ -112,6 +126,7 @@ _RESOURCE_KEY_RE = re.compile(r'^[A-Za-z0-9_-]{1,256}$')
 router = APIRouter(prefix='/api/drive-import')
 
 _GRANTS: dict[tuple[str, str], dict] = {}
+_GRANTS_LOCK = threading.Lock()
 
 
 class Strict(BaseModel):
@@ -452,11 +467,16 @@ def _session_parts(request: Request) -> tuple[str | None, str | None]:
     return raw, auth.session_key(raw)
 
 
-def _prune_grants() -> None:
-    now = time.time()
-    expired = [key for key, grant in _GRANTS.items() if grant.get('expiry_ts', 0) <= now]
+def _prune_grants_locked(now: float | None = None) -> None:
+    at = now if now is not None else time.time()
+    expired = [key for key, grant in _GRANTS.items() if grant.get('expiry_ts', 0) <= at]
     for key in expired:
         _GRANTS.pop(key, None)
+
+
+def _prune_grants() -> None:
+    with _GRANTS_LOCK:
+        _prune_grants_locked()
 
 
 def check_drive_id_binding(userinfo: object, expected_client_id: str, expected_sub: str) -> None:
@@ -489,10 +509,19 @@ def check_drive_granted_scope(token: object) -> None:
     scope_raw = token.get('scope', '')
     if not isinstance(scope_raw, str):
         raise HTTPException(403, 'Drive consent required')
-    scopes = set(scope_raw.split())
+    parts = scope_raw.split()
+    if not parts:
+        raise HTTPException(403, 'Drive consent required')
+    if len(parts) != len(set(parts)):
+        raise HTTPException(403, 'Drive consent required')
+    scopes = set(parts)
     if DRIVE_SCOPE not in scopes:
         raise HTTPException(403, 'Drive consent required')
     if not scopes.issubset(DRIVE_ALLOWED_SCOPES):
+        raise HTTPException(403, 'Drive consent required')
+    if 'email' in scopes and DRIVE_EMAIL_CANONICAL in scopes:
+        raise HTTPException(403, 'Drive consent required')
+    if 'profile' in scopes and DRIVE_PROFILE_CANONICAL in scopes:
         raise HTTPException(403, 'Drive consent required')
 
 
@@ -518,21 +547,58 @@ def decode_text(data: bytes) -> str:
 
 
 def _verify_and_consume_grant(actor: str, session_hash: str, presented_token: str) -> None:
-    _prune_grants()
-    grant = _GRANTS.get((actor, session_hash))
-    if grant is None:
-        raise HTTPException(403, 'Drive consent required')
-    if grant.get('consumed'):
+    with _GRANTS_LOCK:
+        _prune_grants_locked()
+        grant = _GRANTS.get((actor, session_hash))
+        if grant is None:
+            raise HTTPException(403, 'Drive consent required')
+        if grant.get('consumed'):
+            _GRANTS.pop((actor, session_hash), None)
+            raise HTTPException(403, 'Drive consent required')
+        if not grant.get('delivered'):
+            raise HTTPException(403, 'Drive consent required')
+        if grant.get('expiry_ts', 0) <= time.time():
+            _GRANTS.pop((actor, session_hash), None)
+            raise HTTPException(403, 'Drive consent required')
+        if grant.get('digest') != token_digest(presented_token):
+            raise HTTPException(403, 'Drive consent required')
         _GRANTS.pop((actor, session_hash), None)
-        raise HTTPException(403, 'Drive consent required')
-    if not grant.get('delivered'):
-        raise HTTPException(403, 'Drive consent required')
-    if grant.get('expiry_ts', 0) <= time.time():
-        _GRANTS.pop((actor, session_hash), None)
-        raise HTTPException(403, 'Drive consent required')
-    if grant.get('digest') != token_digest(presented_token):
-        raise HTTPException(403, 'Drive consent required')
-    _GRANTS.pop((actor, session_hash), None)
+
+
+def _store_grant(actor: str, session_hash: str, access_token: str, ttl: int) -> None:
+    with _GRANTS_LOCK:
+        _prune_grants_locked()
+        if len(_GRANTS) >= DRIVE_MAX_GRANTS:
+            raise HTTPException(503, 'Drive intake unavailable')
+        _GRANTS[(actor, session_hash)] = {
+            'digest': token_digest(access_token),
+            'plaintext': access_token,
+            'expiry_ts': time.time() + ttl,
+            'delivered': False,
+            'consumed': False,
+        }
+
+
+def _claim_picker_token(actor: str, session_hash: str) -> tuple[str, int]:
+    with _GRANTS_LOCK:
+        _prune_grants_locked()
+        grant = _GRANTS.get((actor, session_hash))
+        if grant is None or grant.get('consumed') or grant.get('delivered'):
+            raise HTTPException(403, 'Drive consent required')
+        if grant.get('expiry_ts', 0) <= time.time():
+            _GRANTS.pop((actor, session_hash), None)
+            raise HTTPException(403, 'Drive consent required')
+        plaintext = grant.get('plaintext')
+        if not isinstance(plaintext, str) or not plaintext:
+            _GRANTS.pop((actor, session_hash), None)
+            raise HTTPException(403, 'Drive consent required')
+        remaining = int(grant['expiry_ts'] - time.time())
+        if remaining <= 0:
+            _GRANTS.pop((actor, session_hash), None)
+            raise HTTPException(403, 'Drive consent required')
+        grant['delivered'] = True
+        grant['plaintext'] = None
+        return plaintext, remaining
 
 
 def import_drive_selection(
@@ -682,14 +748,10 @@ async def drive_authorize(request: Request, actor: str = Depends(auth.actor)):
     if not state_keys:
         raise HTTPException(502, 'Drive provider error')
     state = state_keys[-1].split('_state_google-drive_', 1)[1]
-    entry = request.session.get(state_keys[-1], {})
-    inner = entry.get('data', {}) if isinstance(entry, dict) else {}
-    nonce = inner.get('nonce') if isinstance(inner, dict) else None
     binding = {
         'actor': actor,
         'session_hash': session_hash,
         'state': state,
-        'nonce': nonce if isinstance(nonce, str) else '',
         'expiry_ts': time.time() + DRIVE_PENDING_TTL_SECONDS,
         'redirect_uri': callback_uri,
     }
@@ -758,16 +820,7 @@ async def drive_callback(request: Request, actor: str = Depends(auth.actor)):
     if expires_in <= 0:
         raise HTTPException(403, 'Drive consent required')
     ttl = min(expires_in, DRIVE_GRANT_TTL_SECONDS)
-    _prune_grants()
-    if len(_GRANTS) >= DRIVE_MAX_GRANTS:
-        raise HTTPException(503, 'Drive intake unavailable')
-    _GRANTS[(actor, session_hash)] = {
-        'digest': token_digest(access_token),
-        'plaintext': access_token,
-        'expiry_ts': time.time() + ttl,
-        'delivered': False,
-        'consumed': False,
-    }
+    _store_grant(actor, session_hash, access_token, ttl)
     cleaned = dict(data)
     for key in _drive_state_keys(cleaned):
         cleaned.pop(key, None)
@@ -785,23 +838,7 @@ def drive_picker_token(request: Request, actor: str = Depends(auth.actor)):
     _, session_hash = _session_parts(request)
     if not session_hash:
         raise HTTPException(401, 'Sign in required')
-    _prune_grants()
-    grant = _GRANTS.get((actor, session_hash))
-    if grant is None or grant.get('consumed') or grant.get('delivered'):
-        raise HTTPException(403, 'Drive consent required')
-    if grant.get('expiry_ts', 0) <= time.time():
-        _GRANTS.pop((actor, session_hash), None)
-        raise HTTPException(403, 'Drive consent required')
-    plaintext = grant.get('plaintext')
-    if not isinstance(plaintext, str) or not plaintext:
-        _GRANTS.pop((actor, session_hash), None)
-        raise HTTPException(403, 'Drive consent required')
-    remaining = int(grant['expiry_ts'] - time.time())
-    if remaining <= 0:
-        _GRANTS.pop((actor, session_hash), None)
-        raise HTTPException(403, 'Drive consent required')
-    grant['delivered'] = True
-    grant['plaintext'] = None
+    plaintext, remaining = _claim_picker_token(actor, session_hash)
     return {'access_token': plaintext, 'expires_in': remaining, 'token_type': 'Bearer'}
 
 

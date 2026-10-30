@@ -31,7 +31,7 @@ CloudFormation sets PUBLIC_BASE_URL to that exact value in the API task. Local: 
 No credential value goes in the repo, in chat, in shell argv, in logs, or in docs. The private client ID and secret live only in a private Secrets Manager JSON secret with keys google-client-id and google-client-secret.
 
 - [ ] Create a Web application OAuth client in the provider console.
-- [ ] Set the authorized redirect URI from section 2 exactly. For Drive intake, also register the extra exact Drive callback URI from section 2, plus Drive and Picker APIs, consent scope, restricted API key and project number, named test users, and possible External Testing or public review; see docs/drive-intake-decision.md.
+- [ ] Set the authorized redirect URI from section two exactly. For Drive intake, also register the extra exact Drive callback URI from section two, plus Drive and Picker APIs, consent scope, restricted API key and project number, named test users, and possible External Testing or public review; see docs/drive-intake-decision.md.
 - [ ] Confirm the requested sign-in scopes are exactly openid profile email. Drive consent is a separate flow with identity plus drive.file only and is never part of sign-in.
 - [ ] Store the private client ID and secret in Secrets Manager as JSON keys google-client-id and google-client-secret. Record only the secret ARN, never the values.
 - [ ] Deploy with EnableGoogleAuth false and GoogleOAuthSecretArn empty for keyless default. AUTH_ENABLED stays false and no Google secret is injected.
