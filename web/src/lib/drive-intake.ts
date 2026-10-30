@@ -6,6 +6,7 @@ export type DrivePublicConfigOut = components['schemas']['DrivePublicConfigOut']
 export type DriveImportIn = components['schemas']['DriveImportIn'];
 export type DriveImportOut = components['schemas']['DriveImportOut'];
 export type DriveSuggestionItem = components['schemas']['DriveSuggestionItem'];
+export type DrivePickerTokenOut = components['schemas']['DrivePickerTokenOut'];
 
 export const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 export const DRIVE_DOC_MIME = 'application/vnd.google-apps.document';
@@ -13,8 +14,9 @@ export const DRIVE_TEXT_MIME = 'text/plain';
 export const DRIVE_SUPPORTED_MIME_TYPES: readonly string[] = [DRIVE_DOC_MIME, DRIVE_TEXT_MIME] as const;
 export const DRIVE_MAX_BYTES = 200000;
 export const DRIVE_MAX_REQUESTS = 3;
-export const DRIVE_GIS_SCRIPT = 'https://accounts.google.com/gsi/client';
 export const DRIVE_PICKER_SCRIPT = 'https://apis.google.com/js/api.js';
+export const DRIVE_AUTHORIZE_URL = '/api/drive-import/authorize';
+export const DRIVE_PICKER_TOKEN_URL = '/api/drive-import/picker-token';
 
 export const DRIVE_SOURCE_LABEL = 'Drive file';
 export const DRIVE_SELECTION_CONTEXT = 'Drive file selection';
@@ -43,6 +45,13 @@ export function validateDriveResourceKey(resourceKey: string | null | undefined)
   if (resourceKey === null || resourceKey === undefined || resourceKey === '') return [];
   if (!FILE_ID_PATTERN.test(resourceKey)) return ['Drive selection is invalid. Pick the file again with Picker.'];
   return [];
+}
+
+export function driveAuthStatusFromSearch(search: string): 'authorized' | null {
+  if (!search) return null;
+  const params = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
+  if (params.get('drive') === 'authorized') return 'authorized';
+  return null;
 }
 
 function coerceDriveSource(value: unknown): ProductFactSource {
@@ -91,7 +100,7 @@ export function driveStatusMessage(status: DriveStatusOut | null | undefined): s
 
 export function driveErrorMessage(statusCode: number): string {
   if (statusCode === 401) return 'Sign in is required for Drive intake.';
-  if (statusCode === 403) return 'Drive consent is missing or the file was not selected. Reconnect with Picker and pick the file again.';
+  if (statusCode === 403) return 'Drive consent is missing or expired. Reconnect and pick the file again.';
   if (statusCode === 413) return 'The selected Drive file is too large for the bounded demo import.';
   if (statusCode === 422) return 'The selected Drive file type is not supported. Use a Google Doc or a plain text file.';
   if (statusCode === 503) return 'Drive intake is not configured. Pasted-text import still works.';

@@ -228,6 +228,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/drive-import/authorize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Drive Authorize */
+        get: operations["drive_authorize_api_drive_import_authorize_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/drive-import/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Drive Callback */
+        get: operations["drive_callback_api_drive_import_callback_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/drive-import/config": {
         parameters: {
             query?: never;
@@ -239,6 +273,23 @@ export interface paths {
         get: operations["drive_config_api_drive_import_config_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/drive-import/picker-token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Drive Picker Token */
+        post: operations["drive_picker_token_api_drive_import_picker_token_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -892,14 +943,25 @@ export interface components {
             /** Truncated */
             truncated: boolean;
         };
+        /** DrivePickerTokenOut */
+        DrivePickerTokenOut: {
+            /** Access Token */
+            access_token: string;
+            /** Expires In */
+            expires_in: number;
+            /**
+             * Token Type
+             * @default Bearer
+             * @constant
+             */
+            token_type: "Bearer";
+        };
         /** DrivePublicConfigOut */
         DrivePublicConfigOut: {
             /** Api Key */
             api_key: string;
             /** App Id */
             app_id: string;
-            /** Client Id */
-            client_id: string;
             /** Max Bytes */
             max_bytes: number;
             /** Scope */
@@ -2649,6 +2711,46 @@ export interface operations {
             };
         };
     };
+    drive_authorize_api_drive_import_authorize_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    drive_callback_api_drive_import_callback_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
     drive_config_api_drive_import_config_get: {
         parameters: {
             query?: never;
@@ -2665,6 +2767,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DrivePublicConfigOut"];
+                };
+            };
+        };
+    };
+    drive_picker_token_api_drive_import_picker_token_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DrivePickerTokenOut"];
                 };
             };
         };

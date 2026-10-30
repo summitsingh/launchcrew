@@ -93,6 +93,13 @@ def save_session(data, response, old=None):
     response.set_cookie(COOKIE, raw, secure=True, httponly=True, samesite='lax', max_age=SESSION_HOURS * 3600, path='/api')
 
 
+def update_session_data_in_place(raw, data):
+    if not raw:
+        return
+    with store.connect() as db:
+        db.execute(text('UPDATE auth_sessions SET data=CAST(:data AS jsonb) WHERE id=:id'), {'id': session_key(raw), 'data': json.dumps(data)})
+
+
 def actor(request: Request):
     if not enabled():
         return 'demo_placeholder'

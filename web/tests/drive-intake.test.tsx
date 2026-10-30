@@ -3,10 +3,13 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { DriveIntakeForm, DriveSuggestionsList } from '../src/components/drive-intake-form';
 import {
+  DRIVE_AUTHORIZE_URL,
   DRIVE_MAX_BYTES,
   DRIVE_MAX_REQUESTS,
+  DRIVE_PICKER_TOKEN_URL,
   DRIVE_SCOPE,
   DRIVE_SUPPORTED_MIME_TYPES,
+  driveAuthStatusFromSearch,
   driveErrorMessage,
   driveMimeLabel,
   driveStatusMessage,
@@ -74,6 +77,14 @@ describe('drive intake bounds and scope', () => {
     expect(isSupportedDriveMime('video/mp4')).toBe(false);
     expect(driveMimeLabel('application/vnd.google-apps.document')).toBe('Google Doc');
     expect(driveMimeLabel('text/plain')).toBe('Plain text');
+  });
+
+  it('uses server auth-code endpoints without browser token client', () => {
+    expect(DRIVE_AUTHORIZE_URL).toBe('/api/drive-import/authorize');
+    expect(DRIVE_PICKER_TOKEN_URL).toBe('/api/drive-import/picker-token');
+    expect(driveAuthStatusFromSearch('?drive=authorized')).toBe('authorized');
+    expect(driveAuthStatusFromSearch('?drive=denied')).toBe(null);
+    expect(driveAuthStatusFromSearch('')).toBe(null);
   });
 
   it('validates selected IDs and rejects URLs without provider calls', () => {
@@ -145,7 +156,7 @@ describe('drive suggestion conversion', () => {
 });
 
 describe('drive intake UI flow', () => {
-  it('renders optional Picker intake without verified claims or live proof', () => {
+  it('renders server-consent Picker intake without verified claims or live proof', () => {
     const html = renderToStaticMarkup(
       <QueryClientProvider client={new QueryClient()}>
         <DriveIntakeForm onAdd={() => {}} />
@@ -159,7 +170,8 @@ describe('drive intake UI flow', () => {
       'Drive file provenance',
       'explicitly confirm each',
       'Live Drive proof has not been run',
-      'Choose Drive file',
+      'Connect Drive and choose file',
+      'separate step',
     ]) {
       expect(html).toContain(text);
     }

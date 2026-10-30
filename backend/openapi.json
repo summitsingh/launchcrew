@@ -651,6 +651,31 @@
         "title": "DriveImportOut",
         "type": "object"
       },
+      "DrivePickerTokenOut": {
+        "additionalProperties": false,
+        "properties": {
+          "access_token": {
+            "title": "Access Token",
+            "type": "string"
+          },
+          "expires_in": {
+            "title": "Expires In",
+            "type": "integer"
+          },
+          "token_type": {
+            "const": "Bearer",
+            "default": "Bearer",
+            "title": "Token Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "access_token",
+          "expires_in"
+        ],
+        "title": "DrivePickerTokenOut",
+        "type": "object"
+      },
       "DrivePublicConfigOut": {
         "additionalProperties": false,
         "properties": {
@@ -660,10 +685,6 @@
           },
           "app_id": {
             "title": "App Id",
-            "type": "string"
-          },
-          "client_id": {
-            "title": "Client Id",
             "type": "string"
           },
           "max_bytes": {
@@ -685,7 +706,6 @@
         "required": [
           "api_key",
           "app_id",
-          "client_id",
           "max_bytes",
           "scope",
           "supported_mime_types"
@@ -4333,6 +4353,38 @@
         "summary": "Checker Policies"
       }
     },
+    "/api/drive-import/authorize": {
+      "get": {
+        "operationId": "drive_authorize_api_drive_import_authorize_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Drive Authorize"
+      }
+    },
+    "/api/drive-import/callback": {
+      "get": {
+        "operationId": "drive_callback_api_drive_import_callback_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Drive Callback"
+      }
+    },
     "/api/drive-import/config": {
       "get": {
         "operationId": "drive_config_api_drive_import_config_get",
@@ -4349,6 +4401,24 @@
           }
         },
         "summary": "Drive Config"
+      }
+    },
+    "/api/drive-import/picker-token": {
+      "post": {
+        "operationId": "drive_picker_token_api_drive_import_picker_token_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DrivePickerTokenOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Drive Picker Token"
       }
     },
     "/api/drive-import/status": {

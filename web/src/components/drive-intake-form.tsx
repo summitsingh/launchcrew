@@ -4,9 +4,9 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { api, unwrap } from '@/lib/api';
 import {
-  DRIVE_GIS_SCRIPT,
+  DRIVE_AUTHORIZE_URL,
   DRIVE_PICKER_SCRIPT,
-  DRIVE_SCOPE,
+  driveAuthStatusFromSearch,
   driveErrorMessage,
   driveMimeLabel,
   driveStatusMessage,
@@ -26,7 +26,6 @@ declare global {
   interface Window {
     gapi?: { load: (api: string, cb: () => void) => void };
     google?: {
-      accounts?: { oauth2?: { initTokenClient: (cfg: unknown) => { requestAccessToken: (opts?: unknown) => void } } };
       picker?: unknown;
     };
   }
@@ -152,10 +151,9 @@ export function DriveIntakeForm({
   onAdd: (facts: OwnerFactState[]) => void;
   disabled?: boolean;
 }) {
-  const [gisReady, setGisReady] = useState(false);
   const [pickerReady, setPickerReady] = useState(false);
   const [scriptError, setScriptError] = useState('');
-  const [driveToken, setDriveToken] = useState('');
+  const [pickerToken, setPickerToken] = useState('');
   const [selectionTitle, setSelectionTitle] = useState('');
   const [selectionMime, setSelectionMime] = useState('');
   const [result, setResult] = useState<DriveImportOut | null>(null);
@@ -181,11 +179,7 @@ export function DriveIntakeForm({
     if (!available || !config) return;
     let cancelled = false;
     setScriptError('');
-    loadScript(DRIVE_GIS_SCRIPT)
-      .then(() => {
-        if (!cancelled) setGisReady(true);
-        return loadScript(DRIVE_PICKER_SCRIPT);
-      })
+    loadScript(DRIVE_PICKER_SCRIPT)
       .then(() => {
         if (cancelled) return;
         const gapi = window.gapi;
@@ -206,7 +200,6 @@ export function DriveIntakeForm({
   }, [available, config]);
 
   const busy = statusQuery.isPending || configQuery.isPending || disabled === true;
-  const ready = available && !!config && gisReady && pickerReady && !scriptError && !busy;
 
   const suggest = useMutation({
     mutationFn: (input: { file_id: string; resource_key: string | null; drive_token: string }) =>
@@ -223,16 +216,45 @@ export function DriveIntakeForm({
       setResult(data);
       setEdited({});
       setLocalError('');
-      setDriveToken('');
+      setPickerToken('');
     },
     onError: (error: unknown) => {
-      setDriveToken('');
+      setPickerToken('');
       const message = error instanceof Error ? error.message : '';
       const match = message.match(/\((\d+)\)/);
       const code = match ? Number(match[1]) : 0;
       setLocalError(driveErrorMessage(code));
     },
   });
+
+  const claimToken = useMutation({
+    mutationFn: () => unwrap(api.POST('/api/drive-import/picker-token')),
+    onSuccess: data => {
+      const token = (data as { access_token?: unknown }).access_token;
+      if (typeof token !== 'string' || !token) {
+        setLocalError(driveErrorMessage(403));
+        return;
+      }
+      setPickerToken(token);
+      setLocalError('');
+    },
+    onError: (error: unknown) => {
+      setPickerToken('');
+      const message = error instanceof Error ? error.message : '';
+      const match = message.match(/\((\d+)\)/);
+      const code = match ? Number(match[1]) : 0;
+      setLocalError(driveErrorMessage(code));
+    },
+  });
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (driveAuthStatusFromSearch(window.location.search) !== 'authorized') return;
+    window.history.replaceState(null, '', window.location.pathname);
+    claimToken.mutate();
+    // Claim once after Drive consent redirect. Token stays in memory only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleEdit = (index: number, value: string) => {
     setEdited(prev => ({ ...prev, [index]: value }));
@@ -248,16 +270,9 @@ export function DriveIntakeForm({
     onAdd(toOwnerFactsFromDriveSuggestions(result.suggestions, edited));
   };
 
-  const launchPicker = () => {
-    setLocalError('');
-    setResult(null);
+  const launchPickerWithToken = (token: string) => {
     if (!config) {
       setLocalError(driveErrorMessage(503));
-      return;
-    }
-    const oauth2 = window.google?.accounts?.oauth2;
-    if (!oauth2 || typeof oauth2.initTokenClient !== 'function') {
-      setLocalError('Drive sign-in library is not ready. Try again after it loads.');
       return;
     }
     const rawPicker: unknown = (window.google as { picker?: unknown } | undefined)?.picker;
@@ -289,84 +304,92 @@ export function DriveIntakeForm({
       setLocalError('Drive Picker is not ready. Try again after it loads.');
       return;
     }
-    const tokenClient = oauth2.initTokenClient({
-      client_id: config.client_id,
-      scope: DRIVE_SCOPE,
-      callback: (tokenResponse: unknown) => {
-        const token = (tokenResponse as { access_token?: unknown })?.access_token;
-        if (typeof token !== 'string' || !token) {
-          setLocalError(driveErrorMessage(403));
-          return;
-        }
-        setDriveToken(token);
-        try {
-          const view = new DocsViewCtor(docsViewId);
-          if (typeof view.setMimeTypes !== 'function' || typeof view.setSelectFolderEnabled !== 'function') {
-            setDriveToken('');
-            setLocalError('Drive Picker is not ready. Try again after it loads.');
+    try {
+      const view = new DocsViewCtor(docsViewId);
+      if (typeof view.setMimeTypes !== 'function' || typeof view.setSelectFolderEnabled !== 'function') {
+        setLocalError('Drive Picker is not ready. Try again after it loads.');
+        return;
+      }
+      view.setMimeTypes('application/vnd.google-apps.document,text/plain');
+      view.setSelectFolderEnabled(false);
+      const picker = new PickerBuilderCtor()
+        .setOAuthToken(token)
+        .setDeveloperKey(config.api_key)
+        .setAppId(config.app_id)
+        .addView(view)
+        .setCallback((data: unknown) => {
+          const payload = data as {
+            action?: string;
+            docs?: { id?: unknown; name?: unknown; mimeType?: unknown; resourceKey?: unknown }[];
+          };
+          if (payload?.action === cancelAction) {
             return;
           }
-          view.setMimeTypes('application/vnd.google-apps.document,text/plain');
-          view.setSelectFolderEnabled(false);
-          const picker = new PickerBuilderCtor()
-            .setOAuthToken(token)
-            .setDeveloperKey(config.api_key)
-            .setAppId(config.app_id)
-            .addView(view)
-            .setCallback((data: unknown) => {
-              const payload = data as {
-                action?: string;
-                docs?: { id?: unknown; name?: unknown; mimeType?: unknown; resourceKey?: unknown }[];
-              };
-              if (payload?.action === cancelAction) {
-                setDriveToken('');
-                return;
-              }
-              if (payload?.action !== pickedAction || !payload?.docs?.length) {
-                setDriveToken('');
-                setLocalError('No Drive file was selected.');
-                return;
-              }
-              const doc = payload.docs[0];
-              const fileId = typeof doc.id === 'string' ? doc.id : '';
-              const resourceKey = typeof doc.resourceKey === 'string' ? doc.resourceKey : null;
-              const title = typeof doc.name === 'string' ? doc.name : 'Drive file';
-              const mime = typeof doc.mimeType === 'string' ? doc.mimeType : '';
-              if (validateDriveFileId(fileId).length > 0 || validateDriveResourceKey(resourceKey).length > 0) {
-                setDriveToken('');
-                setLocalError(driveErrorMessage(422));
-                return;
-              }
-              if (!isSupportedDriveMime(mime)) {
-                setDriveToken('');
-                setLocalError(driveErrorMessage(422));
-                return;
-              }
-              setSelectionTitle(title);
-              setSelectionMime(mime);
-              suggest.mutate({ file_id: fileId, resource_key: resourceKey, drive_token: token });
-            })
-            .build();
-          if (!picker || typeof picker.setVisible !== 'function') {
-            setDriveToken('');
-            setLocalError('Drive Picker is not ready. Try again after it loads.');
+          if (payload?.action !== pickedAction || !payload?.docs?.length) {
+            setLocalError('No Drive file was selected.');
             return;
           }
-          picker.setVisible(true);
-        } catch {
-          setDriveToken('');
-          setLocalError('Drive Picker is not ready. Try again after it loads.');
-        }
-      },
-    });
-    tokenClient.requestAccessToken({ prompt: '' });
+          const doc = payload.docs[0];
+          const fileId = typeof doc.id === 'string' ? doc.id : '';
+          const resourceKey = typeof doc.resourceKey === 'string' ? doc.resourceKey : null;
+          const title = typeof doc.name === 'string' ? doc.name : 'Drive file';
+          const mime = typeof doc.mimeType === 'string' ? doc.mimeType : '';
+          if (validateDriveFileId(fileId).length > 0 || validateDriveResourceKey(resourceKey).length > 0) {
+            setLocalError(driveErrorMessage(422));
+            return;
+          }
+          if (!isSupportedDriveMime(mime)) {
+            setLocalError(driveErrorMessage(422));
+            return;
+          }
+          setSelectionTitle(title);
+          setSelectionMime(mime);
+          suggest.mutate({ file_id: fileId, resource_key: resourceKey, drive_token: token });
+        })
+        .build();
+      if (!picker || typeof picker.setVisible !== 'function') {
+        setLocalError('Drive Picker is not ready. Try again after it loads.');
+        return;
+      }
+      picker.setVisible(true);
+    } catch {
+      setLocalError('Drive Picker is not ready. Try again after it loads.');
+    }
   };
+
+  const handleChoose = () => {
+    setLocalError('');
+    setResult(null);
+    if (!config) {
+      setLocalError(driveErrorMessage(503));
+      return;
+    }
+    if (!pickerToken) {
+      window.location.href = DRIVE_AUTHORIZE_URL;
+      return;
+    }
+    if (!pickerReady) {
+      setLocalError('Drive Picker is not ready. Try again after it loads.');
+      return;
+    }
+    launchPickerWithToken(pickerToken);
+  };
+
+  useEffect(() => {
+    if (!pickerToken || !pickerReady || !config) return;
+    launchPickerWithToken(pickerToken);
+    // Launch once when a fresh server-issued token and Picker are both ready.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pickerToken, pickerReady, config]);
+
+  const ready = available && !!config && pickerReady && !scriptError && !busy && !claimToken.isPending;
 
   return (
     <div>
       <h3>Select a Drive file</h3>
       <p className="hint">
-        Optional Google Picker intake for one Google Doc or plain text file you select. Proposals stay
+        Optional Google Picker intake for one Google Doc or plain text file you select. Sign-in stays Google identity only.
+        Drive consent is a separate step that issues a short lived Picker token to this browser session only. Proposals stay
         unconfirmed suggestions with Drive file provenance. Nothing becomes evidence until you edit and
         explicitly confirm each in the fact form. Live Drive proof has not been run.
       </p>
@@ -395,8 +418,8 @@ export function DriveIntakeForm({
         </p>
       )}
       <div className="queue-actions">
-        <Button type="button" variant="outline" disabled={!ready || suggest.isPending} onClick={launchPicker}>
-          {suggest.isPending ? 'Reading selected file...' : 'Choose Drive file'}
+        <Button type="button" variant="outline" disabled={!available || busy || suggest.isPending || claimToken.isPending} onClick={handleChoose}>
+          {suggest.isPending ? 'Reading selected file...' : claimToken.isPending ? 'Connecting Drive...' : pickerToken ? 'Choose Drive file' : 'Connect Drive and choose file'}
         </Button>
       </div>
       {!ready && available && !scriptError && (
@@ -411,7 +434,7 @@ export function DriveIntakeForm({
           onAddAll={handleAddAll}
         />
       )}
-      {driveToken && <p className="hint">Drive session is active for this selection only.</p>}
+      {pickerToken && <p className="hint">Drive session is active for this selection only.</p>}
     </div>
   );
 }
