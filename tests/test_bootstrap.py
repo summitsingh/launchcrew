@@ -1921,7 +1921,7 @@ class PhaseOrderingTests(BootstrapHarness):
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
         self.assertIn("BOOTSTRAP COMPLETE", result.stdout)
         self.assertIn("Enable precheck", result.stdout)
-        self.assertIn("no new run-task", result.stdout + result.stderr)
+        self.assertIn("no new mutating run-task", result.stdout + result.stderr)
         self.assertFalse(any("run-task" in call for call in calls))
         self.assertTrue(any("EnableServices=true" in call for call in calls))
         self.assertIn("BOOTSTRAP COMPLETE phases requested: enable", result.stdout)
@@ -1958,6 +1958,12 @@ class PhaseOrderingTests(BootstrapHarness):
                 shared_dir=shared_tmp)
             self.assertEqual(result_mat.returncode, 0,
                              msg=result_mat.stdout + result_mat.stderr)
+            result_roles, _ = self.run_bootstrap(
+                [*base, "--phase", "dbroles",
+                 "--release-generation", release],
+                shared_dir=shared_tmp)
+            self.assertEqual(result_roles.returncode, 0,
+                             msg=result_roles.stdout + result_roles.stderr)
             result_mig, _ = self.run_bootstrap(
                 [*base, "--phase", "migrate",
                  "--release-generation", release],
@@ -1969,8 +1975,8 @@ class PhaseOrderingTests(BootstrapHarness):
                 shared_dir=shared_tmp)
         self.assertNotEqual(result.returncode, 0)
         combined = result.stdout + result.stderr
-        self.assertIn("not complete", combined)
-        self.assertIn("No new launch", combined)
+        self.assertIn("UNRESOLVED", combined)
+        self.assertIn("no bypass", combined)
         self.assertNotIn("BOOTSTRAP COMPLETE", result.stdout)
         self.assertFalse(any("run-task" in call for call in calls))
         self.assertFalse(any("EnableServices=true" in call for call in calls))
@@ -2131,6 +2137,12 @@ class EnableServiceProofTests(BootstrapHarness):
                 shared_dir=shared_tmp)
             self.assertEqual(result_mat.returncode, 0,
                              msg=result_mat.stdout + result_mat.stderr)
+            result_roles, _ = self.run_bootstrap(
+                [*base, "--phase", "dbroles",
+                 "--release-generation", release],
+                shared_dir=shared_tmp)
+            self.assertEqual(result_roles.returncode, 0,
+                             msg=result_roles.stdout + result_roles.stderr)
             result_mig, _ = self.run_bootstrap(
                 [*base, "--phase", "migrate",
                  "--release-generation", release],
@@ -3615,6 +3627,12 @@ class InfraGooglePolicyTests(BootstrapHarness):
                 params_overrides=params, shared_dir=shared_tmp)
             self.assertEqual(result_mat.returncode, 0,
                              msg=result_mat.stdout + result_mat.stderr)
+            result_roles, _ = self.run_bootstrap(
+                [*base, "--phase", "dbroles",
+                 "--release-generation", release],
+                params_overrides=params, shared_dir=shared_tmp)
+            self.assertEqual(result_roles.returncode, 0,
+                             msg=result_roles.stdout + result_roles.stderr)
             result_mig, _ = self.run_bootstrap(
                 [*base, "--phase", "migrate",
                  "--release-generation", release],
@@ -3645,6 +3663,12 @@ class InfraGooglePolicyTests(BootstrapHarness):
                 params_overrides=params, shared_dir=shared_tmp)
             self.assertEqual(result_mat.returncode, 0,
                              msg=result_mat.stdout + result_mat.stderr)
+            result_roles, _ = self.run_bootstrap(
+                [*base, "--phase", "dbroles",
+                 "--release-generation", release],
+                params_overrides=params, shared_dir=shared_tmp)
+            self.assertEqual(result_roles.returncode, 0,
+                             msg=result_roles.stdout + result_roles.stderr)
             result_mig, _ = self.run_bootstrap(
                 [*base, "--phase", "migrate",
                  "--release-generation", release],
@@ -3976,8 +4000,8 @@ class LegacyJournalTests(BootstrapHarness):
                 shared_dir=shared_tmp)
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
-            self.assertIn("legacy generation is started", combined)
-            self.assertIn("no new launch", combined)
+            self.assertIn("UNRESOLVED", combined)
+            self.assertIn("no bypass", combined)
             self.assertFalse(any("run-task" in call for call in calls))
             self.assertTrue(legacy.exists())
             self.assertEqual(legacy.read_text(encoding="utf-8"), before)
@@ -4002,7 +4026,7 @@ class LegacyJournalTests(BootstrapHarness):
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
             self.assertIn("TASKDEF_LOGICAL_MISMATCH", combined)
-            self.assertIn("no new launch", combined)
+            self.assertIn("no bypass", combined)
             self.assertFalse(any("run-task" in call for call in calls))
             self.assertTrue(legacy.exists())
             self.assertEqual(legacy.read_text(encoding="utf-8"), before)
@@ -4028,7 +4052,7 @@ class LegacyJournalTests(BootstrapHarness):
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
             self.assertIn("CONFIG_MISMATCH", combined)
-            self.assertIn("no new launch", combined)
+            self.assertIn("no bypass", combined)
             self.assertFalse(any("run-task" in call for call in calls))
             self.assertTrue(legacy.exists())
             self.assertEqual(legacy.read_text(encoding="utf-8"), before)
@@ -4125,8 +4149,8 @@ class LegacyJournalTests(BootstrapHarness):
                 shared_dir=shared_tmp)
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
-            self.assertIn("STACKID_MISMATCH", combined)
-            self.assertIn("no new launch", combined)
+            self.assertIn("FOREIGN_FIELD", combined)
+            self.assertIn("no bypass", combined)
             self.assertFalse(any("run-task" in call for call in calls))
             self.assertTrue(legacy.exists())
             self.assertEqual(legacy.read_text(encoding="utf-8"), before)
@@ -4155,8 +4179,9 @@ class LegacyJournalTests(BootstrapHarness):
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
             self.assertIn("NO_TASK", combined)
-            self.assertIn("no new", combined)
-            self.assertFalse(any("run-task" in call for call in calls))
+            self.assertIn("not claimed", combined)
+            runs = [call for call in calls if "run-task" in call]
+            self.assertEqual(len(runs), 1)
             self.assertTrue(any("describe-tasks" in call for call in calls))
             self.assertTrue(legacy.exists())
             self.assertEqual(legacy.read_text(encoding="utf-8"), before)
@@ -4185,8 +4210,9 @@ class LegacyJournalTests(BootstrapHarness):
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
             self.assertIn("NO_TASK", combined)
-            self.assertIn("no new", combined)
-            self.assertFalse(any("run-task" in call for call in calls))
+            self.assertIn("not claimed", combined)
+            runs = [call for call in calls if "run-task" in call]
+            self.assertEqual(len(runs), 1)
             self.assertTrue(any("describe-tasks" in call for call in calls))
             self.assertTrue(legacy.exists())
             self.assertEqual(legacy.read_text(encoding="utf-8"), before)
@@ -4215,7 +4241,7 @@ class LegacyJournalTests(BootstrapHarness):
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
             self.assertIn("EXIT_NONZERO", combined)
-            self.assertIn("no new", combined)
+            self.assertIn("no bypass", combined)
             self.assertFalse(any("run-task" in call for call in calls))
             self.assertTrue(any("describe-tasks" in call for call in calls))
             self.assertTrue(legacy.exists())
@@ -4264,7 +4290,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             "outcome": outcome,
             "task_arn": self.PRIOR_TASK if outcome == "complete" else "",
             "release_generation": generation,
-            "source_sha": "old0000",
+            "source_sha": "abc1234",
             "target_head": "006",
             "stack_id": self.STACK_ID,
             "predecessor_task_arn": "",
@@ -4311,7 +4337,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
             self.assertIn("UNRESOLVED", combined)
-            self.assertIn("no new launch", combined)
+            self.assertIn("no bypass", combined)
             self.assertFalse(any("run-task" in call for call in calls))
             self.assertTrue(prior.exists())
             self.assertEqual(prior.read_text(encoding="utf-8"), before)
@@ -4334,7 +4360,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
             self.assertIn("UNRESOLVED", combined)
-            self.assertIn("no new launch", combined)
+            self.assertIn("no bypass", combined)
             self.assertFalse(any("run-task" in call for call in calls))
             self.assertEqual(prior.read_text(encoding="utf-8"), before)
 
@@ -4379,7 +4405,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
             self.assertIn("WRONG_TOKEN", combined)
-            self.assertIn("no new", combined)
+            self.assertIn("no bypass", combined)
             self.assertFalse(any("run-task" in call for call in calls))
             self.assertTrue(prior.exists())
 
@@ -4397,7 +4423,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
             self.assertIn("UNREADABLE", combined)
-            self.assertIn("no new launch", combined)
+            self.assertIn("no bypass", combined)
             self.assertFalse(any("run-task" in call for call in calls))
 
     def test_foreign_prior_record_blocks_new_launch(self):
@@ -4452,7 +4478,8 @@ class CrossGenerationJournalTests(BootstrapHarness):
                 shared_dir=shared_tmp)
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
-            self.assertIn("UNKNOWN_FILE", combined)
+            self.assertIn("ACCOUNT_MISMATCH", combined)
+            self.assertIn("no bypass", combined)
             self.assertFalse(any("run-task" in call for call in calls))
 
     def test_prior_head004_proceeds_when_fully_proven(self):
@@ -4461,7 +4488,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             shared, journals = self.fresh_shared(shared_tmp)
             prior = self.write_prior(
                 journals, generation="head004-old0000",
-                target_head="004", source_sha="old0000")
+                target_head="004", source_sha="abc1234")
             before = prior.read_text(encoding="utf-8")
             self.seed_live_prior(shared)
             result, calls = self.run_bootstrap(
@@ -4491,7 +4518,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             shared, journals = self.fresh_shared(shared_tmp)
             prior = self.write_prior(
                 journals, generation="head005-old0000",
-                target_head="005", source_sha="old0000")
+                target_head="005", source_sha="abc1234")
             before = prior.read_text(encoding="utf-8")
             self.seed_live_prior(shared)
             result, calls = self.run_bootstrap(
@@ -4519,7 +4546,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             shared, journals = self.fresh_shared(shared_tmp)
             prior = self.write_prior(
                 journals, generation="head006-old0000",
-                target_head="006", source_sha="old0000")
+                target_head="006", source_sha="abc1234")
             before = prior.read_text(encoding="utf-8")
             self.seed_live_prior(shared)
             result, calls = self.run_bootstrap(
@@ -4584,7 +4611,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
             self.assertIn("HEAD_UNKNOWN", combined)
-            self.assertIn("no new launch", combined)
+            self.assertIn("no bypass", combined)
             self.assertFalse(any("run-task" in call for call in calls))
             self.assertEqual(prior.read_text(encoding="utf-8"), before)
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
@@ -4605,7 +4632,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
             self.assertIn("GENERATION_FOREIGN", combined)
-            self.assertIn("no new launch", combined)
+            self.assertIn("no bypass", combined)
             self.assertFalse(any("run-task" in call for call in calls))
             self.assertEqual(prior.read_text(encoding="utf-8"), before)
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
@@ -4628,7 +4655,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
             self.assertIn("GENERATION_FILENAME_MISMATCH", combined)
-            self.assertIn("no new launch", combined)
+            self.assertIn("no bypass", combined)
             self.assertFalse(any("run-task" in call for call in calls))
             self.assertEqual(prior.read_text(encoding="utf-8"), before)
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
@@ -4648,7 +4675,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
             self.assertIn("CONFIG_MISMATCH", combined)
-            self.assertIn("no new launch", combined)
+            self.assertIn("no bypass", combined)
             self.assertFalse(any("run-task" in call for call in calls))
             self.assertEqual(prior.read_text(encoding="utf-8"), before)
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
@@ -4669,7 +4696,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
             self.assertIn("GENERATION_AMBIGUOUS", combined)
-            self.assertIn("no new launch", combined)
+            self.assertIn("no bypass", combined)
             self.assertFalse(any("run-task" in call for call in calls))
             self.assertEqual(prior.read_text(encoding="utf-8"), before)
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
@@ -4722,8 +4749,9 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
             self.assertIn("NO_TASK", combined)
-            self.assertIn("no new", combined)
-            self.assertFalse(any("run-task" in call for call in calls))
+            self.assertIn("not claimed", combined)
+            runs = [call for call in calls if "run-task" in call]
+            self.assertEqual(len(runs), 1)
             self.assertTrue(any("describe-tasks" in call for call in calls))
             self.assertTrue(prior.exists())
             self.assertEqual(prior.read_text(encoding="utf-8"), before)
@@ -4747,8 +4775,9 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
             self.assertIn("NO_TASK", combined)
-            self.assertIn("no new", combined)
-            self.assertFalse(any("run-task" in call for call in calls))
+            self.assertIn("not claimed", combined)
+            runs = [call for call in calls if "run-task" in call]
+            self.assertEqual(len(runs), 1)
             self.assertTrue(any("describe-tasks" in call for call in calls))
             self.assertTrue(prior.exists())
             self.assertEqual(prior.read_text(encoding="utf-8"), before)
@@ -4772,7 +4801,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
             self.assertIn("NOT_STOPPED", combined)
-            self.assertIn("no new", combined)
+            self.assertIn("no bypass", combined)
             self.assertFalse(any("run-task" in call for call in calls))
             self.assertTrue(any("describe-tasks" in call for call in calls))
             self.assertTrue(prior.exists())
@@ -4797,7 +4826,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
             self.assertIn("EXIT_NONZERO", combined)
-            self.assertIn("no new", combined)
+            self.assertIn("no bypass", combined)
             self.assertFalse(any("run-task" in call for call in calls))
             self.assertTrue(any("describe-tasks" in call for call in calls))
             self.assertTrue(prior.exists())
@@ -5792,7 +5821,7 @@ class InitRecoveryTests(BootstrapHarness):
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
             self.assertIn("UNRESOLVED", combined)
-            self.assertIn("no new launch", combined)
+            self.assertIn("no bypass", combined)
             runs = [c for c in calls if "run-task" in c]
             self.assertEqual(len(runs), 1)
             self.assertIn("launchcrew-demo-sdkmaterial", runs[0])
