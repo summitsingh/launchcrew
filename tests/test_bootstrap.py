@@ -8518,6 +8518,169 @@ class TypedRecoveryTests(BootstrapHarness):
             self.assertEqual(prior.read_bytes(), before)
             self.assertFalse(any("run-task" in c for c in calls))
 
+    def test_migration_all_live_008_observed007_refuses_with_no_resend(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            mig008_token = "lc-" + "k" * 30
+            mig008_task = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+                           "task/launchcrew-demo/live-migration-008")
+            prior008 = self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", mig008_token, mig008_task,
+                self.MIG_TASKDEF, generation="head008-abc1234",
+                head="008", outcome="complete")
+            before008 = prior008.read_bytes()
+            (shared / "taskdefs").write_text(
+                f"{mig008_task}|{self.MIG_TASKDEF}|{mig008_token}\n",
+                encoding="utf-8")
+            (shared / "count").write_text("10", encoding="utf-8")
+            (shared / "token").write_text("", encoding="utf-8")
+            result, calls = self.run_bootstrap(
+                self.migrate_args(),
+                extra_env={"FAKE_ROLESTATE_EXIT": "10"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("separately reviewed repair", combined)
+            self.assertIn("zero new migration", combined.lower())
+            self.assertEqual(prior008.read_bytes(), before008)
+            runs = [c for c in calls if "run-task" in c]
+            self.assertFalse(any("launchcrew-demo-migration" in c
+                                 for c in runs))
+            new_file = journals / (f"launchcrew-{STACK}-migrate-migration-"
+                                   f"{self.RELEASE}-active.json")
+            self.assertFalse(new_file.exists())
+            rec008 = journals / "recovery" / (prior008.name + ".recovery.json")
+            self.assertFalse(rec008.exists())
+
+    def test_migration_live_006_only_refuses_with_no_resend(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            live006_token = "lc-" + "l" * 30
+            live006_task = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+                            "task/launchcrew-demo/live-migration-006")
+            prior006 = self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", live006_token, live006_task,
+                self.MIG_TASKDEF, generation="head006-abc1234",
+                head="006", outcome="complete")
+            before006 = prior006.read_bytes()
+            (shared / "taskdefs").write_text(
+                f"{live006_task}|{self.MIG_TASKDEF}|{live006_token}\n",
+                encoding="utf-8")
+            (shared / "count").write_text("10", encoding="utf-8")
+            (shared / "token").write_text("", encoding="utf-8")
+            result, calls = self.run_bootstrap(
+                self.migrate_args(),
+                extra_env={"FAKE_ROLESTATE_EXIT": "10"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("separately reviewed repair", combined)
+            self.assertIn("zero new migration", combined.lower())
+            self.assertIn("006-only", combined)
+            self.assertEqual(prior006.read_bytes(), before006)
+            runs = [c for c in calls if "run-task" in c]
+            self.assertFalse(any("launchcrew-demo-migration" in c
+                                 for c in runs))
+            new_file = journals / (f"launchcrew-{STACK}-migrate-migration-"
+                                   f"{self.RELEASE}-active.json")
+            self.assertFalse(new_file.exists())
+
+    def test_migration_malformed_filename_refuses_with_no_resend(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", self.MIG_TOKEN, self.MIG_TASK,
+                self.MIG_TASKDEF, generation="head007-abc1234",
+                head="007", outcome="complete")
+            bad_name = (f"launchcrew-{STACK}-migrate-migration-"
+                        "head007-abc1234-weird.json")
+            bad_path = journals / bad_name
+            prior.rename(bad_path)
+            prior = bad_path
+            before = prior.read_bytes()
+            (shared / "taskdefs").write_text(
+                f"{self.MIG_TASK}|{self.MIG_TASKDEF}|{self.MIG_TOKEN}\n",
+                encoding="utf-8")
+            (shared / "count").write_text("10", encoding="utf-8")
+            (shared / "token").write_text("", encoding="utf-8")
+            result, calls = self.run_bootstrap(
+                self.migrate_args(),
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("GENERATION_FILENAME_MISMATCH", combined)
+            self.assertEqual(prior.read_bytes(), before)
+            runs = [c for c in calls if "run-task" in c]
+            self.assertFalse(any("launchcrew-demo-migration" in c
+                                 for c in runs))
+            new_file = journals / (f"launchcrew-{STACK}-migrate-migration-"
+                                   f"{self.RELEASE}-active.json")
+            self.assertFalse(new_file.exists())
+
+    def test_migration_same_generation_complete_resumes_with_no_resend(self):
+        import json as _json
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            token008 = "lc-" + "m" * 30
+            task008 = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+                       "task/launchcrew-demo/live-migration-current008")
+            active = self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", token008, task008,
+                self.MIG_TASKDEF, generation=self.RELEASE,
+                head="008", outcome="complete")
+            (shared / "taskdefs").write_text(
+                f"{task008}|{self.MIG_TASKDEF}|{token008}\n",
+                encoding="utf-8")
+            (shared / "count").write_text("10", encoding="utf-8")
+            (shared / "token").write_text("", encoding="utf-8")
+            result, calls = self.run_bootstrap(
+                self.migrate_args(),
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            combined = result.stdout + result.stderr
+            self.assertIn("already complete", combined.lower())
+            self.assertIn("no new run-task", combined.lower())
+            runs = [c for c in calls if "run-task" in c]
+            self.assertFalse(any("launchcrew-demo-migration" in c
+                                 for c in runs))
+            after = _json.loads(active.read_text(encoding="utf-8"))
+            self.assertEqual(after.get("client_token"), token008)
+            self.assertEqual(after.get("outcome"), "complete")
+            self.assertEqual(after.get("target_head"), "008")
+
+    def test_migration_same_generation_pending_refuses_with_no_resend(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            token008 = "lc-" + "n" * 30
+            active = self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", token008, "",
+                self.MIG_TASKDEF, generation=self.RELEASE,
+                head="008", outcome="pending")
+            before = active.read_bytes()
+            (shared / "count").write_text("10", encoding="utf-8")
+            (shared / "token").write_text("", encoding="utf-8")
+            result, calls = self.run_bootstrap(
+                self.migrate_args(),
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("UNRESOLVED", combined)
+            self.assertEqual(active.read_bytes(), before)
+            runs = [c for c in calls if "run-task" in c]
+            self.assertFalse(any("launchcrew-demo-migration" in c
+                                 for c in runs))
+
 
 class EnableEvidenceTests(BootstrapHarness):
     RELEASE = "head008-testabc"
