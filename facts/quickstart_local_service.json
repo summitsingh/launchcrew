@@ -1,0 +1,53 @@
+{
+  "template_id": "quickstart_local_service",
+  "title": "Fictional local service starter",
+  "kind": "local_service",
+  "fictional": true,
+  "confirmation_required": true,
+  "fictional_note": "Fictional example only. Every value below is an unconfirmed suggestion, including the first-person founder note. Review each example, replace it with the owner fact, and confirm each checkbox yourself. Never confirm an unchanged example value as a real fact unless you explicitly attest it is your own fact with genuine provenance. Nothing here is verified or approved.",
+  "description": "Example starter for an invented curbside bike tune-up stand. No real business is named.",
+  "approved_claims": [],
+  "sources": [
+    "quickstart_local_service.json (fictional quick-start template)",
+    "unconfirmed suggestions only; not evidence"
+  ],
+  "suggested_facts": {
+    "material": {
+      "value": "Curbside bike tune-up at the Maple Street stand",
+      "confirmed": false,
+      "source": "demo_template"
+    },
+    "contents": {
+      "value": "Brake check, gear tune, and tire top-up",
+      "confirmed": false,
+      "source": "demo_template"
+    },
+    "size": {
+      "value": "Thirty minute curbside appointment",
+      "confirmed": false,
+      "source": "demo_template"
+    },
+    "price": {
+      "value": "$35 per tune-up visit",
+      "confirmed": false,
+      "source": "demo_template"
+    },
+    "allowed_claims": [
+      {
+        "value": "Same-day slots on Saturdays at Maple Street",
+        "confirmed": false,
+        "source": "demo_template"
+      },
+      {
+        "value": "Basic parts carried on the stand cart",
+        "confirmed": false,
+        "source": "demo_template"
+      }
+    ],
+    "founder_note": {
+      "value": "I opened the Maple Street stand to fix neighbor bikes faster.",
+      "confirmed": false,
+      "source": "demo_template"
+    }
+  }
+}
