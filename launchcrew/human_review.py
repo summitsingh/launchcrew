@@ -674,6 +674,51 @@ def current_check(receipt):
     return receipt.get('checker_v2')
 
 
+def _specificity_floor_refusal(receipt):
+    try:
+        from .checker_policies import specificity_hits, specificity_reason
+        draft = current_draft(receipt)
+        if not isinstance(draft, dict):
+            return specificity_reason(matched=[])
+        texts = []
+        for key in ('post', 'email'):
+            value = draft.get(key)
+            if isinstance(value, str):
+                if value.strip():
+                    texts.append(value)
+            elif value is not None:
+                return specificity_reason(matched=[])
+        claims = draft.get('claims')
+        if claims is None:
+            claims = []
+        if not isinstance(claims, list):
+            return specificity_reason(matched=[])
+        for claim in claims:
+            if isinstance(claim, str):
+                if claim.strip():
+                    texts.append(claim)
+            elif claim is not None:
+                return specificity_reason(matched=[])
+        matched_all = []
+        for text in texts:
+            try:
+                hits = specificity_hits(text)
+            except Exception:
+                return specificity_reason(matched=[])
+            for hit in hits:
+                if hit not in matched_all:
+                    matched_all.append(hit)
+        if matched_all:
+            return specificity_reason(matched=matched_all)
+        return None
+    except Exception:
+        try:
+            from .checker_policies import specificity_reason
+            return specificity_reason(matched=[])
+        except Exception:
+            return 'Blocked by specificity floor: vague quality wording.'
+
+
 def exportable(receipt):
     if not isinstance(receipt, dict):
         return False
@@ -688,6 +733,8 @@ def exportable(receipt):
         return False
     check = current_check(receipt)
     if not isinstance(check, dict) or isinstance(check.get('blocked_count'), bool) or check.get('blocked_count', 1) != 0:
+        return False
+    if _specificity_floor_refusal(receipt) is not None:
         return False
     approved = receipt.get('approved_revision')
     if isinstance(approved, bool) or not isinstance(approved, int):
@@ -794,6 +841,9 @@ def approve_current(receipt, actor, expected_revision=None):
         binding = approval_binding(receipt)
     except ValueError as error:
         raise ValueError('Approval binding failed: ' + str(error))
+    specificity_refusal = _specificity_floor_refusal(receipt)
+    if specificity_refusal is not None:
+        raise ValueError(specificity_refusal)
     revised = copy.deepcopy(receipt)
     now = timestamp()
     revised['approvals'] = list(revised.get('approvals') or [])
@@ -821,6 +871,9 @@ def record_export(receipt, actor):
         bound, reason = binding_status(receipt)
         if not bound and 'binding' in reason.lower():
             raise ValueError('Export refused: ' + reason)
+        specificity_refusal = _specificity_floor_refusal(receipt)
+        if specificity_refusal is not None:
+            raise ValueError('Export refused: ' + specificity_refusal)
         raise ValueError('Export requires approval of the latest revision and a clean final check')
     revised = copy.deepcopy(receipt)
     now = timestamp()
@@ -849,6 +902,9 @@ def export_view(receipt):
         bound, reason = binding_status(receipt)
         if not bound and 'binding' in reason.lower():
             raise ValueError('Export refused: ' + reason)
+        specificity_refusal = _specificity_floor_refusal(receipt)
+        if specificity_refusal is not None:
+            raise ValueError('Export refused: ' + specificity_refusal)
         raise ValueError('Export requires approval of the latest revision and a clean final check')
     draft = current_draft(receipt)
     view = copy.deepcopy(receipt)

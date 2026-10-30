@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 from . import agents
-from .checker_policies import effective_policies, parse_checker_agent, policy_blocks, policy_reason
+from .checker_policies import effective_policies, parse_checker_agent, policy_blocks, policy_reason, specificity_hits, specificity_reason
 from .facts import (OWNER_SOURCE_LABEL, check_claim, check_sentence, check_claims, check_draft,
                      founder_variant, load_facts, normalize, parse_product_facts,
                      product_section, split_sentences)
@@ -37,6 +37,15 @@ def _policy_block_for_claim(claim, policies):
         if policy_blocks(policy, claim):
             return {'claim': claim, 'reason': policy_reason(policy)}
     return None
+
+
+def _specificity_block_for_claim(claim):
+    if not isinstance(claim, str):
+        return None
+    matched = specificity_hits(claim)
+    if not matched:
+        return None
+    return {'claim': claim, 'reason': specificity_reason(matched=matched)}
 
 
 def _voice_snapshot_terms(voice_snapshot):
@@ -94,10 +103,19 @@ def check_pack(draft, facts, blocked_claims=None, checker_profile='standard', ch
                                       'reason': hit['reason'],
                                       'blocked': True, 'source': 'explicit_claim'})
             else:
-                claim_results.append({'claim': r['claim'], 'verified': True,
-                                      'verdict': r.get('verdict', 'supported'),
-                                      'evidence': r.get('evidence'), 'reason': r['reason'],
-                                      'blocked': False, 'source': 'explicit_claim'})
+                spec_hit = _specificity_block_for_claim(r['claim'])
+                if spec_hit is not None:
+                    blocked.append(spec_hit)
+                    claim_results.append({'claim': r['claim'], 'verified': False,
+                                          'verdict': r.get('verdict', 'supported'),
+                                          'evidence': r.get('evidence'),
+                                          'reason': spec_hit['reason'],
+                                          'blocked': True, 'source': 'explicit_claim'})
+                else:
+                    claim_results.append({'claim': r['claim'], 'verified': True,
+                                          'verdict': r.get('verdict', 'supported'),
+                                          'evidence': r.get('evidence'), 'reason': r['reason'],
+                                          'blocked': False, 'source': 'explicit_claim'})
         seen_texts.add(r['claim'])
     for result in check_draft(draft['post'] + '\n' + draft['email'], facts):
         if result['claim'] not in [r['claim'] for r in blocked]:
@@ -108,7 +126,11 @@ def check_pack(draft, facts, blocked_claims=None, checker_profile='standard', ch
                 if hit is not None:
                     blocked.append(hit)
                 else:
-                    blocked.append(result)
+                    spec_hit = _specificity_block_for_claim(result['claim'])
+                    if spec_hit is not None:
+                        blocked.append(spec_hit)
+                    else:
+                        blocked.append(result)
     # Draft-text verdicts for every unique sentence, including supported ones
     # that check_draft omits. Explicit-claim texts are not duplicated.
     for sentence_result in (check_sentence(s, facts) for s in split_sentences(
@@ -124,11 +146,19 @@ def check_pack(draft, facts, blocked_claims=None, checker_profile='standard', ch
                                   'reason': 'Blocked by selected memory rule',
                                   'blocked': True, 'source': 'draft_text'})
         elif not sentence_result['verified']:
-            claim_results.append({'claim': text, 'verified': False,
-                                  'verdict': sentence_result.get('verdict', 'unsupported'),
-                                  'evidence': sentence_result.get('evidence'),
-                                  'reason': sentence_result['reason'],
-                                  'blocked': True, 'source': 'draft_text'})
+            spec_hit = _specificity_block_for_claim(text)
+            if spec_hit is not None:
+                claim_results.append({'claim': text, 'verified': False,
+                                      'verdict': sentence_result.get('verdict', 'unsupported'),
+                                      'evidence': sentence_result.get('evidence'),
+                                      'reason': spec_hit['reason'],
+                                      'blocked': True, 'source': 'draft_text'})
+            else:
+                claim_results.append({'claim': text, 'verified': False,
+                                      'verdict': sentence_result.get('verdict', 'unsupported'),
+                                      'evidence': sentence_result.get('evidence'),
+                                      'reason': sentence_result['reason'],
+                                      'blocked': True, 'source': 'draft_text'})
         else:
             hit = _policy_block_for_claim(text, policies)
             if hit is not None:
@@ -138,11 +168,21 @@ def check_pack(draft, facts, blocked_claims=None, checker_profile='standard', ch
                                       'reason': hit['reason'],
                                       'blocked': True, 'source': 'draft_text'})
             else:
-                claim_results.append({'claim': text, 'verified': True,
-                                      'verdict': sentence_result.get('verdict', 'supported'),
-                                      'evidence': sentence_result.get('evidence'),
-                                      'reason': sentence_result['reason'],
-                                      'blocked': False, 'source': 'draft_text'})
+                spec_hit = _specificity_block_for_claim(text)
+                if spec_hit is not None:
+                    claim_results.append({'claim': text, 'verified': False,
+                                          'verdict': sentence_result.get('verdict', 'supported'),
+                                          'evidence': sentence_result.get('evidence'),
+                                          'reason': spec_hit['reason'],
+                                          'blocked': True, 'source': 'draft_text'})
+                    if text not in [b['claim'] for b in blocked]:
+                        blocked.append(spec_hit)
+                else:
+                    claim_results.append({'claim': text, 'verified': True,
+                                          'verdict': sentence_result.get('verdict', 'supported'),
+                                          'evidence': sentence_result.get('evidence'),
+                                          'reason': sentence_result['reason'],
+                                          'blocked': False, 'source': 'draft_text'})
     effective_voice = _voice_snapshot_terms(voice_snapshot)
     if effective_voice is not None:
         already = {b['claim'] for b in blocked
@@ -702,6 +742,7 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
             safe_filtered = [c for c in v1_safe_claims
                              if normalize(c) not in blocked_names
                              and _policy_block_for_claim(c, effective) is None
+                             and _specificity_block_for_claim(c) is None
                              and not _voice_blocks_claim(c, effective_voice, normalized_voice_ref)]
             post_v2 = ' '.join(v1_safe_post_lines)
             email_v2 = '\n'.join(v1_safe_email_lines)
@@ -720,6 +761,7 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
             v2_claims = [c for c in claims
                          if normalize(c) not in blocked_names
                          and _policy_block_for_claim(c, effective) is None
+                         and _specificity_block_for_claim(c) is None
                          and not _voice_blocks_claim(c, effective_voice, normalized_voice_ref)]
             v2 = make_draft(v2_claims)
         reached('maker_draft_v2', 'Maker', 'Revised using approved facts file claims', profiles['Maker']['name'],
