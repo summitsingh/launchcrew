@@ -1,5 +1,6 @@
 """Typed FastAPI demo API over the preserved Python pipeline."""
 from contextlib import asynccontextmanager
+import copy
 import json
 from datetime import date as date_cls
 from datetime import datetime, timezone
@@ -630,6 +631,65 @@ class RunStepsOut(BaseModel):
     steps: list[RunStep]
 
 
+class ChannelVariantOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    channel: str = ''
+    variant_kind: str = 'presentation_candidate'
+    text: str = ''
+    subject: str = ''
+    content_valid: bool = False
+    exportable: bool = False
+    independently_exportable: bool = False
+    requires_checker_binding: bool = True
+    status: str = ''
+    reason: str = ''
+    trim_note: str = ''
+    char_count: int = 0
+    kept_sentences: int = 0
+    total_sentences: int = 0
+    omitted_sentences: int = 0
+    approval_note: str = ''
+
+
+class ChannelCopyOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    approved_by: str = ''
+    channel: str = ''
+    text: str = ''
+    subject: str = ''
+    revision: int = 0
+    receipt_id: str = ''
+    binding_version: str = ''
+    binding_digest: str = ''
+    copy_authorized: bool = False
+    note: str = ''
+
+
+class ChannelVariantsOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    bundle_version: str = 'checked-channel-variants/v1'
+    receipt_id: str = ''
+    revision: int = 0
+    approval_state: str = ''
+    binding_version: str = ''
+    binding_digest: str = ''
+    channel_approvals: dict[str, Any] = {}
+    facts_mode: str = ''
+    facts_label: str = ''
+    template_used: bool = False
+    confirmed_claims_count: int = 0
+    draft_source: str = 'current post draft'
+    all_content_valid: bool = False
+    no_auto_publish: bool = True
+    note: str = ''
+    x: ChannelVariantOut
+    linkedin: ChannelVariantOut
+    instagram: ChannelVariantOut
+    email: ChannelVariantOut
+    facebook: ChannelVariantOut
+    provenance: dict[str, Any] = {}
+
+
 @app.post('/api/runs', response_model=Receipt, status_code=201)
 def create_run(body: RunInput, actor: str = Depends(auth.actor)):
     from backend import model_admission
@@ -930,6 +990,100 @@ def export(run_id: str, body: ExportIn, response: Response, actor: str = Depends
     response.headers['Content-Disposition'] = 'attachment; filename="launchcrew-pack.json"'
     return exported
 
+
+
+@app.get('/api/runs/{run_id}/channel-variants', response_model=ChannelVariantsOut)
+def channel_variants(run_id: str, actor: str = Depends(auth.actor)):
+    # Checked channel export candidates for one owned run. The bundle
+    # derives verbatim from the current approved post draft and the
+    # receipt-bound confirmed claims, and refuses unless the receipt
+    # is currently exportable: human approval for export on the latest
+    # revision with a clean final check and a matching current approval
+    # binding. Read-only: no auto-publish, no auto-post, no auto-send.
+    # Offline copy happens only after that human approval.
+    from launchcrew import channel_variants as channel_mod
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        receipt = get_receipt(db, run_id, workspace_id)
+        _reject_when_running(receipt)
+        try:
+            bundle = channel_mod.checked_channel_variants(receipt)
+        except ValueError as error:
+            message = str(error)
+            if 'stale' in message.lower():
+                raise HTTPException(409, message)
+            raise HTTPException(422, message)
+    return bundle
+
+
+@app.post('/api/runs/{run_id}/channel-variants/{channel}/approve', response_model=Receipt)
+def approve_channel_variant(run_id: str, channel: str, body: ExportIn, actor: str = Depends(auth.actor)):
+    # Human approval of one exact channel variant text. The approver
+    # reviews the exact rendered candidate from the bundle read, then
+    # this binds that exact text and subject to the current revision
+    # and the current pack approval binding digest, recording the
+    # approver and an audit event. A concurrent revision change
+    # refuses stale with 409; unsupported exact text refuses with 422.
+    # Pack approval, revision, and export state are unchanged.
+    from launchcrew import channel_variants as channel_mod
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        receipt = get_receipt(db, run_id, workspace_id, True)
+        _reject_when_running(receipt)
+        try:
+            revised = channel_mod.approve_channel_variant(receipt, channel, actor, body.expected_revision)
+        except ValueError as error:
+            message = str(error)
+            if 'stale' in message.lower():
+                raise HTTPException(409, message)
+            raise HTTPException(422, message)
+        result = db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id AND workspace_id=:ws'), {'receipt': json.dumps(revised), 'state': revised['approval_state'], 'id': run_id, 'ws': workspace_id})
+        if result.rowcount == 0:
+            raise HTTPException(404, 'Run not found')
+        store.audit(db, run_id, 'channel_variant_approval', actor, workspace_id)
+    return revised
+
+
+@app.post('/api/runs/{run_id}/channel-variants/{channel}/copy', response_model=ChannelCopyOut)
+def copy_channel_variant(run_id: str, channel: str, body: ExportIn, actor: str = Depends(auth.actor)):
+    # Server-side copy authorization for one exact channel text. Reads
+    # the run fresh in the owner workspace, rejects running receipts,
+    # requires the caller revision to match the current revision (a
+    # concurrent revision change refuses with 409), and requires a
+    # current human approval of the exact channel text plus the
+    # exportable gate, the approval binding, and the exact rendered
+    # text before authorizing. Only the returned text is copied by the
+    # UI; cached bundle text is never copied. The authorization is
+    # recorded in the receipt audit log without changing approval,
+    # revision, or export state. No auto-publish, no auto-post.
+    from launchcrew import channel_variants as channel_mod
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        receipt = get_receipt(db, run_id, workspace_id, True)
+        _reject_when_running(receipt)
+        try:
+            record = channel_mod.authorize_channel_copy(receipt, channel, body.expected_revision)
+        except ValueError as error:
+            message = str(error)
+            if 'stale' in message.lower():
+                raise HTTPException(409, message)
+            raise HTTPException(422, message)
+        revised = copy.deepcopy(receipt)
+        now = datetime.now(timezone.utc).isoformat()
+        events = list((revised.get('audit') or {}).get('event_log') or [])
+        events.append({'step': 'channel_copy', 'agent': 'human',
+                       'profile': actor or 'human',
+                       'action': ('Copied %s text at revision %d for offline use; '
+                                  'no publish, post, or send occurred'
+                                  % (record['channel'], record['revision'])),
+                       'timestamp': now, 'revision': record['revision'],
+                       'channel': record['channel']})
+        revised.setdefault('audit', {})['event_log'] = events
+        result = db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id AND workspace_id=:ws'), {'receipt': json.dumps(revised), 'state': revised['approval_state'], 'id': run_id, 'ws': workspace_id})
+        if result.rowcount == 0:
+            raise HTTPException(404, 'Run not found')
+        store.audit(db, run_id, 'channel_copy', actor, workspace_id)
+    return record
 
 
 @app.post('/api/runs/{run_id}/photo-check', response_model=PhotoCheckResponse)

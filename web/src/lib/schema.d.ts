@@ -552,6 +552,55 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/channel-variants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Channel Variants */
+        get: operations["channel_variants_api_runs__run_id__channel_variants_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/channel-variants/{channel}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        put?: never;
+        /** Approve Channel Variant */
+        post: operations["approve_channel_variant_api_runs__run_id__channel_variants__channel__approve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/channel-variants/{channel}/copy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        put?: never;
+        /** Copy Channel Variant */
+        post: operations["copy_channel_variant_api_runs__run_id__channel_variants__channel__copy_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/export": {
         parameters: {
             query?: never;
@@ -792,6 +841,240 @@ export interface components {
             id: string;
             /** Idea */
             idea: string;
+        };
+        /** ChannelCopyOut */
+        ChannelCopyOut: {
+            /**
+             * Approved By
+             * @default
+             */
+            approved_by: string;
+            /**
+             * Binding Digest
+             * @default
+             */
+            binding_digest: string;
+            /**
+             * Binding Version
+             * @default
+             */
+            binding_version: string;
+            /**
+             * Channel
+             * @default
+             */
+            channel: string;
+            /**
+             * Copy Authorized
+             * @default false
+             */
+            copy_authorized: boolean;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /**
+             * Receipt Id
+             * @default
+             */
+            receipt_id: string;
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+            /**
+             * Subject
+             * @default
+             */
+            subject: string;
+            /**
+             * Text
+             * @default
+             */
+            text: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** ChannelVariantOut */
+        ChannelVariantOut: {
+            /**
+             * Approval Note
+             * @default
+             */
+            approval_note: string;
+            /**
+             * Channel
+             * @default
+             */
+            channel: string;
+            /**
+             * Char Count
+             * @default 0
+             */
+            char_count: number;
+            /**
+             * Content Valid
+             * @default false
+             */
+            content_valid: boolean;
+            /**
+             * Exportable
+             * @default false
+             */
+            exportable: boolean;
+            /**
+             * Independently Exportable
+             * @default false
+             */
+            independently_exportable: boolean;
+            /**
+             * Kept Sentences
+             * @default 0
+             */
+            kept_sentences: number;
+            /**
+             * Omitted Sentences
+             * @default 0
+             */
+            omitted_sentences: number;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /**
+             * Requires Checker Binding
+             * @default true
+             */
+            requires_checker_binding: boolean;
+            /**
+             * Status
+             * @default
+             */
+            status: string;
+            /**
+             * Subject
+             * @default
+             */
+            subject: string;
+            /**
+             * Text
+             * @default
+             */
+            text: string;
+            /**
+             * Total Sentences
+             * @default 0
+             */
+            total_sentences: number;
+            /**
+             * Trim Note
+             * @default
+             */
+            trim_note: string;
+            /**
+             * Variant Kind
+             * @default presentation_candidate
+             */
+            variant_kind: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** ChannelVariantsOut */
+        ChannelVariantsOut: {
+            /**
+             * All Content Valid
+             * @default false
+             */
+            all_content_valid: boolean;
+            /**
+             * Approval State
+             * @default
+             */
+            approval_state: string;
+            /**
+             * Binding Digest
+             * @default
+             */
+            binding_digest: string;
+            /**
+             * Binding Version
+             * @default
+             */
+            binding_version: string;
+            /**
+             * Bundle Version
+             * @default checked-channel-variants/v1
+             */
+            bundle_version: string;
+            /**
+             * Channel Approvals
+             * @default {}
+             */
+            channel_approvals: {
+                [key: string]: unknown;
+            };
+            /**
+             * Confirmed Claims Count
+             * @default 0
+             */
+            confirmed_claims_count: number;
+            /**
+             * Draft Source
+             * @default current post draft
+             */
+            draft_source: string;
+            email: components["schemas"]["ChannelVariantOut"];
+            facebook: components["schemas"]["ChannelVariantOut"];
+            /**
+             * Facts Label
+             * @default
+             */
+            facts_label: string;
+            /**
+             * Facts Mode
+             * @default
+             */
+            facts_mode: string;
+            instagram: components["schemas"]["ChannelVariantOut"];
+            linkedin: components["schemas"]["ChannelVariantOut"];
+            /**
+             * No Auto Publish
+             * @default true
+             */
+            no_auto_publish: boolean;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /**
+             * Provenance
+             * @default {}
+             */
+            provenance: {
+                [key: string]: unknown;
+            };
+            /**
+             * Receipt Id
+             * @default
+             */
+            receipt_id: string;
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+            /**
+             * Template Used
+             * @default false
+             */
+            template_used: boolean;
+            x: components["schemas"]["ChannelVariantOut"];
+        } & {
+            [key: string]: unknown;
         };
         /** Check */
         Check: {
@@ -3273,6 +3556,109 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Receipt"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    channel_variants_api_runs__run_id__channel_variants_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelVariantsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    approve_channel_variant_api_runs__run_id__channel_variants__channel__approve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+                channel: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExportIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Receipt"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    copy_channel_variant_api_runs__run_id__channel_variants__channel__copy_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+                channel: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExportIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelCopyOut"];
                 };
             };
             /** @description Validation Error */

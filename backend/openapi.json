@@ -243,6 +243,261 @@
         "title": "CampaignOut",
         "type": "object"
       },
+      "ChannelCopyOut": {
+        "additionalProperties": true,
+        "properties": {
+          "approved_by": {
+            "default": "",
+            "title": "Approved By",
+            "type": "string"
+          },
+          "binding_digest": {
+            "default": "",
+            "title": "Binding Digest",
+            "type": "string"
+          },
+          "binding_version": {
+            "default": "",
+            "title": "Binding Version",
+            "type": "string"
+          },
+          "channel": {
+            "default": "",
+            "title": "Channel",
+            "type": "string"
+          },
+          "copy_authorized": {
+            "default": false,
+            "title": "Copy Authorized",
+            "type": "boolean"
+          },
+          "note": {
+            "default": "",
+            "title": "Note",
+            "type": "string"
+          },
+          "receipt_id": {
+            "default": "",
+            "title": "Receipt Id",
+            "type": "string"
+          },
+          "revision": {
+            "default": 0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "subject": {
+            "default": "",
+            "title": "Subject",
+            "type": "string"
+          },
+          "text": {
+            "default": "",
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "title": "ChannelCopyOut",
+        "type": "object"
+      },
+      "ChannelVariantOut": {
+        "additionalProperties": true,
+        "properties": {
+          "approval_note": {
+            "default": "",
+            "title": "Approval Note",
+            "type": "string"
+          },
+          "channel": {
+            "default": "",
+            "title": "Channel",
+            "type": "string"
+          },
+          "char_count": {
+            "default": 0,
+            "title": "Char Count",
+            "type": "integer"
+          },
+          "content_valid": {
+            "default": false,
+            "title": "Content Valid",
+            "type": "boolean"
+          },
+          "exportable": {
+            "default": false,
+            "title": "Exportable",
+            "type": "boolean"
+          },
+          "independently_exportable": {
+            "default": false,
+            "title": "Independently Exportable",
+            "type": "boolean"
+          },
+          "kept_sentences": {
+            "default": 0,
+            "title": "Kept Sentences",
+            "type": "integer"
+          },
+          "omitted_sentences": {
+            "default": 0,
+            "title": "Omitted Sentences",
+            "type": "integer"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "requires_checker_binding": {
+            "default": true,
+            "title": "Requires Checker Binding",
+            "type": "boolean"
+          },
+          "status": {
+            "default": "",
+            "title": "Status",
+            "type": "string"
+          },
+          "subject": {
+            "default": "",
+            "title": "Subject",
+            "type": "string"
+          },
+          "text": {
+            "default": "",
+            "title": "Text",
+            "type": "string"
+          },
+          "total_sentences": {
+            "default": 0,
+            "title": "Total Sentences",
+            "type": "integer"
+          },
+          "trim_note": {
+            "default": "",
+            "title": "Trim Note",
+            "type": "string"
+          },
+          "variant_kind": {
+            "default": "presentation_candidate",
+            "title": "Variant Kind",
+            "type": "string"
+          }
+        },
+        "title": "ChannelVariantOut",
+        "type": "object"
+      },
+      "ChannelVariantsOut": {
+        "additionalProperties": true,
+        "properties": {
+          "all_content_valid": {
+            "default": false,
+            "title": "All Content Valid",
+            "type": "boolean"
+          },
+          "approval_state": {
+            "default": "",
+            "title": "Approval State",
+            "type": "string"
+          },
+          "binding_digest": {
+            "default": "",
+            "title": "Binding Digest",
+            "type": "string"
+          },
+          "binding_version": {
+            "default": "",
+            "title": "Binding Version",
+            "type": "string"
+          },
+          "bundle_version": {
+            "default": "checked-channel-variants/v1",
+            "title": "Bundle Version",
+            "type": "string"
+          },
+          "channel_approvals": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Channel Approvals",
+            "type": "object"
+          },
+          "confirmed_claims_count": {
+            "default": 0,
+            "title": "Confirmed Claims Count",
+            "type": "integer"
+          },
+          "draft_source": {
+            "default": "current post draft",
+            "title": "Draft Source",
+            "type": "string"
+          },
+          "email": {
+            "$ref": "#/components/schemas/ChannelVariantOut"
+          },
+          "facebook": {
+            "$ref": "#/components/schemas/ChannelVariantOut"
+          },
+          "facts_label": {
+            "default": "",
+            "title": "Facts Label",
+            "type": "string"
+          },
+          "facts_mode": {
+            "default": "",
+            "title": "Facts Mode",
+            "type": "string"
+          },
+          "instagram": {
+            "$ref": "#/components/schemas/ChannelVariantOut"
+          },
+          "linkedin": {
+            "$ref": "#/components/schemas/ChannelVariantOut"
+          },
+          "no_auto_publish": {
+            "default": true,
+            "title": "No Auto Publish",
+            "type": "boolean"
+          },
+          "note": {
+            "default": "",
+            "title": "Note",
+            "type": "string"
+          },
+          "provenance": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Provenance",
+            "type": "object"
+          },
+          "receipt_id": {
+            "default": "",
+            "title": "Receipt Id",
+            "type": "string"
+          },
+          "revision": {
+            "default": 0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "template_used": {
+            "default": false,
+            "title": "Template Used",
+            "type": "boolean"
+          },
+          "x": {
+            "$ref": "#/components/schemas/ChannelVariantOut"
+          }
+        },
+        "required": [
+          "x",
+          "linkedin",
+          "instagram",
+          "email",
+          "facebook"
+        ],
+        "title": "ChannelVariantsOut",
+        "type": "object"
+      },
       "Check": {
         "properties": {
           "blocked_claims": {
@@ -5012,6 +5267,161 @@
           }
         },
         "summary": "Approve"
+      }
+    },
+    "/api/runs/{run_id}/channel-variants": {
+      "get": {
+        "operationId": "channel_variants_api_runs__run_id__channel_variants_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelVariantsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Channel Variants"
+      }
+    },
+    "/api/runs/{run_id}/channel-variants/{channel}/approve": {
+      "post": {
+        "operationId": "approve_channel_variant_api_runs__run_id__channel_variants__channel__approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "channel",
+            "required": true,
+            "schema": {
+              "title": "Channel",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExportIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Receipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Approve Channel Variant"
+      }
+    },
+    "/api/runs/{run_id}/channel-variants/{channel}/copy": {
+      "post": {
+        "operationId": "copy_channel_variant_api_runs__run_id__channel_variants__channel__copy_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "channel",
+            "required": true,
+            "schema": {
+              "title": "Channel",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExportIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelCopyOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Copy Channel Variant"
       }
     },
     "/api/runs/{run_id}/export": {

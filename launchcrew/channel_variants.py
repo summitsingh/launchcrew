@@ -1,19 +1,14 @@
-"""Channel presentation candidates for later integration.
+"""Channel presentation candidates, plus checked receipt-bound bundles.
 
-Tested helper only with no backend or web production callsite. No
-live channel UI capability is claimed from helper tests. Still
-missing product integration: no run product flow, receipt field, API
-route, or UI calls build_channel_variants.
+The base builders below are pure standard library helpers. No model
+calls, no fetching, no publishing, no photo behavior.
 
-Pure standard library helpers. No model calls, no fetching, no
-publishing, no photo behavior.
-
-Inputs are caller supplied: draft text, confirmed fact strings, and
-audience or angle context. Outputs are presentation candidates only,
-never independently exportable. Every candidate requires downstream
-current approved Checker/receipt binding before any export. No
-Checker approval or receipt is claimed here and no approval ID is
-invented.
+Base builder inputs are caller supplied: draft text, confirmed fact
+strings, and audience or angle context. Outputs are presentation
+candidates only, never independently exportable. Every candidate
+requires downstream current approved Checker/receipt binding before
+any export. No Checker approval or receipt is claimed by the base
+builders and no approval ID is invented.
 
 Every draft sentence in every candidate is copied verbatim from the
 draft. No sentence is reworded, shortened, or split. Trimming for X
@@ -21,6 +16,21 @@ and Facebook drops whole trailing sentences only, on a full sentence
 boundary, with an explicit trim note. Audience suggestions and
 campaign angles are recorded as unverified context in metadata and
 are never rendered as product facts.
+
+Slice 4 product integration: checked_channel_variants(receipt)
+derives the five candidates from the current approved post draft
+and the receipt-bound confirmed claims. It refuses unless the
+receipt is currently exportable, meaning human approval for export
+on the latest revision with a clean final check and a matching
+current approval binding. Audience and campaign angle inputs are
+never used there, so no angle is claimed. Every rendered candidate
+is re-verified with verify_exact_variant_text; failures downgrade
+to needs-revision with no text. Results stay presentation
+candidates with no auto-publish; copying the exact text happens
+only through authorize_channel_copy at the current revision, which
+rechecks the gate, the revision, and the exact rendered text, and
+returns the authorized record. The API copy route revalidates this
+server-side on a fresh owner-scoped receipt read at click time.
 """
 
 import copy
@@ -861,6 +871,595 @@ def build_channel_variants(draft_text, confirmed_facts, audience=None, campaign_
         "facebook": variants["facebook"],
         "provenance": provenance,
     }
+
+
+CHECKED_BUNDLE_VERSION = "checked-channel-variants/v1"
+CHECKED_DRAFT_SOURCE = "current post draft"
+CHECKED_NO_PUBLISH_NOTE = (
+    "Checked export candidates only. No auto-publish, no auto-post, "
+    "no auto-send, no scheduling, and no campaign angles. Copy for "
+    "offline use only after this human approval, through the copy "
+    "action that rechecks the exact text against the current "
+    "revision, facts, and binding. Every candidate derives verbatim "
+    "from the current approved post draft and the confirmed claims "
+    "bound to that approval."
+)
+COPY_NOTE = (
+    "Copy authorized for offline use only at the stated revision "
+    "and approval binding, for the stated human-approved exact "
+    "text. No auto-publish, no auto-post, no auto-send. The exact "
+    "text below passed deterministic checks against the current "
+    "approved draft and confirmed claims, and a human approved "
+    "that exact text at the stated revision."
+)
+VARIANT_APPROVAL_VERSION = "channel-variant-approval/v1"
+
+
+def _checked_confirmed_claims(receipt):
+    """Confirmed claim strings bound on this receipt, in stored order."""
+    product = receipt.get('product_facts') if isinstance(receipt, dict) else None
+    if not isinstance(product, dict):
+        raise ValueError(
+            'Checked channel variants require product facts on the receipt')
+    raw = product.get('confirmed_claims')
+    if not isinstance(raw, list) or not raw:
+        raise ValueError(
+            'Checked channel variants require a nonempty confirmed-claims list')
+    cleaned = []
+    for entry in raw:
+        if not isinstance(entry, str) or not entry.strip():
+            raise ValueError('Confirmed claims must be nonempty strings')
+        cleaned.append(entry)
+    return cleaned
+
+
+def _checked_voice(receipt):
+    """Voice snapshot and ref from the receipt, or (None, None)."""
+    raw = receipt.get('voice_profile') if isinstance(receipt, dict) else None
+    if not isinstance(raw, dict):
+        return None, None
+    terms = raw.get('banned_terms')
+    if not isinstance(terms, list) or not terms:
+        return None, None
+    cleaned = [term for term in terms if isinstance(term, str) and term.strip()]
+    if not cleaned:
+        return None, None
+    snapshot = {'banned_terms': cleaned}
+    ref = {'id': raw.get('id'), 'title': raw.get('title'),
+           'version': raw.get('version')}
+    return snapshot, ref
+
+
+def _checked_variant_entry(variant):
+    """API-ready variant dict with sentence counts promoted to top level."""
+    metadata = variant.get('metadata') if isinstance(variant, dict) else None
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    def _count(key):
+        value = metadata.get(key)
+        return value if isinstance(value, int) and value >= 0 else 0
+
+    text = variant.get('text')
+    subject = variant.get('subject')
+    reason = variant.get('reason')
+    trim_note = variant.get('trim_note')
+    approval_note = variant.get('approval_note')
+    return {
+        'channel': variant.get('channel', ''),
+        'variant_kind': variant.get('variant_kind', VARIANT_KIND),
+        'text': text if isinstance(text, str) else '',
+        'subject': subject if isinstance(subject, str) else '',
+        'content_valid': bool(variant.get('content_valid')),
+        'exportable': False,
+        'independently_exportable': False,
+        'requires_checker_binding': True,
+        'status': variant.get('status', ''),
+        'reason': reason if isinstance(reason, str) else '',
+        'trim_note': trim_note if isinstance(trim_note, str) else '',
+        'char_count': _count('char_count'),
+        'kept_sentences': _count('kept_sentences'),
+        'total_sentences': _count('total_sentences'),
+        'omitted_sentences': _count('omitted_sentences'),
+        'approval_note': approval_note if isinstance(approval_note, str) else APPROVAL_NOTE,
+    }
+
+
+def _require_checked_gate(receipt):
+    """Shared exportable gate for variant reads and copy actions.
+
+    Requires a completed receipt with human approval for export on
+    the latest revision, a clean final check, and a matching current
+    approval binding. Raises ValueError with a fail-closed reason
+    otherwise. Messages stay stable for API status mapping.
+    """
+    from .human_review import binding_status, exportable
+    if not isinstance(receipt, dict):
+        raise ValueError('Receipt unavailable for checked channel variants')
+    if receipt.get('status') == 'running':
+        raise ValueError(
+            'Run is still running; checked variants unlock with the final receipt')
+    if receipt.get('status') == 'failed':
+        raise ValueError('Failed runs have no checked channel variants')
+    if receipt.get('approval_state') != 'approved_for_export':
+        raise ValueError(
+            'Checked channel variants require human approval of the latest '
+            'revision; nothing is published automatically')
+    if not exportable(receipt):
+        bound, reason = binding_status(receipt)
+        if not bound:
+            raise ValueError('Checked channel variants refused: ' + reason)
+        raise ValueError(
+            'Checked channel variants require approval of the latest '
+            'revision and a clean final check')
+
+
+def _strip_framing(channel, text):
+    """Remove fixed non-factual framing, or return None when malformed."""
+    if channel == 'linkedin':
+        prefix = LINKEDIN_HEADER + '\n\n'
+        if not text.startswith(prefix):
+            return None
+        return text[len(prefix):]
+    if channel == 'instagram':
+        suffix = '\n\n' + INSTAGRAM_CLOSER
+        if not text.endswith(suffix):
+            return None
+        return text[:-len(suffix)]
+    if channel == 'email':
+        prefix = EMAIL_GREETING + '\n\n'
+        suffix = '\n\n' + EMAIL_CLOSER
+        if not (text.startswith(prefix) and text.endswith(suffix)):
+            return None
+        return text[len(prefix):-len(suffix)]
+    return text
+
+
+def verify_exact_variant_text(channel, rendered_text, rendered_subject,
+                              draft_post, confirmed_facts,
+                              voice_snapshot=None, voice_ref=None):
+    """Verify the exact rendered variant text, not just its draft.
+
+    Checks the full rendered string including fixed framing: verbatim
+    sentence equality against the approved post draft, exact
+    measured-claim support from confirmed facts, channel character
+    limits, and the receipt voice profile on the exact rendered text.
+    No audience or campaign angle input is used. No new literal bans
+    are introduced; voice matching stays the receipt's own
+    context-aware profile. Returns (True, '') or (False, reason).
+    """
+    if channel not in CHANNELS:
+        return False, 'Unknown channel.'
+    if not isinstance(rendered_text, str) or not rendered_text.strip():
+        return False, 'No variant text to verify.'
+    if not isinstance(draft_post, str) or not draft_post.strip():
+        return False, 'Approved post draft unavailable.'
+    try:
+        confirmed = _confirmed_list(confirmed_facts)
+    except (TypeError, ValueError):
+        return False, 'Confirmed facts unavailable.'
+    if channel == 'email':
+        if rendered_subject != EMAIL_SUBJECT:
+            return False, 'Email subject is not the fixed subject.'
+    elif isinstance(rendered_subject, str) and rendered_subject != '':
+        return False, 'Unexpected subject on a non-email variant.'
+    core = _strip_framing(channel, rendered_text)
+    if core is None:
+        return False, 'Variant framing is not the fixed framing.'
+    try:
+        draft_sentences = split_sentences(draft_post)
+    except TypeError:
+        return False, 'Approved post draft unavailable.'
+    if channel in ('x', 'facebook'):
+        limit = X_MAX_CHARS if channel == 'x' else FACEBOOK_MAX_CHARS
+        check = (validate_x_variant(rendered_text, confirmed, draft_post)
+                 if channel == 'x'
+                 else validate_facebook_variant(rendered_text, confirmed, draft_post))
+        if not check.get('ok'):
+            return False, 'Variant text is not the exact leading draft prefix within limits.'
+        if len(rendered_text) > limit:
+            return False, 'Variant text exceeds the channel limit.'
+    else:
+        try:
+            core_sentences = split_sentences(core)
+        except TypeError:
+            return False, 'Variant text has no verifiable sentences.'
+        if core_sentences != draft_sentences:
+            return False, ('Variant sentences are not the exact approved '
+                           'draft sentences in order.')
+    confirmed_tokens = _confirmed_token_set(confirmed)
+    variant_tokens = _measured_tokens(rendered_text)
+    if channel == 'email' and isinstance(rendered_subject, str):
+        variant_tokens = variant_tokens + _measured_tokens(rendered_subject)
+    unconfirmed = sorted({t for t in variant_tokens if t not in confirmed_tokens})
+    if unconfirmed:
+        return False, ('Measured claims not in confirmed facts: '
+                       + ', '.join(unconfirmed) + '.')
+    if isinstance(voice_snapshot, dict):
+        terms = voice_snapshot.get('banned_terms')
+        if isinstance(terms, list) and terms:
+            try:
+                from .voice_profile import voice_single_block_for_text
+                hit = voice_single_block_for_text(
+                    voice_snapshot, rendered_text, voice_ref)
+                if hit is not None:
+                    return False, hit.get('reason') or 'Blocked by voice profile.'
+                if channel == 'email' and isinstance(rendered_subject, str):
+                    subject_hit = voice_single_block_for_text(
+                        voice_snapshot, rendered_subject, voice_ref)
+                    if subject_hit is not None:
+                        return False, (subject_hit.get('reason')
+                                       or 'Blocked by voice profile.')
+            except (TypeError, ValueError):
+                return False, 'Voice profile cannot be applied.'
+    return True, ''
+
+
+def _entry_approval_current(channel, entry, record, current, pack_digest):
+    """Pure currentness check of one stored variant approval.
+
+    Compares the stored record against the freshly derived entry,
+    revision, and pack binding digest. Never raises; fails closed
+    with a reason.
+    """
+    if not isinstance(record, dict):
+        return None, False, ('No human approval of this exact channel '
+                             'text at the current revision.')
+    if not isinstance(entry, dict):
+        return record, False, 'Variant entry unavailable.'
+    if record.get('revision') != current:
+        return record, False, ('Variant approval is stale; the pack '
+                               'changed since approval.')
+    if record.get('pack_binding_digest') != pack_digest:
+        return record, False, ('Variant approval is stale; facts, copy, '
+                               'policy, voice, photo, or check changed '
+                               'since approval.')
+    if not entry.get('content_valid') or not entry.get('text'):
+        return record, False, ('Variant approval is stale; the exact text '
+                               'no longer verifies.')
+    if entry.get('text') != record.get('text') or entry.get('subject') != record.get('subject'):
+        return record, False, ('Variant approval is stale; the exact text '
+                               'differs from the approved text.')
+    try:
+        expected = variant_approval_digest(
+            channel, entry['text'], entry['subject'],
+            current, pack_digest)
+    except ValueError:
+        return record, False, 'Variant approval cannot be recomputed.'
+    if record.get('variant_digest') != expected:
+        return record, False, ('Variant approval digest mismatch; '
+                               'reapprove this exact text.')
+    if record.get('approval_version') != VARIANT_APPROVAL_VERSION:
+        return record, False, ('Variant approval version mismatch; '
+                               'reapprove this exact text.')
+    return record, True, ''
+
+
+def channel_approval_status(receipt, channel):
+    """Check the stored human approval of one exact channel text.
+
+    Returns (record_or_None, current_bool, reason). Current only when
+    a stored approval names this channel with the current revision,
+    the current pack binding digest, and a variant digest that matches
+    the freshly derived exact text and subject. Anything else fails
+    closed with a reason naming stale approval or mismatch. Never
+    raises on content; malformed receipts fail closed as not current.
+    """
+    if channel not in CHANNELS:
+        return None, False, 'Unknown channel.'
+    if not isinstance(receipt, dict):
+        return None, False, 'Receipt unavailable.'
+    try:
+        from .human_review import approval_binding, current_revision
+        current = current_revision(receipt)
+        binding = approval_binding(receipt)
+    except Exception:
+        return None, False, ('Pack approval binding unavailable; '
+                             'reapprove the pack first.')
+    try:
+        bundle = _build_checked_bundle(receipt)
+    except ValueError as error:
+        record = _stored_variant_approvals(receipt).get(channel)
+        return record if isinstance(record, dict) else None, False, (
+            str(error) or 'Variant approval check failed.')
+    except Exception:
+        return None, False, 'Variant approval check failed.'
+    record = _stored_variant_approvals(receipt).get(channel)
+    return _entry_approval_current(channel, bundle[channel], record,
+                                   current, binding['digest'])
+
+
+def _build_checked_bundle(receipt):
+    """Build the checked bundle and per-channel entries; no approval echo."""
+    from .human_review import (approval_binding, current_draft,
+                               current_revision)
+    _require_checked_gate(receipt)
+    confirmed = _checked_confirmed_claims(receipt)
+    draft = current_draft(receipt)
+    post = draft.get('post')
+    if not isinstance(post, str) or not post.strip():
+        raise ValueError(
+            'Checked channel variants require a nonempty approved post draft')
+    voice_snapshot, voice_ref = _checked_voice(receipt)
+    bundle = build_channel_variants(post, confirmed,
+                                    voice_snapshot=voice_snapshot,
+                                    voice_ref=voice_ref)
+    product = receipt.get('product_facts')
+    if not isinstance(product, dict):
+        raise ValueError(
+            'Checked channel variants require product facts on the receipt')
+    binding = approval_binding(receipt)
+    mode = product.get('mode')
+    label = product.get('template_label')
+    entries = {}
+    for channel in CHANNELS:
+        entry = _checked_variant_entry(bundle[channel])
+        if entry['content_valid']:
+            ok, reason = verify_exact_variant_text(
+                channel, entry['text'], entry['subject'], post,
+                confirmed, voice_snapshot, voice_ref)
+            if not ok:
+                entry = dict(entry)
+                entry['content_valid'] = False
+                entry['status'] = STATUS_NEEDS_REVISION
+                entry['text'] = ''
+                entry['reason'] = ('Copy refused: exact rendered text failed '
+                                   're-verification: ' + reason)
+                entry['trim_note'] = ''
+                entry['char_count'] = 0
+                entry['kept_sentences'] = 0
+        entries[channel] = entry
+    result = {
+        'bundle_version': CHECKED_BUNDLE_VERSION,
+        'receipt_id': receipt.get('run_id', ''),
+        'revision': current_revision(receipt),
+        'approval_state': receipt.get('approval_state', ''),
+        'binding_version': binding['version'],
+        'binding_digest': binding['digest'],
+        'facts_mode': mode if isinstance(mode, str) else '',
+        'facts_label': label if isinstance(label, str) else '',
+        'template_used': bool(product.get('template_used')),
+        'confirmed_claims_count': len(confirmed),
+        'draft_source': CHECKED_DRAFT_SOURCE,
+        'all_content_valid': all(entry['content_valid']
+                                 for entry in entries.values()),
+        'no_auto_publish': True,
+        'note': CHECKED_NO_PUBLISH_NOTE,
+    }
+    result.update(entries)
+    result['provenance'] = bundle['provenance']
+    result['channel_approvals'] = {}
+    return result
+
+
+def checked_channel_variants(receipt):
+    """Build checked channel export candidates for an approved receipt.
+
+    Derives all five candidates verbatim from the current approved
+    post draft and the receipt-bound confirmed claims. Refuses with
+    ValueError unless the receipt is currently exportable: human
+    approval for export on the latest revision, a clean final check,
+    and a matching current approval binding. No audience or campaign
+    angle input is used, so no angle is claimed. Voice banned terms
+    from the receipt still veto with needs-revision status. Every
+    rendered candidate is independently re-verified with
+    verify_exact_variant_text; a verification failure downgrades that
+    channel to needs-revision with no text. Every candidate stays non
+    independently exportable with no auto-publish; copying the exact
+    text additionally requires a current human approval of that exact
+    text (see approve_channel_variant and authorize_channel_copy).
+    The returned bundle echoes the binding digest and revision it was
+    checked against, plus a per-channel approval summary.
+    """
+    from .human_review import approval_binding, current_revision
+    result = _build_checked_bundle(receipt)
+    binding = approval_binding(receipt)
+    current = current_revision(receipt)
+    approvals_echo = {}
+    for channel in CHANNELS:
+        record = _stored_variant_approvals(receipt).get(channel)
+        if not isinstance(record, dict):
+            continue
+        _, current_ok, _ = _entry_approval_current(
+            channel, result[channel], record, current, binding['digest'])
+        approvals_echo[channel] = {
+            'approved_by': record.get('approved_by'),
+            'revision': record.get('revision'),
+            'current': bool(current_ok),
+        }
+    result['channel_approvals'] = approvals_echo
+    return result
+
+
+def authorize_channel_copy(receipt, channel, expected_revision=None):
+    """Authorize copying the exact text of one channel variant.
+
+    Re-reads the gate at action time: the receipt must be currently
+    exportable with a matching current approval binding, and
+    expected_revision must match the current revision (a concurrent
+    revision change refuses with a stale error). Requires a current
+    human approval of this exact channel text and subject at the
+    current revision and pack binding digest. Rebuilds the bundle
+    from the current approved draft and confirmed claims, then
+    re-verifies the exact rendered text of the requested channel with
+    verify_exact_variant_text, including equality with the approved
+    text. Fails closed with ValueError on any mismatch; the returned
+    record carries the exact text plus the revision, approver, and
+    binding digest it was authorized against. The candidate itself
+    stays non independently exportable: only this record authorizes
+    the copy.
+    """
+    from .human_review import approval_binding, current_revision
+    if channel not in CHANNELS:
+        raise ValueError('Unknown channel.')
+    if not isinstance(receipt, dict):
+        raise ValueError('Receipt unavailable for checked channel variants')
+    current = current_revision(receipt)
+    if expected_revision is None:
+        if current > 0:
+            raise ValueError(
+                'Copy is stale; expected_revision is required for edited revisions')
+    else:
+        if isinstance(expected_revision, bool) or not isinstance(expected_revision, int):
+            raise ValueError('expected_revision must be an integer')
+        if expected_revision != current:
+            raise ValueError('Copy is stale; the draft changed')
+    _require_checked_gate(receipt)
+    approval, current_ok, status_reason = channel_approval_status(receipt, channel)
+    if not current_ok:
+        raise ValueError('Copy requires human approval of this exact channel text '
+                         'at the current revision'
+                         + (': ' + status_reason if status_reason else ''))
+    bundle = checked_channel_variants(receipt)
+    entry = bundle[channel]
+    if not entry['content_valid'] or not entry['text']:
+        reason = entry.get('reason') or 'needs revision'
+        raise ValueError('Copy refused: ' + reason)
+    if entry['text'] != approval.get('text') or entry['subject'] != approval.get('subject'):
+        raise ValueError('Copy refused: exact text differs from the approved text.')
+    post = bundle_post_text(receipt)
+    confirmed = _checked_confirmed_claims(receipt)
+    voice_snapshot, voice_ref = _checked_voice(receipt)
+    ok, reason = verify_exact_variant_text(
+        channel, entry['text'], entry['subject'], post,
+        confirmed, voice_snapshot, voice_ref)
+    if not ok:
+        raise ValueError('Copy refused: ' + reason)
+    binding = approval_binding(receipt)
+    return {
+        'channel': channel,
+        'text': entry['text'],
+        'subject': entry['subject'],
+        'revision': current,
+        'receipt_id': receipt.get('run_id', ''),
+        'binding_version': binding['version'],
+        'binding_digest': binding['digest'],
+        'approved_by': approval.get('approved_by'),
+        'copy_authorized': True,
+        'note': COPY_NOTE,
+    }
+
+
+def bundle_post_text(receipt):
+    """Current approved post draft text, or '' when unavailable."""
+    try:
+        from .human_review import current_draft
+        draft = current_draft(receipt)
+    except Exception:
+        return ''
+    post = draft.get('post') if isinstance(draft, dict) else None
+    return post if isinstance(post, str) else ''
+
+
+def variant_approval_digest(channel, text, subject, revision, pack_digest):
+    """Deterministic digest binding the exact approved variant text.
+
+    Covers the channel, the exact rendered text and subject, the
+    receipt revision, and the current pack approval binding digest
+    (which itself covers revision, owner-confirmed facts, policy,
+    voice, photo, and check). Raises ValueError on malformed inputs;
+    callers fail closed.
+    """
+    import hashlib
+    import json as json_mod
+    if channel not in CHANNELS:
+        raise ValueError('Unknown channel.')
+    if not isinstance(text, str) or not text:
+        raise ValueError('Variant text unavailable for approval binding.')
+    if not isinstance(subject, str):
+        raise ValueError('Variant subject unavailable for approval binding.')
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+        raise ValueError('Revision unavailable for approval binding.')
+    if not isinstance(pack_digest, str) or len(pack_digest) != 64:
+        raise ValueError('Pack binding digest unavailable for approval binding.')
+    payload = {'version': VARIANT_APPROVAL_VERSION, 'channel': channel,
+               'text': text, 'subject': subject, 'revision': revision,
+               'pack_binding_digest': pack_digest}
+    raw = json_mod.dumps(payload, sort_keys=True, separators=(',', ':'),
+                         ensure_ascii=False).encode('utf-8')
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _stored_variant_approvals(receipt):
+    raw = receipt.get('channel_approvals') if isinstance(receipt, dict) else None
+    return raw if isinstance(raw, dict) else {}
+
+
+def approve_channel_variant(receipt, channel, actor, expected_revision=None):
+    """Human-approve the exact text of one channel variant.
+
+    The approver reviews the exact rendered candidate (as served by
+    the bundle read), then this records a variant approval bound to
+    that exact text and subject, the current revision, and the current
+    pack approval binding digest (which covers revision, confirmed
+    facts, policy, voice, photo, and check). Requires the exportable
+    pack gate first, then revision currency: a concurrent revision
+    change refuses stale. Unsupported or unverified exact text cannot
+    be approved. Returns a revised receipt copy with the approval and
+    an audit event; approval, revision, and export state otherwise
+    unchanged. Raises ValueError on any failure.
+    """
+    from .human_review import approval_binding, current_revision
+    from .receipts import timestamp
+    if channel not in CHANNELS:
+        raise ValueError('Unknown channel.')
+    if not isinstance(receipt, dict):
+        raise ValueError('Receipt unavailable for channel approval.')
+    if not isinstance(actor, str) or not actor.strip():
+        raise ValueError('Channel approval requires a signed-in approver.')
+    current = current_revision(receipt)
+    if expected_revision is None:
+        if current > 0:
+            raise ValueError(
+                'Channel approval is stale; expected_revision is required for edited revisions')
+    else:
+        if isinstance(expected_revision, bool) or not isinstance(expected_revision, int):
+            raise ValueError('expected_revision must be an integer')
+        if expected_revision != current:
+            raise ValueError('Channel approval is stale; the draft changed')
+    _require_checked_gate(receipt)
+    bundle = checked_channel_variants(receipt)
+    entry = bundle[channel]
+    if not entry['content_valid'] or not entry['text']:
+        raise ValueError('Channel variant needs revision before it can be approved: '
+                         + (entry.get('reason') or 'no verified text'))
+    post = bundle_post_text(receipt)
+    confirmed = _checked_confirmed_claims(receipt)
+    voice_snapshot, voice_ref = _checked_voice(receipt)
+    ok, reason = verify_exact_variant_text(
+        channel, entry['text'], entry['subject'], post,
+        confirmed, voice_snapshot, voice_ref)
+    if not ok:
+        raise ValueError('Channel variant needs revision before it can be approved: ' + reason)
+    binding = approval_binding(receipt)
+    digest = variant_approval_digest(
+        channel, entry['text'], entry['subject'], current, binding['digest'])
+    revised = copy.deepcopy(receipt)
+    approvals = dict(_stored_variant_approvals(revised))
+    now = timestamp()
+    approvals[channel] = {
+        'channel': channel,
+        'text': entry['text'],
+        'subject': entry['subject'],
+        'revision': current,
+        'pack_binding_version': binding['version'],
+        'pack_binding_digest': binding['digest'],
+        'variant_digest': digest,
+        'approval_version': VARIANT_APPROVAL_VERSION,
+        'approved_by': actor,
+        'approved_at': now,
+    }
+    revised['channel_approvals'] = approvals
+    events = list((revised.get('audit') or {}).get('event_log') or [])
+    events.append({'step': 'channel_variant_approval', 'agent': 'human',
+                   'profile': actor or 'human',
+                   'action': ('Approved exact %s text at revision %d for offline copy; '
+                              'no publish, post, or send occurred'
+                              % (channel, current)),
+                   'timestamp': now, 'revision': current,
+                   'channel': channel, 'approved_by': actor})
+    revised.setdefault('audit', {})['event_log'] = events
+    return revised
 
 
 def _validate_leading_prefix_candidate(candidate_text, confirmed_facts,

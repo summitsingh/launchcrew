@@ -542,6 +542,128 @@ export function HumanRevisionEditor({ receipt }: { receipt: Receipt }) {
   return <section className="panel" aria-label="Edit drafts"><p className="eyebrow">HUMAN REVIEW</p><h2>Edit post and email</h2><p className="hint">Rechecking compares your edited text against the same verified facts, blocked rules, and Checker policies saved on this run. Unsupported text is rejected and not saved. Saved text clears the prior export approval until you approve the latest revision.</p><p className="hint">Current revision: {base.revision}{base.human ? ' (human revision)' : ' (Maker draft)'} · Status: {revisionStatusOf(receipt)}</p><form onSubmit={e => { e.preventDefault(); save.reset(); save.mutate(); }}><label htmlFor={`human-post-${receipt.run_id}`}>Post text</label><textarea id={`human-post-${receipt.run_id}`} rows={4} required maxLength={2000} value={post} onChange={e => { setPost(e.target.value); }} disabled={failed || save.isPending} /><label htmlFor={`human-email-${receipt.run_id}`}>Email text</label><textarea id={`human-email-${receipt.run_id}`} rows={4} required maxLength={2000} value={email} onChange={e => { setEmail(e.target.value); }} disabled={failed || save.isPending} /><div className="queue-actions"><Button type="submit" disabled={failed || save.isPending || !dirty || !post.trim() || !email.trim()}>{save.isPending ? 'Rechecking...' : 'Save human revision'}</Button></div></form>{dirty && <p role="status">Unsaved changes. Save runs the deterministic recheck.</p>}{saved && <p role="status">Saved revision {base.revision}. This pack needs fresh approval before export.</p>}{save.error && <p role="alert">Needs revision: {needsRevision}. The invalid text was not saved.</p>}</section>;
 }
 
+type ChannelVariantsBundle = components['schemas']['ChannelVariantsOut'];
+type ChannelVariant = components['schemas']['ChannelVariantOut'];
+
+const CHANNEL_VARIANT_ORDER = ['x', 'linkedin', 'instagram', 'email', 'facebook'] as const;
+const CHANNEL_VARIANT_LABELS: Record<string, string> = {
+  x: 'X',
+  linkedin: 'LinkedIn',
+  instagram: 'Instagram',
+  email: 'Email',
+  facebook: 'Facebook',
+};
+
+/** Checked channel export candidates for one run. The bundle display is
+ *  read-only; each copy button POSTs a server copy action that rechecks
+ *  the exact text against the current revision and binding at click
+ *  time. Only the server-authorized text is copied. No publish, post,
+ *  or send action exists. */
+type ChannelVariantApproval = {
+  approved_by?: unknown;
+  revision?: unknown;
+  current?: unknown;
+};
+
+function variantApproval(bundle: ChannelVariantsBundle, channel: string): ChannelVariantApproval | null {
+  const approvals = bundle.channel_approvals;
+  if (!approvals || typeof approvals !== 'object') return null;
+  const record = (approvals as Record<string, unknown>)[channel];
+  return record && typeof record === 'object' ? (record as ChannelVariantApproval) : null;
+}
+
+/** Checked channel export candidates for one run. The bundle display is
+ *  read-only. Approving a channel records a human decision bound to the
+ *  exact text at the current revision; copying POSTs a server copy
+ *  action that rechecks the exact text, the variant approval, and the
+ *  binding at click time. Only the server-authorized text is copied.
+ *  No publish, post, or send action exists. */
+export function ChannelVariantsSection({ runId, revision }: { runId: string; revision: number }) {
+  const client = useQueryClient();
+  const [copied, setCopied] = useState<string | null>(null);
+  const [actionError, setActionError] = useState('');
+  const variants = useQuery({
+    queryKey: ['channel-variants', runId],
+    queryFn: () => unwrap(api.GET('/api/runs/{run_id}/channel-variants', { params: { path: { run_id: runId } } })),
+    refetchInterval: 5000,
+    retry: false,
+  });
+  const refresh = () => {
+    client.invalidateQueries({ queryKey: ['channel-variants', runId] });
+    client.invalidateQueries({ queryKey: ['run'] });
+  };
+  const approve = useMutation({
+    mutationFn: (channel: string) => unwrap(api.POST('/api/runs/{run_id}/channel-variants/{channel}/approve', { params: { path: { run_id: runId, channel } }, body: { expected_revision: variants.data?.revision ?? revision } })),
+    onSuccess: () => { setActionError(''); setCopied(null); refresh(); },
+    onError: (e: Error) => {
+      setActionError(`${e.message} Approval only proceeds for the exact text at the current revision; the bundle refreshes automatically.`);
+      refresh();
+    },
+  });
+  const copy = useMutation({
+    mutationFn: (channel: string) => unwrap(api.POST('/api/runs/{run_id}/channel-variants/{channel}/copy', { params: { path: { run_id: runId, channel } }, body: { expected_revision: variants.data?.revision ?? revision } })),
+    onSuccess: async record => {
+      setActionError('');
+      if (!record.copy_authorized || !record.text) {
+        setActionError(`Copy refused for ${record.channel || 'this channel'}. The exact text needs a current human approval.`);
+        return;
+      }
+      const ok = await copyTextToClipboard(record.text);
+      setCopied(ok ? record.channel : null);
+      if (!ok) setActionError(`Copy failed for ${record.channel}. Download the pack instead.`);
+      refresh();
+    },
+    onError: (e: Error) => {
+      setActionError(`${e.message} The pack may have changed; the bundle refreshes automatically. Copy only proceeds for human-approved exact text at the current revision.`);
+      refresh();
+    },
+  });
+  const busy = approve.isPending || copy.isPending;
+  const bundleRevision = variants.data?.revision;
+  const stale = bundleRevision !== undefined && bundleRevision !== revision;
+  return <section className="panel" aria-label="Checked channel variants">
+    <p className="eyebrow">CHECKED CHANNEL VARIANTS</p>
+    <h2>Channel export candidates.</h2>
+    <p className="hint">Derived verbatim from the current approved post draft and the confirmed claims bound to that approval. X keeps whole sentences within 280 characters with any trim recorded below. Each channel needs its own human approval of the exact text; copy rechecks that approval, the exact text, and the binding server-side at click time. Only authorized text is copied. Offline copy only: no auto-publish, no auto-post, no auto-send, and no campaign angles are claimed.</p>
+    {stale && <p role="alert">This pack changed while you were viewing it. Approval and copy are locked until the fresh bundle loads; both actions recheck the current revision server-side.</p>}
+    {variants.isPending && <p>Loading checked variants...</p>}
+    {variants.error && <p role="alert">{variants.error.message} Checked variants are unavailable for this revision right now. They unlock after the run completes and you approve the latest revision with a clean final check.</p>}
+    {actionError && <p role="alert">{actionError}</p>}
+    {variants.data && <ChannelVariantsBundleView bundle={variants.data} copied={copied} busyChannel={busy ? (approve.variables ?? copy.variables) : undefined} locked={stale} onApprove={channel => { setActionError(''); setCopied(null); approve.mutate(channel); }} onCopy={channel => { setActionError(''); setCopied(null); copy.mutate(channel); }} />}
+  </section>;
+}
+
+export function ChannelVariantsBundleView({ bundle, copied, busyChannel, locked, onApprove, onCopy }: { bundle: ChannelVariantsBundle; copied: string | null; busyChannel?: string; locked: boolean; onApprove: (channel: string) => void; onCopy: (channel: string) => void }) {
+  return <>
+    <p className="hint">Checked against revision {bundle.revision} with approval binding {bundle.binding_version || 'unavailable'} · Facts: {bundle.facts_mode || 'unavailable'}{bundle.facts_label ? ` · ${bundle.facts_label}` : ''} · Confirmed claims: {bundle.confirmed_claims_count} · Source: {bundle.draft_source || 'current post draft'}{bundle.all_content_valid ? '' : ' · Some channels need revision and carry no text.'}</p>
+    {bundle.binding_digest && <p className="run-id">{bundle.binding_digest}</p>}
+    {bundle.note && <p className="hint">{bundle.note}</p>}
+    {CHANNEL_VARIANT_ORDER.map(channel => {
+      const variant = bundle[channel];
+      return <ChannelVariantCard key={channel} label={CHANNEL_VARIANT_LABELS[channel]} variant={variant} approval={variantApproval(bundle, channel)} copied={copied === channel} busy={busyChannel === channel} locked={locked} onApprove={() => onApprove(channel)} onCopy={() => onCopy(channel)} />;
+    })}
+  </>;
+}
+
+function ChannelVariantCard({ label, variant, approval, copied, busy, locked, onApprove, onCopy }: { label: string; variant: ChannelVariant | undefined; approval: ChannelVariantApproval | null; copied: boolean; busy: boolean; locked: boolean; onApprove: () => void; onCopy: () => void }) {
+  if (!variant) return null;
+  const valid = variant.content_valid && !!variant.text;
+  const approvedCurrent = valid && approval?.current === true;
+  const approvedBy = typeof approval?.approved_by === 'string' && approval.approved_by ? approval.approved_by : null;
+  const busyOrLocked = busy || locked;
+  return <article className="panel queue-card" aria-label={`${label} variant`}>
+    <h3>{label}</h3>
+    <p>{valid ? (locked ? 'Locked while the pack changed' : approvedCurrent ? 'Human-approved exact text' : 'Verified, awaiting your approval') : 'Needs revision'} · {variant.status || 'unknown status'} · {variant.char_count} chars{label === 'X' ? ' / 280' : ''}</p>
+    {label === 'Email' && variant.subject && <p className="hint">Subject: {variant.subject}</p>}
+    {valid ? <p className="draft">{variant.text}</p> : <p className="hint">{variant.reason || 'No text for this channel.'}</p>}
+    {variant.trim_note && <p className="hint">{variant.trim_note}</p>}
+    {approvedBy && <p className="hint">Channel approved by {approvedBy}{typeof approval?.revision === 'number' ? ` at revision ${approval.revision}` : ''}{approvedCurrent ? '' : ' (stale; re-approve the current exact text)'}</p>}
+    {variant.approval_note && <p className="hint">{variant.approval_note}</p>}
+    <div className="queue-actions"><Button variant="outline" disabled={!valid || busyOrLocked || approvedCurrent === true} onClick={onApprove}>Approve {label} text</Button><Button variant="outline" disabled={!approvedCurrent || busyOrLocked} onClick={onCopy}>Copy {label} text</Button></div>
+    {copied && <p role="status">Copied {label} text for offline use.</p>}
+  </article>;
+}
+
 export const RUN_STAGE_ORDER = ['accepted', 'deterministic_checks', 'scout', 'maker_draft_v1', 'checker_v1', 'maker_draft_v2', 'checker_v2', 'receipt'];
 
 const RUN_STAGE_LABELS: Record<string, string> = {
