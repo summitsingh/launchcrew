@@ -150,14 +150,14 @@ if [ "$1" = "cloudformation" ] && [ "$2" = "create-change-set" ]; then
   case "$*" in
     *"--template-file"*)
       if [ "${FAKE_INFRA_CREATE:-ok}" = "exists" ]; then
-        echo "An error occurred (AlreadyExistsException) when calling the CreateChangeSet operation: change set infra-006 exists" >&2
+        echo "An error occurred (AlreadyExistsException) when calling the CreateChangeSet operation: change set infra-007 exists" >&2
         exit 254
       fi ;;
   esac
   case "$*" in
     *"--use-previous-template"*)
       if [ "${FAKE_QUIESCE_CREATE:-ok}" = "exists" ]; then
-        echo "An error occurred (AlreadyExistsException) when calling the CreateChangeSet operation: change set quiesce-006 exists" >&2
+        echo "An error occurred (AlreadyExistsException) when calling the CreateChangeSet operation: change set quiesce-007 exists" >&2
         exit 254
       fi ;;
   esac
@@ -339,7 +339,7 @@ elif mode == "tags_mismatch":
     print(json.dumps(base(FULL, iparams(), tags=[{"Key": "Project", "Value": "Other"}])))
 elif mode == "wrong_id":
     doc = base(FULL, iparams())
-    doc["ChangeSetId"] = "arn:aws:cloudformation:us-east-1:999988887777:changeSet/infra-006/aaaabbbbccccddddeeeeffff00001111"
+    doc["ChangeSetId"] = "arn:aws:cloudformation:us-east-1:999988887777:changeSet/infra-007/aaaabbbbccccddddeeeeffff00001111"
     print(json.dumps(doc))
 elif mode == "paginated_ok":
     if not token:
@@ -1282,7 +1282,7 @@ class BootstrapHarness(unittest.TestCase):
                 "--expected-region", REGION]
 
     def run_enable_with_priors(self, shared_tmp, enable_extra_env=None,
-                               release="head006-testabc"):
+                               release="head007-testabc"):
         base = self.base_args()
         material_args = [*base, "--phase", "material",
                          "--release-generation", release]
@@ -1425,7 +1425,7 @@ class PhaseOrderingTests(BootstrapHarness):
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
         self.assertIn("BOOTSTRAP COMPLETE", result.stdout)
         infra_exec = next(i for i, call in enumerate(calls)
-                          if "execute-change-set" in call and "infra-006" in call)
+                          if "execute-change-set" in call and "infra-007" in call)
         first_run = next(i for i, call in enumerate(calls) if "run-task" in call)
         deploy_true = next(i for i, call in enumerate(calls)
                            if "deploy " in call and "EnableServices=true" in call)
@@ -1593,7 +1593,7 @@ class PhaseOrderingTests(BootstrapHarness):
                               "TlsSecretArn": SECRET_TLS})
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
         self.assertIn("Prereqs ready", result.stdout + result.stderr)
-        self.assertTrue(any("execute-change-set" in call and "changeSet/infra-006/" in call
+        self.assertTrue(any("execute-change-set" in call and "changeSet/infra-007/" in call
                             for call in calls))
         self.assertFalse(any("deploy " in call for call in calls))
         self.assertFalse(any("run-task" in call for call in calls))
@@ -1607,7 +1607,7 @@ class PhaseOrderingTests(BootstrapHarness):
     def test_enable_refuses_when_prior_verify_unresolved(self):
         with tempfile.TemporaryDirectory() as shared_tmp:
             base = self.base_args()
-            release = "head006-testabc"
+            release = "head007-testabc"
             result_mat, _ = self.run_bootstrap(
                 [*base, "--phase", "material",
                  "--release-generation", release],
@@ -1780,7 +1780,7 @@ class EnableServiceProofTests(BootstrapHarness):
         }
         with tempfile.TemporaryDirectory() as shared_tmp:
             base = self.base_args()
-            release = "head006-testabc"
+            release = "head007-testabc"
             result_mat, _ = self.run_bootstrap(
                 [*base, "--phase", "material",
                  "--release-generation", release],
@@ -2554,7 +2554,7 @@ class CloudformationTagsTests(BootstrapHarness):
             self.assertIn("LaunchCrew", call)
             self.assertIn("Environment", call)
             self.assertIn("demo", call)
-        self.assertTrue(any("execute-change-set" in call and "changeSet/infra-006/" in call
+        self.assertTrue(any("execute-change-set" in call and "changeSet/infra-007/" in call
                             for call in calls))
         self.assertFalse(any("deploy " in call for call in calls))
 
@@ -2685,7 +2685,7 @@ class QuiesceTests(BootstrapHarness):
             args += ["--quiesce-confirm", self.STACK_ID]
         elif confirm != "":
             args += ["--quiesce-confirm", confirm]
-        args += ["--release-generation", "head006-testabc"]
+        args += ["--release-generation", "head007-testabc"]
         return args
 
     def test_infra_refuses_when_services_true(self):
@@ -2710,7 +2710,7 @@ class QuiesceTests(BootstrapHarness):
     def test_quiesce_requires_explicit_confirm(self):
         result, calls = self.run_bootstrap(
             [*self.base_args(), "--phase", "quiesce",
-             "--release-generation", "head006-testabc"])
+             "--release-generation", "head007-testabc"])
         self.assertEqual(result.returncode, 2)
         self.assertIn("quiesce-confirm", result.stdout + result.stderr)
         self.assertEqual(calls, [])
@@ -2736,7 +2736,7 @@ class QuiesceTests(BootstrapHarness):
         self.assertIn("describe-target-health", joined)
         executes = [call for call in calls if "execute-change-set" in call]
         self.assertEqual(len(executes), 1)
-        self.assertIn("changeSet/quiesce-006/", executes[0])
+        self.assertIn("changeSet/quiesce-007/", executes[0])
         describes = [call for call in calls if "describe-change-set" in call]
         self.assertTrue(describes)
         for call in describes:
@@ -2849,7 +2849,7 @@ class QuiesceTests(BootstrapHarness):
         self.assertIn("page2", decoded[1])
         executes = [call for call in calls if "execute-change-set" in call]
         self.assertEqual(len(executes), 1)
-        self.assertIn("changeSet/quiesce-006/", executes[0])
+        self.assertIn("changeSet/quiesce-007/", executes[0])
 
     def test_quiesce_refuses_extra_change_on_later_page(self):
         result, calls = self.run_bootstrap(
@@ -2904,7 +2904,7 @@ class QuiesceTests(BootstrapHarness):
         code = BOOTSTRAP.read_text(encoding="utf-8")
         self.assertIn("RELEASE_GEN", code)
         self.assertIn("LEGACY_ACTIVE_FILE", code)
-        self.assertIn("head006", code)
+        self.assertIn("head007", code)
         self.assertIn("legacy predecessor", code)
         self.assertIn("reconcile_prior_generations", code)
 
@@ -2917,12 +2917,12 @@ class InfraDiffGuardTests(BootstrapHarness):
         joined = " ".join(calls)
         self.assertIn("create-change-set", joined)
         self.assertIn("--template-file", joined)
-        self.assertIn("infra-006", joined)
+        self.assertIn("infra-007", joined)
         self.assertIn("describe-change-set", joined)
         self.assertIn("describe-services", joined)
         executes = [call for call in calls if "execute-change-set" in call]
         self.assertEqual(len(executes), 1)
-        self.assertIn("changeSet/infra-006/", executes[0])
+        self.assertIn("changeSet/infra-007/", executes[0])
         describes = [call for call in calls if "describe-change-set" in call]
         self.assertTrue(describes)
         for call in describes:
@@ -3020,7 +3020,7 @@ class InfraDiffGuardTests(BootstrapHarness):
         self.assertIn("page2", decoded[1])
         executes = [call for call in calls if "execute-change-set" in call]
         self.assertEqual(len(executes), 1)
-        self.assertIn("changeSet/infra-006/", executes[0])
+        self.assertIn("changeSet/infra-007/", executes[0])
 
     def test_infra_refuses_extra_change_on_later_page(self):
         result, calls = self.run_bootstrap(
@@ -3094,7 +3094,7 @@ class InfraGooglePolicyTests(BootstrapHarness):
         self.assertNotIn("apps.googleusercontent.com", combined)
         executes = [call for call in calls if "execute-change-set" in call]
         self.assertEqual(len(executes), 1)
-        self.assertIn("changeSet/infra-006/", executes[0])
+        self.assertIn("changeSet/infra-007/", executes[0])
         self.assertFalse(any("deploy " in call for call in calls))
         self.assertFalse(any("delete-change-set" in call for call in calls))
         self.assertFalse(any("run-task" in call for call in calls))
@@ -3202,7 +3202,7 @@ class InfraGooglePolicyTests(BootstrapHarness):
         import tempfile as _tmp
         with _tmp.TemporaryDirectory() as shared_tmp:
             base = self.base_args(**{"--google-secret-arn": SECRET_GOOGLE})
-            release = "head006-testabc"
+            release = "head007-testabc"
             params = {"EnableGoogleAuth": "true",
                       "GoogleOAuthSecretArn": SECRET_GOOGLE}
             result_mat, _ = self.run_bootstrap(
@@ -3232,7 +3232,7 @@ class InfraGooglePolicyTests(BootstrapHarness):
         import tempfile as _tmp
         with _tmp.TemporaryDirectory() as shared_tmp:
             base = self.base_args(**{"--google-secret-arn": SECRET_GOOGLE})
-            release = "head006-testabc"
+            release = "head007-testabc"
             params = {"EnableGoogleAuth": "true",
                       "GoogleOAuthSecretArn": SECRET_GOOGLE}
             result_mat, _ = self.run_bootstrap(
@@ -3272,7 +3272,7 @@ class QuiesceResumeTests(BootstrapHarness):
             args += ["--quiesce-confirm", self.STACK_ID]
         elif confirm != "":
             args += ["--quiesce-confirm", confirm]
-        args += ["--release-generation", "head006-testabc"]
+        args += ["--release-generation", "head007-testabc"]
         return args
 
     def quiesce_env(self, changeset="exact", tg="drained", extra=None):
@@ -3294,7 +3294,7 @@ class QuiesceResumeTests(BootstrapHarness):
         self.assertIn("BOOTSTRAP COMPLETE", result.stdout)
         executes = [call for call in calls if "execute-change-set" in call]
         self.assertEqual(len(executes), 1)
-        self.assertIn("changeSet/quiesce-006/", executes[0])
+        self.assertIn("changeSet/quiesce-007/", executes[0])
         describes = [call for call in calls if "describe-change-set" in call]
         self.assertGreaterEqual(len(describes), 2)
         self.assertFalse(any("delete-change-set" in call for call in calls))
@@ -3311,7 +3311,7 @@ class QuiesceResumeTests(BootstrapHarness):
         self.assertIn("resuming existing exact", combined)
         executes = [call for call in calls if "execute-change-set" in call]
         self.assertEqual(len(executes), 1)
-        self.assertIn("changeSet/quiesce-006/", executes[0])
+        self.assertIn("changeSet/quiesce-007/", executes[0])
         self.assertFalse(any("delete-change-set" in call for call in calls))
         self.assertFalse(any("run-task" in call for call in calls))
         self.assertIn("BOOTSTRAP COMPLETE", result.stdout)
@@ -3429,7 +3429,7 @@ class LegacyJournalTests(BootstrapHarness):
             (shared / "token").write_text("", encoding="utf-8")
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "material",
-                 "--release-generation", "head006-testabc"],
+                 "--release-generation", "head007-testabc"],
                 shared_dir=shared_tmp)
             self.assertEqual(result.returncode, 0,
                              msg=result.stdout + result.stderr)
@@ -3439,12 +3439,12 @@ class LegacyJournalTests(BootstrapHarness):
             self.assertEqual(legacy.read_text(encoding="utf-8"), before)
             self.assertEqual(oct(legacy.stat().st_mode & 0o777), "0o600")
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
-                                   "head006-testabc-active.json")
+                                   "head007-testabc-active.json")
             self.assertTrue(new_file.exists())
             new_doc = _json.loads(new_file.read_text(encoding="utf-8"))
             self.assertEqual(new_doc.get("outcome"), "complete")
-            self.assertEqual(new_doc.get("release_generation"), "head006-testabc")
-            self.assertEqual(new_doc.get("target_head"), "006")
+            self.assertEqual(new_doc.get("release_generation"), "head007-testabc")
+            self.assertEqual(new_doc.get("target_head"), "007")
             self.assertEqual(new_doc.get("predecessor_task_arn"), self.LEGACY_TASK)
             self.assertEqual(new_doc.get("predecessor_outcome"), "complete")
             runs = [call for call in calls if "run-task" in call]
@@ -3462,7 +3462,7 @@ class LegacyJournalTests(BootstrapHarness):
             before = legacy.read_text(encoding="utf-8")
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "material",
-                 "--release-generation", "head006-testabc"],
+                 "--release-generation", "head007-testabc"],
                 shared_dir=shared_tmp)
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
@@ -3472,7 +3472,7 @@ class LegacyJournalTests(BootstrapHarness):
             self.assertTrue(legacy.exists())
             self.assertEqual(legacy.read_text(encoding="utf-8"), before)
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
-                                   "head006-testabc-active.json")
+                                   "head007-testabc-active.json")
             self.assertFalse(new_file.exists())
 
     def test_legacy_wrong_logical_refuses_without_new_launch(self):
@@ -3487,7 +3487,7 @@ class LegacyJournalTests(BootstrapHarness):
             before = legacy.read_text(encoding="utf-8")
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "material",
-                 "--release-generation", "head006-testabc"],
+                 "--release-generation", "head007-testabc"],
                 shared_dir=shared_tmp)
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
@@ -3498,7 +3498,7 @@ class LegacyJournalTests(BootstrapHarness):
             self.assertEqual(legacy.read_text(encoding="utf-8"), before)
             self.assertEqual(oct(legacy.stat().st_mode & 0o777), "0o600")
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
-                                   "head006-testabc-active.json")
+                                   "head007-testabc-active.json")
             self.assertFalse(new_file.exists())
 
     def test_legacy_forged_digest_refuses_without_new_launch(self):
@@ -3513,7 +3513,7 @@ class LegacyJournalTests(BootstrapHarness):
             before = legacy.read_text(encoding="utf-8")
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "material",
-                 "--release-generation", "head006-testabc"],
+                 "--release-generation", "head007-testabc"],
                 shared_dir=shared_tmp)
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
@@ -3523,7 +3523,7 @@ class LegacyJournalTests(BootstrapHarness):
             self.assertTrue(legacy.exists())
             self.assertEqual(legacy.read_text(encoding="utf-8"), before)
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
-                                   "head006-testabc-active.json")
+                                   "head007-testabc-active.json")
             self.assertFalse(new_file.exists())
 
     def test_legacy_foreign_operation_refuses_without_new_launch(self):
@@ -3545,17 +3545,17 @@ class LegacyJournalTests(BootstrapHarness):
             (shared / "token").write_text("", encoding="utf-8")
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "material",
-                 "--release-generation", "head006-testabc"],
+                 "--release-generation", "head007-testabc"],
                 shared_dir=shared_tmp)
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
             self.assertIn("TASKDEF_OPERATION_MISMATCH", combined)
-            self.assertIn("no new head006-testabc launch", combined)
+            self.assertIn("no new head007-testabc launch", combined)
             self.assertFalse(any("run-task" in call for call in calls))
             self.assertTrue(legacy.exists())
             self.assertEqual(legacy.read_text(encoding="utf-8"), before)
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
-                                   "head006-testabc-active.json")
+                                   "head007-testabc-active.json")
             self.assertFalse(new_file.exists())
 
     def test_legacy_old_family_after_replacement_proceeds(self):
@@ -3578,7 +3578,7 @@ class LegacyJournalTests(BootstrapHarness):
             (shared / "token").write_text("", encoding="utf-8")
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "material",
-                 "--release-generation", "head006-testabc"],
+                 "--release-generation", "head007-testabc"],
                 shared_dir=shared_tmp)
             self.assertEqual(result.returncode, 0,
                              msg=result.stdout + result.stderr)
@@ -3588,7 +3588,7 @@ class LegacyJournalTests(BootstrapHarness):
             self.assertEqual(legacy.read_text(encoding="utf-8"), before)
             self.assertEqual(oct(legacy.stat().st_mode & 0o777), "0o600")
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
-                                   "head006-testabc-active.json")
+                                   "head007-testabc-active.json")
             self.assertTrue(new_file.exists())
             new_doc = _json.loads(new_file.read_text(encoding="utf-8"))
             self.assertEqual(new_doc.get("outcome"), "complete")
@@ -3611,7 +3611,7 @@ class LegacyJournalTests(BootstrapHarness):
             before = legacy.read_text(encoding="utf-8")
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "material",
-                 "--release-generation", "head006-testabc"],
+                 "--release-generation", "head007-testabc"],
                 shared_dir=shared_tmp)
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
@@ -3621,7 +3621,7 @@ class LegacyJournalTests(BootstrapHarness):
             self.assertTrue(legacy.exists())
             self.assertEqual(legacy.read_text(encoding="utf-8"), before)
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
-                                   "head006-testabc-active.json")
+                                   "head007-testabc-active.json")
             self.assertFalse(new_file.exists())
 
     def test_legacy_ecs_empty_refuses_without_new_launch(self):
@@ -3639,7 +3639,7 @@ class LegacyJournalTests(BootstrapHarness):
             (shared / "token").write_text("", encoding="utf-8")
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "material",
-                 "--release-generation", "head006-testabc"],
+                 "--release-generation", "head007-testabc"],
                 extra_env={"FAKE_DESCRIBE_TASKS": "empty"},
                 shared_dir=shared_tmp)
             self.assertNotEqual(result.returncode, 0)
@@ -3651,7 +3651,7 @@ class LegacyJournalTests(BootstrapHarness):
             self.assertTrue(legacy.exists())
             self.assertEqual(legacy.read_text(encoding="utf-8"), before)
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
-                                   "head006-testabc-active.json")
+                                   "head007-testabc-active.json")
             self.assertFalse(new_file.exists())
 
     def test_legacy_ecs_failures_refuses_without_new_launch(self):
@@ -3669,7 +3669,7 @@ class LegacyJournalTests(BootstrapHarness):
             (shared / "token").write_text("", encoding="utf-8")
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "material",
-                 "--release-generation", "head006-testabc"],
+                 "--release-generation", "head007-testabc"],
                 extra_env={"FAKE_DESCRIBE_TASKS": "failures"},
                 shared_dir=shared_tmp)
             self.assertNotEqual(result.returncode, 0)
@@ -3681,7 +3681,7 @@ class LegacyJournalTests(BootstrapHarness):
             self.assertTrue(legacy.exists())
             self.assertEqual(legacy.read_text(encoding="utf-8"), before)
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
-                                   "head006-testabc-active.json")
+                                   "head007-testabc-active.json")
             self.assertFalse(new_file.exists())
 
     def test_legacy_ecs_nonzero_exit_refuses_without_new_launch(self):
@@ -3699,7 +3699,7 @@ class LegacyJournalTests(BootstrapHarness):
             (shared / "token").write_text("", encoding="utf-8")
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "material",
-                 "--release-generation", "head006-testabc"],
+                 "--release-generation", "head007-testabc"],
                 extra_env={"FAKE_DESCRIBE_TASKS": "exit_nonzero"},
                 shared_dir=shared_tmp)
             self.assertNotEqual(result.returncode, 0)
@@ -3711,7 +3711,7 @@ class LegacyJournalTests(BootstrapHarness):
             self.assertTrue(legacy.exists())
             self.assertEqual(legacy.read_text(encoding="utf-8"), before)
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
-                                   "head006-testabc-active.json")
+                                   "head007-testabc-active.json")
             self.assertFalse(new_file.exists())
 
 
@@ -3796,7 +3796,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             before = prior.read_text(encoding="utf-8")
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "material",
-                 "--release-generation", "head006-new1111"],
+                 "--release-generation", "head007-new1111"],
                 shared_dir=shared_tmp)
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
@@ -3806,7 +3806,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.assertTrue(prior.exists())
             self.assertEqual(prior.read_text(encoding="utf-8"), before)
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
-                                   "head006-new1111-active.json")
+                                   "head007-new1111-active.json")
             self.assertFalse(new_file.exists())
 
     def test_mutating_label_blocked_by_pending_prior_generation(self):
@@ -3819,7 +3819,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             before = prior.read_text(encoding="utf-8")
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "migrate",
-                 "--release-generation", "head006-new1111"],
+                 "--release-generation", "head007-new1111"],
                 shared_dir=shared_tmp)
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
@@ -3837,7 +3837,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.seed_live_prior(shared)
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "material",
-                 "--release-generation", "head006-new1111"],
+                 "--release-generation", "head007-new1111"],
                 shared_dir=shared_tmp)
             self.assertEqual(result.returncode, 0,
                              msg=result.stdout + result.stderr)
@@ -3846,10 +3846,10 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.assertEqual(prior.read_text(encoding="utf-8"), before)
             self.assertEqual(oct(prior.stat().st_mode & 0o777), "0o600")
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
-                                   "head006-new1111-active.json")
+                                   "head007-new1111-active.json")
             new_doc = _json.loads(new_file.read_text(encoding="utf-8"))
             self.assertEqual(new_doc.get("outcome"), "complete")
-            self.assertEqual(new_doc.get("release_generation"), "head006-new1111")
+            self.assertEqual(new_doc.get("release_generation"), "head007-new1111")
             runs = [call for call in calls if "run-task" in call]
             self.assertEqual(len(runs), 1)
 
@@ -3864,7 +3864,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             (shared / "token").write_text("", encoding="utf-8")
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "material",
-                 "--release-generation", "head006-new1111"],
+                 "--release-generation", "head007-new1111"],
                 shared_dir=shared_tmp)
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
@@ -3882,7 +3882,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             prior.chmod(0o600)
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "material",
-                 "--release-generation", "head006-new1111"],
+                 "--release-generation", "head007-new1111"],
                 shared_dir=shared_tmp)
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
@@ -3896,7 +3896,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.write_prior(journals, outcome="complete", account="999988887777")
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "material",
-                 "--release-generation", "head006-new1111"],
+                 "--release-generation", "head007-new1111"],
                 shared_dir=shared_tmp)
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
@@ -3909,7 +3909,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.write_prior(journals, outcome="complete", target_head="005")
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "material",
-                 "--release-generation", "head006-new1111"],
+                 "--release-generation", "head007-new1111"],
                 shared_dir=shared_tmp)
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
@@ -3922,7 +3922,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.write_prior(journals, outcome="started", archived=True)
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "material",
-                 "--release-generation", "head006-new1111"],
+                 "--release-generation", "head007-new1111"],
                 shared_dir=shared_tmp)
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
@@ -3933,12 +3933,12 @@ class CrossGenerationJournalTests(BootstrapHarness):
         with tempfile.TemporaryDirectory() as shared_tmp:
             shared, journals = self.fresh_shared(shared_tmp)
             stray = journals / (f"launchcrew-{STACK}-material-sdk-material-"
-                                "head006-old0000-weird.json")
+                                "head007-old0000-weird.json")
             stray.write_text("{}", encoding="utf-8")
             stray.chmod(0o600)
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "material",
-                 "--release-generation", "head006-new1111"],
+                 "--release-generation", "head007-new1111"],
                 shared_dir=shared_tmp)
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
@@ -3956,7 +3956,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.seed_live_prior(shared)
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "material",
-                 "--release-generation", "head006-new1111"],
+                 "--release-generation", "head007-new1111"],
                 shared_dir=shared_tmp)
             self.assertEqual(result.returncode, 0,
                              msg=result.stdout + result.stderr)
@@ -3965,11 +3965,11 @@ class CrossGenerationJournalTests(BootstrapHarness):
                           combined)
             self.assertEqual(prior.read_text(encoding="utf-8"), before)
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
-                                   "head006-new1111-active.json")
+                                   "head007-new1111-active.json")
             new_doc = _json.loads(new_file.read_text(encoding="utf-8"))
             self.assertEqual(new_doc.get("release_generation"),
-                             "head006-new1111")
-            self.assertEqual(new_doc.get("target_head"), "006")
+                             "head007-new1111")
+            self.assertEqual(new_doc.get("target_head"), "007")
             runs = [call for call in calls if "run-task" in call]
             self.assertEqual(len(runs), 1)
             self.assertNotIn("get-secret-value", " ".join(calls).lower())
@@ -3986,7 +3986,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.seed_live_prior(shared)
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "material",
-                 "--release-generation", "head006-new1111"],
+                 "--release-generation", "head007-new1111"],
                 shared_dir=shared_tmp)
             self.assertEqual(result.returncode, 0,
                              msg=result.stdout + result.stderr)
@@ -3995,9 +3995,39 @@ class CrossGenerationJournalTests(BootstrapHarness):
                           combined)
             self.assertEqual(prior.read_text(encoding="utf-8"), before)
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
-                                   "head006-new1111-active.json")
+                                   "head007-new1111-active.json")
             new_doc = _json.loads(new_file.read_text(encoding="utf-8"))
-            self.assertEqual(new_doc.get("target_head"), "006")
+            self.assertEqual(new_doc.get("target_head"), "007")
+            runs = [call for call in calls if "run-task" in call]
+            self.assertEqual(len(runs), 1)
+            self.assertNotIn("get-secret-value", " ".join(calls).lower())
+            self.assertNotIn("BEGIN PRIVATE", combined)
+
+    def test_prior_head006_proceeds_when_fully_proven(self):
+        import json as _json
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_prior(
+                journals, generation="head006-old0000",
+                target_head="006", source_sha="old0000")
+            before = prior.read_text(encoding="utf-8")
+            self.seed_live_prior(shared)
+            result, calls = self.run_bootstrap(
+                [*self.base_args(), "--phase", "material",
+                 "--release-generation", "head007-new1111"],
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            combined = result.stdout + result.stderr
+            self.assertIn("prior generation head006-old0000 reconciled",
+                          combined)
+            self.assertEqual(prior.read_text(encoding="utf-8"), before)
+            new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
+                                   "head007-new1111-active.json")
+            new_doc = _json.loads(new_file.read_text(encoding="utf-8"))
+            self.assertEqual(new_doc.get("release_generation"),
+                             "head007-new1111")
+            self.assertEqual(new_doc.get("target_head"), "007")
             runs = [call for call in calls if "run-task" in call]
             self.assertEqual(len(runs), 1)
             self.assertNotIn("get-secret-value", " ".join(calls).lower())
@@ -4014,7 +4044,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.seed_live_prior(shared)
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "material",
-                 "--release-generation", "head006-new1111"],
+                 "--release-generation", "head007-new1111"],
                 shared_dir=shared_tmp)
             self.assertEqual(result.returncode, 0,
                              msg=result.stdout + result.stderr)
@@ -4023,7 +4053,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
                           combined)
             self.assertEqual(prior.read_text(encoding="utf-8"), before)
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
-                                   "head006-new1111-active.json")
+                                   "head007-new1111-active.json")
             new_doc = _json.loads(new_file.read_text(encoding="utf-8"))
             self.assertEqual(new_doc.get("outcome"), "complete")
             runs = [call for call in calls if "run-task" in call]
@@ -4034,12 +4064,12 @@ class CrossGenerationJournalTests(BootstrapHarness):
         with tempfile.TemporaryDirectory() as shared_tmp:
             shared, journals = self.fresh_shared(shared_tmp)
             prior = self.write_prior(
-                journals, generation="head007-abc1234",
-                target_head="007", source_sha="abc1234")
+                journals, generation="head008-abc1234",
+                target_head="008", source_sha="abc1234")
             before = prior.read_text(encoding="utf-8")
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "material",
-                 "--release-generation", "head006-new1111"],
+                 "--release-generation", "head007-new1111"],
                 shared_dir=shared_tmp)
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
@@ -4048,7 +4078,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.assertFalse(any("run-task" in call for call in calls))
             self.assertEqual(prior.read_text(encoding="utf-8"), before)
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
-                                   "head006-new1111-active.json")
+                                   "head007-new1111-active.json")
             self.assertFalse(new_file.exists())
 
     def test_arbitrary_006_substring_refuses(self):
@@ -4060,7 +4090,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             before = prior.read_text(encoding="utf-8")
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "material",
-                 "--release-generation", "head006-new1111"],
+                 "--release-generation", "head007-new1111"],
                 shared_dir=shared_tmp)
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
@@ -4069,7 +4099,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.assertFalse(any("run-task" in call for call in calls))
             self.assertEqual(prior.read_text(encoding="utf-8"), before)
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
-                                   "head006-new1111-active.json")
+                                   "head007-new1111-active.json")
             self.assertFalse(new_file.exists())
 
     def test_filename_generation_mismatch_refuses(self):
@@ -4077,13 +4107,13 @@ class CrossGenerationJournalTests(BootstrapHarness):
             shared, journals = self.fresh_shared(shared_tmp)
             prior = self.write_prior(journals, outcome="complete")
             renamed = journals / (f"launchcrew-{STACK}-material-sdk-material-"
-                                  "head006-other1111-active.json")
+                                  "head007-other1111-active.json")
             prior.rename(renamed)
             prior = renamed
             before = prior.read_text(encoding="utf-8")
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "material",
-                 "--release-generation", "head006-new1111"],
+                 "--release-generation", "head007-new1111"],
                 shared_dir=shared_tmp)
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
@@ -4092,7 +4122,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.assertFalse(any("run-task" in call for call in calls))
             self.assertEqual(prior.read_text(encoding="utf-8"), before)
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
-                                   "head006-new1111-active.json")
+                                   "head007-new1111-active.json")
             self.assertFalse(new_file.exists())
 
     def test_config_digest_mismatch_refuses(self):
@@ -4103,7 +4133,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             before = prior.read_text(encoding="utf-8")
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "material",
-                 "--release-generation", "head006-new1111"],
+                 "--release-generation", "head007-new1111"],
                 shared_dir=shared_tmp)
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
@@ -4112,7 +4142,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.assertFalse(any("run-task" in call for call in calls))
             self.assertEqual(prior.read_text(encoding="utf-8"), before)
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
-                                   "head006-new1111-active.json")
+                                   "head007-new1111-active.json")
             self.assertFalse(new_file.exists())
 
     def test_ambiguous_generation_refuses(self):
@@ -4124,7 +4154,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             before = prior.read_text(encoding="utf-8")
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "material",
-                 "--release-generation", "head006-new1111"],
+                 "--release-generation", "head007-new1111"],
                 shared_dir=shared_tmp)
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
@@ -4133,7 +4163,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.assertFalse(any("run-task" in call for call in calls))
             self.assertEqual(prior.read_text(encoding="utf-8"), before)
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
-                                   "head006-new1111-active.json")
+                                   "head007-new1111-active.json")
             self.assertFalse(new_file.exists())
 
     def test_same_generation_archive_proceeds_when_live_proven(self):
@@ -4141,13 +4171,13 @@ class CrossGenerationJournalTests(BootstrapHarness):
         with tempfile.TemporaryDirectory() as shared_tmp:
             shared, journals = self.fresh_shared(shared_tmp)
             prior = self.write_prior(
-                journals, generation="head006-new1111",
+                journals, generation="head007-new1111",
                 outcome="complete", archived=True)
             before = prior.read_text(encoding="utf-8")
             self.seed_live_prior(shared)
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "material",
-                 "--release-generation", "head006-new1111"],
+                 "--release-generation", "head007-new1111"],
                 shared_dir=shared_tmp)
             self.assertEqual(result.returncode, 0,
                              msg=result.stdout + result.stderr)
@@ -4157,10 +4187,10 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.assertEqual(prior.read_text(encoding="utf-8"), before)
             self.assertEqual(oct(prior.stat().st_mode & 0o777), "0o600")
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
-                                   "head006-new1111-active.json")
+                                   "head007-new1111-active.json")
             new_doc = _json.loads(new_file.read_text(encoding="utf-8"))
             self.assertEqual(new_doc.get("outcome"), "complete")
-            self.assertEqual(new_doc.get("release_generation"), "head006-new1111")
+            self.assertEqual(new_doc.get("release_generation"), "head007-new1111")
             runs = [call for call in calls if "run-task" in call]
             self.assertEqual(len(runs), 1)
             describes = [call for call in calls if "describe-tasks" in call]
@@ -4170,13 +4200,13 @@ class CrossGenerationJournalTests(BootstrapHarness):
         with tempfile.TemporaryDirectory() as shared_tmp:
             shared, journals = self.fresh_shared(shared_tmp)
             prior = self.write_prior(
-                journals, generation="head006-new1111",
+                journals, generation="head007-new1111",
                 outcome="complete", archived=True)
             before = prior.read_text(encoding="utf-8")
             self.seed_live_prior(shared)
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "material",
-                 "--release-generation", "head006-new1111"],
+                 "--release-generation", "head007-new1111"],
                 extra_env={"FAKE_DESCRIBE_TASKS": "empty"},
                 shared_dir=shared_tmp)
             self.assertNotEqual(result.returncode, 0)
@@ -4188,20 +4218,20 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.assertTrue(prior.exists())
             self.assertEqual(prior.read_text(encoding="utf-8"), before)
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
-                                   "head006-new1111-active.json")
+                                   "head007-new1111-active.json")
             self.assertFalse(new_file.exists())
 
     def test_same_generation_archive_ecs_failures_refuses(self):
         with tempfile.TemporaryDirectory() as shared_tmp:
             shared, journals = self.fresh_shared(shared_tmp)
             prior = self.write_prior(
-                journals, generation="head006-new1111",
+                journals, generation="head007-new1111",
                 outcome="complete", archived=True)
             before = prior.read_text(encoding="utf-8")
             self.seed_live_prior(shared)
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "material",
-                 "--release-generation", "head006-new1111"],
+                 "--release-generation", "head007-new1111"],
                 extra_env={"FAKE_DESCRIBE_TASKS": "failures"},
                 shared_dir=shared_tmp)
             self.assertNotEqual(result.returncode, 0)
@@ -4213,20 +4243,20 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.assertTrue(prior.exists())
             self.assertEqual(prior.read_text(encoding="utf-8"), before)
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
-                                   "head006-new1111-active.json")
+                                   "head007-new1111-active.json")
             self.assertFalse(new_file.exists())
 
     def test_same_generation_archive_ecs_wrong_status_refuses(self):
         with tempfile.TemporaryDirectory() as shared_tmp:
             shared, journals = self.fresh_shared(shared_tmp)
             prior = self.write_prior(
-                journals, generation="head006-new1111",
+                journals, generation="head007-new1111",
                 outcome="complete", archived=True)
             before = prior.read_text(encoding="utf-8")
             self.seed_live_prior(shared)
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "material",
-                 "--release-generation", "head006-new1111"],
+                 "--release-generation", "head007-new1111"],
                 extra_env={"FAKE_DESCRIBE_TASKS": "running"},
                 shared_dir=shared_tmp)
             self.assertNotEqual(result.returncode, 0)
@@ -4238,20 +4268,20 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.assertTrue(prior.exists())
             self.assertEqual(prior.read_text(encoding="utf-8"), before)
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
-                                   "head006-new1111-active.json")
+                                   "head007-new1111-active.json")
             self.assertFalse(new_file.exists())
 
     def test_same_generation_archive_ecs_nonzero_exit_refuses(self):
         with tempfile.TemporaryDirectory() as shared_tmp:
             shared, journals = self.fresh_shared(shared_tmp)
             prior = self.write_prior(
-                journals, generation="head006-new1111",
+                journals, generation="head007-new1111",
                 outcome="complete", archived=True)
             before = prior.read_text(encoding="utf-8")
             self.seed_live_prior(shared)
             result, calls = self.run_bootstrap(
                 [*self.base_args(), "--phase", "material",
-                 "--release-generation", "head006-new1111"],
+                 "--release-generation", "head007-new1111"],
                 extra_env={"FAKE_DESCRIBE_TASKS": "exit_nonzero"},
                 shared_dir=shared_tmp)
             self.assertNotEqual(result.returncode, 0)
@@ -4263,7 +4293,7 @@ class CrossGenerationJournalTests(BootstrapHarness):
             self.assertTrue(prior.exists())
             self.assertEqual(prior.read_text(encoding="utf-8"), before)
             new_file = journals / (f"launchcrew-{STACK}-material-sdk-material-"
-                                   "head006-new1111-active.json")
+                                   "head007-new1111-active.json")
             self.assertFalse(new_file.exists())
 
 

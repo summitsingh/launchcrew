@@ -1465,78 +1465,33 @@ def campaign_detail(db, campaign_id, workspace_id):
     return result
 
 
-def _insert_campaign_pending_day(db, campaign_id, day, run_id, pending, maker_name, actor, workspace_id):
-    db.execute(text('INSERT INTO runs(id,receipt,agent_name,state,workspace_id) VALUES (:id,CAST(:receipt AS jsonb),:agent,:state,:ws)'),
-               {'id': run_id, 'receipt': json.dumps(pending), 'agent': maker_name.lower(), 'state': pending['approval_state'], 'ws': workspace_id})
-    db.execute(text('INSERT INTO memory(run_id,facts) VALUES (:id,CAST(:facts AS jsonb))'),
-               {'id': run_id, 'facts': json.dumps([])})
-    db.execute(text('INSERT INTO campaign_days(campaign_id,day,run_id,workspace_id) VALUES (:id,:day,:run,:ws)'),
-               {'id': campaign_id, 'day': day, 'run': run_id, 'ws': workspace_id})
-
-
-def _cleanup_campaign_partial(campaign_id, workspace_id):
-    try:
-        with store.connect() as db:
-            run_ids = db.execute(text('SELECT run_id FROM campaign_days WHERE campaign_id=:id AND workspace_id=:ws'),
-                                 {'id': campaign_id, 'ws': workspace_id}).scalars().all()
-            run_ids = [rid for rid in run_ids if isinstance(rid, str) and rid]
-            if run_ids:
-                db.execute(text('DELETE FROM approvals WHERE run_id = ANY(:ids)'), {'ids': run_ids})
-                db.execute(text('DELETE FROM memory WHERE run_id = ANY(:ids)'), {'ids': run_ids})
-                db.execute(text('DELETE FROM audit WHERE run_id = ANY(:ids)'), {'ids': run_ids})
-            db.execute(text('DELETE FROM campaign_days WHERE campaign_id=:id AND workspace_id=:ws'),
-                       {'id': campaign_id, 'ws': workspace_id})
-            if run_ids:
-                db.execute(text('DELETE FROM runs WHERE id = ANY(:ids)'), {'ids': run_ids})
-            db.execute(text('DELETE FROM campaigns WHERE id=:id AND workspace_id=:ws'),
-                       {'id': campaign_id, 'ws': workspace_id})
-    except Exception:
-        pass
-
-
-def _finalize_campaign_day(db, run_id, receipt, maker_name, actor, workspace_id, voice_selection):
-    from backend import run_jobs as run_jobs_mod
+def _insert_campaign_committed_day(db, campaign_id, day, run_id, receipt, maker_name, actor, workspace_id, voice_selection):
     if not isinstance(receipt, dict):
         raise ValueError('Campaign day receipt unavailable')
     status = receipt.get('status')
     if status == 'completed':
         _mark_sync_voice_stale_if_changed(db, receipt, workspace_id, actor, lock=True, selection=voice_selection)
-        stored_row = db.execute(text('SELECT receipt FROM runs WHERE id=:id AND workspace_id=:ws FOR UPDATE'),
-                                {'id': run_id, 'ws': workspace_id}).fetchone()
-        if stored_row is None:
-            raise HTTPException(404, 'Campaign day not found')
-        merged = run_jobs_mod._merge_stored_voice_stale(stored_row[0], receipt)
-        result = db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id AND workspace_id=:ws'),
-                       {'receipt': json.dumps(merged), 'state': merged['approval_state'], 'id': run_id, 'ws': workspace_id})
-        if result.rowcount == 0:
-            raise HTTPException(404, 'Campaign day not found')
-        db.execute(text('INSERT INTO memory(run_id,facts) VALUES (:id,CAST(:facts AS jsonb))'
-                        ' ON CONFLICT (run_id) DO UPDATE SET facts=EXCLUDED.facts'),
-                   {'id': run_id, 'facts': json.dumps((merged.get('scout') or {}).get('facts_used', []) if isinstance(merged.get('scout'), dict) else [])})
-        store.audit(db, run_id, 'run_created', actor, workspace_id)
-        return merged
-    receipt = dict(receipt)
-    receipt['approval_state'] = receipt.get('approval_state') or 'pending_approval'
-    stored_row = db.execute(text('SELECT receipt FROM runs WHERE id=:id AND workspace_id=:ws FOR UPDATE'),
-                            {'id': run_id, 'ws': workspace_id}).fetchone()
-    if stored_row is None:
-        raise HTTPException(404, 'Campaign day not found')
-    merged = run_jobs_mod._merge_stored_voice_stale(stored_row[0], receipt)
-    result = db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id AND workspace_id=:ws'),
-                   {'receipt': json.dumps(merged), 'state': merged['approval_state'], 'id': run_id, 'ws': workspace_id})
-    if result.rowcount == 0:
-        raise HTTPException(404, 'Campaign day not found')
-    db.execute(text('INSERT INTO memory(run_id,facts) VALUES (:id,CAST(:facts AS jsonb))'
-                    ' ON CONFLICT (run_id) DO UPDATE SET facts=EXCLUDED.facts'),
-               {'id': run_id, 'facts': json.dumps([])})
-    store.audit(db, run_id, 'run_failed', actor, workspace_id)
-    return merged
+        facts = (receipt.get('scout') or {}).get('facts_used', []) if isinstance(receipt.get('scout'), dict) else []
+        audit_action = 'run_created'
+        stored = receipt
+    else:
+        stored = dict(receipt)
+        stored['approval_state'] = stored.get('approval_state') or 'pending_approval'
+        facts = []
+        audit_action = 'run_failed'
+    db.execute(text('INSERT INTO runs(id,receipt,agent_name,state,workspace_id) VALUES (:id,CAST(:receipt AS jsonb),:agent,:state,:ws)'),
+               {'id': run_id, 'receipt': json.dumps(stored), 'agent': maker_name.lower(), 'state': stored['approval_state'], 'ws': workspace_id})
+    db.execute(text('INSERT INTO memory(run_id,facts) VALUES (:id,CAST(:facts AS jsonb))'),
+               {'id': run_id, 'facts': json.dumps(facts)})
+    db.execute(text('INSERT INTO campaign_days(campaign_id,day,run_id,workspace_id) VALUES (:id,:day,:run,:ws)'),
+               {'id': campaign_id, 'day': day, 'run': run_id, 'ws': workspace_id})
+    store.audit(db, run_id, audit_action, actor, workspace_id)
+    return stored
 
 
 @app.post('/api/campaigns', response_model=CampaignOut, status_code=201)
 def create_campaign(body: RunInput, actor: str = Depends(auth.actor)):
     from launchcrew.facts import parse_product_facts
-    from launchcrew import receipts as receipt_mod
     from backend import model_admission
     product_facts_raw = body.product_facts.model_dump() if body.product_facts is not None else None
     parse_product_facts(product_facts_raw)
@@ -1549,57 +1504,44 @@ def create_campaign(body: RunInput, actor: str = Depends(auth.actor)):
         scout_name, maker_name, checker_name = stage_names(body)
         voice_selection = _capture_voice_selection(db, items, workspace_id)
         voice_binding = _voice_receipt_binding(items)
+    run_ids = []
+    seen = set()
+    while len(run_ids) < 7:
+        candidate = 'run_' + uuid4().hex
+        if candidate not in seen:
+            seen.add(candidate)
+            run_ids.append(candidate)
+    staged = []
+    for day in range(1, 8):
+        _angle, brief, brief_claim = CAMPAIGN_BRIEF_BY_DAY[day]
+        run_id = run_ids[day - 1]
+        try:
+            factory = model_admission.admission_factory_for_run(engine, run_id)
+            receipt = adapter.execute(run_id, body.idea, legacy, body.seed_unverified_claim,
+                                      memory_items=items, checker_profile=body.checker_profile,
+                                      brief=brief, campaign_day=day, extra_claims=[brief_claim],
+                                      scout_profile=scout, maker_profile=maker, checker_agent=checker,
+                                      product_facts=product_facts_raw,
+                                      model_admission_factory=factory)
+        except Exception as error:
+            failed = {'receipt_version': '1.0', 'run_id': run_id, 'generated_at': datetime.now(timezone.utc).isoformat(),
+                      'status': 'failed', 'brand': 'LaunchCrew', 'mode': 'demo_no_submit',
+                      'idea': body.idea, 'approvals': [], 'completed_steps': [],
+                      'error_type': type(error).__name__[:64] or 'PipelineError',
+                      'approval_state': 'pending_approval', 'checker_profile': body.checker_profile,
+                      'stage_bindings': {'scout': scout_name, 'maker': maker_name, 'checker': checker_name},
+                      'summary': {'submit_attempted': False, 'submit_completed': False},
+                      'audit': {'event_log': [], 'stopped_reason': 'campaign_day_%d' % day},
+                      'voice_profile': voice_binding, 'campaign_day': day, 'campaign_brief': brief}
+            staged.append((day, run_id, failed))
+            continue
+        staged.append((day, run_id, receipt))
+    with store.connect() as db:
+        commit_ws = store.ensure_workspace_seeded(db, actor)
         db.execute(text('INSERT INTO campaigns(id,idea,agent_name,workspace_id) VALUES (:id,:idea,:agent,:ws)'),
-                   {'id': campaign_id, 'idea': body.idea, 'agent': maker_name, 'ws': workspace_id})
-    try:
-        for day in range(1, 8):
-            angle, brief, brief_claim = CAMPAIGN_BRIEF_BY_DAY[day]
-            run_id = 'run_' + uuid4().hex
-            with store.connect() as db:
-                pending_ws = store.ensure_workspace_seeded(db, actor)
-                pending = receipt_mod.pending_receipt(run_id, body.idea,
-                                                      {'scout': scout_name, 'maker': maker_name, 'checker': checker_name},
-                                                      voice_binding)
-                pending['campaign_day'] = day
-                pending['campaign_brief'] = brief
-                _insert_campaign_pending_day(db, campaign_id, day, run_id, pending, maker_name, actor, pending_ws)
-            try:
-                factory = model_admission.admission_factory_for_run(engine, run_id)
-                receipt = adapter.execute(run_id, body.idea, legacy, body.seed_unverified_claim,
-                                          memory_items=items, checker_profile=body.checker_profile,
-                                          brief=brief, campaign_day=day, extra_claims=[brief_claim],
-                                          scout_profile=scout, maker_profile=maker, checker_agent=checker,
-                                          product_facts=product_facts_raw,
-                                          model_admission_factory=factory)
-            except Exception as error:
-                failed = {'receipt_version': '1.0', 'run_id': run_id, 'generated_at': datetime.now(timezone.utc).isoformat(),
-                          'status': 'failed', 'brand': 'LaunchCrew', 'mode': 'demo_no_submit',
-                          'idea': body.idea, 'approvals': [], 'completed_steps': [],
-                          'error_type': type(error).__name__[:64] or 'PipelineError',
-                          'approval_state': 'pending_approval', 'checker_profile': body.checker_profile,
-                          'stage_bindings': {'scout': scout_name, 'maker': maker_name, 'checker': checker_name},
-                          'summary': {'submit_attempted': False, 'submit_completed': False},
-                          'audit': {'event_log': [], 'stopped_reason': 'campaign_day_%d' % day},
-                          'voice_profile': voice_binding, 'campaign_day': day, 'campaign_brief': brief}
-                with store.connect() as db:
-                    finalize_ws = store.ensure_workspace_seeded(db, actor)
-                    _finalize_campaign_day(db, run_id, failed, maker_name, actor, finalize_ws, voice_selection)
-                continue
-            with store.connect() as db:
-                finalize_ws = store.ensure_workspace_seeded(db, actor)
-                _finalize_campaign_day(db, run_id, receipt, maker_name, actor, finalize_ws, voice_selection)
-    except HTTPException:
-        try:
-            _cleanup_campaign_partial(campaign_id, store.workspace_for_actor(actor))
-        except Exception:
-            pass
-        raise
-    except Exception:
-        try:
-            _cleanup_campaign_partial(campaign_id, store.workspace_for_actor(actor))
-        except Exception:
-            pass
-        raise
+                   {'id': campaign_id, 'idea': body.idea, 'agent': maker_name, 'ws': commit_ws})
+        for day, run_id, receipt in staged:
+            _insert_campaign_committed_day(db, campaign_id, day, run_id, receipt, maker_name, actor, commit_ws, voice_selection)
     with store.connect() as db:
         detail_ws = store.ensure_workspace_seeded(db, actor)
         return campaign_detail(db, campaign_id, detail_ws)

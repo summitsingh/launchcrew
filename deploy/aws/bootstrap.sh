@@ -140,11 +140,11 @@ LAUNCH_JOURNAL_DIR="${LAUNCH_JOURNAL_DIR:-}"
 QUIESCE_CONFIRM="${QUIESCE_CONFIRM:-}"
 SOURCE_SHA="${SOURCE_SHA:-}"
 RELEASE_GEN="${RELEASE_GEN:-}"
-TARGET_DB_HEAD="006"
+TARGET_DB_HEAD="007"
 # Empty journal default resolves inside run_one_off_task to a dedicated
 # persistent private directory under the ignored .local tree derived from the
 # script root, never shared /tmp. An explicit --launch-journal-dir still
-# overrides. Release generation defaults to head006 plus the source Git SHA
+# overrides. Release generation defaults to head007 plus the source Git SHA
 # short hash when available; an explicit --release-generation still overrides
 # for tests. Old one-shot journals are never deleted, renamed, or overwritten;
 # a new generation uses a distinct path and must enumerate and reconcile
@@ -994,22 +994,23 @@ case "$PHASE" in
   infra|init|material|dbroles|migrate|enable|all|foundation|prereqs|quiesce) check_cost_tag_activation ;;
 esac
 
-# Release generation for the head006 rollout. A new intentional release uses a
+# Release generation for the head007 rollout. A new intentional release uses a
 # distinct durable generation bound to the source Git SHA and the target DB
 # head, plus the exact owned StackId, task definition, and config digest at
 # launch time. Old one-shot journals are never deleted, renamed, or
 # overwritten; the new generation uses a distinct active path and must
 # enumerate and reconcile every prior-generation record to STOPPED with all
 # essential exits 0 before any new launch. An empty new path never proves
-# absence.
+# absence. The head007 generation name never collides with a head006 prior
+# journal: prior head006 records reconcile as legitimate predecessors.
 resolve_release_generation() {
   if [ -n "$RELEASE_GEN" ]; then
     case "$RELEASE_GEN" in
       *[!A-Za-z0-9_.-]*) echo "refused: release generation has invalid characters: $RELEASE_GEN" >&2; exit 2 ;;
     esac
     case "$RELEASE_GEN" in
-      *head006*|*006*) ;;
-      *) echo "refused: release generation must name the target head006: $RELEASE_GEN" >&2; exit 2 ;;
+      *head007*|*007*) ;;
+      *) echo "refused: release generation must name the target head007: $RELEASE_GEN" >&2; exit 2 ;;
     esac
     return 0
   fi
@@ -1031,7 +1032,7 @@ resolve_release_generation() {
       ""|*[!0-9a-fA-F]*) SHA_SHORT="unknown" ;;
     esac
   fi
-  RELEASE_GEN="head006-$SHA_SHORT"
+  RELEASE_GEN="head007-$SHA_SHORT"
 }
 
 resolve_release_generation
@@ -3403,7 +3404,7 @@ write_launch_journal() {
   JOURNAL_PATH="$1"
   JOURNAL_OUTCOME="$2"
   JOURNAL_TASK="$3"
-  (umask 077; python3 - "$JOURNAL_PATH" "$STACK_NAME" "$TASK_PHASE" "$TASK_LABEL" "$TASKDEF_LOGICAL" "$TASKDEF_ARN" "$CLUSTER_NAME" "$CLIENT_TOKEN" "$EXPECTED_REGION" "$EXPECTED_ACCOUNT" "$JOURNAL_OUTCOME" "$JOURNAL_TASK" "${CONFIG_DIGEST:-}" "${RELEASE_GEN:-}" "${SOURCE_SHA:-}" "${TARGET_DB_HEAD:-006}" "${STACK_ID:-}" "${PREDECESSOR_TASK:-}" "${PREDECESSOR_OUTCOME:-none}" <<'PYEOF'
+  (umask 077; python3 - "$JOURNAL_PATH" "$STACK_NAME" "$TASK_PHASE" "$TASK_LABEL" "$TASKDEF_LOGICAL" "$TASKDEF_ARN" "$CLUSTER_NAME" "$CLIENT_TOKEN" "$EXPECTED_REGION" "$EXPECTED_ACCOUNT" "$JOURNAL_OUTCOME" "$JOURNAL_TASK" "${CONFIG_DIGEST:-}" "${RELEASE_GEN:-}" "${SOURCE_SHA:-}" "${TARGET_DB_HEAD:-007}" "${STACK_ID:-}" "${PREDECESSOR_TASK:-}" "${PREDECESSOR_OUTCOME:-none}" <<'PYEOF'
 import json, os, sys, tempfile
 (path, stack, phase, label, taskdef_logical, taskdef_arn, cluster,
  token, region, account, outcome, task_arn, config_digest,
@@ -4028,8 +4029,10 @@ is_mutating_label() {
 # archived record must be owned, well-formed, complete, and terminally
 # re-proven STOPPED with every required essential container exit 0 before
 # any new release work. Versioned predecessors must name an allowed head
-# (004, 005, or current) explicitly via headXXX or a delimited token, match
-# the filename generation exactly, and carry a recomputed config digest.
+# (004, 005, 006, or current 007) explicitly via headXXX or a delimited
+# token, match the filename generation exactly, and carry a recomputed
+# config digest. Head 006 is a legitimate predecessor of the 007 rollout;
+# unknown, future, or mismatched heads still refuse with no new launch.
 # Same-generation archives from read-only rechecks are field validated,
 # must be complete, and are live re-proven exactly like prior generations:
 # archive-time proof never substitutes for current ECS terminal proof. Unknown,
@@ -4168,7 +4171,7 @@ if not file_gen or file_gen != gen:
     print("PROOF\tGENERATION_FILENAME_MISMATCH")
     sys.exit(0)
 head = doc.get("target_head", "")
-allowed_heads = {"004", "005", want_head}
+allowed_heads = {"004", "005", "006", want_head}
 if not isinstance(head, str) or head not in allowed_heads:
     print("PROOF\tHEAD_UNKNOWN")
     sys.exit(0)

@@ -1450,7 +1450,10 @@ export interface components {
             };
             /** @description Slice 3 selected voice source/version with banned terms. Style samples stay in Memory and never become facts. */
             voice_profile?: components["schemas"]["VoiceProfileSection"] | null;
-            /** @description True when the selected voice was edited or deleted after this receipt; a new human revision check is required. */
+            /**
+             * Voice Stale
+             * @description True when the selected voice was edited or deleted after this receipt; a new human revision check is required.
+             */
             voice_stale?: boolean | null;
         } & {
             [key: string]: unknown;

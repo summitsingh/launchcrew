@@ -114,7 +114,7 @@ if [ "$1" = "cloudformation" ] && [ "$2" = "create-change-set" ]; then
   case "$*" in
     *"--template-file"*)
       if [ "${FAKE_INFRA_CREATE:-ok}" = "exists" ]; then
-        echo "An error occurred (AlreadyExistsException) when calling the CreateChangeSet operation: change set infra-006 exists" >&2
+        echo "An error occurred (AlreadyExistsException) when calling the CreateChangeSet operation: change set infra-007 exists" >&2
         exit 254
       fi ;;
   esac
@@ -978,7 +978,7 @@ class PhaseCHarness(unittest.TestCase):
         return [call for call in calls if "run-task" in call]
 
     def run_enable_with_priors(self, shared_tmp, enable_extra_env=None,
-                               release="head006-testabc"):
+                               release="head007-testabc"):
         base = self.base_args()
         result_mat, _, _ = self.run_phase(
             [*base, "--phase", "material",
@@ -1104,7 +1104,7 @@ class ControllerOrderTests(PhaseCHarness):
         self.assertIn("desiredCount 0", result.stdout)
         self.assertIn("desiredCount 1", result.stdout)
         infra_exec = next(i for i, call in enumerate(calls)
-                          if "execute-change-set" in call and "infra-006" in call)
+                          if "execute-change-set" in call and "infra-007" in call)
         first_run = next(i for i, call in enumerate(calls) if "run-task" in call)
         deploy_true = next(i for i, call in enumerate(calls)
                            if "deploy " in call and "EnableServices=true" in call)
@@ -1629,10 +1629,10 @@ class StandalonePrereqTests(PhaseCHarness):
         self.assertIn("desiredCount 0", result.stdout)
         self.assertIn("services at 0", result.stdout)
         self.assertTrue(any("describe-services" in call for call in calls))
-        self.assertTrue(any("create-change-set" in call and "infra-006" in call
+        self.assertTrue(any("create-change-set" in call and "infra-007" in call
                             for call in calls))
         self.assertTrue(any("describe-change-set" in call for call in calls))
-        self.assertTrue(any("execute-change-set" in call and "changeSet/infra-006/" in call
+        self.assertTrue(any("execute-change-set" in call and "changeSet/infra-007/" in call
                             for call in calls))
         self.assertFalse(any("deploy " in call for call in calls))
         self.assertEqual(self.run_calls(calls), [])
