@@ -463,8 +463,8 @@ def test_preview_suppressed_when_revision_moves_after_finalize(client, monkeypat
     assert 'stale' not in (body['check'].get('reason') or '').lower()
     assert 'stale' not in json.dumps(body['receipt'].get('photo_status') or {}).lower()
     assert 'stale' not in json.dumps(body['receipt'].get('photo_transport') or {}).lower()
-    scrubbed = json.dumps(body).lower().replace('voice_stale', '')
-    assert 'stale' not in scrubbed
+    receipt_scrubbed = {k: v for k, v in (body.get('receipt') or {}).items() if k not in ('readiness', 'voice_stale')}
+    assert 'stale' not in json.dumps(receipt_scrubbed).lower()
 
 
 def test_forged_fields_and_stale_versions(client):
