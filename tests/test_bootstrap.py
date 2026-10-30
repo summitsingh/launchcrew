@@ -1153,7 +1153,7 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-tasks" ]; then
         exit 0
       fi
       if [ "${FAKE_STOPPED_MULTIPLE_FAILURES:-0}" = "1" ]; then
-        printf '%s' '{"tasks":[],"failures":[{"arn":"'"$REQUESTED"'","reason":"MISSING"},{"arn":"arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/other-task-999","reason":"MISSING"}]}'
+        printf '%s' '{"tasks":[],"failures":[{"arn":"'"$REQUESTED"'","reason":"MISSING"},{"arn":"arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/other-job-999","reason":"MISSING"}]}'
         exit 0
       fi
       python3 - "$REQUESTED_ALL" "${FAKE_STOPPED_STARTEDBY:-}" "${FAKE_STOPPED_DESIRED:-STOPPED}" "${FAKE_STOPPED_LASTSTATUS:-STOPPED}" "${FAKE_STOPPED_CLUSTER_MISMATCH:-0}" "${FAKE_STOPPED_TASK_MISMATCH:-0}" "${FAKE_STOPPED_COUNT_MISMATCH:-0}" "${FAKE_STOPPED_NO_STARTEDBY:-0}" "${FAKE_STOPPED_MISSING_DESIRED:-0}" "${FAKE_STOPPED_MISSING_LAST:-0}" "${FAKE_STOPPED_FOREIGN_TASK:-0}" <<'PYEOF'
