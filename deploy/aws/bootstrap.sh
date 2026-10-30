@@ -10370,6 +10370,86 @@ PYEOF
         echo "refused: migration recovery observed007 but original history includes target008 (${MIGRATION_ORIG_HEAD:-unknown}) with state regression, ambiguous prior 008 requires separately reviewed repair with zero new migration RunTask. Preserved history, no resend. Inspect $LAUNCH_JOURNAL_DIR/recovery." >&2
         phase_failed "$TASK_PHASE"
       fi
+      MIGRATION_HIST_ENUM="$(python3 - "$LAUNCH_JOURNAL_DIR" "$STACK_NAME" "$(basename "$ACTIVE_FILE")" 2>/dev/null <<'PYEOF'
+import os, sys
+directory, stack, active_base = sys.argv[1:4]
+prefix = "launchcrew-%s-migrate-migration-" % stack
+try:
+    names = sorted(os.listdir(directory))
+except Exception:
+    print("PROOF\tLIST_FAILED")
+    sys.exit(0)
+found = []
+for name in names:
+    if not name.startswith(prefix) or not name.endswith(".json"):
+        continue
+    if name == active_base:
+        continue
+    found.append(name)
+    if len(found) > 32:
+        print("PROOF\tTOO_MANY")
+        sys.exit(0)
+print("PROOF\tOK")
+for _b in found:
+    print("BASE\t%s" % _b)
+PYEOF
+)" || MIGRATION_HIST_ENUM="PROOF\tLIST_FAILED"
+      MIGRATION_HIST_PROOF="$(printf '%s\n' "$MIGRATION_HIST_ENUM" | awk -F'\t' '$1=="PROOF"{print $2}' | tr -d '[:space:]')"
+      if [ "$MIGRATION_HIST_PROOF" != "OK" ]; then
+        release_operation_lock
+        echo "refused: migration recovery observed007 but historical target inventory proof is $MIGRATION_HIST_PROOF, separately reviewed repair required with zero new migration RunTask. Preserved history, no resend. Inspect $LAUNCH_JOURNAL_DIR." >&2
+        phase_failed "$TASK_PHASE"
+      fi
+      MIGRATION_HIST_LIST="$(printf '%s\n' "$MIGRATION_HIST_ENUM" | awk -F'\t' '$1=="BASE"{print $2}')"
+      MIGRATION_HIST_OK=1
+      MIGRATION_HIST_HAS008=0
+      MIGRATION_HIST_HAS_LEGACY=0
+      while IFS= read -r MIGRATION_HIST_BASE || [ -n "$MIGRATION_HIST_BASE" ]; do
+        [ -n "$MIGRATION_HIST_BASE" ] || continue
+        case "$MIGRATION_HIST_BASE" in
+          *"/"*|"."|"..") MIGRATION_HIST_OK=0; break ;;
+        esac
+        MIGRATION_HIST_PATH="$LAUNCH_JOURNAL_DIR/$MIGRATION_HIST_BASE"
+        if [ -L "$MIGRATION_HIST_PATH" ] || [ ! -f "$MIGRATION_HIST_PATH" ]; then
+          MIGRATION_HIST_OK=0; break
+        fi
+        MIGRATION_HIST_VALIDATED="$(validate_typed_journal_for_recovery "$MIGRATION_HIST_PATH" "$MIGRATION_HIST_BASE" "migrate" "migration" "MigrationTaskDefinition" "1")" || MIGRATION_HIST_VALIDATED="PROOF\tUNREADABLE"
+        MIGRATION_HIST_VPROOF="$(printf '%s\n' "$MIGRATION_HIST_VALIDATED" | awk -F'\t' '$1=="PROOF"{print $2}' | tr -d '[:space:]')"
+        MIGRATION_HIST_VHEAD="$(printf '%s\n' "$MIGRATION_HIST_VALIDATED" | awk -F'\t' '$1=="HEAD"{print $2}' | tr -d '[:space:]')"
+        MIGRATION_HIST_VLEGACY="$(printf '%s\n' "$MIGRATION_HIST_VALIDATED" | awk -F'\t' '$1=="LEGACY"{print $2}' | tr -d '[:space:]')"
+        MIGRATION_HIST_VOUT="$(printf '%s\n' "$MIGRATION_HIST_VALIDATED" | awk -F'\t' '$1=="OUTCOME"{print $2}' | tr -d '[:space:]')"
+        if [ "$MIGRATION_HIST_VPROOF" != "OK" ]; then
+          MIGRATION_HIST_OK=0; break
+        fi
+        if [ "$MIGRATION_HIST_VLEGACY" = "true" ]; then
+          MIGRATION_HIST_HAS_LEGACY=1; continue
+        fi
+        case "$MIGRATION_HIST_VHEAD" in
+          008) MIGRATION_HIST_HAS008=1 ;;
+          004|005|006|007)
+            if [ "$MIGRATION_HIST_VOUT" != "complete" ]; then
+              MIGRATION_HIST_OK=0; break
+            fi ;;
+          *) MIGRATION_HIST_OK=0; break ;;
+        esac
+      done <<EOF_HIST_LIST
+$MIGRATION_HIST_LIST
+EOF_HIST_LIST
+      if [ "$MIGRATION_HIST_OK" != "1" ]; then
+        release_operation_lock
+        echo "refused: migration recovery observed007 but historical target inventory is malformed or ambiguous, separately reviewed repair required with zero new migration RunTask. Preserved history, no resend. Inspect $LAUNCH_JOURNAL_DIR and $LAUNCH_JOURNAL_DIR/recovery." >&2
+        phase_failed "$TASK_PHASE"
+      fi
+      if [ "$MIGRATION_HIST_HAS_LEGACY" = "1" ]; then
+        release_operation_lock
+        echo "refused: migration recovery observed007 with legacy unversioned historical target is ambiguous, historical 008 attempt cannot be excluded, separately reviewed repair required with zero new migration RunTask. Preserved history, no resend. Inspect $LAUNCH_JOURNAL_DIR and $LAUNCH_JOURNAL_DIR/recovery." >&2
+        phase_failed "$TASK_PHASE"
+      fi
+      if [ "$MIGRATION_HIST_HAS008" = "1" ]; then
+        release_operation_lock
+        echo "refused: migration recovery observed007 but validated history includes target008 with state regression, ambiguous prior 008 requires separately reviewed repair with zero new migration RunTask. Preserved history, no resend. Inspect $LAUNCH_JOURNAL_DIR and $LAUNCH_JOURNAL_DIR/recovery." >&2
+        phase_failed "$TASK_PHASE"
+      fi
       if [ "$MIGRATION_ORIG_HAS007" != "true" ]; then
         release_operation_lock
         echo "refused: migration recovery observed007 but original target is ${MIGRATION_ORIG_HEAD:-unknown}, not validated 007; ambiguous prior 008 with state regression requires separately reviewed repair with zero new migration RunTask. Preserved history, no resend. Inspect $LAUNCH_JOURNAL_DIR/recovery." >&2

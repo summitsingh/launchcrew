@@ -8304,6 +8304,68 @@ class TypedRecoveryTests(BootstrapHarness):
             self.assertEqual(doc.get("observed_head"), "007")
             self.check_digest(doc)
 
+    def test_migration_mixed_aged_006_007_with_live_008_observed007_refuses(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            shared, journals = self.fresh_shared(shared_tmp)
+            prior006 = self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", self.MIG_TOKEN, self.MIG_TASK,
+                self.MIG_TASKDEF, generation="head006-abc1234",
+                head="006", outcome="complete")
+            before006 = prior006.read_bytes()
+            mig007_token = "lc-" + "i" * 30
+            mig007_task = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+                           "task/launchcrew-demo/aged-migration-002")
+            prior007 = self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", mig007_token, mig007_task,
+                self.MIG_TASKDEF, generation="head007-abc1234",
+                head="007", outcome="complete")
+            before007 = prior007.read_bytes()
+            mig008_token = "lc-" + "k" * 30
+            mig008_task = (f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+                           "task/launchcrew-demo/live-migration-008")
+            prior008 = self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", mig008_token, mig008_task,
+                self.MIG_TASKDEF, generation="head008-abc1234",
+                head="008", outcome="complete")
+            before008 = prior008.read_bytes()
+            (shared / "taskdefs").write_text(
+                f"{mig008_task}|{self.MIG_TASKDEF}|{mig008_token}\n",
+                encoding="utf-8")
+            (shared / "count").write_text("10", encoding="utf-8")
+            (shared / "token").write_text("", encoding="utf-8")
+            result, calls = self.run_bootstrap(
+                self.migrate_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_ROLESTATE_EXIT": "10"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("separately reviewed repair", combined)
+            self.assertIn("zero new migration", combined.lower())
+            self.assertEqual(prior006.read_bytes(), before006)
+            self.assertEqual(prior007.read_bytes(), before007)
+            self.assertEqual(prior008.read_bytes(), before008)
+            runs = [c for c in calls if "run-task" in c]
+            self.assertFalse(any("launchcrew-demo-migration" in c
+                                 for c in runs))
+            new_file = journals / (f"launchcrew-{STACK}-migrate-migration-"
+                                   f"{self.RELEASE}-active.json")
+            self.assertFalse(new_file.exists())
+            doc006, _ = self.read_attestation(journals, prior006.name)
+            self.assertEqual(doc006.get("original_target_head"), "006")
+            self.assertEqual(doc006.get("observed_head"), "007")
+            self.check_digest(doc006)
+            doc007, _ = self.read_attestation(journals, prior007.name)
+            self.assertEqual(doc007.get("original_target_head"), "007")
+            self.assertEqual(doc007.get("observed_head"), "007")
+            self.check_digest(doc007)
+            rec008 = journals / "recovery" / (prior008.name + ".recovery.json")
+            self.assertFalse(rec008.exists())
+
     def test_migration_mixed_with_ambiguous_008_refuses(self):
         import tempfile as _tempfile
         with _tempfile.TemporaryDirectory() as shared_tmp:
