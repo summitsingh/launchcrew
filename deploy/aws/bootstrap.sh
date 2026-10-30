@@ -140,11 +140,11 @@ LAUNCH_JOURNAL_DIR="${LAUNCH_JOURNAL_DIR:-}"
 QUIESCE_CONFIRM="${QUIESCE_CONFIRM:-}"
 SOURCE_SHA="${SOURCE_SHA:-}"
 RELEASE_GEN="${RELEASE_GEN:-}"
-TARGET_DB_HEAD="007"
+TARGET_DB_HEAD="008"
 # Empty journal default resolves inside run_one_off_task to a dedicated
 # persistent private directory under the ignored .local tree derived from the
 # script root, never shared /tmp. An explicit --launch-journal-dir still
-# overrides. Release generation defaults to head007 plus the source Git SHA
+# overrides. Release generation defaults to head008 plus the source Git SHA
 # short hash when available; an explicit --release-generation still overrides
 # for tests. Old one-shot journals are never deleted, renamed, or overwritten;
 # a new generation uses a distinct path and must enumerate and reconcile
@@ -1026,23 +1026,24 @@ case "$PHASE" in
   infra|init|material|dbroles|migrate|enable|all|foundation|prereqs|quiesce) check_cost_tag_activation ;;
 esac
 
-# Release generation for the head007 rollout. A new intentional release uses a
+# Release generation for the head008 rollout. A new intentional release uses a
 # distinct durable generation bound to the source Git SHA and the target DB
 # head, plus the exact owned StackId, task definition, and config digest at
 # launch time. Old one-shot journals are never deleted, renamed, or
 # overwritten; the new generation uses a distinct active path and must
 # enumerate and reconcile every prior-generation record to STOPPED with all
 # essential exits 0 before any new launch. An empty new path never proves
-# absence. The head007 generation name never collides with a head006 prior
-# journal: prior head006 records reconcile as legitimate predecessors.
+# absence. The head008 generation name never collides with a head007 prior
+# journal: prior head007 records reconcile as legitimate predecessors, with
+# 004, 005, and 006 preserved as allowed historical predecessors.
 resolve_release_generation() {
   if [ -n "$RELEASE_GEN" ]; then
     case "$RELEASE_GEN" in
       *[!A-Za-z0-9_.-]*) echo "refused: release generation has invalid characters: $RELEASE_GEN" >&2; exit 2 ;;
     esac
     case "$RELEASE_GEN" in
-      *head007*|*007*) ;;
-      *) echo "refused: release generation must name the target head007: $RELEASE_GEN" >&2; exit 2 ;;
+      *head008*|*008*) ;;
+      *) echo "refused: release generation must name the target head008: $RELEASE_GEN" >&2; exit 2 ;;
     esac
     return 0
   fi
@@ -1064,7 +1065,7 @@ resolve_release_generation() {
       ""|*[!0-9a-fA-F]*) SHA_SHORT="unknown" ;;
     esac
   fi
-  RELEASE_GEN="head007-$SHA_SHORT"
+  RELEASE_GEN="head008-$SHA_SHORT"
 }
 
 resolve_release_generation
@@ -3619,7 +3620,7 @@ write_launch_journal() {
   JOURNAL_PATH="$1"
   JOURNAL_OUTCOME="$2"
   JOURNAL_TASK="$3"
-  (umask 077; python3 - "$JOURNAL_PATH" "$STACK_NAME" "$TASK_PHASE" "$TASK_LABEL" "$TASKDEF_LOGICAL" "$TASKDEF_ARN" "$CLUSTER_NAME" "$CLIENT_TOKEN" "$EXPECTED_REGION" "$EXPECTED_ACCOUNT" "$JOURNAL_OUTCOME" "$JOURNAL_TASK" "${CONFIG_DIGEST:-}" "${RELEASE_GEN:-}" "${SOURCE_SHA:-}" "${TARGET_DB_HEAD:-007}" "${STACK_ID:-}" "${PREDECESSOR_TASK:-}" "${PREDECESSOR_OUTCOME:-none}" <<'PYEOF'
+  (umask 077; python3 - "$JOURNAL_PATH" "$STACK_NAME" "$TASK_PHASE" "$TASK_LABEL" "$TASKDEF_LOGICAL" "$TASKDEF_ARN" "$CLUSTER_NAME" "$CLIENT_TOKEN" "$EXPECTED_REGION" "$EXPECTED_ACCOUNT" "$JOURNAL_OUTCOME" "$JOURNAL_TASK" "${CONFIG_DIGEST:-}" "${RELEASE_GEN:-}" "${SOURCE_SHA:-}" "${TARGET_DB_HEAD:-008}" "${STACK_ID:-}" "${PREDECESSOR_TASK:-}" "${PREDECESSOR_OUTCOME:-none}" <<'PYEOF'
 import json, os, sys, tempfile
 (path, stack, phase, label, taskdef_logical, taskdef_arn, cluster,
  token, region, account, outcome, task_arn, config_digest,
@@ -4244,10 +4245,11 @@ is_mutating_label() {
 # archived record must be owned, well-formed, complete, and terminally
 # re-proven STOPPED with every required essential container exit 0 before
 # any new release work. Versioned predecessors must name an allowed head
-# (004, 005, 006, or current 007) explicitly via headXXX or a delimited
+# (004, 005, 006, 007, or current 008) explicitly via headXXX or a delimited
 # token, match the filename generation exactly, and carry a recomputed
-# config digest. Head 006 is a legitimate predecessor of the 007 rollout;
-# unknown, future, or mismatched heads still refuse with no new launch.
+# config digest. Head 007 is a legitimate predecessor of the 008 rollout;
+# 004, 005, and 006 stay allowed as historical predecessors. Unknown,
+# future, or mismatched heads still refuse with no new launch.
 # Same-generation archives from read-only rechecks are field validated,
 # must be complete, and are live re-proven exactly like prior generations:
 # archive-time proof never substitutes for current ECS terminal proof. Unknown,
@@ -4414,7 +4416,7 @@ if not file_gen or file_gen != gen:
     print("PROOF\tGENERATION_FILENAME_MISMATCH")
     sys.exit(0)
 head = doc.get("target_head", "")
-allowed_heads = {"004", "005", "006", want_head}
+allowed_heads = {"004", "005", "006", "007", want_head}
 if not isinstance(head, str) or head not in allowed_heads:
     print("PROOF\tHEAD_UNKNOWN")
     sys.exit(0)
@@ -4975,7 +4977,7 @@ write_recovery_attestation() {
     "${RECOVERY_ORIG_TASKDEF:-}" "${RECOVERY_ORIG_GEN:-}" "${RECOVERY_ORIG_SOURCE:-}" "${RECOVERY_ORIG_HEAD:-}" \
     "${RECOVERY_ORIG_LEGACY:-false}" \
     "${RECOVERY_STACK_ID:-}" "${RECOVERY_PROJECT:-}" "${RECOVERY_ENV:-}" "${RELEASE_GEN:-}" "${SOURCE_SHA:-}" \
-    "${TARGET_DB_HEAD:-007}" "${RECOVERY_RT_NAME:-}" "${RECOVERY_RT_ARN:-}" "${RECOVERY_RT_PRE:-}" "${RECOVERY_RT_POST:-}" \
+    "${TARGET_DB_HEAD:-008}" "${RECOVERY_RT_NAME:-}" "${RECOVERY_RT_ARN:-}" "${RECOVERY_RT_PRE:-}" "${RECOVERY_RT_POST:-}" \
     "${RECOVERY_MG_NAME:-}" "${RECOVERY_MG_ARN:-}" "${RECOVERY_MG_PRE:-}" "${RECOVERY_MG_POST:-}" \
     "${RECOVERY_TLS_NAME:-}" "${RECOVERY_TLS_ARN:-}" "${RECOVERY_TLS_PRE:-}" "${RECOVERY_TLS_POST:-}" \
     "${RECOVERY_CERT_ARN:-}" "${RECOVERY_CERT_DOMAIN:-}" "${RECOVERY_CERT_SERIAL_PRE:-}" "${RECOVERY_CERT_SERIAL_POST:-}" \
@@ -5107,7 +5109,7 @@ write_typed_recovery_attestation() {
     "${RECOVERY_ORIG_TASKDEF:-}" "${RECOVERY_ORIG_GEN:-}" "${RECOVERY_ORIG_SOURCE:-}" "${RECOVERY_ORIG_HEAD:-}" \
     "${RECOVERY_ORIG_OUTCOME:-}" "${RECOVERY_ORIG_LEGACY:-false}" \
     "${RECOVERY_STACK_ID:-}" "${RECOVERY_PROJECT:-}" "${RECOVERY_ENV:-}" "${RELEASE_GEN:-}" "${SOURCE_SHA:-}" \
-    "${TARGET_DB_HEAD:-007}" "${RECOVERY_RT_NAME:-}" "${RECOVERY_RT_ARN:-}" "${RECOVERY_RT_PRE:-}" "${RECOVERY_RT_POST:-}" \
+    "${TARGET_DB_HEAD:-008}" "${RECOVERY_RT_NAME:-}" "${RECOVERY_RT_ARN:-}" "${RECOVERY_RT_PRE:-}" "${RECOVERY_RT_POST:-}" \
     "${RECOVERY_MG_NAME:-}" "${RECOVERY_MG_ARN:-}" "${RECOVERY_MG_PRE:-}" "${RECOVERY_MG_POST:-}" \
     "${RECOVERY_TLS_NAME:-}" "${RECOVERY_TLS_ARN:-}" "${RECOVERY_TLS_PRE:-}" "${RECOVERY_TLS_POST:-}" \
     "${RECOVERY_CERT_ARN:-}" "${RECOVERY_CERT_DOMAIN:-}" "${RECOVERY_CERT_SERIAL_PRE:-}" "${RECOVERY_CERT_SERIAL_POST:-}" \
@@ -5457,7 +5459,7 @@ if source:
         if char not in "0123456789abcdefABCDEF":
             print("PROOF\tSOURCE_MALFORMED")
             sys.exit(0)
-allowed_heads = {"004", "005", "006", want_head}
+allowed_heads = {"004", "005", "006", "007", want_head}
 if not isinstance(head, str) or head not in allowed_heads:
     print("PROOF\tHEAD_UNKNOWN")
     sys.exit(0)
@@ -5783,7 +5785,7 @@ if source:
         if char not in "0123456789abcdefABCDEF":
             print("PROOF\tSOURCE_MALFORMED")
             sys.exit(0)
-allowed_heads = {"004", "005", "006", want_head}
+allowed_heads = {"004", "005", "006", "007", want_head}
 if not isinstance(head, str) or head not in allowed_heads:
     print("PROOF\tHEAD_UNKNOWN")
     sys.exit(0)
@@ -6747,7 +6749,7 @@ PYEOF
 # head, original basename, and legacy flag. Order must match attestation
 # validation exactly. Sets RECOVERY_VERIFIER_DIGEST. Fails closed on empty.
 compute_recovery_verifier_digest() {
-  if ! RECOVERY_VERIFIER_DIGEST="$(python3 - "$RECOVERY_VERIFIER_TASK" "$RECOVERY_VERIFIER_TOKEN" "$RECOVERY_VERIFIER_TASKDEF" "$RECOVERY_VERIFIER_CONTAINERS" "$RECOVERY_VERIFIER_LAST_STATUS" "$RECOVERY_ORIG_SHA" "$RECOVERY_STACK_ID" "$RECOVERY_RT_ARN" "$RECOVERY_RT_NAME" "$RECOVERY_RT_PRE" "$RECOVERY_RT_POST" "$RECOVERY_MG_ARN" "$RECOVERY_MG_NAME" "$RECOVERY_MG_PRE" "$RECOVERY_MG_POST" "$RECOVERY_TLS_ARN" "$RECOVERY_TLS_NAME" "$RECOVERY_TLS_PRE" "$RECOVERY_TLS_POST" "$RECOVERY_CERT_ARN" "$RECOVERY_CERT_DOMAIN" "$RECOVERY_CERT_SERIAL_PRE" "$RECOVERY_CERT_SERIAL_POST" "${RELEASE_GEN:-}" "${SOURCE_SHA:-}" "${TARGET_DB_HEAD:-007}" "$RECOVERY_ORIG_BASENAME" "${RECOVERY_ORIG_LEGACY:-false}" 2>/dev/null <<'PYEOF'
+  if ! RECOVERY_VERIFIER_DIGEST="$(python3 - "$RECOVERY_VERIFIER_TASK" "$RECOVERY_VERIFIER_TOKEN" "$RECOVERY_VERIFIER_TASKDEF" "$RECOVERY_VERIFIER_CONTAINERS" "$RECOVERY_VERIFIER_LAST_STATUS" "$RECOVERY_ORIG_SHA" "$RECOVERY_STACK_ID" "$RECOVERY_RT_ARN" "$RECOVERY_RT_NAME" "$RECOVERY_RT_PRE" "$RECOVERY_RT_POST" "$RECOVERY_MG_ARN" "$RECOVERY_MG_NAME" "$RECOVERY_MG_PRE" "$RECOVERY_MG_POST" "$RECOVERY_TLS_ARN" "$RECOVERY_TLS_NAME" "$RECOVERY_TLS_PRE" "$RECOVERY_TLS_POST" "$RECOVERY_CERT_ARN" "$RECOVERY_CERT_DOMAIN" "$RECOVERY_CERT_SERIAL_PRE" "$RECOVERY_CERT_SERIAL_POST" "${RELEASE_GEN:-}" "${SOURCE_SHA:-}" "${TARGET_DB_HEAD:-008}" "$RECOVERY_ORIG_BASENAME" "${RECOVERY_ORIG_LEGACY:-false}" 2>/dev/null <<'PYEOF'
 import hashlib, sys
 parts = sys.argv[1:]
 print(hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest())
@@ -6770,7 +6772,7 @@ PYEOF
 # basename, and legacy flag. Order must match typed attestation validation
 # exactly. Sets RECOVERY_VERIFIER_DIGEST. Fails closed on empty.
 compute_typed_verifier_digest() {
-  if ! RECOVERY_VERIFIER_DIGEST="$(python3 - "${RECOVERY_KIND:-}" "$RECOVERY_VERIFIER_TASK" "$RECOVERY_VERIFIER_TOKEN" "$RECOVERY_VERIFIER_TASKDEF" "$RECOVERY_VERIFIER_CONTAINERS" "$RECOVERY_VERIFIER_LAST_STATUS" "$RECOVERY_ORIG_SHA" "${RECOVERY_ORIG_OUTCOME:-}" "$RECOVERY_STACK_ID" "$RECOVERY_RT_ARN" "$RECOVERY_RT_NAME" "$RECOVERY_RT_PRE" "$RECOVERY_RT_POST" "$RECOVERY_MG_ARN" "$RECOVERY_MG_NAME" "$RECOVERY_MG_PRE" "$RECOVERY_MG_POST" "$RECOVERY_TLS_ARN" "$RECOVERY_TLS_NAME" "$RECOVERY_TLS_PRE" "$RECOVERY_TLS_POST" "$RECOVERY_CERT_ARN" "$RECOVERY_CERT_DOMAIN" "$RECOVERY_CERT_SERIAL_PRE" "$RECOVERY_CERT_SERIAL_POST" "${RELEASE_GEN:-}" "${SOURCE_SHA:-}" "${TARGET_DB_HEAD:-007}" "${RECOVERY_OBSERVED_HEAD:-}" "$RECOVERY_ORIG_BASENAME" "${RECOVERY_ORIG_LEGACY:-false}" 2>/dev/null <<'PYEOF'
+  if ! RECOVERY_VERIFIER_DIGEST="$(python3 - "${RECOVERY_KIND:-}" "$RECOVERY_VERIFIER_TASK" "$RECOVERY_VERIFIER_TOKEN" "$RECOVERY_VERIFIER_TASKDEF" "$RECOVERY_VERIFIER_CONTAINERS" "$RECOVERY_VERIFIER_LAST_STATUS" "$RECOVERY_ORIG_SHA" "${RECOVERY_ORIG_OUTCOME:-}" "$RECOVERY_STACK_ID" "$RECOVERY_RT_ARN" "$RECOVERY_RT_NAME" "$RECOVERY_RT_PRE" "$RECOVERY_RT_POST" "$RECOVERY_MG_ARN" "$RECOVERY_MG_NAME" "$RECOVERY_MG_PRE" "$RECOVERY_MG_POST" "$RECOVERY_TLS_ARN" "$RECOVERY_TLS_NAME" "$RECOVERY_TLS_PRE" "$RECOVERY_TLS_POST" "$RECOVERY_CERT_ARN" "$RECOVERY_CERT_DOMAIN" "$RECOVERY_CERT_SERIAL_PRE" "$RECOVERY_CERT_SERIAL_POST" "${RELEASE_GEN:-}" "${SOURCE_SHA:-}" "${TARGET_DB_HEAD:-008}" "${RECOVERY_OBSERVED_HEAD:-}" "$RECOVERY_ORIG_BASENAME" "${RECOVERY_ORIG_LEGACY:-false}" 2>/dev/null <<'PYEOF'
 import hashlib, sys
 parts = sys.argv[1:]
 print(hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest())
@@ -6788,11 +6790,11 @@ PYEOF
 
 # Terminal proof for a typed recovery verifier task. Args: task ARN, token,
 # taskdef ARN, allow_exit10 (0 exit 0 only, 1 exit 0 or 10 for role-state
-# head006 ready). Requires STOPPED with exact owned task, taskdef, cluster,
+# head007 ready). Requires STOPPED with exact owned task, taskdef, cluster,
 # and startedBy, plus every expected essential container STOPPED with an
 # allowed exit. Sets RECOVERY_VERIFIER_PROOF to OK, RECOVERY_VERIFIER_EXIT
-# to the observed exit, and RECOVERY_OBSERVED_HEAD for role-state (007 for
-# 0, 006 for 10, empty otherwise). Fails closed via phase_failed.
+# to the observed exit, and RECOVERY_OBSERVED_HEAD for role-state (008 for
+# 0, 007 for 10, empty otherwise). Fails closed via phase_failed.
 prove_typed_verifier_terminal() {
   TYPED_TASK="$1"
   TYPED_TOKEN="$2"
@@ -6895,14 +6897,14 @@ PYEOF
   RECOVERY_VERIFIER_PROOF="OK"
   if [ "${RECOVERY_KIND:-}" = "dbroles-recovery-attestation" ] || [ "${RECOVERY_KIND:-}" = "migration-recovery-attestation" ]; then
     if [ "$RECOVERY_VERIFIER_EXIT" = "0" ]; then
-      RECOVERY_OBSERVED_HEAD="007"
+      RECOVERY_OBSERVED_HEAD="008"
     elif [ "$RECOVERY_VERIFIER_EXIT" = "10" ]; then
-      RECOVERY_OBSERVED_HEAD="006"
+      RECOVERY_OBSERVED_HEAD="007"
     else
       RECOVERY_OBSERVED_HEAD=""
     fi
   elif [ "${RECOVERY_KIND:-}" = "runtime-recovery-attestation" ]; then
-    RECOVERY_OBSERVED_HEAD="007"
+    RECOVERY_OBSERVED_HEAD="008"
   else
     RECOVERY_OBSERVED_HEAD=""
   fi
@@ -7422,7 +7424,7 @@ PYEOF
         echo "refused: live certificate domain changed since recovery attestation, no bypass. Inspect $RECOVERY_FILE." >&2
         phase_failed "$RECOVERY_FAIL_PHASE"
       fi
-      if [ "$RECOVERY_ATTEST_REL_GEN" != "${RELEASE_GEN:-}" ] || [ "$RECOVERY_ATTEST_REL_HEAD" != "${TARGET_DB_HEAD:-007}" ]; then
+      if [ "$RECOVERY_ATTEST_REL_GEN" != "${RELEASE_GEN:-}" ] || [ "$RECOVERY_ATTEST_REL_HEAD" != "${TARGET_DB_HEAD:-008}" ]; then
         release_recovery_lock
         echo "refused: recovery attestation release generation or head does not equal current owned release, same-release restart only with no bypass. Inspect $RECOVERY_FILE." >&2
         phase_failed "$RECOVERY_FAIL_PHASE"
@@ -7574,7 +7576,7 @@ PYEOF
         echo "refused: live material ARN changed during recovery resume, no attestation. Inspect $RECOVERY_FILE." >&2
         phase_failed "$RECOVERY_FAIL_PHASE"
       fi
-      if [ "$RECOVERY_RESUME_REL_GEN" != "${RELEASE_GEN:-}" ] || [ "$RECOVERY_RESUME_REL_HEAD" != "${TARGET_DB_HEAD:-007}" ] || [ "$RECOVERY_RESUME_REL_SOURCE" != "${SOURCE_SHA:-}" ]; then
+      if [ "$RECOVERY_RESUME_REL_GEN" != "${RELEASE_GEN:-}" ] || [ "$RECOVERY_RESUME_REL_HEAD" != "${TARGET_DB_HEAD:-008}" ] || [ "$RECOVERY_RESUME_REL_SOURCE" != "${SOURCE_SHA:-}" ]; then
         release_recovery_lock
         echo "refused: recovery resume release does not equal current owned release, same-release only with no attestation. Inspect $RECOVERY_FILE." >&2
         phase_failed "$RECOVERY_FAIL_PHASE"
@@ -8301,11 +8303,11 @@ if outcome == "complete":
             print("PROOF\tVERIFIER_CONTAINERS_MISMATCH")
             sys.exit(0)
         _obs = doc.get("observed_head", "")
-        if (_exit == "0" and _obs != "007") or (_exit == "10" and _obs != "006"):
+        if (_exit == "0" and _obs != "008") or (_exit == "10" and _obs != "007"):
             print("PROOF\tOBSERVED_HEAD_MISMATCH")
             sys.exit(0)
     elif want_kind == "runtime-recovery-attestation":
-        if _exit != "0" or doc.get("observed_head", "") != "007":
+        if _exit != "0" or doc.get("observed_head", "") != "008":
             print("PROOF\tVERIFIER_CONTAINERS_MISMATCH")
             sys.exit(0)
     else:
@@ -8480,7 +8482,7 @@ PYEOF
         echo "refused: live certificate domain changed since recovery attestation, no bypass. Inspect $RECOVERY_FILE." >&2
         phase_failed "$RECOVERY_FAIL_PHASE"
       fi
-      if [ "$RECOVERY_ATTEST_REL_GEN" != "${RELEASE_GEN:-}" ] || [ "$RECOVERY_ATTEST_REL_HEAD" != "${TARGET_DB_HEAD:-007}" ]; then
+      if [ "$RECOVERY_ATTEST_REL_GEN" != "${RELEASE_GEN:-}" ] || [ "$RECOVERY_ATTEST_REL_HEAD" != "${TARGET_DB_HEAD:-008}" ]; then
         release_recovery_lock
         echo "refused: recovery attestation release generation or head does not equal current owned release, same-release restart only with no bypass. Inspect $RECOVERY_FILE." >&2
         phase_failed "$RECOVERY_FAIL_PHASE"
@@ -8627,7 +8629,7 @@ PYEOF
         echo "refused: live material ARN changed during recovery resume, no attestation. Inspect $RECOVERY_FILE." >&2
         phase_failed "$RECOVERY_FAIL_PHASE"
       fi
-      if [ "$RECOVERY_RESUME_REL_GEN" != "${RELEASE_GEN:-}" ] || [ "$RECOVERY_RESUME_REL_HEAD" != "${TARGET_DB_HEAD:-007}" ] || [ "$RECOVERY_RESUME_REL_SOURCE" != "${SOURCE_SHA:-}" ]; then
+      if [ "$RECOVERY_RESUME_REL_GEN" != "${RELEASE_GEN:-}" ] || [ "$RECOVERY_RESUME_REL_HEAD" != "${TARGET_DB_HEAD:-008}" ] || [ "$RECOVERY_RESUME_REL_SOURCE" != "${SOURCE_SHA:-}" ]; then
         release_recovery_lock
         echo "refused: recovery resume release does not equal current owned release, same-release only with no attestation. Inspect $RECOVERY_FILE." >&2
         phase_failed "$RECOVERY_FAIL_PHASE"
@@ -10150,13 +10152,13 @@ print(doc.get("observed_head", "") or "MISSING")
 PYEOF
 )" || MIGRATION_ACTIVE_OBS="UNREADABLE"
               MIGRATION_ACTIVE_OBS="$(printf '%s' "$MIGRATION_ACTIVE_OBS" | tr -d '[:space:]')"
-              if [ "$MIGRATION_ACTIVE_OBS" = "007" ]; then
-                echo "$TASK_LABEL already complete via recovery attestation with observed head007, one-shot preserved with no new run-task; desired-state equivalence, not retroactive proof."
+              if [ "$MIGRATION_ACTIVE_OBS" = "008" ]; then
+                echo "$TASK_LABEL already complete via recovery attestation with observed head008, one-shot preserved with no new run-task; desired-state equivalence, not retroactive proof."
                 release_operation_lock
                 return 0
               fi
               release_operation_lock
-              echo "refused: $TASK_LABEL same-generation complete aged out but observed head is $MIGRATION_ACTIVE_OBS, not 007; ambiguous 007 attempt with no automatic resend. Inspect $ACTIVE_FILE." >&2
+              echo "refused: $TASK_LABEL same-generation complete aged out but observed head is $MIGRATION_ACTIVE_OBS, not 008; ambiguous 008 attempt with no automatic resend. Inspect $ACTIVE_FILE." >&2
               phase_failed "$TASK_PHASE"
             fi
           else
@@ -10257,7 +10259,7 @@ PYEOF
     return 0
   fi
   if [ "$TASK_LABEL" = "migration" ] && [ "$TASK_PHASE" = "migrate" ] && [ "${RECOVERED_AGED_PRIOR_MIGRATION:-0}" = "1" ]; then
-    MIGRATION_OBSERVED="$(python3 - "$LAUNCH_JOURNAL_DIR" "$STACK_NAME" "${RELEASE_GEN:-}" "${SOURCE_SHA:-}" "${TARGET_DB_HEAD:-007}" 2>/dev/null <<'PYEOF'
+    MIGRATION_OBSERVED="$(python3 - "$LAUNCH_JOURNAL_DIR" "$STACK_NAME" "${RELEASE_GEN:-}" "${SOURCE_SHA:-}" "${TARGET_DB_HEAD:-008}" 2>/dev/null <<'PYEOF'
 import json, os, sys
 directory, stack, want_gen, want_source, want_head = sys.argv[1:6]
 prefix = "launchcrew-%s-migrate-migration-" % stack
@@ -10296,7 +10298,7 @@ for name in names:
     if doc.get("target_head", "") != want_head:
         continue
     head = doc.get("observed_head", "")
-    if head not in ("006", "007"):
+    if head not in ("007", "008"):
         print("PROOF\tHEAD_UNKNOWN")
         sys.exit(0)
     legacy = doc.get("legacy_unversioned", "")
@@ -10312,7 +10314,7 @@ for name in names:
         orig_legacy = True
         orig_heads.add("LEGACY")
     else:
-        if orig not in ("004", "005", "006", "007"):
+        if orig not in ("004", "005", "006", "007", "008"):
             print("PROOF\tORIG_HEAD_UNKNOWN")
             sys.exit(0)
         orig_heads.add(orig)
@@ -10348,20 +10350,20 @@ PYEOF
       echo "refused: migration recovery observed head proof is $MIGRATION_OBS_PROOF, no new migration and no skip without exact head. Inspect $LAUNCH_JOURNAL_DIR/recovery." >&2
       phase_failed "$TASK_PHASE"
     fi
-    if [ "$MIGRATION_OBS_HEAD" = "007" ]; then
-      echo "$TASK_LABEL aged prior recovered with observed head007 plus verified equivalence, skipping migration with no new run-task under typed attestation; fresh runtime verification still required. Preserved history, no resend."
+    if [ "$MIGRATION_OBS_HEAD" = "008" ]; then
+      echo "$TASK_LABEL aged prior recovered with observed head008 plus verified equivalence, skipping migration with no new run-task under typed attestation; fresh runtime verification still required. Preserved history, no resend."
       release_operation_lock
       return 0
     fi
-    if [ "$MIGRATION_OBS_HEAD" = "006" ]; then
+    if [ "$MIGRATION_OBS_HEAD" = "007" ]; then
       if [ "$MIGRATION_ORIG_LEGACY" = "true" ]; then
         release_operation_lock
-        echo "refused: migration recovery observed006 with legacy unversioned original target is ambiguous, historical 007 attempt cannot be excluded, separately reviewed repair required with zero new migration RunTask. Preserved history, no resend. Inspect $LAUNCH_JOURNAL_DIR/recovery." >&2
+        echo "refused: migration recovery observed007 with legacy unversioned original target is ambiguous, historical 008 attempt cannot be excluded, separately reviewed repair required with zero new migration RunTask. Preserved history, no resend. Inspect $LAUNCH_JOURNAL_DIR/recovery." >&2
         phase_failed "$TASK_PHASE"
       fi
-      if [ "$MIGRATION_ORIG_HEAD" != "006" ]; then
+      if [ "$MIGRATION_ORIG_HEAD" != "007" ]; then
         release_operation_lock
-        echo "refused: migration recovery observed006 but original target is ${MIGRATION_ORIG_HEAD:-unknown}, not validated 006; ambiguous prior 007 with state regression requires separately reviewed repair with zero new migration RunTask. Preserved history, no resend. Inspect $LAUNCH_JOURNAL_DIR/recovery." >&2
+        echo "refused: migration recovery observed007 but original target is ${MIGRATION_ORIG_HEAD:-unknown}, not validated 007; ambiguous prior 008 with state regression requires separately reviewed repair with zero new migration RunTask. Preserved history, no resend. Inspect $LAUNCH_JOURNAL_DIR/recovery." >&2
         phase_failed "$TASK_PHASE"
       fi
       MIGRATION_ORIG_LIST="$(printf '%s\n' "$MIGRATION_OBSERVED" | awk -F'\t' '$1=="ORIG_BASE"{print $2}')"
@@ -10380,7 +10382,7 @@ PYEOF
         MIGRATION_ORIG_VHEAD="$(printf '%s\n' "$MIGRATION_ORIG_VALIDATED" | awk -F'\t' '$1=="HEAD"{print $2}' | tr -d '[:space:]')"
         MIGRATION_ORIG_VLEGACY="$(printf '%s\n' "$MIGRATION_ORIG_VALIDATED" | awk -F'\t' '$1=="LEGACY"{print $2}' | tr -d '[:space:]')"
         MIGRATION_ORIG_VOUT="$(printf '%s\n' "$MIGRATION_ORIG_VALIDATED" | awk -F'\t' '$1=="OUTCOME"{print $2}' | tr -d '[:space:]')"
-        if [ "$MIGRATION_ORIG_VPROOF" != "OK" ] || [ "$MIGRATION_ORIG_VHEAD" != "006" ] || [ "$MIGRATION_ORIG_VLEGACY" = "true" ] || [ "$MIGRATION_ORIG_VOUT" != "complete" ]; then
+        if [ "$MIGRATION_ORIG_VPROOF" != "OK" ] || [ "$MIGRATION_ORIG_VHEAD" != "007" ] || [ "$MIGRATION_ORIG_VLEGACY" = "true" ] || [ "$MIGRATION_ORIG_VOUT" != "complete" ]; then
           MIGRATION_ORIG_OK=0; break
         fi
       done <<EOF_ORIG_LIST
@@ -10388,13 +10390,13 @@ $MIGRATION_ORIG_LIST
 EOF_ORIG_LIST
       if [ "$MIGRATION_ORIG_OK" != "1" ]; then
         release_operation_lock
-        echo "refused: migration recovery observed006 but validated original target006 proof failed, ambiguous prior requires separately reviewed repair with zero new migration RunTask. Preserved history, no resend. Inspect $LAUNCH_JOURNAL_DIR and $LAUNCH_JOURNAL_DIR/recovery." >&2
+        echo "refused: migration recovery observed007 but validated original target007 proof failed, ambiguous prior requires separately reviewed repair with zero new migration RunTask. Preserved history, no resend. Inspect $LAUNCH_JOURNAL_DIR and $LAUNCH_JOURNAL_DIR/recovery." >&2
         phase_failed "$TASK_PHASE"
       fi
-      echo "$TASK_LABEL aged prior recovered with observed head006 plus validated original target006, admitting at most one deliberate 006->007 migration after old-token and current-state checks; never automatically resending an ambiguous 007 attempt."
+      echo "$TASK_LABEL aged prior recovered with observed head007 plus validated original target007, admitting at most one deliberate 007->008 migration after old-token and current-state checks; never automatically resending an ambiguous 008 attempt."
     else
       release_operation_lock
-      echo "refused: migration recovery observed head is $MIGRATION_OBS_HEAD, not 006 or 007, no migration and no skip. Inspect $LAUNCH_JOURNAL_DIR/recovery." >&2
+      echo "refused: migration recovery observed head is $MIGRATION_OBS_HEAD, not 007 or 008, no migration and no skip. Inspect $LAUNCH_JOURNAL_DIR/recovery." >&2
       phase_failed "$TASK_PHASE"
     fi
   fi
@@ -10785,9 +10787,9 @@ PYEOF
   if [ -L "$REPROVE_ACTIVE_FILE" ]; then echo "enable re-proof $REPROVE_LABEL record is a symlink, no claim made. Inspect $REPROVE_ACTIVE_FILE." >&2; phase_failed enable; fi
   case "$REPROVE_ORIGIN/$REPROVE_LABEL" in
     material/sdk-material) REPROVE_KIND="material-recovery-attestation"; REPROVE_VERIFIER_LOGICAL="SdkMaterialTaskDefinition"; REPROVE_NEED_HEAD=""; REPROVE_ALLOW_STARTED="0"; REPROVE_TYPED_LOGICAL="SdkMaterialTaskDefinition" ;;
-    dbroles/bootstrap) REPROVE_KIND="dbroles-recovery-attestation"; REPROVE_VERIFIER_LOGICAL="RoleStateTaskDefinition"; REPROVE_NEED_HEAD="006,007"; REPROVE_ALLOW_STARTED="1"; REPROVE_TYPED_LOGICAL="BootstrapTaskDefinition" ;;
-    migrate/migration) REPROVE_KIND="migration-recovery-attestation"; REPROVE_VERIFIER_LOGICAL="RoleStateTaskDefinition"; REPROVE_NEED_HEAD="007"; REPROVE_ALLOW_STARTED="0"; REPROVE_TYPED_LOGICAL="MigrationTaskDefinition" ;;
-    migrate/verify) REPROVE_KIND="runtime-recovery-attestation"; REPROVE_VERIFIER_LOGICAL="VerifyTaskDefinition"; REPROVE_NEED_HEAD="007"; REPROVE_ALLOW_STARTED="0"; REPROVE_TYPED_LOGICAL="VerifyTaskDefinition" ;;
+    dbroles/bootstrap) REPROVE_KIND="dbroles-recovery-attestation"; REPROVE_VERIFIER_LOGICAL="RoleStateTaskDefinition"; REPROVE_NEED_HEAD="007,008"; REPROVE_ALLOW_STARTED="1"; REPROVE_TYPED_LOGICAL="BootstrapTaskDefinition" ;;
+    migrate/migration) REPROVE_KIND="migration-recovery-attestation"; REPROVE_VERIFIER_LOGICAL="RoleStateTaskDefinition"; REPROVE_NEED_HEAD="008"; REPROVE_ALLOW_STARTED="0"; REPROVE_TYPED_LOGICAL="MigrationTaskDefinition" ;;
+    migrate/verify) REPROVE_KIND="runtime-recovery-attestation"; REPROVE_VERIFIER_LOGICAL="VerifyTaskDefinition"; REPROVE_NEED_HEAD="008"; REPROVE_ALLOW_STARTED="0"; REPROVE_TYPED_LOGICAL="VerifyTaskDefinition" ;;
     *) REPROVE_KIND=""; REPROVE_VERIFIER_LOGICAL=""; REPROVE_NEED_HEAD=""; REPROVE_ALLOW_STARTED="0"; REPROVE_TYPED_LOGICAL="" ;;
   esac
   if [ ! -f "$REPROVE_ACTIVE_FILE" ]; then
@@ -10795,7 +10797,7 @@ PYEOF
       echo "refused: enable re-proof needs prior $REPROVE_LABEL $REPROVE_ORIGIN complete record $REPROVE_ACTIVE_FILE but none exists. Run --phase $REPROVE_ORIGIN first. No new launch." >&2
       phase_failed enable
     fi
-    REPROVE_ATTEST_FOUND="$(python3 - "$LAUNCH_JOURNAL_DIR" "$STACK_NAME" "$REPROVE_ORIGIN" "$REPROVE_LABEL" "$REPROVE_KIND" "${RELEASE_GEN:-}" "${SOURCE_SHA:-}" "${TARGET_DB_HEAD:-007}" "$REPROVE_NEED_HEAD" "${STACK_ID:-}" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$CLUSTER_NAME" 2>/dev/null <<'PYEOF'
+    REPROVE_ATTEST_FOUND="$(python3 - "$LAUNCH_JOURNAL_DIR" "$STACK_NAME" "$REPROVE_ORIGIN" "$REPROVE_LABEL" "$REPROVE_KIND" "${RELEASE_GEN:-}" "${SOURCE_SHA:-}" "${TARGET_DB_HEAD:-008}" "$REPROVE_NEED_HEAD" "${STACK_ID:-}" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$CLUSTER_NAME" 2>/dev/null <<'PYEOF'
 import hashlib, json, os, sys
 (directory, stack, phase, label, want_kind, want_gen, want_source, want_head, need_head,
  want_stack_id, want_account, want_region, want_cluster) = sys.argv[1:14]
@@ -10866,14 +10868,14 @@ for name in names:
         if cont != "sdk-material:STOPPED:0" or obs != "":
             continue
     elif want_kind in ("dbroles-recovery-attestation", "migration-recovery-attestation"):
-        if cont == "bootstrap-db-roles:STOPPED:0" and obs != "007":
+        if cont == "bootstrap-db-roles:STOPPED:0" and obs != "008":
             continue
-        if cont == "bootstrap-db-roles:STOPPED:10" and obs != "006":
+        if cont == "bootstrap-db-roles:STOPPED:10" and obs != "007":
             continue
         if cont not in ("bootstrap-db-roles:STOPPED:0", "bootstrap-db-roles:STOPPED:10"):
             continue
     elif want_kind == "runtime-recovery-attestation":
-        if cont != "bootstrap-db-roles:STOPPED:0" or obs != "007":
+        if cont != "bootstrap-db-roles:STOPPED:0" or obs != "008":
             continue
     else:
         if ":STOPPED:" not in cont:
@@ -11061,7 +11063,7 @@ PYEOF
       echo "refused: enable re-proof $REPROVE_LABEL attestation stack mismatch, wrong stack, no claim made. Inspect $REPROVE_ATTEST_PATH." >&2
       phase_failed enable
     fi
-    if [ "$REPROVE_A_RELGEN" != "${RELEASE_GEN:-}" ] || [ "$REPROVE_A_SOURCE" != "${SOURCE_SHA:-}" ] || [ "$REPROVE_A_HEAD" != "${TARGET_DB_HEAD:-007}" ]; then
+    if [ "$REPROVE_A_RELGEN" != "${RELEASE_GEN:-}" ] || [ "$REPROVE_A_SOURCE" != "${SOURCE_SHA:-}" ] || [ "$REPROVE_A_HEAD" != "${TARGET_DB_HEAD:-008}" ]; then
       echo "refused: enable re-proof $REPROVE_LABEL attestation release, source or head mismatch, no claim made. Inspect $REPROVE_ATTEST_PATH." >&2
       phase_failed enable
     fi
@@ -11387,7 +11389,7 @@ if wants_phase enable; then
   # on, because nothing is assumed from memory. Refresh the full image
   # digest and task definition ref proof, the owned secrets and role bindings
   # including TLS material, then re-prove current-release typed attestations
-  # or fresh live terminal journals for material, roles, migration007 and
+  # or fresh live terminal journals for material, roles, migration008 and
   # runtime, all exact identities and unchanged inputs, with no new mutating
   # run-task call. Standalone enable may refresh only read-only proofs, never
   # bind roles, migrate, rotate, publish, populate, or export. An aged file
@@ -11426,7 +11428,7 @@ if wants_phase enable; then
   reprove_prior_one_off_readonly BootstrapTaskDefinition bootstrap dbroles
   reprove_prior_one_off_readonly MigrationTaskDefinition migration migrate
   reprove_prior_one_off_readonly VerifyTaskDefinition verify migrate
-  echo "Enable proof: material, roles, migration007 and runtime re-proved via current attestations or fresh journals with no new mutating run-task."
+  echo "Enable proof: material, roles, migration008 and runtime re-proved via current attestations or fresh journals with no new mutating run-task."
   ENABLE_OLD_API_TASKDEF=""
   ENABLE_OLD_WEB_TASKDEF=""
   if ! ENABLE_OLD_API_TASKDEF="$(stack_resource ApiTaskDefinition 2>"$TMP_ERR")"; then

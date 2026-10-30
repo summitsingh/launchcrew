@@ -137,7 +137,33 @@ class FakeCursor:
                 return (not self.state.role_partial,)
             return (False,)
         if "pg_get_constraintdef" in lowered:
+            table = params[1] if params and len(params) > 1 else ""
+            name = params[2] if params and len(params) > 2 else ""
+            if table == "run_outcomes":
+                if name == "run_outcomes_actor_signed_in":
+                    return (self.state.outcome_actor_def,)
+                if name == "run_outcomes_provenance":
+                    return (self.state.outcome_prov_def,)
+                if name in self.state.outcome_constraints:
+                    return ("CHECK ((true))",)
+                return ("",)
             return (self.state.check_def,)
+        if "information_schema" in lowered and "column_default" in lowered:
+            table = params[1] if params and len(params) > 1 else ""
+            column = params[2] if params and len(params) > 2 else ""
+            if table == "run_outcomes" and column == "workspace_id":
+                return (self.state.outcome_default,)
+            return (None,)
+        if "run_outcomes" in lowered and "count(*)" in lowered:
+            if not self.state.outcome_present:
+                raise FakeError('relation "run_outcomes" does not exist',
+                                sqlstate="42P01")
+            return (self.state.outcome_count,)
+        if "pg_class" in lowered and "owner.rolname" in lowered:
+            if params and "run_outcomes" in list(params):
+                if not self.state.outcome_present:
+                    return None
+                return ("run_outcomes", self.state.outcome_owner)
         if "pg_auth_members" in lowered:
             return (1,) if self.state.role_memberships else None
         if "pg_shdescription" in lowered:
@@ -205,6 +231,10 @@ class FakeCursor:
             if objtype == "S":
                 return list(self.state.sequence_default_acls)
             return list(self.state.model_default_acls)
+        if "pg_constraint" in lowered and "conname" in lowered:
+            if not self.state.outcome_present:
+                return []
+            return [(name,) for name in self.state.outcome_constraints]
         if "pg_class" in lowered:
             if "relkind" in lowered and "owner.rolname" in lowered:
                 return list(self.state.inventory)
@@ -271,7 +301,29 @@ class FakeDriverState:
         self.refuse_ddl = True
         self.ddl_sqlstate = "42501"
         self.schema_present = True
-        self.schema_version = "007"
+        self.schema_version = "008"
+        self.outcome_present = True
+        self.outcome_owner = "launchcrew_migration"
+        self.outcome_constraints = [
+            "run_outcomes_workspace_fkey",
+            "run_outcomes_run_workspace_fkey",
+            "run_outcomes_revision_non_negative",
+            "run_outcomes_channel",
+            "run_outcomes_likes_bounds",
+            "run_outcomes_comments_bounds",
+            "run_outcomes_clicks_bounds",
+            "run_outcomes_sales_bounds",
+            "run_outcomes_note_length",
+            "run_outcomes_note_no_control",
+            "run_outcomes_provenance",
+            "run_outcomes_actor_signed_in",
+        ]
+        self.outcome_default = None
+        self.outcome_actor_def = (
+            "CHECK ((btrim(actor) <> '' AND actor <> 'demo_placeholder'))")
+        self.outcome_prov_def = (
+            "CHECK ((provenance = 'self_reported'::text))")
+        self.outcome_count = 0
         self.current_identity = "launchcrew_runtime"
         self.runtime_oid = 12345
         self.model_budget_remaining = 0
@@ -1160,9 +1212,12 @@ class VerifyJobTests(BindJobTests):
                        "verify-model-functions ok",
                        "verify-model-owners ok",
                        "verify-model-defaults ok",
+                       "verify-outcome-owner ok",
+                       "verify-outcome-constraints ok",
+                       "verify-outcome-grants ok",
                        "VERIFY COMPLETE"):
             self.assertIn(marker, out)
-        self.assertIn("revision=007", out)
+        self.assertIn("revision=008", out)
 
     def test_verify_fails_when_runtime_can_write(self):
         self.state.refuse_ddl = False
@@ -1178,6 +1233,47 @@ class VerifyJobTests(BindJobTests):
         self.state.schema_version = "004"
         code, _ = self.run_main("--verify")
         self.assertNotEqual(code, 0)
+
+    def test_verify_refuses_historical_007(self):
+        self.state.schema_version = "007"
+        self.state.outcome_present = False
+        code, out = self.run_main("--verify")
+        self.assertNotEqual(code, 0)
+        self.assertIn("verify-schema", out)
+        self.assertNotIn("VERIFY COMPLETE", out)
+
+    def test_verify_refuses_missing_outcome_table(self):
+        self.state.outcome_present = False
+        code, out = self.run_main("--verify")
+        self.assertNotEqual(code, 0)
+        self.assertIn("verify-outcome-owner", out)
+        self.assertNotIn("VERIFY COMPLETE", out)
+
+    def test_verify_refuses_wrong_outcome_owner(self):
+        self.state.outcome_owner = "launchcrew_runtime"
+        code, out = self.run_main("--verify")
+        self.assertNotEqual(code, 0)
+        self.assertIn("verify-outcome-owner", out)
+
+    def test_verify_refuses_missing_outcome_constraint(self):
+        self.state.outcome_constraints = [
+            name for name in self.state.outcome_constraints
+            if name != "run_outcomes_actor_signed_in"]
+        code, out = self.run_main("--verify")
+        self.assertNotEqual(code, 0)
+        self.assertIn("verify-outcome-constraints", out)
+
+    def test_verify_refuses_outcome_workspace_default(self):
+        self.state.outcome_default = "'demo'::text"
+        code, out = self.run_main("--verify")
+        self.assertNotEqual(code, 0)
+        self.assertIn("verify-outcome-default", out)
+
+    def test_verify_refuses_outcome_missing_grants(self):
+        self.state.has_table_map[("public.run_outcomes", "INSERT")] = False
+        code, out = self.run_main("--verify")
+        self.assertNotEqual(code, 0)
+        self.assertIn("verify-outcome-grants", out)
 
     def test_verify_refuses_nonzero_model_budget(self):
         self.state.model_budget_remaining = 4000000
@@ -1618,10 +1714,10 @@ class VerifyFutureFunctionProofTests(unittest.TestCase):
 
     def test_verify_completion_requires_both_signals(self):
         self.assertIn('*"VERIFY COMPLETE"*', self.text)
-        self.assertIn('*"revision=007"*', self.text)
+        self.assertIn('*"revision=008"*', self.text)
         self.assertIn("missed VERIFY COMPLETE", self.text)
-        self.assertIn("missed revision=007", self.text)
-        self.assertNotIn('*"VERIFY COMPLETE"*|*"revision=007"*', self.text)
+        self.assertIn("missed revision=008", self.text)
+        self.assertNotIn('*"VERIFY COMPLETE"*|*"revision=008"*', self.text)
 
 
 class RoleStateVerifierTests(unittest.TestCase):
@@ -1668,6 +1764,7 @@ class RoleStateVerifierTests(unittest.TestCase):
             ("model_budget", "r", "launchcrew_migration"),
             ("model_calls", "r", "launchcrew_migration"),
             ("model_calls_id_seq", "S", "launchcrew_migration"),
+            ("run_outcomes", "r", "launchcrew_migration"),
         ]
         self.state.function_inventory = [
             ("model_reserve_call", "launchcrew_migration"),
@@ -1690,26 +1787,65 @@ class RoleStateVerifierTests(unittest.TestCase):
             os.environ.update(old)
         return code, out.getvalue()
 
-    def test_role_state_head007_returns_zero(self):
+    def test_role_state_head008_returns_zero(self):
         code, out = self.run_main()
         self.assertEqual(code, 0, msg=out)
         self.assertIn("ROLE-STATE COMPLETE", out)
-        self.assertIn("head=007", out)
+        self.assertIn("head=008", out)
         self.assertEqual(self.state.commits, 0)
         self.assertNotIn(RT_PW, out)
         self.assertNotIn(MG_PW, out)
         self.assertNotIn("postgresql://", out)
 
-    def test_role_state_head006_returns_ten(self):
-        self.state.schema_version = "006"
-        self.state.check_def = (
-            "CHECK ((kind = ANY (ARRAY['brand_fact'::text, "
-            "'profile'::text, 'approval_example'::text, "
-            "'blocked_rule'::text])))")
+    def test_role_state_head007_returns_ten(self):
+        self.state.schema_version = "007"
+        self.state.outcome_present = False
+        self.state.inventory = [
+            row for row in self.state.inventory
+            if row[0] != "run_outcomes"]
         code, out = self.run_main()
         self.assertEqual(code, 10, msg=out)
-        self.assertIn("head=006", out)
+        self.assertIn("head=007", out)
+        self.assertIn("ready for single 008 migration", out)
         self.assertEqual(self.state.commits, 0)
+
+    def test_role_state_007_with_outcome_refuses(self):
+        self.state.schema_version = "007"
+        code, out = self.run_main()
+        self.assertEqual(code, 1, msg=out)
+        self.assertIn("role-state-outcome-unexpected", out)
+
+    def test_role_state_008_missing_outcome_refuses(self):
+        self.state.outcome_present = False
+        self.state.inventory = [
+            row for row in self.state.inventory
+            if row[0] != "run_outcomes"]
+        code, out = self.run_main()
+        self.assertEqual(code, 1, msg=out)
+        self.assertIn("role-state-outcome-missing", out)
+
+    def test_role_state_008_wrong_outcome_owner_refuses(self):
+        self.state.inventory = [
+            (rel, kind, "launchcrew_runtime") if rel == "run_outcomes"
+            else (rel, kind, own)
+            for rel, kind, own in self.state.inventory]
+        code, out = self.run_main()
+        self.assertEqual(code, 1, msg=out)
+        self.assertIn("role-state-ownership", out)
+
+    def test_role_state_008_missing_constraint_refuses(self):
+        self.state.outcome_constraints = [
+            name for name in self.state.outcome_constraints
+            if name != "run_outcomes_provenance"]
+        code, out = self.run_main()
+        self.assertEqual(code, 1, msg=out)
+        self.assertIn("role-state-outcome-constraints", out)
+
+    def test_role_state_008_workspace_default_refuses(self):
+        self.state.outcome_default = "'demo'::text"
+        code, out = self.run_main()
+        self.assertEqual(code, 1, msg=out)
+        self.assertIn("role-state-outcome-default", out)
 
     def test_role_state_partial_grants_refuse(self):
         self.state.role_partial = True
@@ -1734,6 +1870,16 @@ class RoleStateVerifierTests(unittest.TestCase):
 
     def test_role_state_unknown_head_refuses(self):
         self.state.schema_version = "005"
+        code, out = self.run_main()
+        self.assertEqual(code, 1, msg=out)
+        self.assertIn("role-state-head", out)
+
+    def test_role_state_006_now_refuses(self):
+        self.state.schema_version = "006"
+        self.state.outcome_present = False
+        self.state.inventory = [
+            row for row in self.state.inventory
+            if row[0] != "run_outcomes"]
         code, out = self.run_main()
         self.assertEqual(code, 1, msg=out)
         self.assertIn("role-state-head", out)

@@ -1797,11 +1797,14 @@ def create_outcome(run_id: str, body: OutcomeIn, actor: str = Depends(auth.actor
 def list_outcomes(run_id: str, actor: str = Depends(auth.actor)):
     """List owner self-reports for an owned run, oldest first.
 
-    Owner-entered only, never provider-measured. Reads are workspace
-    scoped and return 404 for foreign runs. Historical rows keep their
-    stored export revision after later edits; this read never gates on
-    the current approval or export state.
+    Owner-entered only, never provider-measured. Requires a signed-in
+    actor, matching POST. Reads are workspace scoped and return 404 for
+    foreign runs. Historical rows keep their stored export revision after
+    later edits; this read never gates on the current approval or export
+    state.
     """
+    if not actor or actor == 'demo_placeholder':
+        raise HTTPException(401, 'Sign in required to read owner-reported outcomes')
     with store.connect() as db:
         workspace_id = store.ensure_workspace_seeded(db, actor)
         exists = db.execute(text('SELECT 1 FROM runs WHERE id=:id AND workspace_id=:ws'),

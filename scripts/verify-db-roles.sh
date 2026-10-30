@@ -354,10 +354,11 @@ bind_verify_live() {
   python3 -c "import psycopg" 2>/dev/null || fail "python3 psycopg is required for stage 2, no database driver means no invented pass"
   python3 -c "import alembic, sqlalchemy" 2>/dev/null || fail "python3 alembic and sqlalchemy are required for stage 2, no migration run without them means no invented pass"
   (cd "$REPO_ROOT" && python3 -c "import backend.store" 2>/dev/null) || fail "backend.store must import for the alembic run in stage 2"
-  head_expected="$(grep -E "^revision = " "$REPO_ROOT/backend/migrations/versions/007_voice_profile.py" | cut -d"'" -f2)" || true
+  head_expected="$(grep -E "^revision = " "$REPO_ROOT/backend/migrations/versions/008_run_outcomes.py" | cut -d"'" -f2)" || true
   head_script="$(grep -E "^EXPECTED_HEAD = " "$REPO_ROOT/scripts/bootstrap_db_roles.py" | cut -d'"' -f2)" || true
   [ -n "$head_expected" ] || fail "migration head unreadable, no invented pass"
   [ "$head_expected" = "$head_script" ] || fail "EXPECTED_HEAD $head_script does not match migration head $head_expected"
+  [ "$head_expected" = "008" ] || fail "migration head is $head_expected, expected 008"
 
   BIND_DB="lc_bind_db"
   BIND_ADMIN="lc_bind_admin"
@@ -528,7 +529,7 @@ sys.stdout.write(text[:2000])
   model_checks() {
     m_label="$1"
     m_prefix="$2"
-    log "model 007 $m_label: tables owned, functions secdef pinned, no PUBLIC"
+    log "model 008 $m_label: tables owned, functions secdef pinned, no PUBLIC"
     for m_tbl in model_budget model_calls; do
       m_own="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT pg_get_userbyid(c.relowner) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = '$APP_SCHEMA' AND c.relname = '$m_tbl';" | tr -d '[:space:]')" || true
       [ "$m_own" = "$BIND_MG" ] || fail "model $m_tbl owner is $m_own, expected $BIND_MG ($m_label)"
@@ -728,9 +729,9 @@ print("model ok")
 ' 2>&1)"
     MODEL_CODE=$?
     set -e
-    [ "$MODEL_CODE" -eq 0 ] || { printf '%s' "$MODEL_OUT" | safe_emit >&2; fail "model 007 $m_label proof failed"; }
+    [ "$MODEL_CODE" -eq 0 ] || { printf '%s' "$MODEL_OUT" | safe_emit >&2; fail "model 008 $m_label proof failed"; }
     unset MODEL_OUT MODEL_CODE
-    log "pass: model 007 $m_label direct fails 42501, functions allowed, no resend, scope ok"
+    log "pass: model 008 $m_label direct fails 42501, functions allowed, no resend, scope ok"
   }
 
   log "password auth with the bound password works, a wrong one fails"
@@ -751,10 +752,10 @@ print("model ok")
   set -e
   [ "$MIG_CODE" -eq 0 ] || { printf '%s' "$MIG_OUT" | safe_emit >&2; fail "alembic upgrade head failed"; }
   ver="$(bind_as "$BIND_MG" "$BIND_MG_PW" "SELECT version_num FROM alembic_version;" | tr -d '[:space:]')" || true
-  [ "$ver" = "007" ] || fail "alembic head is $ver, expected 007"
+  [ "$ver" = "008" ] || fail "alembic head is $ver, expected 008"
   alembic_owner="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT pg_get_userbyid(c.relowner) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = '$APP_SCHEMA' AND c.relname = 'alembic_version';" | tr -d '[:space:]')" || true
   [ "$alembic_owner" = "$BIND_MG" ] || fail "alembic owner is $alembic_owner, expected $BIND_MG"
-  log "pass: alembic head 007 applied via the migration role and owned by it"
+  log "pass: alembic head 008 applied via the migration role and owned by it"
 
   model_checks "pre-rebind" "mpre"
 
@@ -770,6 +771,48 @@ print("model ok")
 
   model_checks "post-rebind" "mpost"
 
+  log "outcome 008: run_outcomes owned, constrained, no workspace DEFAULT, runtime DML only"
+  outcome_owner="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT pg_get_userbyid(c.relowner) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = '$APP_SCHEMA' AND c.relname = 'run_outcomes';" | tr -d '[:space:]')" || true
+  [ "$outcome_owner" = "$BIND_MG" ] || fail "outcome run_outcomes owner is $outcome_owner, expected $BIND_MG"
+  outcome_default="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT COALESCE(column_default,'') FROM information_schema.columns WHERE table_schema = '$APP_SCHEMA' AND table_name = 'run_outcomes' AND column_name = 'workspace_id';" | tr -d '[:space:]')" || true
+  [ -z "$outcome_default" ] || fail "outcome workspace_id has DEFAULT $outcome_default, expected none"
+  for want_constraint in run_outcomes_workspace_fkey run_outcomes_run_workspace_fkey run_outcomes_revision_non_negative run_outcomes_channel run_outcomes_likes_bounds run_outcomes_comments_bounds run_outcomes_clicks_bounds run_outcomes_sales_bounds run_outcomes_note_length run_outcomes_note_no_control run_outcomes_provenance run_outcomes_actor_signed_in; do
+    found="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT count(*) FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid JOIN pg_namespace n ON n.oid = t.relnamespace WHERE n.nspname = '$APP_SCHEMA' AND t.relname = 'run_outcomes' AND c.conname = '$want_constraint';" | tr -d '[:space:]')" || true
+    [ "$found" = "1" ] || fail "outcome constraint missing: $want_constraint"
+  done
+  actor_def="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT pg_get_constraintdef(c.oid) FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid JOIN pg_namespace n ON n.oid = t.relnamespace WHERE n.nspname = '$APP_SCHEMA' AND t.relname = 'run_outcomes' AND c.conname = 'run_outcomes_actor_signed_in';" || true)"
+  case "$actor_def" in *"demo_placeholder"*) ;; *) fail "outcome actor constraint does not refuse demo_placeholder" ;; esac
+  prov_def="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT pg_get_constraintdef(c.oid) FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid JOIN pg_namespace n ON n.oid = t.relnamespace WHERE n.nspname = '$APP_SCHEMA' AND t.relname = 'run_outcomes' AND c.conname = 'run_outcomes_provenance';" || true)"
+  case "$prov_def" in *"self_reported"*) ;; *) fail "outcome provenance constraint does not require self_reported" ;; esac
+  bind_as "$BIND_RT" "$BIND_RT_PW" "SELECT count(*) FROM $APP_SCHEMA.run_outcomes;" >/dev/null || fail "runtime role cannot SELECT run_outcomes"
+  RT_URL="$RT_URL" CERT_FILE="$CERTDIR/server.crt" APP_SCHEMA="$APP_SCHEMA" python3 -c '
+import os
+import psycopg
+url = os.environ["RT_URL"]
+cert = os.environ["CERT_FILE"]
+schema = os.environ["APP_SCHEMA"]
+conn = psycopg.connect(url, sslrootcert=cert, autocommit=True)
+cur = conn.cursor()
+table = schema + ".run_outcomes"
+for priv in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+    cur.execute("SELECT has_table_privilege(%s, %s)", (table, priv))
+    if not cur.fetchone()[0]:
+        raise SystemExit("runtime %s missing on run_outcomes" % priv)
+for priv in ("TRUNCATE", "REFERENCES", "TRIGGER"):
+    cur.execute("SELECT has_table_privilege(%s, %s)", (table, priv))
+    if cur.fetchone()[0]:
+        raise SystemExit("runtime %s present on run_outcomes" % priv)
+conn.close()
+print("outcome grants ok")
+' >/dev/null || fail "runtime DML split on run_outcomes is wrong"
+  set +e
+  bind_as "$BIND_RT" "$BIND_RT_PW" "ALTER TABLE $APP_SCHEMA.run_outcomes ADD COLUMN outcome_nope integer;" >/dev/null 2>&1
+  outcome_ddl=$?
+  set -e
+  [ "$outcome_ddl" -ne 0 ] || fail "runtime role altered run_outcomes, split broken"
+  log "pass: outcome 008 table owned, constrained, no DEFAULT, runtime DML only with DDL refused"
+  unset outcome_owner outcome_default found want_constraint actor_def prov_def outcome_ddl
+
   verify_job() {
     LAUNCHCREW_DB_TLS_MODE=verify-full DATABASE_SSL_ROOTCERT="$CERTDIR/server.crt" \
       DB_HOST=127.0.0.1 DB_PORT="$PORT" DB_NAME="$BIND_DB" \
@@ -783,16 +826,19 @@ print("model ok")
   VERIFY_OUT="$(verify_job)"
   VERIFY_CODE=$?
   set -e
-  [ "$VERIFY_CODE" -eq 0 ] || { printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify failed at head 007"; }
+  [ "$VERIFY_CODE" -eq 0 ] || { printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify failed at head 008"; }
   case "$VERIFY_OUT" in *"VERIFY COMPLETE"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed VERIFY COMPLETE" ;; esac
-  case "$VERIFY_OUT" in *"revision=007"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed revision=007" ;; esac
+  case "$VERIFY_OUT" in *"revision=008"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed revision=008" ;; esac
   case "$VERIFY_OUT" in *"verify-model-budget-zero ok"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed model budget proof" ;; esac
   case "$VERIFY_OUT" in *"verify-model-no-direct ok"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed model direct DML proof" ;; esac
   case "$VERIFY_OUT" in *"verify-model-functions ok"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed model function proof" ;; esac
   case "$VERIFY_OUT" in *"verify-model-owners ok"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed model owner proof" ;; esac
   case "$VERIFY_OUT" in *"verify-model-defaults ok"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed model defaults proof" ;; esac
+  case "$VERIFY_OUT" in *"verify-outcome-owner ok"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed outcome owner proof" ;; esac
+  case "$VERIFY_OUT" in *"verify-outcome-constraints ok"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed outcome constraints proof" ;; esac
+  case "$VERIFY_OUT" in *"verify-outcome-grants ok"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed outcome grants proof" ;; esac
   case "$VERIFY_OUT" in *"$BIND_RT_PW"*|*"$RT_URL"*) fail "verify output leaked a synthetic secret" ;; esac
-  log "pass: actual --verify proves 007, identity, rolled-back write, DDL refusal, model guards"
+  log "pass: actual --verify proves 008, identity, rolled-back write, DDL refusal, model and outcome guards"
 
   log "bind roles repeat the CRUD and sequence split directly"
   bind_as "$BIND_MG" "$BIND_MG_PW" "CREATE TABLE $APP_SCHEMA.bind_items (id SERIAL PRIMARY KEY, note TEXT);" >/dev/null || fail "migration role cannot create"
@@ -1032,21 +1078,21 @@ print("42501 ok")
   [ "$EVIL_FIX_CODE" -eq 0 ] || { printf '%s' "$EVIL_FIX_OUT" | safe_emit >&2; fail "rebind failed after foreign chain cleanup"; }
   log "pass: foreign grant chain refused, native row restored, recovery rebind ok"
 
-  log "negative: wrong head is refused by verify"
-  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "UPDATE alembic_version SET version_num='004';" >/dev/null
+  log "negative: historical predecessor 007 is refused by verify at 008"
+  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "UPDATE alembic_version SET version_num='007';" >/dev/null
   set +e
   OLD_OUT="$(verify_job 2>&1)"
   OLD_CODE=$?
   set -e
-  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "UPDATE alembic_version SET version_num='007';" >/dev/null
-  [ "$OLD_CODE" -ne 0 ] || fail "verify accepted the old head 004"
+  "$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -qAc "UPDATE alembic_version SET version_num='008';" >/dev/null
+  [ "$OLD_CODE" -ne 0 ] || fail "verify accepted the historical head 007"
   case "$OLD_OUT" in *"FAIL"*) ;; *) printf '%s' "$OLD_OUT" | safe_emit >&2; fail "old head refusal left no FAIL marker" ;; esac
   set +e
   AGAIN_OUT="$(verify_job 2>&1)"
   AGAIN_CODE=$?
   set -e
-  [ "$AGAIN_CODE" -eq 0 ] || { printf '%s' "$AGAIN_OUT" | safe_emit >&2; fail "verify failed after restoring head 007"; }
-  log "pass: old head refused, restored head proves again"
+  [ "$AGAIN_CODE" -eq 0 ] || { printf '%s' "$AGAIN_OUT" | safe_emit >&2; fail "verify failed after restoring head 008"; }
+  log "pass: historical 007 refused, restored 008 proves again"
 
   log "run actual --verify-role-state with both URLs, no master, under NOSUPERUSER admin"
   role_state_job() {
@@ -1062,15 +1108,16 @@ print("42501 ok")
   RS_OUT="$(role_state_job)"
   RS_CODE=$?
   set -e
-  [ "$RS_CODE" -eq 0 ] || { printf '%s' "$RS_OUT" | safe_emit >&2; fail "actual --verify-role-state failed at head 007"; }
+  [ "$RS_CODE" -eq 0 ] || { printf '%s' "$RS_OUT" | safe_emit >&2; fail "actual --verify-role-state failed at head 008"; }
   case "$RS_OUT" in *"ROLE-STATE COMPLETE"*) ;; *) printf '%s' "$RS_OUT" | safe_emit >&2; fail "role-state missed ROLE-STATE COMPLETE" ;; esac
-  case "$RS_OUT" in *"head=007"*) ;; *) printf '%s' "$RS_OUT" | safe_emit >&2; fail "role-state missed head=007" ;; esac
+  case "$RS_OUT" in *"head=008"*) ;; *) printf '%s' "$RS_OUT" | safe_emit >&2; fail "role-state missed head=008" ;; esac
   case "$RS_OUT" in *"role-state-runtime-connect ok"*) ;; *) printf '%s' "$RS_OUT" | safe_emit >&2; fail "role-state missed runtime connect proof" ;; esac
   case "$RS_OUT" in *"role-state-migration-connect ok"*) ;; *) printf '%s' "$RS_OUT" | safe_emit >&2; fail "role-state missed migration connect proof" ;; esac
   case "$RS_OUT" in *"role-state-ownership ok"*) ;; *) printf '%s' "$RS_OUT" | safe_emit >&2; fail "role-state missed ownership proof" ;; esac
   case "$RS_OUT" in *"role-state-grants ok"*) ;; *) printf '%s' "$RS_OUT" | safe_emit >&2; fail "role-state missed grants proof" ;; esac
+  case "$RS_OUT" in *"role-state-schema-props ok"*) ;; *) printf '%s' "$RS_OUT" | safe_emit >&2; fail "role-state missed schema-props proof" ;; esac
   case "$RS_OUT" in *"$BIND_RT_PW"*|*"$BIND_MG_PW"*|*"$RT_URL"*|*"$MG_URL"*) fail "role-state output leaked a synthetic secret" ;; esac
-  log "pass: actual --verify-role-state proves both auths, flags, ownership, grants at 007 with no master"
+  log "pass: actual --verify-role-state proves both auths, flags, ownership, grants at 008 with no master"
 
   log "negative: partial grants are refused by role-state, then restored"
   bind_as "$BIND_MG" "$BIND_MG_PW" "REVOKE INSERT ON $APP_SCHEMA.bind_items FROM \"$BIND_RT\";" >/dev/null || fail "partial revoke setup failed"
@@ -1089,35 +1136,37 @@ print("42501 ok")
   [ "$RS_RESTORE_CODE" -eq 0 ] || { printf '%s' "$RS_RESTORE_OUT" | safe_emit >&2; fail "role-state failed after grant restore"; }
   log "pass: partial grants refused with FAIL, restored grants prove again"
 
-  log "head006 ready path: downgrade to 006 returns 10, upgrade restores 007"
+  log "head007 ready path: downgrade to 007 returns 10, upgrade restores 008"
   set +e
   DOWN_OUT="$(cd "$REPO_ROOT" && DATABASE_URL="$MG_URL" LAUNCHCREW_DB_TLS_MODE=verify-full DATABASE_SSL_ROOTCERT="$CERTDIR/server.crt" python3 -m alembic downgrade -1 2>&1)"
   DOWN_CODE=$?
   set -e
-  [ "$DOWN_CODE" -eq 0 ] || { printf '%s' "$DOWN_OUT" | safe_emit >&2; fail "alembic downgrade to 006 failed"; }
-  ver006="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT version_num FROM alembic_version;" | tr -d '[:space:]')" || true
-  [ "$ver006" = "006" ] || fail "downgrade head is $ver006, expected 006"
-  set +e
-  RS006_OUT="$(role_state_job 2>&1)"
-  RS006_CODE=$?
-  set -e
-  [ "$RS006_CODE" -eq 10 ] || { printf '%s' "$RS006_OUT" | safe_emit >&2; fail "role-state at head 006 returned $RS006_CODE, expected 10"; }
-  case "$RS006_OUT" in *"head=006"*) ;; *) printf '%s' "$RS006_OUT" | safe_emit >&2; fail "role-state 006 missed head=006" ;; esac
-  set +e
-  UP_OUT="$(cd "$REPO_ROOT" && DATABASE_URL="$MG_URL" LAUNCHCREW_DB_TLS_MODE=verify-full DATABASE_SSL_ROOTCERT="$CERTDIR/server.crt" python3 -m alembic upgrade head 2>&1)"
-  UP_CODE=$?
-  set -e
-  [ "$UP_CODE" -eq 0 ] || { printf '%s' "$UP_OUT" | safe_emit >&2; fail "alembic upgrade back to 007 failed"; }
+  [ "$DOWN_CODE" -eq 0 ] || { printf '%s' "$DOWN_OUT" | safe_emit >&2; fail "alembic downgrade to 007 failed"; }
+  ver007="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT version_num FROM alembic_version;" | tr -d '[:space:]')" || true
+  [ "$ver007" = "007" ] || fail "downgrade head is $ver007, expected 007"
+  outcome_gone="$("$PG_BIN_DIR/psql" "host=127.0.0.1 port=$PORT dbname=$BIND_DB user=$SUPERUSER" -v ON_ERROR_STOP=1 -tAc "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = '$APP_SCHEMA' AND c.relname = 'run_outcomes';" | tr -d '[:space:]')" || true
+  [ "$outcome_gone" = "0" ] || fail "run_outcomes still present at head 007, expected exactly one 008 migration"
   set +e
   RS007_OUT="$(role_state_job 2>&1)"
   RS007_CODE=$?
   set -e
-  [ "$RS007_CODE" -eq 0 ] || { printf '%s' "$RS007_OUT" | safe_emit >&2; fail "role-state failed after restoring head 007"; }
-  log "pass: head006 returns 10 ready, restored 007 returns 0"
+  [ "$RS007_CODE" -eq 10 ] || { printf '%s' "$RS007_OUT" | safe_emit >&2; fail "role-state at head 007 returned $RS007_CODE, expected 10"; }
+  case "$RS007_OUT" in *"head=007"*) ;; *) printf '%s' "$RS007_OUT" | safe_emit >&2; fail "role-state 007 missed head=007" ;; esac
+  set +e
+  UP_OUT="$(cd "$REPO_ROOT" && DATABASE_URL="$MG_URL" LAUNCHCREW_DB_TLS_MODE=verify-full DATABASE_SSL_ROOTCERT="$CERTDIR/server.crt" python3 -m alembic upgrade head 2>&1)"
+  UP_CODE=$?
+  set -e
+  [ "$UP_CODE" -eq 0 ] || { printf '%s' "$UP_OUT" | safe_emit >&2; fail "alembic upgrade back to 008 failed"; }
+  set +e
+  RS008_OUT="$(role_state_job 2>&1)"
+  RS008_CODE=$?
+  set -e
+  [ "$RS008_CODE" -eq 0 ] || { printf '%s' "$RS008_OUT" | safe_emit >&2; fail "role-state failed after restoring head 008"; }
+  log "pass: head007 returns 10 ready, restored 008 returns 0"
 
   bind_as "$BIND_MG" "$BIND_MG_PW" "DROP TABLE $APP_SCHEMA.bind_items;" >/dev/null || fail "owned bind table cleanup failed"
   unset ADMIN_PW BIND_RT_PW BIND_MG_PW INTR_PW RT_URL MG_URL INTR_URL
-  unset BIND_OUT VERIFY_OUT MIG_OUT INTR_OUT BYPASS_OUT FOREIGN_OUT FOREIGN_FIX_OUT GRP_OUT GRP_FIX_OUT OPTS_OUT OPTS_FIX_OUT OWN_OUT OWN_FIX_OUT VIEW_OUT VIEW_FIX_OUT EVIL_OUT EVIL_FIX_OUT OLD_OUT AGAIN_OUT REBIND_OUT POSTMIG_OUT RS_OUT RS_PART_OUT RS_RESTORE_OUT RS006_OUT RS007_OUT DOWN_OUT UP_OUT
+  unset BIND_OUT VERIFY_OUT MIG_OUT INTR_OUT BYPASS_OUT FOREIGN_OUT FOREIGN_FIX_OUT GRP_OUT GRP_FIX_OUT OPTS_OUT OPTS_FIX_OUT OWN_OUT OWN_FIX_OUT VIEW_OUT VIEW_FIX_OUT EVIL_OUT EVIL_FIX_OUT OLD_OUT AGAIN_OUT REBIND_OUT POSTMIG_OUT RS_OUT RS_PART_OUT RS_RESTORE_OUT RS007_OUT RS008_OUT DOWN_OUT UP_OUT
   log "PASS: bind and verify job proof complete on disposable 127.0.0.1:$PORT"
   log "loopback self-signed CA only, NOT live RDS TLS proof"
   log "admin fixture proves binder logic only, NOT RDS identity proof"

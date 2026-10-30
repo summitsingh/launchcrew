@@ -160,20 +160,35 @@ def test_two_user_denial_on_create_and_read(client, monkeypatch):
     assert client.get(f'/api/runs/{own_id}/outcomes').status_code == 404
 
 
-def test_anonymous_demo_placeholder_write_denied_read_empty(client, monkeypatch):
+def test_anonymous_demo_placeholder_write_and_read_denied(client, monkeypatch):
     run_id = _new_run(client)['run_id']
     assert client.post(f'/api/runs/{run_id}/approve', json={}).status_code == 200
     assert client.post(f'/api/runs/{run_id}/export', json={}).status_code == 200
     denied = client.post(f'/api/runs/{run_id}/outcomes', json=_outcome_payload())
     assert denied.status_code == 401
     assert 'Sign in required' in denied.json()['detail']
-    assert client.get(f'/api/runs/{run_id}/outcomes').json() == []
+    read_denied = client.get(f'/api/runs/{run_id}/outcomes')
+    assert read_denied.status_code == 401
+    assert 'Sign in required' in read_denied.json()['detail']
     with store.connect() as db:
         assert db.execute(text('SELECT count(*) FROM run_outcomes WHERE run_id=:id'),
                           {'id': run_id}).scalar() == 0
     monkeypatch.setenv('AUTH_ENABLED', 'true')
     client.cookies.clear()
     assert client.post(f'/api/runs/{run_id}/outcomes', json=_outcome_payload()).status_code == 401
+    assert client.get(f'/api/runs/{run_id}/outcomes').status_code == 401
+
+
+def test_anonymous_read_denied_without_existence_leak(client, monkeypatch):
+    run_id = _new_run(client)['run_id']
+    assert client.post(f'/api/runs/{run_id}/approve', json={}).status_code == 200
+    assert client.post(f'/api/runs/{run_id}/export', json={}).status_code == 200
+    existing = client.get(f'/api/runs/{run_id}/outcomes')
+    missing = client.get('/api/runs/does-not-exist/outcomes')
+    assert existing.status_code == 401
+    assert missing.status_code == 401
+    assert existing.json() == missing.json()
+    assert 'Sign in required' in existing.json()['detail']
 
 
 def test_pending_refused(client, monkeypatch):

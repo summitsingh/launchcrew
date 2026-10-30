@@ -30,8 +30,8 @@ Modes, selected by argv flag only (no secret ever appears in argv):
             takeover risk. The only permitted membership is the exact
             native Postgres 16 creator administration row. Idempotent:
             safe to rerun; reports each completed phase.
-  --verify  read-only proof with the runtime URL only at head 007: SELECT
-            works, the alembic schema version equals 007, the connected
+  --verify  read-only proof with the runtime URL only at head 008: SELECT
+            works, the alembic schema version equals 008, the connected
             identity equals the runtime role, a rolled-back write proves DML
             without committing, runtime CREATE/ALTER/DROP each fail with
             SQLSTATE 42501, the global model budget reads zero, runtime
@@ -41,8 +41,12 @@ Modes, selected by argv flag only (no secret ever appears in argv):
             finalize, and trigger functions plus both model tables must be
             owned exactly by the expected migration role name carried in the
             nonsecret MIGRATION_USER metadata, failing closed on wrong owner.
-            Never connects as master or migration here, and never commits.
-            No provider key is read or injected here.
+            The run_outcomes table must exist at 008, owned by the migration
+            role, with its workspace isolation and self-report CHECK and FK
+            constraints plus no workspace_id DEFAULT, and the runtime role
+            must hold SELECT, INSERT, UPDATE, DELETE with no TRUNCATE,
+            REFERENCES, or TRIGGER. Never connects as master or migration
+            here, and never commits. No provider key is read or injected here.
   --verify-role-state
             read-only current-state equivalence proof with both runtime and
             migration URLs, no master secret, zero writes including zero
@@ -53,11 +57,12 @@ Modes, selected by argv flag only (no secret ever appears in argv):
             schema and table and sequence grants plus default grants for
             future objects, model table and function ownership and EXECUTE
             scope with no PUBLIC, plus the actual alembic head and critical
-            schema properties. Head 007 returns 0, head 006 ready for the
-            single 007 migration returns 10, any other head or any partial
-            or inconsistent state returns 1 and requires a separately
-            reviewed repair. Never logs a password, URL, or statement with
-            secret material.
+            schema properties including voice_profile at 007 and 008 and the
+            run_outcomes table at 008 only. Head 008 returns 0, head 007
+            ready for the single 008 migration returns 10, any other head or
+            any partial or inconsistent state returns 1 and requires a
+            separately reviewed repair. Never logs a password, URL, or
+            statement with secret material.
 
 TLS guard: LAUNCHCREW_DB_TLS_MODE must be verify-full and
 DATABASE_SSL_ROOTCERT must be an existing CA bundle file, otherwise the job
@@ -84,8 +89,24 @@ NATIVE_BOOTSTRAP_OID = 10
 PHASES_BIND = ("db-ensure", "password-binding", "schema-acls",
                "runtime-grants", "default-privileges")
 ROOTCERT_ENV = "DATABASE_SSL_ROOTCERT"
-EXPECTED_HEAD = "007"
+EXPECTED_HEAD = "008"
+PREDECESSOR_HEAD = "007"
 MODEL_TABLES = ("model_budget", "model_calls")
+OUTCOME_TABLE = "run_outcomes"
+OUTCOME_CONSTRAINTS = (
+    "run_outcomes_workspace_fkey",
+    "run_outcomes_run_workspace_fkey",
+    "run_outcomes_revision_non_negative",
+    "run_outcomes_channel",
+    "run_outcomes_likes_bounds",
+    "run_outcomes_comments_bounds",
+    "run_outcomes_clicks_bounds",
+    "run_outcomes_sales_bounds",
+    "run_outcomes_note_length",
+    "run_outcomes_note_no_control",
+    "run_outcomes_provenance",
+    "run_outcomes_actor_signed_in",
+)
 MODEL_RESERVE_FUNC = "model_reserve_call"
 MODEL_RESERVE_SIG = "(TEXT, TEXT, TEXT, TEXT, INTEGER, INTEGER, INTEGER)"
 MODEL_FINALIZE_FUNC = "model_finalize_call"
@@ -866,6 +887,26 @@ def _constraint_def(cur, schema, table, name):
     return str(row[0]) if row and row[0] else ""
 
 
+def _outcome_constraint_names(cur, schema):
+    cur.execute(
+        "SELECT c.conname FROM pg_constraint c "
+        "JOIN pg_class t ON t.oid = c.conrelid "
+        "JOIN pg_namespace n ON n.oid = t.relnamespace "
+        "WHERE n.nspname = %s AND t.relname = %s",
+        (schema, OUTCOME_TABLE))
+    return {str(row[0]) for row in (cur.fetchall() or []) if row}
+
+
+def _column_default(cur, schema, table, column):
+    cur.execute(
+        "SELECT column_default FROM information_schema.columns "
+        "WHERE table_schema = %s AND table_name = %s "
+        "AND column_name = %s",
+        (schema, table, column))
+    row = cur.fetchone()
+    return row[0] if row else None
+
+
 def do_verify_role_state():
     import psycopg
 
@@ -1067,7 +1108,7 @@ def do_verify_role_state():
             mcur.execute("SELECT version_num FROM alembic_version")
             version = mcur.fetchone()
             head = str(version[0]) if version and version[0] else ""
-            if head not in ("006", "007"):
+            if head not in ("007", "008"):
                 try:
                     mconn.rollback()
                 except Exception:
@@ -1126,12 +1167,63 @@ def do_verify_role_state():
                 except Exception:
                     pass
                 return _fail("role-state-check-007")
-            if head == "006" and has_voice:
+            if head == "008" and not has_voice:
                 try:
                     mconn.rollback()
                 except Exception:
                     pass
-                return _fail("role-state-check-006")
+                return _fail("role-state-check-008")
+            if head == "007" and OUTCOME_TABLE in names:
+                try:
+                    mconn.rollback()
+                except Exception:
+                    pass
+                return _fail("role-state-outcome-unexpected")
+            if head == "008":
+                if OUTCOME_TABLE not in names:
+                    try:
+                        mconn.rollback()
+                    except Exception:
+                        pass
+                    return _fail("role-state-outcome-missing")
+                owners = {rel: own for rel, _kind, own in inventory}
+                if owners.get(OUTCOME_TABLE) != migration_user:
+                    try:
+                        mconn.rollback()
+                    except Exception:
+                        pass
+                    return _fail("role-state-outcome-owner")
+                present = _outcome_constraint_names(mcur, schema)
+                for want in OUTCOME_CONSTRAINTS:
+                    if want not in present:
+                        try:
+                            mconn.rollback()
+                        except Exception:
+                            pass
+                        return _fail("role-state-outcome-constraints")
+                if _column_default(mcur, schema, OUTCOME_TABLE,
+                                   "workspace_id") is not None:
+                    try:
+                        mconn.rollback()
+                    except Exception:
+                        pass
+                    return _fail("role-state-outcome-default")
+                actor_def = _constraint_def(mcur, schema, OUTCOME_TABLE,
+                                            "run_outcomes_actor_signed_in")
+                if not actor_def or "demo_placeholder" not in actor_def:
+                    try:
+                        mconn.rollback()
+                    except Exception:
+                        pass
+                    return _fail("role-state-outcome-actor")
+                prov_def = _constraint_def(mcur, schema, OUTCOME_TABLE,
+                                           "run_outcomes_provenance")
+                if not prov_def or "self_reported" not in prov_def:
+                    try:
+                        mconn.rollback()
+                    except Exception:
+                        pass
+                    return _fail("role-state-outcome-provenance")
             _ok("role-state-schema-props")
         except Exception:
             try:
@@ -1424,12 +1516,12 @@ def do_verify_role_state():
             gconn.close()
         except Exception:
             pass
-    if head == "007":
-        print("bootstrap-db-roles: ROLE-STATE COMPLETE head=007 "
+    if head == "008":
+        print("bootstrap-db-roles: ROLE-STATE COMPLETE head=008 "
               "roles=2 read-only, no master, repair not needed", flush=True)
         return 0
-    print("bootstrap-db-roles: ROLE-STATE COMPLETE head=006 "
-          "roles=2 read-only, ready for single 007 migration", flush=True)
+    print("bootstrap-db-roles: ROLE-STATE COMPLETE head=007 "
+          "roles=2 read-only, ready for single 008 migration", flush=True)
     return 10
 
 
@@ -1748,6 +1840,79 @@ def do_verify():
                 pass
             return _fail("verify-model-defaults")
         try:
+            cur.execute(
+                "SELECT c.relname, owner.rolname FROM pg_class c "
+                "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                "JOIN pg_roles owner ON owner.oid = c.relowner "
+                "WHERE n.nspname = %s AND c.relname = %s",
+                ("public", OUTCOME_TABLE))
+            outcome_owner = cur.fetchone()
+            if (not outcome_owner or len(outcome_owner) != 2
+                    or str(outcome_owner[0]) != OUTCOME_TABLE
+                    or str(outcome_owner[1]) != migration_user):
+                conn.rollback()
+                return _fail("verify-outcome-owner")
+            conn.rollback()
+            _ok("verify-outcome-owner")
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return _fail("verify-outcome-owner")
+        try:
+            names = _outcome_constraint_names(cur, "public")
+            for want in OUTCOME_CONSTRAINTS:
+                if want not in names:
+                    conn.rollback()
+                    return _fail("verify-outcome-constraints")
+            if _column_default(cur, "public", OUTCOME_TABLE,
+                               "workspace_id") is not None:
+                conn.rollback()
+                return _fail("verify-outcome-default")
+            actor_def = _constraint_def(cur, "public", OUTCOME_TABLE,
+                                        "run_outcomes_actor_signed_in")
+            if not actor_def or "demo_placeholder" not in actor_def:
+                conn.rollback()
+                return _fail("verify-outcome-actor")
+            prov_def = _constraint_def(cur, "public", OUTCOME_TABLE,
+                                       "run_outcomes_provenance")
+            if not prov_def or "self_reported" not in prov_def:
+                conn.rollback()
+                return _fail("verify-outcome-provenance")
+            conn.rollback()
+            _ok("verify-outcome-constraints")
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return _fail("verify-outcome-constraints")
+        try:
+            cur.execute("SELECT count(*) FROM public.run_outcomes")
+            count_row = cur.fetchone()
+            if not count_row or not isinstance(count_row[0], int):
+                conn.rollback()
+                return _fail("verify-outcome-read")
+            for priv in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+                if not _has_priv(cur, "has_table_privilege",
+                                 "public." + OUTCOME_TABLE, priv):
+                    conn.rollback()
+                    return _fail("verify-outcome-grants")
+            for priv in ("TRUNCATE", "REFERENCES", "TRIGGER"):
+                if _has_priv(cur, "has_table_privilege",
+                             "public." + OUTCOME_TABLE, priv):
+                    conn.rollback()
+                    return _fail("verify-outcome-grants")
+            conn.rollback()
+            _ok("verify-outcome-grants")
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return _fail("verify-outcome-grants")
+        try:
             conn.rollback()
         except Exception:
             pass
@@ -1757,7 +1922,7 @@ def do_verify():
         except Exception:
             pass
     print("bootstrap-db-roles: VERIFY COMPLETE runtime read-only, "
-          "schema 007, DDL refused, model guards ok", flush=True)
+          "schema 008, DDL refused, model and outcome guards ok", flush=True)
     return 0
 
 
