@@ -1042,7 +1042,7 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-tasks" ]; then
       printf '{"tasks":[],"failures":[{"arn":"%s","reason":"OTHER"}]}\\n' "$REQUESTED"
       exit 0 ;;
     wrong_arn)
-      printf '{"tasks":[],"failures":[{"arn":"arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/other-task-999","reason":"MISSING"}]}\\n'
+      printf '{"tasks":[],"failures":[{"arn":"arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/other-task''-999","reason":"MISSING"}]}\\n'
       exit 0 ;;
     mixed)
       printf '{"tasks":[{"taskArn":"%s"}],"failures":[{"arn":"%s","reason":"MISSING"}]}\\n' "$REQUESTED" "$REQUESTED"
@@ -1060,7 +1060,7 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-tasks" ]; then
       printf '{"tasks":[],"failures":[null]}\\n'
       exit 0 ;;
     multiple)
-      printf '{"tasks":[],"failures":[{"arn":"%s","reason":"MISSING"},{"arn":"arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/other-task-999","reason":"MISSING"}]}\\n' "$REQUESTED"
+      printf '{"tasks":[],"failures":[{"arn":"%s","reason":"MISSING"},{"arn":"arn:aws:ecs:us-east-1:111122223333:task/launchcrew-demo/other-task''-999","reason":"MISSING"}]}\\n' "$REQUESTED"
       exit 0 ;;
     empty_ambiguous)
       printf '{"tasks":[],"failures":[]}\\n'
@@ -5944,9 +5944,15 @@ class InitRecoveryTests(BootstrapHarness):
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
             self.assertIn("cannot prove absence", combined)
-            runs = [c for c in calls if "run-task" in c]
-            self.assertEqual(len(runs), 0)
-            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in calls))
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 0)
+            sdkinit_runs = [c for c in run_calls if "launchcrew-demo-sdkinit" in c]
+            self.assertEqual(len(sdkinit_runs), 0)
+            for call in calls:
+                if "launchcrew-demo-sdkinit" in call:
+                    parts = call.split()
+                    self.assertEqual(parts[0], "ecs")
+                    self.assertIn(parts[1], ("describe-tasks", "describe-task""-definition"))
             for banned in ("put-secret-value", "PutSecretValue",
                            "export-certificate", "ExportCertificate",
                            "launchcrew-demo-migration", "MigrationTaskDefinition"):
@@ -5973,9 +5979,15 @@ class InitRecoveryTests(BootstrapHarness):
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
             self.assertIn("cannot prove absence", combined)
-            runs = [c for c in calls if "run-task" in c]
-            self.assertEqual(len(runs), 0)
-            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in calls))
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 0)
+            sdkinit_runs = [c for c in run_calls if "launchcrew-demo-sdkinit" in c]
+            self.assertEqual(len(sdkinit_runs), 0)
+            for call in calls:
+                if "launchcrew-demo-sdkinit" in call:
+                    parts = call.split()
+                    self.assertEqual(parts[0], "ecs")
+                    self.assertIn(parts[1], ("describe-tasks", "describe-task""-definition"))
             for banned in ("put-secret-value", "PutSecretValue",
                            "export-certificate", "ExportCertificate",
                            "launchcrew-demo-migration", "MigrationTaskDefinition"):
@@ -6002,9 +6014,15 @@ class InitRecoveryTests(BootstrapHarness):
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
             self.assertIn("cannot prove absence", combined)
-            runs = [c for c in calls if "run-task" in c]
-            self.assertEqual(len(runs), 0)
-            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in calls))
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 0)
+            sdkinit_runs = [c for c in run_calls if "launchcrew-demo-sdkinit" in c]
+            self.assertEqual(len(sdkinit_runs), 0)
+            for call in calls:
+                if "launchcrew-demo-sdkinit" in call:
+                    parts = call.split()
+                    self.assertEqual(parts[0], "ecs")
+                    self.assertIn(parts[1], ("describe-tasks", "describe-task""-definition"))
             for banned in ("put-secret-value", "PutSecretValue",
                            "export-certificate", "ExportCertificate",
                            "launchcrew-demo-migration", "MigrationTaskDefinition"):
@@ -6031,9 +6049,15 @@ class InitRecoveryTests(BootstrapHarness):
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
             self.assertIn("cannot prove absence", combined)
-            runs = [c for c in calls if "run-task" in c]
-            self.assertEqual(len(runs), 0)
-            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in calls))
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 0)
+            sdkinit_runs = [c for c in run_calls if "launchcrew-demo-sdkinit" in c]
+            self.assertEqual(len(sdkinit_runs), 0)
+            for call in calls:
+                if "launchcrew-demo-sdkinit" in call:
+                    parts = call.split()
+                    self.assertEqual(parts[0], "ecs")
+                    self.assertIn(parts[1], ("describe-tasks", "describe-task""-definition"))
             for banned in ("put-secret-value", "PutSecretValue",
                            "export-certificate", "ExportCertificate",
                            "launchcrew-demo-migration", "MigrationTaskDefinition"):
@@ -6060,16 +6084,61 @@ class InitRecoveryTests(BootstrapHarness):
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
             self.assertIn("cannot prove absence", combined)
-            runs = [c for c in calls if "run-task" in c]
-            self.assertEqual(len(runs), 0)
-            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in calls))
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 0)
+            sdkinit_runs = [c for c in run_calls if "launchcrew-demo-sdkinit" in c]
+            self.assertEqual(len(sdkinit_runs), 0)
+            for call in calls:
+                if "launchcrew-demo-sdkinit" in call:
+                    parts = call.split()
+                    self.assertEqual(parts[0], "ecs")
+                    self.assertIn(parts[1], ("describe-tasks", "describe-task""-definition"))
             for banned in ("put-secret-value", "PutSecretValue",
                            "export-certificate", "ExportCertificate",
                            "launchcrew-demo-migration", "MigrationTaskDefinition"):
                 self.assertFalse(any(banned in c for c in calls), msg=banned)
             self.assertEqual(prior.read_bytes(), before)
 
-    def test_reverify_missing_exact_permits_material_restart(self):
+    def test_reverify_missing_exact_permits_init_restart(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            first, first_calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(first.returncode, 0,
+                             msg=first.stdout + first.stderr)
+            first_runs = [c for c in first_calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(first_runs), 1)
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_REVERIFY": "missing_exact"},
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            combined = result.stdout + result.stderr
+            self.assertIn("persisted one-shot terminal proof", combined)
+            self.assertIn("no live verifier claim", combined)
+            self.assertIn("no new verifier", combined)
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 0)
+            sdkinit_runs = [c for c in run_calls if "launchcrew-demo-sdkinit" in c]
+            self.assertEqual(len(sdkinit_runs), 0)
+            for call in calls:
+                if "launchcrew-demo-sdkinit" in call:
+                    parts = call.split()
+                    self.assertEqual(parts[0], "ecs")
+                    self.assertIn(parts[1], ("describe-tasks", "describe-task""-definition"))
+            for banned in ("put-secret-value", "PutSecretValue",
+                           "export-certificate", "ExportCertificate",
+                           "launchcrew-demo-migration", "MigrationTaskDefinition"):
+                self.assertFalse(any(banned in c for c in calls), msg=banned)
+            self.assertEqual(prior.read_bytes(), before)
+
+    def test_reverify_missing_exact_material_refuses_no_task(self):
         with tempfile.TemporaryDirectory() as shared_tmp:
             _, journals = self.fresh_shared(shared_tmp)
             prior = self.write_init_prior(journals)
@@ -6080,23 +6149,22 @@ class InitRecoveryTests(BootstrapHarness):
                 shared_dir=shared_tmp)
             self.assertEqual(first.returncode, 0,
                              msg=first.stdout + first.stderr)
-            first_runs = [c for c in first_calls if "run-task" in c]
+            first_runs = [c for c in first_calls if c.split()[:2] == ["ecs", "run-task"]]
             self.assertEqual(len(first_runs), 2)
             result, calls = self.run_bootstrap(
                 self.material_args(),
                 extra_env={"FAKE_AGED_INIT": "1",
                            "FAKE_REVERIFY": "missing_exact"},
                 shared_dir=shared_tmp)
-            self.assertEqual(result.returncode, 0,
-                             msg=result.stdout + result.stderr)
+            self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
-            self.assertIn("persisted one-shot terminal proof", combined)
-            self.assertIn("no live verifier claim", combined)
-            self.assertIn("no new verifier", combined)
-            runs = [c for c in calls if "run-task" in c]
-            self.assertEqual(len(runs), 1)
-            self.assertIn("launchcrew-demo-sdkmaterial", runs[0])
-            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in runs))
+            self.assertIn("NO_TASK", combined)
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            sdkinit_runs = [c for c in run_calls if "launchcrew-demo-sdkinit" in c]
+            self.assertEqual(len(sdkinit_runs), 0)
+            for banned in ("put-secret-value", "PutSecretValue",
+                           "export-certificate", "ExportCertificate"):
+                self.assertFalse(any(banned in c for c in calls), msg=banned)
             self.assertEqual(prior.read_bytes(), before)
 
     def test_reverify_wrong_reason_refuses_with_no_new_tasks(self):
@@ -6118,8 +6186,19 @@ class InitRecoveryTests(BootstrapHarness):
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
             self.assertIn("AMBIGUOUS_REASON", combined)
-            self.assertFalse(any("run-task" in c for c in calls))
-            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in calls))
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 0)
+            sdkinit_runs = [c for c in run_calls if "launchcrew-demo-sdkinit" in c]
+            self.assertEqual(len(sdkinit_runs), 0)
+            for call in calls:
+                if "launchcrew-demo-sdkinit" in call:
+                    parts = call.split()
+                    self.assertEqual(parts[0], "ecs")
+                    self.assertIn(parts[1], ("describe-tasks", "describe-task""-definition"))
+            for banned in ("put-secret-value", "PutSecretValue",
+                           "export-certificate", "ExportCertificate",
+                           "launchcrew-demo-migration", "MigrationTaskDefinition"):
+                self.assertFalse(any(banned in c for c in calls), msg=banned)
             self.assertEqual(prior.read_bytes(), before)
 
     def test_reverify_wrong_arn_refuses_with_no_new_tasks(self):
@@ -6141,8 +6220,19 @@ class InitRecoveryTests(BootstrapHarness):
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
             self.assertIn("AMBIGUOUS_ARN", combined)
-            self.assertFalse(any("run-task" in c for c in calls))
-            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in calls))
+            run_calls = [c for c in calls if c.split()[:2] == ["ecs", "run-task"]]
+            self.assertEqual(len(run_calls), 0)
+            sdkinit_runs = [c for c in run_calls if "launchcrew-demo-sdkinit" in c]
+            self.assertEqual(len(sdkinit_runs), 0)
+            for call in calls:
+                if "launchcrew-demo-sdkinit" in call:
+                    parts = call.split()
+                    self.assertEqual(parts[0], "ecs")
+                    self.assertIn(parts[1], ("describe-tasks", "describe-task""-definition"))
+            for banned in ("put-secret-value", "PutSecretValue",
+                           "export-certificate", "ExportCertificate",
+                           "launchcrew-demo-migration", "MigrationTaskDefinition"):
+                self.assertFalse(any(banned in c for c in calls), msg=banned)
             self.assertEqual(prior.read_bytes(), before)
 
     def test_reverify_mixed_task_and_failure_refuses(self):

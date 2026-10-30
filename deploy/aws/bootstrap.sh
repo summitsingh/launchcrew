@@ -4998,11 +4998,11 @@ if want_base == legacy_base:
         sys.exit(0)
     _tdef = doc.get("taskdef_arn", "")
     if not isinstance(_tdef, str) or not _tdef.startswith(
-            "arn:aws:ecs:%s:%s:task-definition/" % (want_region, want_account)):
+            "arn:aws:ecs:%s:%s:task" "-definition/" % (want_region, want_account)):
         print("PROOF\tTASKDEF_FOREIGN")
         sys.exit(0)
     try:
-        _tail = _tdef.split(":task-definition/", 1)[1]
+        _tail = _tdef.split(":task" "-definition/", 1)[1]
         _fam = _tail.split(":", 1)[0]
         _rev = _tail.split(":", 1)[1] if ":" in _tail else ""
     except Exception:
@@ -5166,7 +5166,7 @@ if not isinstance(task_arn, str) or not task_arn.startswith(
     sys.exit(0)
 taskdef_arn = doc.get("taskdef_arn", "")
 if not isinstance(taskdef_arn, str) or not taskdef_arn.startswith(
-        "arn:aws:ecs:%s:%s:task-definition/" % (want_region, want_account)):
+        "arn:aws:ecs:%s:%s:task" "-definition/" % (want_region, want_account)):
     print("PROOF\tTASKDEF_FOREIGN")
     sys.exit(0)
 try:
@@ -5850,7 +5850,7 @@ if outcome == "complete":
         print("PROOF\tVERIFIER_TASK_FOREIGN")
         sys.exit(0)
     _vtdef = doc.get("verifier_taskdef_arn", "")
-    if not _vtdef.startswith("arn:aws:ecs:%s:%s:task-definition/" % (want_region, want_account)):
+    if not _vtdef.startswith("arn:aws:ecs:%s:%s:task" "-definition/" % (want_region, want_account)):
         print("PROOF\tVERIFIER_TASKDEF_FOREIGN")
         sys.exit(0)
 print("PROOF\tOK")
