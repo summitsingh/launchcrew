@@ -12,6 +12,8 @@ from pathlib import Path
 try:
     from evaluation.runner import (
         EXPECTED_TO_PRODUCTION,
+        MALFORMED_OBSERVED,
+        OBSERVED_VERDICTS,
         PRODUCTION_VERDICTS,
         build_checker_facts,
         compute_binary_metrics,
@@ -22,10 +24,13 @@ try:
         hash_dataset_bytes,
         map_expected_to_production,
         validate_checker_result,
+        validate_dataset_cases,
     )
 except ImportError:
     from runner import (
         EXPECTED_TO_PRODUCTION,
+        MALFORMED_OBSERVED,
+        OBSERVED_VERDICTS,
         PRODUCTION_VERDICTS,
         build_checker_facts,
         compute_binary_metrics,
@@ -36,6 +41,7 @@ except ImportError:
         hash_dataset_bytes,
         map_expected_to_production,
         validate_checker_result,
+        validate_dataset_cases,
     )
 
 
@@ -150,7 +156,7 @@ class ValidationTests(unittest.TestCase):
             {"verified": False, "verdict": "unknown", "reason": "fake"}
         )
         self.assertIs(verified, False)
-        self.assertEqual(verdict, "unsupported")
+        self.assertEqual(verdict, "malformed")
         self.assertIs(malformed, True)
 
     def test_capitalized_verdict_fails_closed(self):
@@ -159,7 +165,7 @@ class ValidationTests(unittest.TestCase):
             {"verified": True, "verdict": "Supported", "reason": "fake"}
         )
         self.assertIs(verified, False)
-        self.assertEqual(verdict, "unsupported")
+        self.assertEqual(verdict, "malformed")
         self.assertIs(malformed, True)
 
     def test_verified_int_fails_closed(self):
@@ -167,7 +173,7 @@ class ValidationTests(unittest.TestCase):
             {"verified": 1, "verdict": "supported", "reason": "fake"}
         )
         self.assertIs(verified, False)
-        self.assertEqual(verdict, "unsupported")
+        self.assertEqual(verdict, "malformed")
         self.assertIs(malformed, True)
 
     def test_verified_string_fails_closed(self):
@@ -175,14 +181,14 @@ class ValidationTests(unittest.TestCase):
             {"verified": "true", "verdict": "unsupported", "reason": "fake"}
         )
         self.assertIs(verified, False)
-        self.assertEqual(verdict, "unsupported")
+        self.assertEqual(verdict, "malformed")
         self.assertIs(malformed, True)
 
     def test_missing_keys_fail_closed(self):
         for result in ({}, {"verified": True}, {"verdict": "supported"}):
             verified, verdict, malformed, _ = validate_checker_result(result)
             self.assertIs(verified, False)
-            self.assertEqual(verdict, "unsupported")
+            self.assertEqual(verdict, "malformed")
             self.assertIs(malformed, True)
 
     def test_contradictory_true_with_blocked_verdict_fails_closed(self):
@@ -190,13 +196,13 @@ class ValidationTests(unittest.TestCase):
             {"verified": True, "verdict": "unsupported", "reason": "fake"}
         )
         self.assertIs(verified, False)
-        self.assertEqual(verdict, "unsupported")
+        self.assertEqual(verdict, "malformed")
         self.assertIs(malformed, True)
         verified, verdict, malformed, _ = validate_checker_result(
             {"verified": True, "verdict": "conflicts", "reason": "fake"}
         )
         self.assertIs(verified, False)
-        self.assertEqual(verdict, "conflicts")
+        self.assertEqual(verdict, "malformed")
         self.assertIs(malformed, True)
 
     def test_contradictory_false_with_supported_fails_closed(self):
@@ -204,7 +210,7 @@ class ValidationTests(unittest.TestCase):
             {"verified": False, "verdict": "supported", "reason": "fake"}
         )
         self.assertIs(verified, False)
-        self.assertEqual(verdict, "unsupported")
+        self.assertEqual(verdict, "malformed")
         self.assertIs(malformed, True)
 
     def test_non_dict_raises(self):
@@ -235,9 +241,24 @@ class CategoryMetricTests(unittest.TestCase):
         self.assertEqual(
             cat["confusion"],
             {
-                "supported": {"supported": 1, "unsupported": 0, "conflicts": 0},
-                "unsupported": {"supported": 0, "unsupported": 1, "conflicts": 0},
-                "conflicts": {"supported": 0, "unsupported": 0, "conflicts": 1},
+                "supported": {
+                    "supported": 1,
+                    "unsupported": 0,
+                    "conflicts": 0,
+                    "malformed": 0,
+                },
+                "unsupported": {
+                    "supported": 0,
+                    "unsupported": 1,
+                    "conflicts": 0,
+                    "malformed": 0,
+                },
+                "conflicts": {
+                    "supported": 0,
+                    "unsupported": 0,
+                    "conflicts": 1,
+                    "malformed": 0,
+                },
             },
         )
         self.assertEqual(
@@ -280,9 +301,24 @@ class CategoryMetricTests(unittest.TestCase):
         self.assertEqual(
             cat["confusion"],
             {
-                "supported": {"supported": 1, "unsupported": 1, "conflicts": 0},
-                "unsupported": {"supported": 0, "unsupported": 1, "conflicts": 1},
-                "conflicts": {"supported": 1, "unsupported": 0, "conflicts": 1},
+                "supported": {
+                    "supported": 1,
+                    "unsupported": 1,
+                    "conflicts": 0,
+                    "malformed": 0,
+                },
+                "unsupported": {
+                    "supported": 0,
+                    "unsupported": 1,
+                    "conflicts": 1,
+                    "malformed": 0,
+                },
+                "conflicts": {
+                    "supported": 1,
+                    "unsupported": 0,
+                    "conflicts": 1,
+                    "malformed": 0,
+                },
             },
         )
         self.assertAlmostEqual(cat["per_class_recall"]["supported"], 1 / 2)
@@ -291,7 +327,8 @@ class CategoryMetricTests(unittest.TestCase):
 
     def test_malformed_never_counts_as_correct(self):
         # Hand computed: both observed enums match expected, but both flagged
-        # malformed, so correct stays 0 and both are mismatches.
+        # malformed, so correct stays 0 and both are mismatches in the
+        # separate malformed column, never on the valid diagonal.
         cases = [
             {"id": "S-001", "expected_verdict": "Supported"},
             {"id": "U-001", "expected_verdict": "Not in confirmed facts"},
@@ -310,6 +347,10 @@ class CategoryMetricTests(unittest.TestCase):
         self.assertAlmostEqual(cat["per_class_recall"]["supported"], 0.0)
         self.assertAlmostEqual(cat["per_class_recall"]["unsupported"], 0.0)
         self.assertIsNone(cat["per_class_recall"]["conflicts"])
+        self.assertEqual(cat["confusion"]["supported"]["malformed"], 1)
+        self.assertEqual(cat["confusion"]["unsupported"]["malformed"], 1)
+        self.assertEqual(cat["confusion"]["supported"]["supported"], 0)
+        self.assertEqual(cat["confusion"]["unsupported"]["unsupported"], 0)
 
     def test_unknown_observed_fails_closed_to_mismatch(self):
         cases = [{"id": "S-001", "expected_verdict": "Supported"}]
@@ -318,7 +359,8 @@ class CategoryMetricTests(unittest.TestCase):
         self.assertEqual(cat["mismatch_total"], 1)
         self.assertEqual(cat["malformed_total"], 1)
         self.assertEqual(cat["malformed_ids"], ["S-001"])
-        self.assertEqual(cat["confusion"]["supported"]["unsupported"], 1)
+        self.assertEqual(cat["confusion"]["supported"]["malformed"], 1)
+        self.assertEqual(cat["confusion"]["supported"]["unsupported"], 0)
         self.assertAlmostEqual(cat["category_accuracy"], 0.0)
 
     def test_missing_observed_fails_closed_to_mismatch(self):
@@ -327,7 +369,8 @@ class CategoryMetricTests(unittest.TestCase):
         self.assertEqual(cat["correct_total"], 0)
         self.assertEqual(cat["mismatch_total"], 1)
         self.assertEqual(cat["malformed_total"], 1)
-        self.assertEqual(cat["confusion"]["conflicts"]["unsupported"], 1)
+        self.assertEqual(cat["confusion"]["conflicts"]["malformed"], 1)
+        self.assertEqual(cat["confusion"]["conflicts"]["unsupported"], 0)
 
     def test_empty_denominator_gives_none_accuracy(self):
         cat = compute_category_metrics([], {}, {})
@@ -339,9 +382,24 @@ class CategoryMetricTests(unittest.TestCase):
         self.assertEqual(
             cat["confusion"],
             {
-                "supported": {"supported": 0, "unsupported": 0, "conflicts": 0},
-                "unsupported": {"supported": 0, "unsupported": 0, "conflicts": 0},
-                "conflicts": {"supported": 0, "unsupported": 0, "conflicts": 0},
+                "supported": {
+                    "supported": 0,
+                    "unsupported": 0,
+                    "conflicts": 0,
+                    "malformed": 0,
+                },
+                "unsupported": {
+                    "supported": 0,
+                    "unsupported": 0,
+                    "conflicts": 0,
+                    "malformed": 0,
+                },
+                "conflicts": {
+                    "supported": 0,
+                    "unsupported": 0,
+                    "conflicts": 0,
+                    "malformed": 0,
+                },
             },
         )
         self.assertIsNone(cat["per_class_recall"]["supported"])
@@ -367,6 +425,93 @@ class CategoryMetricTests(unittest.TestCase):
         cases = [{"id": "X-001", "expected_verdict": "Almost supported"}]
         with self.assertRaises(ValueError):
             compute_category_metrics(cases, {"X-001": "supported"}, {})
+
+    def test_expected_unsupported_malformed_stays_off_diagonal(self):
+        # Regression: expected unsupported with malformed output must not
+        # increment the valid diagonal even when the raw enum matches.
+        cases = [
+            {"id": "U-001", "expected_verdict": "Not in confirmed facts"},
+            {"id": "U-002", "expected_verdict": "Not in confirmed facts"},
+        ]
+        observed = {"U-001": "unsupported", "U-002": "bogus-enum"}
+        malformed = {"U-001": True}
+        cat = compute_category_metrics(cases, observed, malformed)
+        self.assertEqual(cat["correct_total"], 0)
+        self.assertEqual(cat["mismatch_total"], 2)
+        self.assertEqual(cat["malformed_total"], 2)
+        self.assertEqual(cat["malformed_ids"], ["U-001", "U-002"])
+        self.assertAlmostEqual(cat["category_accuracy"], 0.0)
+        self.assertEqual(cat["confusion"]["unsupported"]["unsupported"], 0)
+        self.assertEqual(cat["confusion"]["unsupported"]["malformed"], 2)
+        diagonal = sum(
+            cat["confusion"][v][v] for v in ("supported", "unsupported", "conflicts")
+        )
+        self.assertEqual(diagonal, cat["correct_total"])
+        self.assertEqual(diagonal, 0)
+
+    def test_confusion_arithmetic_invariants_with_malformed(self):
+        # Hand computed mixed valid and malformed: diagonal equals correct,
+        # malformed column equals malformed_total, matrix sum equals total.
+        cases = [
+            {"id": "S-001", "expected_verdict": "Supported"},
+            {"id": "S-002", "expected_verdict": "Supported"},
+            {"id": "U-001", "expected_verdict": "Not in confirmed facts"},
+            {"id": "C-001", "expected_verdict": "Conflicts with confirmed facts"},
+        ]
+        observed = {
+            "S-001": "supported",
+            "S-002": "unsupported",
+            "U-001": "unsupported",
+            "C-001": "conflicts",
+        }
+        malformed = {"U-001": True}
+        cat = compute_category_metrics(cases, observed, malformed)
+        self.assertEqual(cat["total"], 4)
+        self.assertEqual(cat["correct_total"], 2)
+        self.assertEqual(cat["mismatch_total"], 2)
+        self.assertEqual(cat["malformed_total"], 1)
+        self.assertEqual(cat["malformed_ids"], ["U-001"])
+        self.assertAlmostEqual(cat["category_accuracy"], 2 / 4)
+        self.assertEqual(
+            cat["confusion"],
+            {
+                "supported": {
+                    "supported": 1,
+                    "unsupported": 1,
+                    "conflicts": 0,
+                    "malformed": 0,
+                },
+                "unsupported": {
+                    "supported": 0,
+                    "unsupported": 0,
+                    "conflicts": 0,
+                    "malformed": 1,
+                },
+                "conflicts": {
+                    "supported": 0,
+                    "unsupported": 0,
+                    "conflicts": 1,
+                    "malformed": 0,
+                },
+            },
+        )
+        self.assertEqual(tuple(OBSERVED_VERDICTS), ("supported", "unsupported", "conflicts", "malformed"))
+        self.assertEqual(MALFORMED_OBSERVED, "malformed")
+        total_cells = sum(
+            cat["confusion"][exp][obs]
+            for exp in ("supported", "unsupported", "conflicts")
+            for obs in ("supported", "unsupported", "conflicts", "malformed")
+        )
+        self.assertEqual(total_cells, cat["total"])
+        diagonal = sum(
+            cat["confusion"][v][v] for v in ("supported", "unsupported", "conflicts")
+        )
+        self.assertEqual(diagonal, cat["correct_total"])
+        malformed_column = sum(
+            cat["confusion"][exp]["malformed"]
+            for exp in ("supported", "unsupported", "conflicts")
+        )
+        self.assertEqual(malformed_column, cat["malformed_total"])
 
 
 class SourceShaTests(unittest.TestCase):
@@ -443,9 +588,24 @@ class EvaluateWithFakeCheckerTests(unittest.TestCase):
         self.assertEqual(
             report["confusion"],
             {
-                "supported": {"supported": 1, "unsupported": 0, "conflicts": 0},
-                "unsupported": {"supported": 0, "unsupported": 1, "conflicts": 0},
-                "conflicts": {"supported": 0, "unsupported": 0, "conflicts": 1},
+                "supported": {
+                    "supported": 1,
+                    "unsupported": 0,
+                    "conflicts": 0,
+                    "malformed": 0,
+                },
+                "unsupported": {
+                    "supported": 0,
+                    "unsupported": 1,
+                    "conflicts": 0,
+                    "malformed": 0,
+                },
+                "conflicts": {
+                    "supported": 0,
+                    "unsupported": 0,
+                    "conflicts": 1,
+                    "malformed": 0,
+                },
             },
         )
         self.assertEqual(
@@ -457,7 +617,10 @@ class EvaluateWithFakeCheckerTests(unittest.TestCase):
             self.assertIn("observed_verified", row)
             self.assertIn("observed_blocked", row)
             self.assertIn("observed_verdict", row)
-            self.assertIn(row["observed_verdict"], ("supported", "unsupported", "conflicts"))
+            self.assertIn(
+                row["observed_verdict"],
+                ("supported", "unsupported", "conflicts", "malformed"),
+            )
             self.assertIn("expected_production_verdict", row)
             self.assertIn("malformed", row)
             self.assertIn("category_correct", row)
@@ -504,7 +667,8 @@ class EvaluateWithFakeCheckerTests(unittest.TestCase):
         self.assertEqual(report["false_block_rate"], 1.0)
         self.assertEqual(report["miss_ids"], [])
         self.assertEqual(report["false_block_ids"], ["S-001"])
-        # Category never counts malformed as correct.
+        # Category never counts malformed as correct and never uses a
+        # fallback production enum as the observed verdict.
         self.assertAlmostEqual(report["category_accuracy"], 0.0)
         self.assertEqual(report["category_accuracy_denominator"], 2)
         self.assertEqual(report["category_correct_total"], 0)
@@ -512,10 +676,14 @@ class EvaluateWithFakeCheckerTests(unittest.TestCase):
         self.assertEqual(report["category_mismatch_ids"], ["E-001", "S-001"])
         self.assertEqual(report["malformed_total"], 2)
         self.assertEqual(report["malformed_ids"], ["E-001", "S-001"])
+        self.assertEqual(report["confusion"]["conflicts"]["malformed"], 1)
+        self.assertEqual(report["confusion"]["supported"]["malformed"], 1)
+        self.assertEqual(report["confusion"]["conflicts"]["conflicts"], 0)
+        self.assertEqual(report["confusion"]["supported"]["supported"], 0)
         for row in report["results"]:
             self.assertIs(row["observed_verified"], False)
             self.assertIs(row["observed_blocked"], True)
-            self.assertEqual(row["observed_verdict"], "unsupported")
+            self.assertEqual(row["observed_verdict"], "malformed")
             self.assertIs(row["malformed"], True)
             self.assertIs(row["category_correct"], False)
 
@@ -524,6 +692,64 @@ class EvaluateWithFakeCheckerTests(unittest.TestCase):
         facts = build_checker_facts(case)
         self.assertEqual(facts["approved_claims"], ["Alpha one", "Beta two"])
         self.assertTrue(facts["sources"])
+
+
+class EvaluateDatasetValidationTests(unittest.TestCase):
+    def _evaluate_with_counting_checker(self, cases):
+        calls = []
+
+        def fake_checker(claim, facts):
+            calls.append((claim, facts))
+            return {"verified": True, "verdict": "supported", "reason": "fake"}
+
+        dataset = {
+            "version": "9.9.9-test",
+            "dataset_id": "fake-validation-only",
+            "cases": cases,
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "invalid_dataset.json"
+            path.write_text(json.dumps(dataset), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                evaluate(str(path), source_sha="test-sha-invalid", checker_fn=fake_checker)
+        return calls
+
+    def _valid_case(self, case_id, expected="Supported"):
+        return {
+            "id": case_id,
+            "product": "Fictional test item, synthetic evaluation only",
+            "confirmed_facts": ["Item color is fictional teal"],
+            "candidate_claim": "Item color is fictional teal",
+            "expected_verdict": expected,
+            "category": "supported_exact",
+        }
+
+    def test_duplicate_ids_rejected_without_checker_calls(self):
+        cases = [self._valid_case("DUP-001"), self._valid_case("DUP-001")]
+        calls = self._evaluate_with_counting_checker(cases)
+        self.assertEqual(calls, [])
+
+    def test_missing_and_empty_ids_rejected_without_checker_calls(self):
+        base = self._valid_case("OK-001")
+        invalid_ids = [
+            ("missing", {k: v for k, v in base.items() if k != "id"}),
+            ("empty", dict(base, id="")),
+            ("whitespace", dict(base, id="   ")),
+            ("none", dict(base, id=None)),
+            ("int", dict(base, id=123)),
+        ]
+        for label, bad_case in invalid_ids:
+            with self.subTest(label=label):
+                calls = self._evaluate_with_counting_checker([bad_case])
+                self.assertEqual(calls, [])
+
+    def test_unknown_expected_label_rejected_without_checker_calls(self):
+        cases = [self._valid_case("X-001", expected="Almost supported")]
+        calls = self._evaluate_with_counting_checker(cases)
+        self.assertEqual(calls, [])
+
+    def test_validate_dataset_cases_accepts_unique_nonempty_ids(self):
+        validate_dataset_cases([self._valid_case("A-001"), self._valid_case("A-002")])
 
 
 class ProductionEntrypointSmokeTests(unittest.TestCase):
@@ -588,13 +814,25 @@ class ProductionEntrypointSmokeTests(unittest.TestCase):
         self.assertEqual(report["baseline"]["status"], "unmeasured")
         for row in report["results"]:
             self.assertIs(type(row["observed_verified"]), bool)
-            self.assertIn(row["observed_verdict"], ("supported", "unsupported", "conflicts"))
+            self.assertIn(
+                row["observed_verdict"],
+                ("supported", "unsupported", "conflicts", "malformed"),
+            )
         total_confusion = sum(
             report["confusion"][exp][obs]
             for exp in ("supported", "unsupported", "conflicts")
-            for obs in ("supported", "unsupported", "conflicts")
+            for obs in ("supported", "unsupported", "conflicts", "malformed")
         )
         self.assertEqual(total_confusion, 3)
+        diagonal = sum(
+            report["confusion"][v][v] for v in ("supported", "unsupported", "conflicts")
+        )
+        self.assertEqual(diagonal, report["category_correct_total"])
+        malformed_column = sum(
+            report["confusion"][exp]["malformed"]
+            for exp in ("supported", "unsupported", "conflicts")
+        )
+        self.assertEqual(malformed_column, report["malformed_total"])
         # Hand checked deterministic expectations for these synthetic inputs.
         by_id = {row["id"]: row for row in report["results"]}
         self.assertEqual(by_id["T-001"]["observed_verdict"], "supported")
