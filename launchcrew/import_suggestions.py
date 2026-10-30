@@ -1,7 +1,8 @@
-"""Parse owner-pasted text into UNCONFIRMED import suggestions.
+"""Parse owner text into UNCONFIRMED import suggestions.
 
 Helper only. This module parses plain text the owner pasted from a listing
-or an Instagram bio/caption into candidate suggestions for a later explicit
+or an Instagram bio/caption, or text read from one Drive file the owner
+selected in Picker, into candidate suggestions for a later explicit
 confirmation UI. Every output stays explicitly unconfirmed.
 
 Scope guarantees:
@@ -35,6 +36,7 @@ SUPPORTED_SOURCES: tuple[str, ...] = (
     "listing",
     "instagram_bio",
     "instagram_caption",
+    "drive_file",
 )
 
 MAX_INPUT_CHARS: int = 10000

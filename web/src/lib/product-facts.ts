@@ -12,6 +12,7 @@ export const PRODUCT_FACT_SOURCES: readonly ProductFactSource[] = [
   'listing',
   'campaign_brief',
   'demo_template',
+  'drive_file',
 ] as const;
 
 export const PRODUCT_FACT_FIELDS = ['material', 'contents', 'size', 'price'] as const;
@@ -156,6 +157,7 @@ export const SOURCE_LABELS: Record<ProductFactSource, string> = {
   listing: 'Listing',
   campaign_brief: 'Campaign brief',
   demo_template: 'Demo template',
+  drive_file: 'Drive file',
 };
 
 export function sourceLabel(source: string): string {

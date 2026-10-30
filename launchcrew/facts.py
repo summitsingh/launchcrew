@@ -329,7 +329,8 @@ def check_draft(draft_text, facts):
 
 
 # Slice 1: explicitly confirmed owner product facts with provenance.
-# Pasted text, listings, and memory items can at most SUGGEST a fact. A
+# Pasted text, listings, memory items, and Drive file selections can at
+# most SUGGEST a fact. A
 # value becomes evidence only when the owner explicitly confirms it in
 # this input. The bundled fictional demo template stays available in
 # demo mode only and never silently becomes owner-confirmed facts.
@@ -343,7 +344,7 @@ PRODUCT_FIELD_LABELS = {
     'founder_note': 'Founder note',
 }
 PRODUCT_FACT_SOURCES = ('owner', 'pasted_text', 'memory', 'listing',
-                        'campaign_brief', 'demo_template')
+                        'campaign_brief', 'demo_template', 'drive_file')
 PRODUCT_FACT_VALUE_MAX = 200
 PRODUCT_FACT_ALLOWED_MAX = 12
 FOUNDER_NOTE_MAX = 280

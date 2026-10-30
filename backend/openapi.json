@@ -542,6 +542,252 @@
         "title": "Draft",
         "type": "object"
       },
+      "DriveImportIn": {
+        "additionalProperties": false,
+        "properties": {
+          "drive_token": {
+            "maxLength": 4096,
+            "minLength": 1,
+            "title": "Drive Token",
+            "type": "string"
+          },
+          "file_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "File Id",
+            "type": "string"
+          },
+          "resource_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resource Key"
+          }
+        },
+        "required": [
+          "drive_token",
+          "file_id"
+        ],
+        "title": "DriveImportIn",
+        "type": "object"
+      },
+      "DriveImportOut": {
+        "additionalProperties": false,
+        "properties": {
+          "dropped_duplicates": {
+            "title": "Dropped Duplicates",
+            "type": "integer"
+          },
+          "dropped_empty": {
+            "title": "Dropped Empty",
+            "type": "integer"
+          },
+          "dropped_overlong": {
+            "title": "Dropped Overlong",
+            "type": "integer"
+          },
+          "file_title": {
+            "title": "File Title",
+            "type": "string"
+          },
+          "mime_type": {
+            "title": "Mime Type",
+            "type": "string"
+          },
+          "parser_version": {
+            "title": "Parser Version",
+            "type": "string"
+          },
+          "product_fact_source": {
+            "const": "drive_file",
+            "default": "drive_file",
+            "title": "Product Fact Source",
+            "type": "string"
+          },
+          "selection_context": {
+            "title": "Selection Context",
+            "type": "string"
+          },
+          "source": {
+            "const": "drive_file",
+            "default": "drive_file",
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "const": "unconfirmed",
+            "default": "unconfirmed",
+            "title": "Status",
+            "type": "string"
+          },
+          "suggestions": {
+            "items": {
+              "$ref": "#/components/schemas/DriveSuggestionItem"
+            },
+            "title": "Suggestions",
+            "type": "array"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "dropped_duplicates",
+          "dropped_empty",
+          "dropped_overlong",
+          "file_title",
+          "mime_type",
+          "parser_version",
+          "selection_context",
+          "suggestions",
+          "truncated"
+        ],
+        "title": "DriveImportOut",
+        "type": "object"
+      },
+      "DrivePublicConfigOut": {
+        "additionalProperties": false,
+        "properties": {
+          "api_key": {
+            "title": "Api Key",
+            "type": "string"
+          },
+          "app_id": {
+            "title": "App Id",
+            "type": "string"
+          },
+          "client_id": {
+            "title": "Client Id",
+            "type": "string"
+          },
+          "max_bytes": {
+            "title": "Max Bytes",
+            "type": "integer"
+          },
+          "scope": {
+            "title": "Scope",
+            "type": "string"
+          },
+          "supported_mime_types": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Supported Mime Types",
+            "type": "array"
+          }
+        },
+        "required": [
+          "api_key",
+          "app_id",
+          "client_id",
+          "max_bytes",
+          "scope",
+          "supported_mime_types"
+        ],
+        "title": "DrivePublicConfigOut",
+        "type": "object"
+      },
+      "DriveStatusOut": {
+        "additionalProperties": false,
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "configured": {
+            "title": "Configured",
+            "type": "boolean"
+          },
+          "live_verified": {
+            "default": false,
+            "title": "Live Verified",
+            "type": "boolean"
+          },
+          "max_bytes": {
+            "title": "Max Bytes",
+            "type": "integer"
+          },
+          "max_requests": {
+            "title": "Max Requests",
+            "type": "integer"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "scope": {
+            "title": "Scope",
+            "type": "string"
+          },
+          "supported_mime_types": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Supported Mime Types",
+            "type": "array"
+          }
+        },
+        "required": [
+          "available",
+          "configured",
+          "max_bytes",
+          "max_requests",
+          "reason",
+          "scope",
+          "supported_mime_types"
+        ],
+        "title": "DriveStatusOut",
+        "type": "object"
+      },
+      "DriveSuggestionItem": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed": {
+            "const": false,
+            "default": false,
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "index": {
+            "title": "Index",
+            "type": "integer"
+          },
+          "product_fact_source": {
+            "const": "drive_file",
+            "default": "drive_file",
+            "title": "Product Fact Source",
+            "type": "string"
+          },
+          "source": {
+            "const": "drive_file",
+            "default": "drive_file",
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "const": "unconfirmed",
+            "default": "unconfirmed",
+            "title": "Status",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "index"
+        ],
+        "title": "DriveSuggestionItem",
+        "type": "object"
+      },
       "ExportEvent": {
         "additionalProperties": true,
         "properties": {
@@ -617,7 +863,8 @@
               "memory",
               "listing",
               "campaign_brief",
-              "demo_template"
+              "demo_template",
+              "drive_file"
             ],
             "title": "Source",
             "type": "string"
@@ -815,7 +1062,8 @@
               "memory",
               "listing",
               "campaign_brief",
-              "demo_template"
+              "demo_template",
+              "drive_file"
             ],
             "title": "Product Fact Source",
             "type": "string"
@@ -900,7 +1148,8 @@
               "memory",
               "listing",
               "campaign_brief",
-              "demo_template"
+              "demo_template",
+              "drive_file"
             ],
             "title": "Product Fact Source",
             "type": "string"
@@ -1757,7 +2006,8 @@
               "memory",
               "listing",
               "campaign_brief",
-              "demo_template"
+              "demo_template",
+              "drive_file"
             ],
             "title": "Source",
             "type": "string"
@@ -4081,6 +4331,80 @@
           }
         },
         "summary": "Checker Policies"
+      }
+    },
+    "/api/drive-import/config": {
+      "get": {
+        "operationId": "drive_config_api_drive_import_config_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DrivePublicConfigOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Drive Config"
+      }
+    },
+    "/api/drive-import/status": {
+      "get": {
+        "operationId": "drive_status_api_drive_import_status_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DriveStatusOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Drive Status"
+      }
+    },
+    "/api/drive-import/suggestions": {
+      "post": {
+        "operationId": "drive_suggestions_api_drive_import_suggestions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DriveImportIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DriveImportOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Drive Suggestions"
       }
     },
     "/api/health": {

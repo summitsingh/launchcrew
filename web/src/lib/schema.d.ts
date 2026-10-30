@@ -228,6 +228,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/drive-import/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Drive Config */
+        get: operations["drive_config_api_drive_import_config_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/drive-import/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Drive Status */
+        get: operations["drive_status_api_drive_import_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/drive-import/suggestions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Drive Suggestions */
+        post: operations["drive_suggestions_api_drive_import_suggestions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/health": {
         parameters: {
             query?: never;
@@ -792,6 +843,122 @@ export interface components {
             /** Post */
             post: string;
         };
+        /** DriveImportIn */
+        DriveImportIn: {
+            /** Drive Token */
+            drive_token: string;
+            /** File Id */
+            file_id: string;
+            /** Resource Key */
+            resource_key?: string | null;
+        };
+        /** DriveImportOut */
+        DriveImportOut: {
+            /** Dropped Duplicates */
+            dropped_duplicates: number;
+            /** Dropped Empty */
+            dropped_empty: number;
+            /** Dropped Overlong */
+            dropped_overlong: number;
+            /** File Title */
+            file_title: string;
+            /** Mime Type */
+            mime_type: string;
+            /** Parser Version */
+            parser_version: string;
+            /**
+             * Product Fact Source
+             * @default drive_file
+             * @constant
+             */
+            product_fact_source: "drive_file";
+            /** Selection Context */
+            selection_context: string;
+            /**
+             * Source
+             * @default drive_file
+             * @constant
+             */
+            source: "drive_file";
+            /**
+             * Status
+             * @default unconfirmed
+             * @constant
+             */
+            status: "unconfirmed";
+            /** Suggestions */
+            suggestions: components["schemas"]["DriveSuggestionItem"][];
+            /** Truncated */
+            truncated: boolean;
+        };
+        /** DrivePublicConfigOut */
+        DrivePublicConfigOut: {
+            /** Api Key */
+            api_key: string;
+            /** App Id */
+            app_id: string;
+            /** Client Id */
+            client_id: string;
+            /** Max Bytes */
+            max_bytes: number;
+            /** Scope */
+            scope: string;
+            /** Supported Mime Types */
+            supported_mime_types: string[];
+        };
+        /** DriveStatusOut */
+        DriveStatusOut: {
+            /** Available */
+            available: boolean;
+            /** Configured */
+            configured: boolean;
+            /**
+             * Live Verified
+             * @default false
+             */
+            live_verified: boolean;
+            /** Max Bytes */
+            max_bytes: number;
+            /** Max Requests */
+            max_requests: number;
+            /** Reason */
+            reason: string;
+            /** Scope */
+            scope: string;
+            /** Supported Mime Types */
+            supported_mime_types: string[];
+        };
+        /** DriveSuggestionItem */
+        DriveSuggestionItem: {
+            /**
+             * Confirmed
+             * @default false
+             * @constant
+             */
+            confirmed: false;
+            /** Index */
+            index: number;
+            /**
+             * Product Fact Source
+             * @default drive_file
+             * @constant
+             */
+            product_fact_source: "drive_file";
+            /**
+             * Source
+             * @default drive_file
+             * @constant
+             */
+            source: "drive_file";
+            /**
+             * Status
+             * @default unconfirmed
+             * @constant
+             */
+            status: "unconfirmed";
+            /** Text */
+            text: string;
+        };
         /** ExportEvent */
         ExportEvent: {
             /** Exported By */
@@ -820,7 +987,7 @@ export interface components {
              * @default owner
              * @enum {string}
              */
-            source: "owner" | "pasted_text" | "memory" | "listing" | "campaign_brief" | "demo_template";
+            source: "owner" | "pasted_text" | "memory" | "listing" | "campaign_brief" | "demo_template" | "drive_file";
             /**
              * Value
              * @default
@@ -941,7 +1108,7 @@ export interface components {
              * Product Fact Source
              * @enum {string}
              */
-            product_fact_source: "owner" | "pasted_text" | "memory" | "listing" | "campaign_brief" | "demo_template";
+            product_fact_source: "owner" | "pasted_text" | "memory" | "listing" | "campaign_brief" | "demo_template" | "drive_file";
             /**
              * Source
              * @enum {string}
@@ -980,7 +1147,7 @@ export interface components {
              * Product Fact Source
              * @enum {string}
              */
-            product_fact_source: "owner" | "pasted_text" | "memory" | "listing" | "campaign_brief" | "demo_template";
+            product_fact_source: "owner" | "pasted_text" | "memory" | "listing" | "campaign_brief" | "demo_template" | "drive_file";
             /**
              * Source
              * @enum {string}
@@ -1396,7 +1563,7 @@ export interface components {
              * @default owner
              * @enum {string}
              */
-            source: "owner" | "pasted_text" | "memory" | "listing" | "campaign_brief" | "demo_template";
+            source: "owner" | "pasted_text" | "memory" | "listing" | "campaign_brief" | "demo_template" | "drive_file";
             /**
              * Value
              * @default
@@ -2477,6 +2644,79 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CheckerPoliciesOut"];
+                };
+            };
+        };
+    };
+    drive_config_api_drive_import_config_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DrivePublicConfigOut"];
+                };
+            };
+        };
+    };
+    drive_status_api_drive_import_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DriveStatusOut"];
+                };
+            };
+        };
+    };
+    drive_suggestions_api_drive_import_suggestions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DriveImportIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DriveImportOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

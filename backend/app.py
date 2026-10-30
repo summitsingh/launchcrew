@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
-from backend import adapter, store, auth
+from backend import adapter, store, auth, drive_intake
 from launchcrew import agents, receipts
 from launchcrew.outcome_log import KNOWN_CHANNELS as OUTCOME_KNOWN_CHANNELS
 from launchcrew.outcome_log import MAX_COUNT as OUTCOME_MAX_COUNT
@@ -45,7 +45,7 @@ class Idea(Strict):
     idea: str = Field(min_length=1, max_length=2000)
 
 
-ProductFactSource = Literal['owner', 'pasted_text', 'memory', 'listing', 'campaign_brief', 'demo_template']
+ProductFactSource = Literal['owner', 'pasted_text', 'memory', 'listing', 'campaign_brief', 'demo_template', 'drive_file']
 
 
 class ProductFactField(Strict):
@@ -411,6 +411,7 @@ async def lifespan(app):
 
 app = FastAPI(title='LaunchCrew', version='0.1.0', lifespan=lifespan)
 app.include_router(auth.router)
+app.include_router(drive_intake.router)
 
 
 @app.middleware('http')
