@@ -212,6 +212,38 @@ def test_foreign_campaign_and_days_denied(client, monkeypatch):
     assert client.post(f'/api/campaigns/{campaign_id}/days/1/export', json={}).status_code == 404
 
 
+def test_failed_cross_user_mutations_leave_owner_state_unchanged(client, monkeypatch):
+    _sign_in(client, monkeypatch, ACTOR_ONE)
+    run_id = _new_run(client)['run_id']
+    mem_id = _new_memory(client, title='Owner fact')['id']
+    campaign_id = client.post('/api/campaigns', json={'idea': IDEA, 'agent_name': 'Maker'}).json()['id']
+    before_receipt = client.get(f'/api/runs/{run_id}').json()
+    before_queue = client.get('/api/queue').json()
+    before_memory = client.get('/api/memory/' + mem_id).json()
+    before_campaigns = client.get('/api/campaigns').json()
+    _sign_in(client, monkeypatch, ACTOR_TWO)
+    assert client.post(f'/api/runs/{run_id}/revise',
+                       json={'post': 'Hijacked post', 'email': 'Hijacked email',
+                             'base_revision': 0}).status_code == 404
+    assert client.post(f'/api/runs/{run_id}/approve', json={}).status_code == 404
+    assert client.post(f'/api/runs/{run_id}/export', json={}).status_code == 404
+    assert client.post(f'/api/runs/{run_id}/photo-check',
+                       json={'image_data_uri': _png_data_uri(), 'expected_revision': 0}).status_code == 404
+    assert client.request('DELETE', f'/api/runs/{run_id}/photo',
+                          json={'expected_revision': 0}).status_code == 404
+    assert client.put('/api/memory/' + mem_id,
+                      json={'title': 'Hijack', 'content': {}}).status_code == 404
+    assert client.delete('/api/memory/' + mem_id).status_code == 404
+    assert client.post(f'/api/campaigns/{campaign_id}/days/1/approve', json={}).status_code == 404
+    assert client.post(f'/api/campaigns/{campaign_id}/days/1/export', json={}).status_code == 404
+    assert client.get('/api/queue').json() == []
+    _sign_in(client, monkeypatch, ACTOR_ONE)
+    assert client.get(f'/api/runs/{run_id}').json() == before_receipt
+    assert client.get('/api/queue').json() == before_queue
+    assert client.get('/api/memory/' + mem_id).json() == before_memory
+    assert client.get('/api/campaigns').json() == before_campaigns
+
+
 def test_async_worker_scoped_completion(client, monkeypatch):
     _sign_in(client, monkeypatch, ACTOR_ONE)
     response = client.post('/api/runs/async', json={'idea': IDEA, 'agent_name': 'Maker'})

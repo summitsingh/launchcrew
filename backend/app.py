@@ -2167,8 +2167,8 @@ def create_fact_variant(product_id: str, body: FactVariantIn, actor: str = Depen
     with store.connect() as db:
         workspace_id = store.ensure_workspace_seeded(db, actor)
         _get_fact_product(db, product_id, workspace_id)
-        clash = db.execute(text('SELECT id FROM fact_variants WHERE product_id=:id AND LOWER(name)=LOWER(:name)'),
-                           {'id': product_id, 'name': name}).fetchone()
+        clash = db.execute(text('SELECT id FROM fact_variants WHERE product_id=:id AND workspace_id=:ws AND LOWER(name)=LOWER(:name)'),
+                           {'id': product_id, 'ws': workspace_id, 'name': name}).fetchone()
         if clash:
             raise HTTPException(409, 'A variant with this name already exists for this product')
         variant_id = 'fvar_' + uuid4().hex
@@ -2222,8 +2222,8 @@ def save_fact_variant_from_run(product_id: str, run_id: str, body: FactVariantFr
         _get_fact_product(db, product_id, workspace_id)
         receipt = get_receipt(db, run_id, workspace_id)
         raw = _receipt_facts_snapshot(receipt)
-        clash = db.execute(text('SELECT id FROM fact_variants WHERE product_id=:id AND LOWER(name)=LOWER(:name)'),
-                           {'id': product_id, 'name': name}).fetchone()
+        clash = db.execute(text('SELECT id FROM fact_variants WHERE product_id=:id AND workspace_id=:ws AND LOWER(name)=LOWER(:name)'),
+                           {'id': product_id, 'ws': workspace_id, 'name': name}).fetchone()
         if clash:
             raise HTTPException(409, 'A variant with this name already exists for this product')
         variant_id = 'fvar_' + uuid4().hex
@@ -2251,8 +2251,8 @@ def edit_fact_variant(variant_id: str, body: FactVariantEdit, actor: str = Depen
         updates: dict[str, Any] = {}
         if body.name is not None:
             name = _clean_fact_library_name(body.name, 'Variant')
-            clash = db.execute(text('SELECT id FROM fact_variants WHERE product_id=:prod AND LOWER(name)=LOWER(:name) AND id != :id'),
-                               {'prod': row['product_id'], 'name': name, 'id': variant_id}).fetchone()
+            clash = db.execute(text('SELECT id FROM fact_variants WHERE product_id=:prod AND workspace_id=:ws AND LOWER(name)=LOWER(:name) AND id != :id'),
+                               {'prod': row['product_id'], 'ws': workspace_id, 'name': name, 'id': variant_id}).fetchone()
             if clash:
                 raise HTTPException(409, 'A variant with this name already exists for this product')
             updates['name'] = name

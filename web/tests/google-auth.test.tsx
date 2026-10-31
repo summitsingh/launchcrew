@@ -70,4 +70,14 @@ describe('google and facebook auth UI', () => {
     expect(source).not.toContain('FACEBOOK_CLIENT_SECRET');
     expect(source).not.toContain('apps.googleusercontent.com');
   });
+
+  it('labels the shared demo workspace everywhere it matters', () => {
+    const source = desk();
+    expect(source).toContain('SHARED DEMO WORKSPACE');
+    expect(source).toContain('Shared demo workspace: runs and memory are visible to all demo visitors.');
+    expect(source).toContain('Runs and memory are visible to all demo visitors.');
+    expect(source).toContain('PRIVATE WORKSPACE');
+    expect(source).toContain('Shared demo');
+    expect(source).toContain('isSharedDemo');
+  });
 });
