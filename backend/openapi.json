@@ -5124,6 +5124,76 @@
         },
         "title": "VoiceProfileSection",
         "type": "object"
+      },
+      "WaitlistIn": {
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "maxLength": 254,
+            "title": "Email",
+            "type": "string"
+          },
+          "interest": {
+            "default": "general",
+            "maxLength": 120,
+            "title": "Interest",
+            "type": "string"
+          },
+          "tier": {
+            "default": "pro",
+            "enum": [
+              "free",
+              "pro",
+              "team"
+            ],
+            "title": "Tier",
+            "type": "string"
+          }
+        },
+        "required": [
+          "email"
+        ],
+        "title": "WaitlistIn",
+        "type": "object"
+      },
+      "WaitlistOut": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "duplicate": {
+            "default": false,
+            "title": "Duplicate",
+            "type": "boolean"
+          },
+          "email": {
+            "title": "Email",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "interest": {
+            "title": "Interest",
+            "type": "string"
+          },
+          "tier": {
+            "title": "Tier",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "interest",
+          "tier",
+          "created_at"
+        ],
+        "title": "WaitlistOut",
+        "type": "object"
       }
     }
   },
@@ -7695,6 +7765,66 @@
           }
         },
         "summary": "Verify Landing Page"
+      }
+    },
+    "/api/waitlist": {
+      "get": {
+        "description": "List waitlist signups oldest first. Public read for the Plans page count.",
+        "operationId": "list_waitlist_api_waitlist_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/WaitlistOut"
+                  },
+                  "title": "Response List Waitlist Api Waitlist Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Waitlist"
+      },
+      "post": {
+        "description": "Store a Plans-page waitlist signup. Public; Checker stays unmetered.\n\nEmail is normalized (trimmed, lowercased) and unique, so a repeat\nsubmission for the same address returns the stored row with\nduplicate=true and HTTP 200 instead of storing twice. The safety\nChecker path is untouched by this route: verification never reads\ncredits and is never gated by waitlist state.",
+        "operationId": "join_waitlist_api_waitlist_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WaitlistIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitlistOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Join Waitlist"
       }
     }
   }

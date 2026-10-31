@@ -2872,3 +2872,88 @@ def list_outcomes(run_id: str, actor: str = Depends(auth.actor)):
         rows = db.execute(text('SELECT ' + _OUTCOME_PUBLIC_SELECT + ' FROM run_outcomes WHERE run_id=:id AND workspace_id=:ws ORDER BY created_at, id'),
                           {'id': run_id, 'ws': workspace_id}).mappings().all()
         return [_public_outcome(row) for row in rows]
+
+
+WaitlistTier = Literal['free', 'pro', 'team']
+
+
+class WaitlistIn(Strict):
+    email: str = Field(max_length=254)
+    interest: str = Field(default='general', max_length=120)
+    tier: WaitlistTier = 'pro'
+
+    @field_validator('email')
+    @classmethod
+    def _normalize_email(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not normalized or len(normalized) > 254 or '@' not in normalized:
+            raise ValueError('email must be a valid email address')
+        local, _, domain = normalized.partition('@')
+        if not local or '.' not in domain or normalized.count('@') != 1:
+            raise ValueError('email must be a valid email address')
+        if any(ch.isspace() for ch in normalized):
+            raise ValueError('email must be a valid email address')
+        return normalized
+
+    @field_validator('interest')
+    @classmethod
+    def _normalize_interest(cls, value: str) -> str:
+        cleaned = ' '.join(value.strip().split())
+        return cleaned or 'general'
+
+
+class WaitlistOut(Strict):
+    id: str
+    email: str
+    interest: str
+    tier: str
+    created_at: str
+    duplicate: bool = False
+
+
+_WAITLIST_SELECT = 'id, email, interest, tier, created_at'
+
+
+def _public_waitlist(row: Any, duplicate: bool = False) -> dict[str, Any]:
+    created = row['created_at']
+    if isinstance(created, datetime):
+        created = created.isoformat()
+    return {'id': row['id'], 'email': row['email'], 'interest': row['interest'],
+            'tier': row['tier'], 'created_at': str(created), 'duplicate': duplicate}
+
+
+@app.post('/api/waitlist', response_model=WaitlistOut, status_code=201)
+def join_waitlist(body: WaitlistIn):
+    """Store a Plans-page waitlist signup. Public; Checker stays unmetered.
+
+    Email is normalized (trimmed, lowercased) and unique, so a repeat
+    submission for the same address returns the stored row with
+    duplicate=true and HTTP 200 instead of storing twice. The safety
+    Checker path is untouched by this route: verification never reads
+    credits and is never gated by waitlist state.
+    """
+    signup_id = 'wl_' + uuid4().hex
+    with store.connect() as db:
+        try:
+            with db.begin_nested():
+                db.execute(text('INSERT INTO waitlist_signups (id, email, interest, tier) VALUES (:id, :email, :interest, :tier)'),
+                           {'id': signup_id, 'email': body.email, 'interest': body.interest, 'tier': body.tier})
+        except IntegrityError:
+            row = db.execute(text('SELECT ' + _WAITLIST_SELECT + ' FROM waitlist_signups WHERE email=:email'),
+                             {'email': body.email}).mappings().first()
+            if row is None:
+                raise HTTPException(409, 'Email already on the waitlist')
+            return JSONResponse(status_code=200, content=_public_waitlist(row, duplicate=True))
+        row = db.execute(text('SELECT ' + _WAITLIST_SELECT + ' FROM waitlist_signups WHERE id=:id'),
+                         {'id': signup_id}).mappings().first()
+        if row is None:
+            raise HTTPException(500, 'Waitlist signup was not stored')
+        return _public_waitlist(row)
+
+
+@app.get('/api/waitlist', response_model=list[WaitlistOut])
+def list_waitlist():
+    """List waitlist signups oldest first. Public read for the Plans page count."""
+    with store.connect() as db:
+        rows = db.execute(text('SELECT ' + _WAITLIST_SELECT + ' FROM waitlist_signups ORDER BY created_at, id')).mappings().all()
+        return [_public_waitlist(row) for row in rows]

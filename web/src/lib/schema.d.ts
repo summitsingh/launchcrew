@@ -1004,6 +1004,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/waitlist": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Waitlist
+         * @description List waitlist signups oldest first. Public read for the Plans page count.
+         */
+        get: operations["list_waitlist_api_waitlist_get"];
+        put?: never;
+        /**
+         * Join Waitlist
+         * @description Store a Plans-page waitlist signup. Public; Checker stays unmetered.
+         *
+         *     Email is normalized (trimmed, lowercased) and unique, so a repeat
+         *     submission for the same address returns the stored row with
+         *     duplicate=true and HTTP 200 instead of storing twice. The safety
+         *     Checker path is untouched by this route: verification never reads
+         *     credits and is never gated by waitlist state.
+         */
+        post: operations["join_waitlist_api_waitlist_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -3353,6 +3383,40 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** WaitlistIn */
+        WaitlistIn: {
+            /** Email */
+            email: string;
+            /**
+             * Interest
+             * @default general
+             */
+            interest: string;
+            /**
+             * Tier
+             * @default pro
+             * @enum {string}
+             */
+            tier: "free" | "pro" | "team";
+        };
+        /** WaitlistOut */
+        WaitlistOut: {
+            /** Created At */
+            created_at: string;
+            /**
+             * Duplicate
+             * @default false
+             */
+            duplicate: boolean;
+            /** Email */
+            email: string;
+            /** Id */
+            id: string;
+            /** Interest */
+            interest: string;
+            /** Tier */
+            tier: string;
+        };
     };
     responses: never;
     parameters: never;
@@ -5387,6 +5451,59 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LandingParityOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_waitlist_api_waitlist_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaitlistOut"][];
+                };
+            };
+        };
+    };
+    join_waitlist_api_waitlist_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WaitlistIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaitlistOut"];
                 };
             };
             /** @description Validation Error */
