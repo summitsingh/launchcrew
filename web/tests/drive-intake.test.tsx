@@ -312,7 +312,7 @@ describe('drive photo intake foundation', () => {
     for (const text of [
       'Select a Drive photo',
       'JPEG or PNG photo you select',
-      'stay unconfirmed',
+      'stays unconfirmed',
       'explicit approval before any photo check',
       'Original pixels only',
       'Live Drive proof has not been run',
