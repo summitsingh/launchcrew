@@ -1174,6 +1174,7 @@ def approve(run_id: str, body: ApproveIn, actor: str = Depends(auth.actor)):
         # reapproval after edits inserts cleanly in the same transaction.
         db.execute(text('INSERT INTO approvals(run_id,approved_by) VALUES (:id,:actor)'), {'id': run_id, 'actor': actor})
         store.audit(db, run_id, 'approved_for_export', actor, workspace_id)
+        _advance_calendar_slots(db, run_id, workspace_id, 'approved')
     return receipt
 
 
@@ -1201,6 +1202,7 @@ def export(run_id: str, body: ExportIn, response: Response, actor: str = Depends
         if result.rowcount == 0:
             raise HTTPException(404, 'Run not found')
         store.audit(db, run_id, 'exported', actor, workspace_id)
+        _advance_calendar_slots(db, run_id, workspace_id, 'exported')
     response.headers['Content-Disposition'] = 'attachment; filename="launchcrew-pack.json"'
     return exported
 
@@ -3023,3 +3025,205 @@ def list_waitlist():
     with store.connect() as db:
         rows = db.execute(text('SELECT ' + _WAITLIST_SELECT + ' FROM waitlist_signups ORDER BY created_at, id')).mappings().all()
         return [_public_waitlist(row) for row in rows]
+
+
+# S1 content calendar: week and month views over workspace-scoped slots.
+# Each day carries feed_post, story, and reel slots; empty daily slots
+# render as visible gaps, never hidden absences. Slot status derives
+# from the linked run and advances on approve/export with no manual edit.
+
+CalendarSlotType = Literal['feed_post', 'story', 'reel']
+CalendarSlotStatus = Literal['drafted', 'checked', 'approved', 'exported', 'verified']
+
+
+class CalendarSlotOut(Strict):
+    id: str
+    slot_date: str
+    slot_type: CalendarSlotType
+    pillar: str
+    format: str
+    status: CalendarSlotStatus
+    run_id: str | None = None
+    campaign_id: str | None = None
+    campaign_day: int | None = None
+
+
+class CalendarSlotIn(Strict):
+    slot_date: str = Field(min_length=10, max_length=10)
+    slot_type: CalendarSlotType
+    pillar: str = Field(default='product', max_length=80)
+    format: str = Field(default='', max_length=120)
+    run_id: str | None = None
+    campaign_id: str | None = None
+    campaign_day: int | None = None
+
+
+class CalendarPlaceIn(Strict):
+    start_date: str = Field(min_length=10, max_length=10)
+
+
+_CALENDAR_PUBLIC_FIELDS = ('id', 'workspace_id', 'slot_date', 'slot_type', 'pillar',
+                           'format', 'status', 'run_id', 'campaign_id', 'campaign_day')
+_CALENDAR_PUBLIC_SELECT = ('id, workspace_id, slot_date, slot_type, pillar, format, '
+                           'status, run_id, campaign_id, campaign_day')
+
+
+def _public_calendar_slot(row):
+    posted = row['slot_date']
+    if hasattr(posted, 'isoformat'):
+        posted = posted.isoformat()
+    return {'id': row['id'], 'slot_date': str(posted), 'slot_type': row['slot_type'],
+            'pillar': row['pillar'], 'format': row['format'], 'status': row['status'],
+            'run_id': row['run_id'], 'campaign_id': row['campaign_id'],
+            'campaign_day': row['campaign_day']}
+
+
+def _parse_calendar_date(value, field_name='slot_date'):
+    from launchcrew import calendar as calendar_mod
+    try:
+        calendar_mod.parse_slot_date(value)
+    except ValueError:
+        raise HTTPException(422, field_name + ' must be a real calendar date in YYYY-MM-DD format')
+    return value
+
+
+def _advance_calendar_slots(db, run_id, workspace_id, target):
+    from launchcrew import calendar as calendar_mod
+    rows = db.execute(text('SELECT id, status FROM calendar_slots WHERE run_id=:run AND workspace_id=:ws'),
+                      {'run': run_id, 'ws': workspace_id}).mappings().all()
+    for row in rows:
+        if calendar_mod.should_advance(row['status'], target):
+            db.execute(text("UPDATE calendar_slots SET status=:status, updated_at=now() WHERE id=:id AND workspace_id=:ws"),
+                       {'status': target, 'id': row['id'], 'ws': workspace_id})
+
+
+def _sync_calendar_row(db, slot, workspace_id):
+    from launchcrew import calendar as calendar_mod
+    if not slot['run_id']:
+        return slot
+    stored = db.execute(text('SELECT receipt FROM runs WHERE id=:id AND workspace_id=:ws'),
+                        {'id': slot['run_id'], 'ws': workspace_id}).fetchone()
+    if stored is None:
+        return slot
+    computed = calendar_mod.status_for_receipt(stored[0])
+    if calendar_mod.should_advance(slot['status'], computed):
+        db.execute(text("UPDATE calendar_slots SET status=:status, updated_at=now() WHERE id=:id AND workspace_id=:ws"),
+                   {'status': computed, 'id': slot['id'], 'ws': workspace_id})
+        slot = dict(slot)
+        slot['status'] = computed
+    return slot
+
+
+@app.get('/api/calendar/slots', response_model=list[CalendarSlotOut])
+def list_calendar_slots(start_date: str | None = None, end_date: str | None = None,
+                        actor: str = Depends(auth.actor)):
+    from launchcrew import calendar as calendar_mod
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        clauses = ['workspace_id=:ws']
+        params: dict[str, Any] = {'ws': workspace_id}
+        if start_date is not None:
+            _parse_calendar_date(start_date, 'start_date')
+            clauses.append('slot_date >= CAST(:start AS date)')
+            params['start'] = start_date
+        if end_date is not None:
+            _parse_calendar_date(end_date, 'end_date')
+            clauses.append('slot_date <= CAST(:end AS date)')
+            params['end'] = end_date
+        rows = db.execute(text('SELECT ' + _CALENDAR_PUBLIC_SELECT + ' FROM calendar_slots WHERE '
+                               + ' AND '.join(clauses) + ' ORDER BY slot_date, slot_type, id'),
+                          params).mappings().all()
+        synced = [_sync_calendar_row(db, dict(row), workspace_id) for row in rows]
+        return [_public_calendar_slot(slot) for slot in synced]
+
+
+@app.post('/api/calendar/slots', response_model=CalendarSlotOut, status_code=201)
+def create_calendar_slot(body: CalendarSlotIn, actor: str = Depends(auth.actor)):
+    from launchcrew import calendar as calendar_mod
+    slot_date = _parse_calendar_date(body.slot_date)
+    pillar = calendar_mod.normalize_pillar(body.pillar)
+    slot_format = ' '.join((body.format or '').strip().split())
+    if len(slot_format) > 120:
+        raise HTTPException(422, 'format must be at most 120 characters')
+    if not slot_format:
+        slot_format = body.slot_type
+    if body.campaign_day is not None and not 1 <= body.campaign_day <= 7:
+        raise HTTPException(422, 'campaign_day must be 1 to 7')
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        status = 'drafted'
+        if body.run_id is not None:
+            row = db.execute(text('SELECT receipt FROM runs WHERE id=:id AND workspace_id=:ws'),
+                             {'id': body.run_id, 'ws': workspace_id}).fetchone()
+            if row is None:
+                raise HTTPException(404, 'Run not found')
+            status = calendar_mod.status_for_receipt(row[0])
+        if body.campaign_id is not None:
+            campaign = db.execute(text('SELECT 1 FROM campaigns WHERE id=:id AND workspace_id=:ws'),
+                                  {'id': body.campaign_id, 'ws': workspace_id}).fetchone()
+            if campaign is None:
+                raise HTTPException(404, 'Campaign not found')
+        slot_id = 'slot_' + uuid4().hex
+        try:
+            db.execute(text('INSERT INTO calendar_slots(id, workspace_id, slot_date, slot_type, pillar, format, status, run_id, campaign_id, campaign_day)'
+                            ' VALUES (:id, :ws, CAST(:slot_date AS date), :slot_type, :pillar, :format, :status, :run_id, :campaign_id, :campaign_day)'),
+                       {'id': slot_id, 'ws': workspace_id, 'slot_date': slot_date,
+                        'slot_type': body.slot_type, 'pillar': pillar, 'format': slot_format,
+                        'status': status, 'run_id': body.run_id, 'campaign_id': body.campaign_id,
+                        'campaign_day': body.campaign_day})
+        except IntegrityError as error:
+            raise HTTPException(422, 'Calendar slot could not be stored: %s' % (error.orig,))
+        row = db.execute(text('SELECT ' + _CALENDAR_PUBLIC_SELECT + ' FROM calendar_slots WHERE id=:id AND workspace_id=:ws'),
+                         {'id': slot_id, 'ws': workspace_id}).mappings().first()
+        if row is None:
+            raise HTTPException(500, 'Calendar slot was not stored')
+        if body.run_id:
+            store.audit(db, body.run_id, 'calendar_slot_created', actor, workspace_id)
+        return _public_calendar_slot(row)
+
+
+@app.post('/api/calendar/campaigns/{campaign_id}/place', response_model=list[CalendarSlotOut], status_code=201)
+def place_campaign_on_calendar(campaign_id: str, body: CalendarPlaceIn, actor: str = Depends(auth.actor)):
+    from datetime import timedelta
+    from launchcrew import calendar as calendar_mod
+    start = calendar_mod.parse_slot_date(body.start_date)
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        campaign = db.execute(text('SELECT 1 FROM campaigns WHERE id=:id AND workspace_id=:ws'),
+                              {'id': campaign_id, 'ws': workspace_id}).fetchone()
+        if campaign is None:
+            raise HTTPException(404, 'Campaign not found')
+        days = db.execute(text('SELECT d.day, d.run_id, r.receipt FROM campaign_days d JOIN runs r ON r.id=d.run_id'
+                               ' WHERE d.campaign_id=:id AND d.workspace_id=:ws AND r.workspace_id=:ws ORDER BY d.day'),
+                          {'id': campaign_id, 'ws': workspace_id}).all()
+        if len(days) != 7:
+            raise HTTPException(422, 'Campaign week needs seven days before calendar placement')
+        placed = []
+        for day, run_id, receipt in days:
+            slot_date = (start + timedelta(days=int(day) - 1)).isoformat()
+            slot_type = calendar_mod.slot_type_for_day(int(day))
+            pillar = calendar_mod.pillar_for_day(int(day))
+            status = calendar_mod.status_for_receipt(receipt)
+            slot_id = 'slot_' + uuid4().hex
+            db.execute(text('INSERT INTO calendar_slots(id, workspace_id, slot_date, slot_type, pillar, format, status, run_id, campaign_id, campaign_day)'
+                            ' VALUES (:id, :ws, CAST(:slot_date AS date), :slot_type, :pillar, :format, :status, :run_id, :campaign_id, :campaign_day)'),
+                       {'id': slot_id, 'ws': workspace_id, 'slot_date': slot_date,
+                        'slot_type': slot_type, 'pillar': pillar, 'format': slot_type,
+                        'status': status, 'run_id': run_id, 'campaign_id': campaign_id,
+                        'campaign_day': int(day)})
+            store.audit(db, run_id, 'calendar_slot_created', actor, workspace_id)
+            placed.append(slot_id)
+        rows = db.execute(text('SELECT ' + _CALENDAR_PUBLIC_SELECT + ' FROM calendar_slots WHERE id = ANY(:ids) ORDER BY slot_date, slot_type, id'),
+                         {'ids': placed}).mappings().all()
+        return [_public_calendar_slot(row) for row in rows]
+
+
+@app.delete('/api/calendar/slots/{slot_id}', status_code=204)
+def delete_calendar_slot(slot_id: str, actor: str = Depends(auth.actor)):
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        result = db.execute(text('DELETE FROM calendar_slots WHERE id=:id AND workspace_id=:ws'),
+                            {'id': slot_id, 'ws': workspace_id})
+        if result.rowcount == 0:
+            raise HTTPException(404, 'Calendar slot not found')
+    return Response(status_code=204)

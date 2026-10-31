@@ -142,6 +142,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/calendar/campaigns/{campaign_id}/place": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Place Campaign On Calendar */
+        post: operations["place_campaign_on_calendar_api_calendar_campaigns__campaign_id__place_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/calendar/slots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Calendar Slots */
+        get: operations["list_calendar_slots_api_calendar_slots_get"];
+        put?: never;
+        /** Create Calendar Slot */
+        post: operations["create_calendar_slot_api_calendar_slots_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/calendar/slots/{slot_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Calendar Slot */
+        delete: operations["delete_calendar_slot_api_calendar_slots__slot_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/campaigns": {
         parameters: {
             query?: never;
@@ -1093,6 +1145,64 @@ export interface components {
             status: string;
         } & {
             [key: string]: unknown;
+        };
+        /** CalendarPlaceIn */
+        CalendarPlaceIn: {
+            /** Start Date */
+            start_date: string;
+        };
+        /** CalendarSlotIn */
+        CalendarSlotIn: {
+            /** Campaign Day */
+            campaign_day?: number | null;
+            /** Campaign Id */
+            campaign_id?: string | null;
+            /**
+             * Format
+             * @default
+             */
+            format: string;
+            /**
+             * Pillar
+             * @default product
+             */
+            pillar: string;
+            /** Run Id */
+            run_id?: string | null;
+            /** Slot Date */
+            slot_date: string;
+            /**
+             * Slot Type
+             * @enum {string}
+             */
+            slot_type: "feed_post" | "story" | "reel";
+        };
+        /** CalendarSlotOut */
+        CalendarSlotOut: {
+            /** Campaign Day */
+            campaign_day?: number | null;
+            /** Campaign Id */
+            campaign_id?: string | null;
+            /** Format */
+            format: string;
+            /** Id */
+            id: string;
+            /** Pillar */
+            pillar: string;
+            /** Run Id */
+            run_id?: string | null;
+            /** Slot Date */
+            slot_date: string;
+            /**
+             * Slot Type
+             * @enum {string}
+             */
+            slot_type: "feed_post" | "story" | "reel";
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "drafted" | "checked" | "approved" | "exported" | "verified";
         };
         /** CampaignDay */
         CampaignDay: {
@@ -3786,6 +3896,135 @@ export interface operations {
                 content: {
                     "application/json": unknown;
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    place_campaign_on_calendar_api_calendar_campaigns__campaign_id__place_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                campaign_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CalendarPlaceIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CalendarSlotOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_calendar_slots_api_calendar_slots_get: {
+        parameters: {
+            query?: {
+                start_date?: string | null;
+                end_date?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CalendarSlotOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_calendar_slot_api_calendar_slots_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CalendarSlotIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CalendarSlotOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_calendar_slot_api_calendar_slots__slot_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slot_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

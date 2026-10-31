@@ -118,6 +118,177 @@
         "title": "AsyncRunCreated",
         "type": "object"
       },
+      "CalendarPlaceIn": {
+        "additionalProperties": false,
+        "properties": {
+          "start_date": {
+            "maxLength": 10,
+            "minLength": 10,
+            "title": "Start Date",
+            "type": "string"
+          }
+        },
+        "required": [
+          "start_date"
+        ],
+        "title": "CalendarPlaceIn",
+        "type": "object"
+      },
+      "CalendarSlotIn": {
+        "additionalProperties": false,
+        "properties": {
+          "campaign_day": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaign Day"
+          },
+          "campaign_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaign Id"
+          },
+          "format": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Format",
+            "type": "string"
+          },
+          "pillar": {
+            "default": "product",
+            "maxLength": 80,
+            "title": "Pillar",
+            "type": "string"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "slot_date": {
+            "maxLength": 10,
+            "minLength": 10,
+            "title": "Slot Date",
+            "type": "string"
+          },
+          "slot_type": {
+            "enum": [
+              "feed_post",
+              "story",
+              "reel"
+            ],
+            "title": "Slot Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "slot_date",
+          "slot_type"
+        ],
+        "title": "CalendarSlotIn",
+        "type": "object"
+      },
+      "CalendarSlotOut": {
+        "additionalProperties": false,
+        "properties": {
+          "campaign_day": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaign Day"
+          },
+          "campaign_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaign Id"
+          },
+          "format": {
+            "title": "Format",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "pillar": {
+            "title": "Pillar",
+            "type": "string"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "slot_date": {
+            "title": "Slot Date",
+            "type": "string"
+          },
+          "slot_type": {
+            "enum": [
+              "feed_post",
+              "story",
+              "reel"
+            ],
+            "title": "Slot Type",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "drafted",
+              "checked",
+              "approved",
+              "exported",
+              "verified"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "slot_date",
+          "slot_type",
+          "pillar",
+          "format",
+          "status"
+        ],
+        "title": "CalendarSlotOut",
+        "type": "object"
+      },
       "CampaignDay": {
         "additionalProperties": false,
         "properties": {
@@ -5656,6 +5827,193 @@
           }
         },
         "summary": "Login"
+      }
+    },
+    "/api/calendar/campaigns/{campaign_id}/place": {
+      "post": {
+        "operationId": "place_campaign_on_calendar_api_calendar_campaigns__campaign_id__place_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CalendarPlaceIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CalendarSlotOut"
+                  },
+                  "title": "Response Place Campaign On Calendar Api Calendar Campaigns  Campaign Id  Place Post",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Place Campaign On Calendar"
+      }
+    },
+    "/api/calendar/slots": {
+      "get": {
+        "operationId": "list_calendar_slots_api_calendar_slots_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "start_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Start Date"
+            }
+          },
+          {
+            "in": "query",
+            "name": "end_date",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "End Date"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CalendarSlotOut"
+                  },
+                  "title": "Response List Calendar Slots Api Calendar Slots Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Calendar Slots"
+      },
+      "post": {
+        "operationId": "create_calendar_slot_api_calendar_slots_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CalendarSlotIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CalendarSlotOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Calendar Slot"
+      }
+    },
+    "/api/calendar/slots/{slot_id}": {
+      "delete": {
+        "operationId": "delete_calendar_slot_api_calendar_slots__slot_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slot_id",
+            "required": true,
+            "schema": {
+              "title": "Slot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Calendar Slot"
       }
     },
     "/api/campaigns": {
