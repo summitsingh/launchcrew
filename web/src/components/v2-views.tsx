@@ -27,7 +27,7 @@ export const SEED_CLAIM_HINT = 'Opt-in demo only. Seeds the unsupported claim 鈥
 export const SUPPORTED_CHECKER_POLICIES = [
   { label: 'Superlatives', veto: 'superlatives', rule: 'Block superlatives', description: 'Block claims containing hype or superlative words from the strict word list.' },
   { label: 'Price claims', veto: 'price_claims', rule: 'Block price claims', description: 'Block claims containing price values such as $49.' },
-  { label: 'Cliches', veto: 'cliches', rule: 'Block marketing cliches', description: 'Block claims containing generic AI filler buzzwords and marketing cliches.' },
+  { label: 'Marketing cliches', veto: 'cliches', rule: 'Block marketing cliches', description: 'Block claims containing generic AI filler buzzwords and marketing cliches.' },
 ];
 
 /** Readable policy summary that keeps every exact ID inspectable. */
@@ -649,17 +649,28 @@ export function ChannelVariantsBundleView({ bundle, copied, busyChannel, locked,
 }
 
 type AdPolicyHit = {
-  category?: unknown;
-  match?: unknown;
-  reason?: unknown;
+  category: string;
+  match: string;
+  reason: string;
 };
 
+/** Ad Account Shield lint attached to every variant. The generated client
+ *  type carries these as open extra keys, so read them defensively: only
+ *  well-formed hit dicts with category, match, and reason are shown. */
 function adPolicyOf(variant: ChannelVariant): { passed: boolean | null; hits: AdPolicyHit[] } {
-  const extra = variant as ChannelVariant & { ad_policy_passed?: unknown; ad_policy_hits?: unknown };
-  const passed = typeof extra.ad_policy_passed === 'boolean' ? extra.ad_policy_passed : null;
-  const hits = Array.isArray(extra.ad_policy_hits)
-    ? (extra.ad_policy_hits.filter(h => h && typeof h === 'object') as AdPolicyHit[])
-    : [];
+  const raw = variant as unknown as Record<string, unknown>;
+  const passed = typeof raw.ad_policy_passed === 'boolean' ? raw.ad_policy_passed : null;
+  const rawHits = Array.isArray(raw.ad_policy_hits) ? raw.ad_policy_hits : [];
+  const hits = rawHits.filter((hit): hit is AdPolicyHit =>
+    !!hit && typeof hit === 'object'
+    && typeof (hit as Record<string, unknown>).category === 'string'
+    && typeof (hit as Record<string, unknown>).match === 'string'
+    && typeof (hit as Record<string, unknown>).reason === 'string'
+  ).map(hit => ({
+    category: (hit as unknown as Record<string, string>).category,
+    match: (hit as unknown as Record<string, string>).match,
+    reason: (hit as unknown as Record<string, string>).reason,
+  }));
   return { passed, hits };
 }
 
@@ -669,14 +680,14 @@ function ChannelVariantCard({ label, variant, approval, copied, busy, locked, on
   const approvedCurrent = valid && approval?.current === true;
   const approvedBy = typeof approval?.approved_by === 'string' && approval.approved_by ? approval.approved_by : null;
   const busyOrLocked = busy || locked;
-  const shield = adPolicyOf(variant);
-  const shieldWarn = shield.passed === false || shield.hits.length > 0;
+  const adPolicy = adPolicyOf(variant);
+  const adFlagged = adPolicy.passed === false || adPolicy.hits.length > 0;
   return <article className="panel queue-card" aria-label={`${label} variant`}>
     <h3>{label}</h3>
     <p>{valid ? (locked ? 'Locked while the pack changed' : approvedCurrent ? 'Human-approved exact text' : 'Verified, awaiting your approval') : 'Needs revision'} 路 {variant.status || 'unknown status'} 路 {variant.char_count} chars{label === 'X' ? ' / 280' : ''}</p>
-    {shieldWarn
-      ? <div role="alert" aria-label={`Ad policy warning for ${label}`}><p><span className="badge pending">Ad Policy: needs review ({shield.hits.length} {shield.hits.length === 1 ? 'hit' : 'hits'})</span></p><ul className="scout-list">{shield.hits.map((hit, i) => <li key={i} className="scout-fact"><div className="scout-row"><span>{typeof hit.category === 'string' && hit.category ? hit.category : 'Ad policy hit'}</span><span className="tag">{typeof hit.match === 'string' && hit.match ? `"${hit.match}"` : 'match unavailable'}</span></div><p className="hint">{typeof hit.reason === 'string' && hit.reason ? hit.reason : 'No reason stored.'}</p></li>)}</ul></div>
-      : shield.passed === true
+    {adFlagged
+      ? <div role="alert" aria-label={`Ad policy warning for ${label}`}><p><span className="badge pending">Ad Policy: {adPolicy.hits.length} violation{adPolicy.hits.length === 1 ? '' : 's'}</span></p><ul className="scout-list">{adPolicy.hits.map((hit, i) => <li key={i} className="scout-fact"><div className="scout-row"><strong>{hit.category}</strong><span className="tag">{hit.match}</span></div><p className="hint">{hit.reason}</p></li>)}</ul></div>
+      : adPolicy.passed === true
         ? <p><span className="badge approved">Ad Shield: Compliant</span></p>
         : null}
     {label === 'Email' && variant.subject && <p className="hint">Subject: {variant.subject}</p>}
@@ -701,50 +712,54 @@ function landingPolicyLabel(policy: string): string {
   return LANDING_POLICY_LABELS[policy] ?? policy;
 }
 
-/** Landing Page Offer Parity Sentinel: audits the post draft price against
- *  the landing page and checks the mandatory legal footer links. Read-only
- *  audit; it never edits the draft and never publishes. */
+/** Landing Page Offer Parity Sentinel. Audits caller-supplied landing page
+ *  HTML against the current post draft through
+ *  POST /api/runs/{run_id}/verify-landing-page. The audit is read-only:
+ *  the receipt is never modified, and the optional landing URL is recorded
+ *  context only and is never fetched. Every ad price must appear on the
+ *  page, and the page footer must link the required legal policies. */
 export function LandingPageParitySection({ runId }: { runId: string }) {
   const [landingUrl, setLandingUrl] = useState('');
   const [landingHtml, setLandingHtml] = useState('');
   const verify = useMutation({
-    mutationFn: () => {
-      const body: { landing_html: string; landing_url?: string | null } = { landing_html: landingHtml };
-      if (landingUrl.trim()) body.landing_url = landingUrl.trim();
-      return unwrap(api.POST('/api/runs/{run_id}/verify-landing-page', { params: { path: { run_id: runId } }, body }));
-    },
+    mutationFn: () => unwrap(api.POST('/api/runs/{run_id}/verify-landing-page', {
+      params: { path: { run_id: runId } },
+      body: { landing_html: landingHtml, landing_url: landingUrl.trim() ? landingUrl.trim() : null },
+    })),
   });
-  const result = verify.data as LandingParity | undefined;
-  const detected = result && Array.isArray(result.detected_policies) ? result.detected_policies : [];
-  const missing = result && Array.isArray(result.missing_policies) ? result.missing_policies : [];
-  const adPrices = result && Array.isArray(result.ad_prices) ? result.ad_prices : [];
-  const landingPrices = result && Array.isArray(result.landing_prices) ? result.landing_prices : [];
-  const unmatched = result && Array.isArray(result.unmatched_ad_prices) ? result.unmatched_ad_prices : [];
+  const result: LandingParity | undefined = verify.data;
+  const adPrices = result?.ad_prices ?? [];
+  const landingPrices = result?.landing_prices ?? [];
+  const unmatchedAdPrices = result?.unmatched_ad_prices ?? [];
+  const detectedPolicies = result?.detected_policies ?? [];
+  const missingPolicies = result?.missing_policies ?? [];
   return <section className="panel" aria-label="Landing page offer parity">
     <p className="eyebrow">LANDING PAGE OFFER PARITY</p>
     <h2>Landing page audit.</h2>
-    <p className="hint">Paste the landing page HTML (required) and optionally its URL, then run the audit. The server compares the post draft price against the landing page price and checks the mandatory legal footer links. This audit is read-only: it never edits the draft and never publishes.</p>
+    <p className="hint">Paste the landing page HTML below. The audit compares it against the current post draft on the server: every price in the draft must appear on the page, and the footer must link the Privacy Policy, Terms of Service, and Refund Policy. Read-only: nothing is published and the URL is never fetched.</p>
     <form onSubmit={e => { e.preventDefault(); verify.reset(); verify.mutate(); }}>
-      <label htmlFor={`landing-url-${runId}`}>Landing page URL (optional)</label>
-      <input id={`landing-url-${runId}`} type="url" maxLength={2000} placeholder="https://example.com/product" value={landingUrl} onChange={e => setLandingUrl(e.target.value)} />
-      <label htmlFor={`landing-html-${runId}`}>Landing page HTML (required)</label>
-      <textarea id={`landing-html-${runId}`} rows={6} required maxLength={200000} placeholder="<html>... paste the landing page source ...</html>" value={landingHtml} onChange={e => setLandingHtml(e.target.value)} />
-      <div className="queue-actions"><Button type="submit" disabled={verify.isPending || !landingHtml.trim()}>{verify.isPending ? 'Auditing...' : 'Verify landing page'}</Button></div>
+      <label htmlFor={`landing-url-${runId}`}>Landing page URL (optional context, never fetched)</label>
+      <input id={`landing-url-${runId}`} maxLength={2000} value={landingUrl} onChange={e => setLandingUrl(e.target.value)} placeholder="https://example.com/offer" />
+      <label htmlFor={`landing-html-${runId}`}>Landing page HTML</label>
+      <textarea id={`landing-html-${runId}`} rows={6} required maxLength={200000} value={landingHtml} onChange={e => setLandingHtml(e.target.value)} placeholder="Paste the rendered landing page HTML here" />
+      <div className="queue-actions"><Button type="submit" disabled={verify.isPending || !landingHtml.trim()}>Audit landing page</Button></div>
     </form>
+    {verify.isPending && <p>Auditing landing page...</p>}
     {verify.error && <p role="alert">{verify.error.message}</p>}
     {result && <>
-      <p role="status">{result.overall_passed ? 'Parity passed: price and legal footer both check out.' : 'Parity issues found: see price and footer details below.'} <span className={`badge ${result.overall_passed ? 'approved' : 'pending'}`}>{result.overall_passed ? 'Passed' : 'Issues'}</span></p>
-      <h3>Price parity: {result.parity_passed ? 'match' : 'mismatch'}</h3>
-      <p className="hint">Post draft prices: {adPrices.length > 0 ? adPrices.join(', ') : 'none detected'} 路 Landing page prices: {landingPrices.length > 0 ? landingPrices.join(', ') : 'none detected'}</p>
-      {!result.parity_passed && unmatched.length > 0 && <p role="alert">Unmatched draft prices: {unmatched.join(', ')}.</p>}
-      <h3>Legal footer: {result.legal_compliance_passed ? 'complete' : 'incomplete'}</h3>
-      <ul className="scout-list">
-        {['privacy_policy', 'terms_of_service', 'refund_policy'].map(policy => {
-          const ok = detected.includes(policy);
-          return <li key={policy} className="scout-fact"><div className="scout-row"><span>{landingPolicyLabel(policy)}</span><span className={`badge ${ok ? 'approved' : 'pending'}`}>{ok ? 'Present' : 'Missing'}</span></div></li>;
-        })}
-      </ul>
-      {missing.length > 0 && <p role="alert">Missing footer links: {missing.map(landingPolicyLabel).join(', ')}.</p>}
+      <p role="status">{result.overall_passed
+        ? <span className="badge approved">Parity passed</span>
+        : <span className="badge pending">Parity issues found</span>}</p>
+      <h3>Price parity {result.parity_passed ? 'passed' : 'failed'}</h3>
+      <p className="hint">Prices in the post draft ({adPrices.length}): {adPrices.join(', ') || 'none detected'} 路 Prices on the landing page ({landingPrices.length}): {landingPrices.join(', ') || 'none detected'}</p>
+      {unmatchedAdPrices.length > 0
+        ? <p role="alert">Missing from the landing page: {unmatchedAdPrices.join(', ')}</p>
+        : <p className="hint">Every draft price appears on the landing page.</p>}
+      <h3>Legal footer links {result.legal_compliance_passed ? 'passed' : 'failed'}</h3>
+      <p className="hint">Detected ({detectedPolicies.length}): {detectedPolicies.map(landingPolicyLabel).join(', ') || 'none'} 路 Missing ({missingPolicies.length}): {missingPolicies.map(landingPolicyLabel).join(', ') || 'none'}</p>
+      {missingPolicies.length > 0
+        ? <p role="alert">Add footer links for: {missingPolicies.map(landingPolicyLabel).join(', ')}</p>
+        : <p className="hint">All mandatory legal footer links are present.</p>}
     </>}
   </section>;
 }
