@@ -1,8 +1,9 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import { QueryClient, QueryClientProvider, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ArrowRight, Check, FileText, Layers, ShieldCheck } from 'lucide-react';
+import { Activity, ArrowRight, Check, CheckCircle2, FileText, Image, Layers, Rocket, ShieldAlert, ShieldCheck, Sparkles } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Badge as ShadcnBadge } from '@/components/ui/badge';
 import { MemoryView, ReplayView, CampaignView, ScoutFactsSection, HumanRevisionEditor, ChannelVariantsSection, ReceiptTimeline, FailedRunNotice, RunProgressSection, SupportedPoliciesHint, RunRef, VoiceBlock, SEED_CLAIM_DEFAULT, SEED_CLAIM_LABEL, SEED_CLAIM_HINT, terminalNotice, safeExportFilename, downloadTextFile, copyTextToClipboard, exportReceiptToMarkdown, currentDraftOf, currentCheckOf, revisionStatusOf } from '@/components/v2-views';
 import { ProductFactsForm } from '@/components/product-facts-form';
 import { ImportSuggestionsForm } from '@/components/import-suggestions-form';
@@ -131,19 +132,19 @@ function Desk() {
   };
   const pending = queue.data?.filter(r => r.approval_state === 'pending_approval').length || 0;
   function open(r: Receipt, target: View) { setActive(r.run_id); setView(target); setNotice(''); }
-  const primaryNav: { item: View; label: string; number: string }[] = [
-    { item: 'Idea', label: 'Launch brief', number: '01' },
-    { item: 'Run', label: 'Run review', number: '03' },
-    { item: 'Queue', label: 'Approval queue', number: '04' },
-    { item: 'Receipt', label: 'Receipt', number: '05' },
+  const primaryNav: { item: View; label: string; number: string; icon: typeof Rocket }[] = [
+    { item: 'Idea', label: 'Launch brief', number: '01', icon: Rocket },
+    { item: 'Run', label: 'Run review', number: '03', icon: Activity },
+    { item: 'Queue', label: 'Approval queue', number: '04', icon: CheckCircle2 },
+    { item: 'Receipt', label: 'Receipt', number: '05', icon: FileText },
   ];
-  const advancedNav: { item: View; label: string; number: string }[] = [
-    { item: 'Agents', label: 'Agent builder', number: '02' },
-    { item: 'Memory', label: 'Memory', number: '06' },
-    { item: 'Replay', label: 'Replay', number: '07' },
-    { item: 'Campaign', label: 'Campaign', number: '08' },
+  const advancedNav: { item: View; label: string; number: string; icon: typeof Rocket }[] = [
+    { item: 'Agents', label: 'Agent builder', number: '02', icon: Sparkles },
+    { item: 'Memory', label: 'Memory', number: '06', icon: Layers },
+    { item: 'Replay', label: 'Replay', number: '07', icon: Image },
+    { item: 'Campaign', label: 'Campaign', number: '08', icon: ShieldAlert },
   ];
-  const navButton = ({ item, label, number }: { item: View; label: string; number: string }) => <button key={item} onClick={() => setView(item)} aria-current={view === item ? 'page' : undefined}><span className="nav-number">{number}</span>{label}{item === 'Queue' && <span className="count">{pending}</span>}</button>;
+  const navButton = ({ item, label, number, icon: Icon }: { item: View; label: string; number: string; icon: typeof Rocket }) => <button key={item} onClick={() => setView(item)} aria-current={view === item ? 'page' : undefined}><span className="nav-icon"><Icon size={16} /></span><span className="nav-number">{number}</span>{label}{item === 'Queue' && pending > 0 && <ShadcnBadge variant="secondary" className="ml-auto">{pending}</ShadcnBadge>}</button>;
   return <div className="shell">
     <aside className="sidebar"><a className="brand" href="/" aria-label="LaunchCrew home"><span className="brand-mark"><Layers size={21} /></span>LaunchCrew</a><div className="workspace">DEMO WORKSPACE</div>
       <p className="tiny path-hint">Path: facts, draft, check, approve, then copy or export.</p>
@@ -152,7 +153,7 @@ function Desk() {
       <div id="advanced-nav">{advanced && <nav aria-label="Advanced">{advancedNav.map(navButton)}</nav>}</div>
       <div className="sidebar-note"><ShieldCheck size={20} /><strong>You hold the final say.</strong><p>Every pack needs your approval before export.</p><span className="tiny">Confirmed facts only · No publishing</span></div>
     </aside>
-    <div className="main-wrap"><header className="topbar"><span>Workspace <span className="muted">/ Review desk</span></span><span className="demo-pill"><span className="dot" />{authStatusError ? 'Auth check failed' : authEnabled ? 'Auth enabled, unverified' : 'Demo mode'}</span></header>
+    <div className="main-wrap"><header className="topbar"><span>Workspace <span className="muted">/ Review desk</span>{active && <span className="muted"> / {active.slice(0, 8)}</span>}</span><span className="topbar-cluster">{active && run.data && <ShadcnBadge variant="outline">{run.data.status}</ShadcnBadge>}{pending > 0 ? <ShadcnBadge variant="destructive">Requires review: {pending}</ShadcnBadge> : <ShadcnBadge variant="success">Ready</ShadcnBadge>}<ShadcnBadge variant="secondary"><span className="dot" />{authStatusError ? 'Auth check failed' : authEnabled ? 'Auth enabled, unverified' : 'Live demo'}</ShadcnBadge></span></header>
       <main id="main"><div className="page-intro"><div><p className="eyebrow">LAUNCHCREW / REVIEW DESK</p><h1>{view === 'Memory' ? 'Review your saved memory.' : view === 'Replay' ? 'Compare two recorded runs.' : view === 'Campaign' ? 'Review a week of drafts.' : view === 'Idea' ? 'Start with a clear brief.' : view === 'Agents' ? 'Build your crew.' : view === 'Queue' ? 'Your approval matters.' : view === 'Receipt' ? 'A record of every decision.' : 'From facts to a launch pack.'}</h1><p className="lede">{view === 'Memory' ? 'Manage facts, profiles, examples, rules, and voice styles explicitly.' : view === 'Replay' ? 'Inspect stored drafts, Checker verdicts, voice sources, and approvals.' : view === 'Campaign' ? 'Seven pending packs, each reviewed and approved individually.' : view === 'Idea' ? 'Turn approved product facts into drafts you can stand behind.' : view === 'Agents' ? 'Give each agent a role, clear rules, and a boundary.' : view === 'Queue' ? 'Review each pack, approve it individually, then export when ready.' : view === 'Receipt' ? 'Inspect the checks, revisions, and human approval behind a pack.' : 'Follow Scout, Maker, and Checker through the draft and revision.'}</p></div><span className="step-label">{view === 'Memory' ? '06 / MEMORY' : view === 'Replay' ? '07 / REPLAY' : view === 'Campaign' ? '08 / CAMPAIGN' : view === 'Idea' ? '01 / BRIEF' : view === 'Agents' ? '02 / CREW' : view === 'Queue' ? '04 / APPROVAL' : view === 'Receipt' ? '05 / RECORD' : '03 / REVIEW'}</span></div>
       {authEnabled && !authUser && (authProviders.includes('google') ? <div className="message" data-testid="auth-signin">Sign in with <a href="/api/auth/google/login">Google</a>.</div> : <div className="message" data-testid="auth-setup-required">Sign-in is enabled but Google provider setup is required.</div>)}
       {authEnabled && authUser && <div className="message" role="status" data-testid="auth-signed-in">Signed in as {authUser}. <Button variant="outline" data-testid="sign-out" onClick={() => signOut.mutate()} disabled={signOut.isPending}>{signOut.isPending ? 'Signing out...' : 'Sign out'}</Button></div>}
