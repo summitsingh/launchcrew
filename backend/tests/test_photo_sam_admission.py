@@ -365,16 +365,62 @@ def test_upload_failure_prevents_sam_and_never_resends(client, monkeypatch):
         first = client.post('/api/runs/%s/photo-check' % run_id,
                             json={'image_data_uri': _data_uri(raw), 'expected_revision': 0})
         assert first.status_code == 200, first.text
-        assert first.json()['check']['label'] == 'unknown'
+        assert first.json()['check']['label'] == 'unchecked'
+        assert first.json()['receipt']['photo_status']['state'] == 'unchecked'
         second = client.post('/api/runs/%s/photo-check' % run_id,
                              json={'image_data_uri': _data_uri(raw), 'expected_revision': 0})
     assert second.status_code == 200
-    assert second.json()['check']['label'] == 'unknown'
+    assert second.json()['check']['label'] == 'unchecked'
     assert calls == [url for url in calls if url.endswith('/files')]
     assert len(calls) == 1
     with store.connect() as db:
         status = db.execute(text('SELECT status FROM sam_calls')).scalar()
-    assert status == 'failed_terminal'
+    assert status == 'succeeded'
+
+
+def test_transport_error_unchecked_allows_text_approval(client, monkeypatch):
+    run_id = _make_run(client)
+    raw = _png_bytes()
+    _approve_bytes(monkeypatch, raw)
+    _grant(1)
+
+    def failing_files(request, timeout):
+        raise OSError('files unreachable')
+
+    with patch('backend.sam.urlopen', side_effect=failing_files):
+        response = client.post('/api/runs/%s/photo-check' % run_id,
+                               json={'image_data_uri': _data_uri(raw), 'expected_revision': 0})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body['receipt']['photo_status']['state'] == 'unchecked'
+    assert body['receipt']['revision'] == 1
+    assert client.post('/api/runs/%s/approve' % run_id, json={'expected_revision': 1}).status_code == 200
+    exported = client.post('/api/runs/%s/export' % run_id, json={'expected_revision': 1})
+    assert exported.status_code == 200, exported.text
+    assert exported.json()['exported_revision'] == 1
+
+
+def test_completed_detected_binds_crop_state_into_approval(client, monkeypatch):
+    run_id = _make_run(client)
+    raw = _png_bytes()
+    _approve_bytes(monkeypatch, raw)
+    _grant(1)
+    calls = []
+    with patch('backend.sam.urlopen', side_effect=_transport(CLEAR_TAG, calls)):
+        response = client.post('/api/runs/%s/photo-check' % run_id,
+                               json={'image_data_uri': _data_uri(raw), 'expected_revision': 0})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body['check']['label'] == 'detected'
+    assert body['receipt']['photo_status']['state'] == 'checked'
+    assert body['preview'] is not None
+    assert body['preview']['crop'] is not None
+    approved = client.post('/api/runs/%s/approve' % run_id, json={'expected_revision': 1})
+    assert approved.status_code == 200, approved.text
+    assert approved.json()['approval_binding']['digest']
+    exported = client.post('/api/runs/%s/export' % run_id, json={'expected_revision': 1})
+    assert exported.status_code == 200, exported.text
+    assert exported.json()['photo_status']['label'] == 'detected'
 
 
 def test_ambiguous_multi_match_is_terminal_and_never_resent(client, monkeypatch):

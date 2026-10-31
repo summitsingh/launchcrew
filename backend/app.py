@@ -1362,9 +1362,10 @@ def photo_check(run_id: str, body: PhotoCheckIn, actor: str = Depends(auth.actor
     from backend import photo_admission, sam
     from backend.photo_admission import AdmissionConflict, AdmissionNotFound, AdmissionRejected, AdmissionStale
     from backend.photo_input import PhotoInputError, parse_photo_data_uri
-    from backend.photo_review import (PHOTO_EVENT_CHECKED,
-                                      STATE_REQUESTED_UNCHECKED, apply_photo_event,
-                                      photo_status_of, record_unattempted_transport)
+    from backend.photo_review import (PHOTO_EVENT_UNCHECKED,
+                                      apply_photo_event,
+                                      photo_status_of, record_unattempted_transport,
+                                      unchecked_status)
     from launchcrew import human_review
     from launchcrew.photo_policy import PHOTO_POLICY_VERSION
     try:
@@ -1380,25 +1381,25 @@ def photo_check(run_id: str, body: PhotoCheckIn, actor: str = Depends(auth.actor
                 raise HTTPException(422, context_reason)
             if body.expected_revision != human_review.current_revision(receipt):
                 raise HTTPException(409, 'Photo check is stale; the draft changed')
-            status = {'state': STATE_REQUESTED_UNCHECKED, 'label': None,
-                      'reason': 'not_run: SAM not configured, photo unchecked',
-                      'policy_version': PHOTO_POLICY_VERSION,
-                      'revision': human_review.current_revision(receipt),
-                      'actor': actor, 'checked_at': ''}
-            revised = apply_photo_event(receipt, event=PHOTO_EVENT_CHECKED, actor=actor, status=status)
+            status = unchecked_status(
+                reason='not_run: SAM not configured, photo unchecked',
+                actor=actor, revision=human_review.current_revision(receipt))
+            revised = apply_photo_event(receipt, event=PHOTO_EVENT_UNCHECKED, actor=actor, status=status)
             revised = record_unattempted_transport(
                 revised, handling='not_run',
                 note=('SAM is not configured, so the photo bytes stayed on the LaunchCrew validation '
                       'server for this check and were not forwarded to any segmentation provider. '
+                      'Photo unchecked: text-only approval stays available; only a completed '
+                      'segmentation check binds photo state into approval. '
                       'Text-model usage above is unchanged and covers text models only.'))
             result = db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id AND workspace_id=:ws'),
                        {'receipt': json.dumps(revised), 'state': revised['approval_state'], 'id': run_id, 'ws': workspace_id})
             if result.rowcount == 0:
                 raise HTTPException(404, 'Run not found')
             db.execute(text('DELETE FROM approvals WHERE run_id=:id'), {'id': run_id})
-            store.audit(db, run_id, 'photo_check_requested', actor, workspace_id)
+            store.audit(db, run_id, 'photo_unchecked', actor, workspace_id)
         kept = photo_status_of(revised)
-        check = PhotoCheckOut(method='not_run', label=None, reason=kept['reason'],
+        check = PhotoCheckOut(method='not_run', label=kept['label'], reason=kept['reason'],
                               policy_version=PHOTO_POLICY_VERSION,
                               revision=revised['revision'], photo_state=kept['state'])
         return PhotoCheckResponse(check=check, receipt=revised, preview=None)

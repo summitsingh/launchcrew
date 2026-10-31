@@ -263,7 +263,10 @@ def test_synthetic_admission_invalid_expiry_terminal_budget_spent(client, monkey
             {'id': run_id}).mappings().first()
         connection.execute(text("UPDATE sam_budget SET remaining_images=0 WHERE id='global'"))
     assert budget == 0
-    assert row is not None and row['status'] == 'failed_terminal'
+    assert row is not None and row['status'] == 'succeeded'
+    body = response.json()
+    assert body['receipt']['photo_status']['state'] == 'unchecked'
+    assert body['receipt']['photo_status']['label'] == 'unchecked'
 
 
 def test_synthetic_sam_env_refuses_base_override(monkeypatch, tmp_path):

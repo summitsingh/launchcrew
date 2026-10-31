@@ -231,13 +231,17 @@ def finalize_photo_check(db, call_id, verdict, expected_revision, *, actor='',
     """Finalize an admitted call exactly once; never resend transport.
 
     A verdict whose label is not a definitive geometry outcome lands
-    ``failed_terminal``. A revision that moved before finalization also
-    lands ``failed_terminal`` with nothing attached to the receipt: the
-    terminal state commits in its own transaction BEFORE the stale error
-    raises, so the rollback of the failed finalization cannot resurrect
-    ``admitted``. Lock order stays sam_calls-before-runs throughout.
-    Finalization never crosses owners: a foreign parent raises not-found
-    with no ledger or receipt side effects.
+    ``failed_terminal``, except an explicit ``unchecked`` transport verdict
+    (provider error with no segmentation), which lands ``succeeded`` with an
+    unchecked receipt that does not block text-only approval. A revision
+    that moved before finalization also lands ``failed_terminal`` with
+    nothing attached to the receipt: the terminal state commits in its own
+    transaction BEFORE the stale error raises, so the rollback of the
+    failed finalization cannot resurrect ``admitted``. Lock order stays
+    sam_calls-before-runs throughout. Finalization never crosses owners: a
+    foreign parent raises not-found with no ledger or receipt side effects.
+    Only a completed segmentation check binds photo state into approval;
+    an unchecked verdict records the outcome without blocking text approval.
     """
     label = verdict.get('label') if isinstance(verdict, dict) else None
     reason = verdict.get('reason', '') if isinstance(verdict, dict) else ''
@@ -245,10 +249,13 @@ def finalize_photo_check(db, call_id, verdict, expected_revision, *, actor='',
     if isinstance(expected_revision, bool) or not isinstance(expected_revision, int):
         raise AdmissionRejected('expected_revision must be an integer')
     resolved = _resolved_workspace(actor, workspace_id)
-    definitive = label in ('detected', 'not_detected', 'possible_clipping')
+    definitive = label in ('detected', 'not_detected', 'possible_clipping', 'unchecked')
     status = 'succeeded' if definitive else 'failed_terminal'
-    if label not in ('detected', 'not_detected', 'possible_clipping', 'unknown'):
+    if label not in ('detected', 'not_detected', 'possible_clipping', 'unknown', 'unchecked'):
         label, reason, status = 'unknown', reason or 'fix_photo', 'failed_terminal'
+    if label == 'unchecked':
+        status = 'succeeded'
+        reason = reason or 'delivery_failed: segmentation did not run, photo unchecked'
     stale_reason = None
     missing_run = False
     with db.begin() as connection:
@@ -326,7 +333,10 @@ def run_photo_check(db, run_id, raw_bytes, mime, revision, expected_revision, *,
     Transport runs only for the single owner admitted here, and only
     outside any DB transaction. Replays (pending in-flight or terminal)
     return the persisted row with no preview and zero HTTP. The preview
-    crop hint is volatile and never persisted.
+    crop hint is volatile and never persisted: only a completed detected
+    check carries a crop, and the crop is drawn from original pixels
+    client-side, never stored. A transport error finalizes as an explicit
+    unchecked verdict that does not block text-only approval.
     """
     resolved = _resolved_workspace(actor, workspace_id)
     digest = hashlib.sha256(raw_bytes).hexdigest()
@@ -343,7 +353,8 @@ def run_photo_check(db, run_id, raw_bytes, mime, revision, expected_revision, *,
         records = sam.upload_and_segment(raw_bytes, mime)
     except sam.SamTransportError as error:
         uploads, segmentations = _transport_counts(error)
-        verdict = {'label': 'unknown', 'reason': 'delivery_failed',
+        verdict = {'label': 'unchecked',
+                   'reason': 'delivery_failed: segmentation did not run, photo unchecked',
                    'policy_version': PHOTO_POLICY_VERSION, 'actor': actor,
                    'detail': str(error)[:120]}
         final = finalize_photo_check(db, row['id'], verdict, expected_revision, actor=actor,

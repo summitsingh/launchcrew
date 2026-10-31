@@ -46,9 +46,18 @@ function panel(overrides: Partial<PhotoPanelProps> = {}): string {
 }
 
 const notRun: StoredPhoto = {
-  state: 'requested_unchecked',
-  label: null,
+  state: 'unchecked',
+  label: 'unchecked',
   reason: 'not_run: SAM not configured, photo unchecked',
+  revision: 1,
+  actor: 'demo_placeholder',
+  checkedAt: '2026-01-01T00:00:00Z',
+};
+
+const errored: StoredPhoto = {
+  state: 'unchecked',
+  label: 'unchecked',
+  reason: 'delivery_failed: segmentation did not run, photo unchecked',
   revision: 1,
   actor: 'demo_placeholder',
   checkedAt: '2026-01-01T00:00:00Z',
@@ -64,17 +73,29 @@ const detected: StoredPhoto = {
 };
 
 describe('photo check review copy', () => {
-  it('photo_keyless_blocks_approve_export', () => {
+  it('photo_unchecked_allows_text_approval', () => {
     const html = panel({ stored: notRun, revision: 1 });
     expect(html).toContain('SAM not configured, photo unchecked');
-    expect(html).toContain('Approval and export are refused');
+    expect(html).toContain('Photo unchecked');
+    expect(html).toContain('Text-only approval stays available');
     expect(html).toContain('not_run: SAM not configured, photo unchecked');
     expect(html).not.toContain('photo-crop-canvas');
-    expect(photoBlocksApproval(notRun, 1)).toContain('not_run');
+    expect(html).not.toContain('Approval and export are refused');
+    expect(photoBlocksApproval(notRun, 1)).toBe(null);
+    expect(photoBlocksApproval(errored, 1)).toBe(null);
     // A stale revision still blocks even for a detected summary.
     expect(photoBlocksApproval(detected, 2)).not.toBe(null);
     expect(photoBlocksApproval(detected, 1)).toBe(null);
     expect(photoBlocksApproval(null, 0)).toBe(null);
+  });
+
+  it('photo_errored_unchecked_records_explicit_verdict_without_blocking', () => {
+    const html = panel({ stored: errored, revision: 1 });
+    expect(html).toContain('delivery_failed: segmentation did not run, photo unchecked');
+    expect(html).toContain('Text-only approval stays available');
+    expect(html).toContain('only a completed segmentation check binds photo state into approval');
+    expect(photoBlocksApproval(errored, 1)).toBe(null);
+    expect(photoStatusCopy(errored, 1)).toContain('Photo unchecked');
   });
 
   it('photo_remove_requires_reapprove', () => {
@@ -93,6 +114,18 @@ describe('photo check review copy', () => {
     expect(html).toContain('Download crop');
     expect(html).toContain('only subsets existing pixels');
     expect(html).toContain('cut-off pixels cannot be recovered');
+  });
+
+  it('photo_before_after_presents_original_and_corrected_crop', () => {
+    const preview = { frame_w: 32, frame_h: 16, crop: { x1: 4, y1: 4, x2: 20, y2: 12 }, label: 'detected' as const };
+    const html = panel({
+      stored: detected, revision: 1, preview, naturalW: 32, naturalH: 16, cropDrawn: true,
+      selectionName: 'wallet.png', previewUrl: 'blob:local', hasPayload: true, selectionChecked: true,
+    });
+    expect(html).toContain('Before: original upload pixels.');
+    expect(html).toContain('After: corrected crop taken from the original pixels.');
+    expect(html).toContain('photo-crop-canvas');
+    expect(html).toContain('Selected photo preview (checked on this revision, detected)');
   });
 
   it('shows no fake persisted preview after reload', () => {
@@ -146,13 +179,13 @@ describe('photo check review copy', () => {
     const staleProof = selectionPhotoCopy(detected, 2, true);
     expect(staleProof.caption).toContain('not yet checked');
     expect(staleProof.caption).not.toContain('Checked: these current pixels passed');
-    // The keyless post-check copy admits the validation-server send: the
-    // bytes reached LaunchCrew validation, but SAM never ran.
+    // The unchecked post-check copy records no segmentation: text-only
+    // approval stays available and only a completed check binds.
     const keyless = selectionPhotoCopy(notRun, 1, true);
-    expect(keyless.caption).toContain('Checked: these current pixels were sent to the validation server once');
-    expect(keyless.caption).toContain('segmentation did not run');
-    expect(keyless.caption).not.toContain('were not sent');
-    expect(keyless.alt).toContain('segmentation did not run');
+    expect(keyless.caption).toContain('Unchecked: these current pixels were recorded without segmentation');
+    expect(keyless.caption).toContain('segmentation');
+    expect(keyless.caption).toContain('Text-only approval stays available');
+    expect(keyless.alt).toContain('unchecked on this revision, segmentation did not run');
     // The panel renders the checked copy only with proof; without proof
     // the same detected server state still reads as a new unchecked selection.
     const html = panel({ stored: detected, revision: 1, selectionName: 'a.png', previewUrl: 'blob:a', hasPayload: true, selectionChecked: true });
@@ -342,5 +375,6 @@ describe('photo revision copy', () => {
     expect(photoRevisionSuffix({ photo_status: null })).toBe('');
     expect(photoRevisionSuffix({ photo_status: { state: 'no_photo' } })).toBe('');
     expect(photoRevisionSuffix({ photo_status: { state: 'requested_unchecked' } })).toBe(' · photo requested_unchecked');
+    expect(photoRevisionSuffix({ photo_status: { state: 'unchecked' } })).toBe(' · photo unchecked');
   });
 });

@@ -16,11 +16,13 @@ from launchcrew.receipts import timestamp
 
 PHOTO_EVENT_CHECKED = 'photo_checked'
 PHOTO_EVENT_REMOVED = 'photo_removed'
+PHOTO_EVENT_UNCHECKED = 'photo_unchecked'
 
 STATE_NO_PHOTO = 'no_photo'
 STATE_REQUESTED_UNCHECKED = 'requested_unchecked'
 STATE_CHECK_REQUESTED = 'check_requested'
 STATE_CHECKED = 'checked'
+STATE_UNCHECKED = 'unchecked'
 
 BLOCKING_STATES = (STATE_REQUESTED_UNCHECKED, STATE_CHECK_REQUESTED)
 
@@ -91,7 +93,8 @@ def photo_status_of(receipt):
     if not status:
         return _invalid_photo_status(receipt, 'photo status is empty')
     if status.get('state') not in (STATE_NO_PHOTO, STATE_REQUESTED_UNCHECKED,
-                                    STATE_CHECK_REQUESTED, STATE_CHECKED):
+                                    STATE_CHECK_REQUESTED, STATE_CHECKED,
+                                    STATE_UNCHECKED):
         if 'state' not in status:
             return _invalid_photo_status(receipt, 'photo status has no state')
         return _invalid_photo_status(receipt, 'unknown photo state')
@@ -110,7 +113,7 @@ def photo_block_reason(receipt):
     if receipt.get('status') == 'failed':
         return None
     status = photo_status_of(receipt)
-    if status['state'] == STATE_NO_PHOTO:
+    if status['state'] in (STATE_NO_PHOTO, STATE_UNCHECKED):
         return None
     # Strict pass: exact detected label on the exact current revision.
     # Bool coercions (True == 1) must never satisfy the revision match.
@@ -145,7 +148,7 @@ def apply_photo_event(receipt, *, event, actor, status):
     never mutated here; a new entry is appended. The approval binding is
     cleared with approval and preserved in history.
     """
-    if event not in (PHOTO_EVENT_CHECKED, PHOTO_EVENT_REMOVED):
+    if event not in (PHOTO_EVENT_CHECKED, PHOTO_EVENT_REMOVED, PHOTO_EVENT_UNCHECKED):
         raise ValueError('Unknown photo event')
     revised = copy.deepcopy(receipt)
     previous = _current_revision(revised)
@@ -184,7 +187,13 @@ def apply_photo_event(receipt, *, event, actor, status):
     # DB audit already records 'photo_check_requested' here, and the
     # terminal verdict (if any) appends its own 'photo_checked' step in
     # attach_verdict. History keeps the 'photo_checked' photo_event name.
-    receipt_step = 'photo_check_requested' if event == PHOTO_EVENT_CHECKED else event
+    # An explicit unchecked verdict (provider unconfigured) is terminal on
+    # arrival: the receipt step and history both name 'photo_unchecked' so
+    # the history never claims a check ran when segmentation did not.
+    if event == PHOTO_EVENT_CHECKED:
+        receipt_step = 'photo_check_requested'
+    else:
+        receipt_step = event
     events = list((revised.get('audit') or {}).get('event_log') or [])
     events.append({'step': receipt_step, 'agent': 'human',
                    'profile': actor or 'human',
@@ -206,12 +215,16 @@ def attach_verdict(receipt, *, label, reason, actor, uploads=0, segmentations=0,
     receipt and audit log: no bytes, digests, file IDs, or geometry.
     A verdict changes the bound photo state, so any prior approval and
     binding is cleared. Normal finalization runs on an already-pending
-    receipt, where the clear is a no-op.
+    receipt, where the clear is a no-op. An ``unchecked`` label records an
+    explicit unchecked verdict (provider error, no segmentation) that does
+    not block text-only approval; only a completed segmentation check binds
+    its crop state into approval.
     """
     revised = copy.deepcopy(receipt)
     now = timestamp()
     status = photo_status_of(revised)
-    status.update({'state': STATE_CHECKED, 'label': label, 'reason': reason,
+    state = STATE_UNCHECKED if label == 'unchecked' else STATE_CHECKED
+    status.update({'state': state, 'label': label, 'reason': reason,
                    'policy_version': PHOTO_POLICY_VERSION,
                    'revision': _current_revision(revised),
                    'actor': actor, 'checked_at': now})
@@ -271,3 +284,18 @@ def record_unattempted_transport(receipt, *, handling, note):
                       'last_handling': handling, 'note': note})
     revised['photo_transport'] = transport
     return revised
+
+
+def unchecked_status(*, reason, actor, revision):
+    """Build an explicit unchecked photo status for an unrun segmentation.
+
+    The provider was unconfigured or errored, so no segmentation ran. The
+    caller bumps the shared pack revision through apply_photo_event with
+    PHOTO_EVENT_UNCHECKED, which clears approval and binding like any photo
+    event; the unchecked state itself does not block text-only approval, so
+    fresh approval can proceed. Only a completed segmentation check binds
+    its crop state into approval.
+    """
+    return {'state': STATE_UNCHECKED, 'label': 'unchecked', 'reason': reason,
+            'policy_version': PHOTO_POLICY_VERSION, 'revision': revision,
+            'actor': actor, 'checked_at': ''}

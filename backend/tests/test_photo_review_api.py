@@ -114,12 +114,13 @@ def test_keyless_check_returns_not_run_with_zero_http(client):
     assert response.status_code == 200, response.text
     body = response.json()
     assert body['check']['method'] == 'not_run'
-    assert body['check']['label'] is None
-    assert body['check']['photo_state'] == 'requested_unchecked'
+    assert body['check']['label'] == 'unchecked'
+    assert body['check']['photo_state'] == 'unchecked'
     assert body['preview'] is None
     receipt = body['receipt']
     assert receipt['revision'] == 1
-    assert receipt['photo_status']['state'] == 'requested_unchecked'
+    assert receipt['photo_status']['state'] == 'unchecked'
+    assert receipt['photo_status']['label'] == 'unchecked'
     assert receipt['photo_status']['revision'] == 1
     assert receipt['approvals'] == [] and receipt['approval_state'] == 'pending_approval'
     assert receipt['photo_transport']['last_handling'] == 'not_run'
@@ -130,22 +131,26 @@ def test_keyless_check_returns_not_run_with_zero_http(client):
     _assert_clean(receipt)
 
 
-def test_unchecked_photo_blocks_approve_and_export(client):
+def test_unchecked_photo_does_not_block_text_approval(client):
     _no_photo_control(client)
     run_id = _make_run(client)
     with patch('backend.sam.urlopen', side_effect=AssertionError('zero HTTP expected')):
         check = client.post('/api/runs/%s/photo-check' % run_id,
                             json={'image_data_uri': _data_uri(_png_bytes()), 'expected_revision': 0})
     assert check.status_code == 200
+    body = check.json()
+    assert body['receipt']['photo_status']['state'] == 'unchecked'
+    assert body['receipt']['photo_status']['label'] == 'unchecked'
+    assert 'unchecked' in body['receipt']['photo_status']['reason']
     approve = client.post('/api/runs/%s/approve' % run_id, json={'expected_revision': 1})
-    assert approve.status_code == 422
-    assert 'Photo' in approve.json()['detail']
+    assert approve.status_code == 200, approve.text
     export = client.post('/api/runs/%s/export' % run_id, json={'expected_revision': 1})
-    assert export.status_code == 422
-    assert 'Photo' in export.json()['detail']
+    assert export.status_code == 200, export.text
+    assert export.json()['exported_revision'] == 1
+    _assert_clean(export.json())
 
 
-def test_keyless_check_invalidates_prior_approval(client):
+def test_keyless_check_invalidates_prior_approval_but_allows_fresh_text_approval(client):
     run_id = _make_run(client)
     assert client.post('/api/runs/%s/approve' % run_id, json={}).status_code == 200
     with patch('backend.sam.urlopen', side_effect=AssertionError('zero HTTP expected')):
@@ -154,7 +159,10 @@ def test_keyless_check_invalidates_prior_approval(client):
     assert check.status_code == 200
     reread = client.get('/api/runs/%s' % run_id).json()
     assert reread['approvals'] == [] and reread['approval_state'] == 'pending_approval'
-    assert client.post('/api/runs/%s/export' % run_id, json={'expected_revision': 1}).status_code == 422
+    assert reread['photo_status']['state'] == 'unchecked'
+    assert reread['revision_history'][-1].get('photo_event') == 'photo_unchecked'
+    assert client.post('/api/runs/%s/approve' % run_id, json={'expected_revision': 1}).status_code == 200
+    assert client.post('/api/runs/%s/export' % run_id, json={'expected_revision': 1}).status_code == 200
 
 
 def _paid_check(client, monkeypatch, tag, stream=None):
@@ -208,12 +216,63 @@ def test_detected_approves_and_exports_with_clean_payload(client, monkeypatch):
     assert body['preview']['label'] == 'detected'
     assert body['receipt']['model_usage'] == before
     assert 'sent to the segmentation provider' in body['receipt']['photo_transport']['note']
-    assert client.post('/api/runs/%s/approve' % run_id, json={'expected_revision': 1}).status_code == 200
+    assert body['check']['photo_state'] == 'checked'
+    assert body['receipt']['photo_status']['state'] == 'checked'
+    assert body['receipt']['photo_status']['label'] == 'detected'
+    assert body['receipt']['revision'] == 1
+    approved = client.post('/api/runs/%s/approve' % run_id, json={'expected_revision': 1})
+    assert approved.status_code == 200, approved.text
+    binding = approved.json().get('approval_binding')
+    assert isinstance(binding, dict) and len(binding.get('digest', '')) == 64
     exported = client.post('/api/runs/%s/export' % run_id, json={'expected_revision': 1})
     assert exported.status_code == 200, exported.text
     payload = exported.json()
     assert payload['exported_revision'] == 1
+    assert payload['photo_status']['state'] == 'checked'
+    assert payload['photo_status']['label'] == 'detected'
     _assert_clean(payload)
+
+
+def test_transport_error_records_unchecked_without_blocking_text_approval(client, monkeypatch):
+    monkeypatch.setenv('META_API_KEY', 'offline-fixture')
+    monkeypatch.setenv('LAUNCHCREW_PHOTO_SAM_ENABLED', 'true')
+    run_id = _make_run(client)
+    raw = _png_bytes()
+    monkeypatch.setenv('LAUNCHCREW_PHOTO_APPROVED_DIGESTS', hashlib.sha256(raw).hexdigest())
+    _grant(1)
+    calls = []
+
+    def failing_files(request, timeout):
+        calls.append(request.full_url)
+        raise OSError('files unreachable')
+
+    with patch('backend.sam.urlopen', side_effect=failing_files):
+        response = client.post('/api/runs/%s/photo-check' % run_id,
+                               json={'image_data_uri': _data_uri(raw), 'expected_revision': 0})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body['check']['label'] == 'unchecked'
+    assert body['check']['photo_state'] == 'unchecked'
+    assert body['receipt']['photo_status']['state'] == 'unchecked'
+    assert body['receipt']['revision'] == 1
+    assert 'unchecked' in body['receipt']['photo_status']['reason']
+    _assert_clean(body['receipt'])
+    assert client.post('/api/runs/%s/approve' % run_id, json={'expected_revision': 1}).status_code == 200
+    exported = client.post('/api/runs/%s/export' % run_id, json={'expected_revision': 1})
+    assert exported.status_code == 200, exported.text
+    assert exported.json()['exported_revision'] == 1
+
+
+def test_detected_crop_comes_from_original_pixels_with_clean_payload(client, monkeypatch):
+    run_id, body, _, _ = _paid_check(client, monkeypatch, CLEAR_TAG)
+    preview = body['preview']
+    assert preview is not None and preview['label'] == 'detected'
+    crop = preview['crop']
+    assert crop['x1'] == 3 and crop['y1'] == 3 and crop['x2'] == 21 and crop['y2'] == 13
+    assert preview['frame_w'] == 32 and preview['frame_h'] == 16
+    assert 0 <= crop['x1'] <= crop['x2'] < preview['frame_w']
+    assert 0 <= crop['y1'] <= crop['y2'] < preview['frame_h']
+    _assert_clean(body['receipt'])
 
 
 def test_text_edit_after_detected_requires_fresh_check(client, monkeypatch):
@@ -241,7 +300,7 @@ def test_remove_photo_clears_and_requires_reapprove(client):
     assert removed.json() == {'revision': 2, 'photo_state': 'no_photo', 'approval_state': 'pending_approval'}
     reread = client.get('/api/runs/%s' % run_id).json()
     assert reread['photo_status']['state'] == 'no_photo'
-    assert [entry.get('photo_event') for entry in reread['revision_history'][-2:]] == ['photo_checked', 'photo_removed']
+    assert [entry.get('photo_event') for entry in reread['revision_history'][-2:]] == ['photo_unchecked', 'photo_removed']
     assert reread['revision_history'][:len(history_before)] == history_before
     # The shared Receipt DTO serializes an absent human draft as null; the
     # meaningful claim is that removal fabricates no human draft content.

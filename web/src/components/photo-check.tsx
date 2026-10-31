@@ -69,6 +69,9 @@ export function photoStatusCopy(stored: StoredPhoto | null, currentRevision: num
   const revNote = stale
     ? ` Stored at revision ${stored.revision}; the pack is now at revision ${currentRevision}, so this summary is superseded.`
     : ` Stored at revision ${stored.revision}.`;
+  if (stored.state === 'unchecked') {
+    return `Photo unchecked: ${stored.reason || 'not_run'}.${revNote} Text-only approval stays available; only a completed segmentation check binds photo state into approval. Fresh human approval is still required before export.`;
+  }
   if (stored.state === 'requested_unchecked') {
     return `Photo checked without segmentation: ${stored.reason || 'not_run'}.${revNote} Approval and export stay refused until a detected check plus fresh human approval.`;
   }
@@ -118,6 +121,12 @@ export function selectionPhotoCopy(
       return {
         caption: 'Checked: these current pixels passed the size and edge gates on this revision. They are not approved and not exportable until a fresh human approval passes.',
         alt: 'Selected photo preview (checked on this revision, detected)',
+      };
+    }
+    if (stored.state === 'unchecked') {
+      return {
+        caption: `Unchecked: these current pixels were recorded without segmentation on this revision (${stored.reason || 'not_run'}). Text-only approval stays available; only a completed check binds photo state into approval.`,
+        alt: 'Selected photo preview (unchecked on this revision, segmentation did not run)',
       };
     }
     if (stored.state === 'requested_unchecked') {
@@ -186,6 +195,7 @@ export function selectionPhotoCopy(
 /** Null when the pack may proceed; otherwise the honest photo reason. */
 export function photoBlocksApproval(stored: StoredPhoto | null, currentRevision: number): string | null {
   if (!stored || stored.state === 'no_photo') return null;
+  if (stored.state === 'unchecked') return null;
   if (stored.state === 'checked' && stored.label === 'detected' && stored.revision === currentRevision) return null;
   if (stored.state === 'requested_unchecked' || stored.state === 'check_requested') {
     return stored.reason || stored.state;
@@ -377,7 +387,10 @@ export function PhotoCheckPanel(props: PhotoPanelProps) {
                   Selected {props.selectionName}{props.selectionMeta ? ` (${props.selectionMeta})` : ''}. {selection.caption}
                 </p>
                 {props.previewUrl && (
-                  <img className="photo-preview-img" src={props.previewUrl} alt={selection.alt} />
+                  <figure>
+                    <figcaption className="hint">Before: original upload pixels.</figcaption>
+                    <img className="photo-preview-img" src={props.previewUrl} alt={selection.alt} />
+                  </figure>
                 )}
               </div>
             );
@@ -411,7 +424,7 @@ export function PhotoCheckPanel(props: PhotoPanelProps) {
           {showCropOffer && (
             <div>
               <p role="status">
-                Crop suggestion uses only existing pixels. The original file is preserved.
+                After: corrected crop taken from the original pixels. Crop suggestion uses only existing pixels. The original file is preserved.
               </p>
               <canvas
                 ref={props.cropCanvasRef}
@@ -694,7 +707,9 @@ export function PhotoCheck({ receipt, onReceipt }: { receipt: Receipt; onReceipt
       setCropHint(null);
       const check = body.check;
       if (check.method === 'not_run') {
-        setNotice('SAM not configured, photo unchecked. The pack stays unapproved and unexported; approval and export are refused (422) with the photo reason.');
+        setNotice('SAM not configured, photo unchecked. Text-only approval stays available; only a completed segmentation check binds photo state into approval. Fresh human approval is still required before export.');
+      } else if (check.label === 'unchecked') {
+        setNotice('Photo check could not segment and is recorded as unchecked. Text-only approval stays available; fresh human approval is still required before export.');
       } else if (check.label === 'detected') {
         setNotice('Photo check detected one in-frame candidate. Fresh human approval is still required before export.');
       } else {

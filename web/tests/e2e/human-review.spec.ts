@@ -187,7 +187,7 @@ function syntheticPng(width: number, height: number): Buffer {
   ]);
 }
 
-test('keyless photo check leaves pack unapproved and unexported', async ({ page, request }) => {
+test('keyless photo check records unchecked but allows text approval', async ({ page, request }) => {
   test.setTimeout(180_000);
   // Narrow viewport with an actual large decoded photo: the preview must stay
   // bounded by CSS while the bytes stay untouched. Never a personal photo.
@@ -226,23 +226,23 @@ test('keyless photo check leaves pack unapproved and unexported', async ({ page,
   const checkButton = page.getByRole('button', { name: 'Check photo', exact: true });
   await expect(checkButton).toBeEnabled();
   await checkButton.click();
-  await expect(page.getByText('SAM not configured, photo unchecked. The pack stays unapproved and unexported;')).toBeVisible();
+  await expect(page.getByText('SAM not configured, photo unchecked. Text-only approval stays available;')).toBeVisible();
   await expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: '../.local/keyless-375-proof.png' });
 
   const receipt = (await (await request.get(`/api/runs/${runId}/receipt`)).json()) as {
-    revision: number; photo_status: { state: string };
+    revision: number; photo_status: { state: string; label: string };
   };
-  expect(receipt.photo_status.state).toBe('requested_unchecked');
+  expect(receipt.photo_status.state).toBe('unchecked');
+  expect(receipt.photo_status.label).toBe('unchecked');
   const checkedRevision = receipt.revision;
 
-  // Approval and export are actually refused with the photo reason.
+  // Text-only approval and export succeed on the explicit unchecked verdict.
   const approve = await request.post(`/api/runs/${runId}/approve`, { data: { expected_revision: checkedRevision } });
-  expect(approve.status()).toBe(422);
-  expect(JSON.stringify(await approve.json())).toContain('Photo');
+  expect(approve.status()).toBe(200);
   const exported = await request.post(`/api/runs/${runId}/export`, { data: { expected_revision: checkedRevision } });
-  expect(exported.status()).toBe(422);
-  expect(JSON.stringify(await exported.json())).toContain('Photo');
+  expect(exported.status()).toBe(200);
+  expect((await exported.json()).exported_revision).toBe(checkedRevision);
 
   // Explicit removal returns to the text-only path; fresh approval and export are allowed.
   await page.getByRole('button', { name: 'Remove photo', exact: true }).click();

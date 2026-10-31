@@ -80,6 +80,15 @@ def test_present_malformed_and_unknown_states_fail_closed():
 
 def test_all_gate_paths():
     assert photo_review.photo_block_reason(_receipt(photo_status={
+        'state': 'unchecked', 'label': 'unchecked', 'reason': 'not_run: SAM not configured, photo unchecked',
+        'policy_version': 'photo-geometry/v1', 'revision': 1, 'actor': '', 'checked_at': '',
+    }, revision=1)) is None
+    assert photo_review.photo_block_reason(_receipt(photo_status={
+        'state': 'unchecked', 'label': 'unchecked',
+        'reason': 'delivery_failed: segmentation did not run, photo unchecked',
+        'policy_version': 'photo-geometry/v1', 'revision': 1, 'actor': '', 'checked_at': '',
+    }, revision=1)) is None
+    assert photo_review.photo_block_reason(_receipt(photo_status={
         'state': 'requested_unchecked', 'label': None, 'reason': 'not_run: x',
         'policy_version': 'photo-geometry/v1', 'revision': 1, 'actor': '', 'checked_at': '',
     }, revision=1)) is not None
