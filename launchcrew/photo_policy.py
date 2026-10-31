@@ -8,6 +8,8 @@ cropped raster for its box: origin (0, 0) with positive dims bounded by
 the frame, never required to equal the frame size. The opaque payload is
 never decoded or propagated. No I/O, no assets, stdlib only.
 """
+from __future__ import annotations
+
 from typing import TypedDict
 
 PHOTO_POLICY_VERSION: str = "photo-geometry/v1"
