@@ -35,10 +35,84 @@ export const SEED_CLAIM_HINT = 'Opt-in demo only. Seeds the unsupported claim �
 
 /** Readable supported Checker policy labels with exact enforceable IDs. */
 export const SUPPORTED_CHECKER_POLICIES = [
-  { label: 'Superlatives', veto: 'superlatives', rule: 'Block superlatives', description: 'Block claims containing hype or superlative words from the strict word list.' },
-  { label: 'Price claims', veto: 'price_claims', rule: 'Block price claims', description: 'Block claims containing price values such as $49.' },
-  { label: 'Marketing cliches', veto: 'cliches', rule: 'Block marketing cliches', description: 'Block claims containing generic AI filler buzzwords and marketing cliches.' },
+  { label: 'Superlatives guard', veto: 'superlatives', rule: 'Block superlatives', description: 'Block claims containing hype or superlative words from the strict word list.' },
+  { label: 'Price claims verification', veto: 'price_claims', rule: 'Block price claims', description: 'Block claims containing price values such as $49.' },
+  { label: 'Cliche scrubber', veto: 'cliches', rule: 'Block marketing cliches', description: 'Block claims containing generic AI filler buzzwords and marketing cliches.' },
 ];
+
+/** Human-readable labels for raw policy codes shown on primary surfaces.
+ *  Raw codes stay inspectable in title attributes and receipt JSON. */
+export const POLICY_LABELS: Record<string, string> = {
+  veto_scope: 'Scope and claims guard',
+  price_claims: 'Price claims verification',
+  cliches: 'Cliche scrubber',
+  spec_to_benefit: 'Cliche scrubber',
+  ad_policy: 'Platform ad policy lint',
+  landing_parity: 'Landing page parity check',
+  photo_lint: 'Visual aspect ratio check',
+  superlatives: 'Superlatives guard',
+};
+
+/** Map a raw policy code to its human-readable label. Unknown codes fall
+ *  back to title-cased words so no raw snake_case reaches a primary surface. */
+export function humanPolicyLabel(code: string | null | undefined): string {
+  if (typeof code !== 'string' || !code) return 'Unknown check';
+  if (POLICY_LABELS[code]) return POLICY_LABELS[code];
+  return code.split('_').map(part => (part ? part[0].toUpperCase() + part.slice(1) : part)).join(' ');
+}
+
+/** Human-readable labels for raw status tokens on primary surfaces.
+ *  Raw tokens stay inspectable in title attributes and receipt JSON. */
+export const STATUS_LABELS: Record<string, string> = {
+  candidate_pending_checker: 'Pending Checker verification',
+  pending_approval: 'Pending approval',
+  approved_for_export: 'Approved for export',
+  completed: 'Completed',
+  approved: 'Approved',
+  failed: 'Failed',
+  running: 'Running',
+  needs_revision: 'Needs revision',
+};
+
+/** Map a raw status token to its human-readable label. */
+export function humanStatusLabel(token: string | null | undefined): string {
+  if (typeof token !== 'string' || !token) return 'Unknown status';
+  if (STATUS_LABELS[token]) return STATUS_LABELS[token];
+  return token.split('_').map(part => (part ? part[0].toUpperCase() + part.slice(1) : part)).join(' ');
+}
+
+/** Shorten a long run, memory, or campaign ID for chips and tables.
+ *  The full ID stays available on copy and in receipt JSON. */
+export function shortId(id: string | null | undefined): string {
+  if (typeof id !== 'string' || !id) return 'unavailable';
+  return id.length <= 12 ? id : `${id.slice(0, 8)}...`;
+}
+
+/** True once a receipt carries terminal evidence: a terminal status, an
+ *  export approval, or a saved human revision with a final check. A receipt
+ *  in this state must never display as "running" or "result unconfirmed". */
+export function isTerminalReceipt(receipt: Receipt): boolean {
+  if (receipt.status === 'completed' || receipt.status === 'failed') return true;
+  if (receipt.approval_state === 'approved_for_export') return true;
+  const revision = (receipt as unknown as { revision?: number }).revision ?? 0;
+  if (revision > 0 && currentCheckOf(receipt)) return true;
+  return false;
+}
+
+/** Final display status for a receipt. Terminal receipts immediately show
+ *  their true final state and never lag on "running". */
+export function displayRunStatus(receipt: Receipt): string {
+  if (receipt.status === 'failed') return 'failed';
+  if (isTerminalReceipt(receipt)) {
+    return receipt.approval_state === 'approved_for_export' ? 'approved' : 'completed';
+  }
+  return 'running';
+}
+
+/** True only while the pipeline is still in flight with no terminal receipt. */
+export function isLiveRun(receipt: Receipt): boolean {
+  return !isTerminalReceipt(receipt);
+}
 
 /** Checker policy list composed from shadcn/ui badges. Every exact veto and
  *  rule stays inspectable in the DOM. */
@@ -153,8 +227,8 @@ export function MemoryItemCard({ item }: { item: MemoryItem }) {
   });
   const busy = save.isPending || remove.isPending;
   return <article className="panel queue-card" aria-label={`Memory item: ${item.title}`}>
-    <h3>{item.title}</h3><p>Kind (read-only): {item.kind}</p><p className="run-id">{item.id}</p>
-    {item.source_run_id && <p>Source run: {item.source_run_id}</p>}
+    <h3>{item.title}</h3><p>Kind (read-only): {item.kind}</p><p><RunRef id={item.id} /></p>
+    {item.source_run_id && <p>Source run: <RunRef id={item.source_run_id} /></p>}
     {editing ? <form onSubmit={e => { e.preventDefault(); save.mutate(); }}>
       <label htmlFor={`memory-title-${item.id}`}>Edit title</label><input id={`memory-title-${item.id}`} required minLength={1} maxLength={200} value={title} onChange={e => setTitle(e.target.value)} />
       <label htmlFor={`memory-content-${item.id}`}>Edit content JSON object</label><textarea id={`memory-content-${item.id}`} required rows={5} value={content} onChange={e => setContent(e.target.value)} />
@@ -362,7 +436,7 @@ export function ReplayView({ queue }: { queue: Receipt[] }) {
 }
 
 export function CampaignDayCard({ day, busy, approve, download, markdown, copy }: { day: Day; busy: boolean; approve: () => void; download: () => void; markdown?: () => void; copy?: () => void }) {
-  return <article className="panel queue-card"><h3>Day {day.day}: {day.angle}</h3><p>{day.brief}</p><p><RunRef id={day.run_id} /></p><p className="draft">{day.draft_v2_post ?? ''}</p><p>{day.approval_state} · Status: {day.status} · Final blocked count: {day.checker_v2_blocked_count ?? 'unavailable'}</p><div className="queue-actions">{canApproveDay(day) && <Button onClick={approve} disabled={busy}>Approve for export</Button>}{canExportDay(day) && <><Button onClick={download} disabled={busy}>Export pack</Button>{markdown && <Button variant="outline" onClick={markdown} disabled={busy}>Export Markdown</Button>}{copy && <Button variant="outline" onClick={copy} disabled={busy}>Copy pack</Button>}</>}</div></article>;
+  return <article className="panel queue-card"><h3>Day {day.day}: {day.angle}</h3><p>{day.brief}</p><p><RunRef id={day.run_id} /></p><p className="draft">{day.draft_v2_post ?? ''}</p><p><span title={day.approval_state}>{humanStatusLabel(day.approval_state)}</span> · Status: <span title={day.status}>{humanStatusLabel(displayRunStatus(day as unknown as Receipt))}</span> · Final blocked count: {day.checker_v2_blocked_count ?? 'unavailable'}</p><div className="queue-actions">{canApproveDay(day) && <Button onClick={approve} disabled={busy}>Approve for export</Button>}{canExportDay(day) && <><Button onClick={download} disabled={busy}>Export pack</Button>{markdown && <Button variant="outline" onClick={markdown} disabled={busy}>Export Markdown</Button>}{copy && <Button variant="outline" onClick={copy} disabled={busy}>Copy pack</Button>}</>}</div></article>;
 }
 
 /** Every selectable campaign angle. The last five are the added angles. */
@@ -449,7 +523,7 @@ export function CampaignView({ profiles, profilesPending, profilesError }: { pro
   });
   const error = create.error || campaign.error || weeks.error || approve.error || download.error || markdown.error || copy.error;
   const busyDay = approve.isPending || download.isPending || markdown.isPending || copy.isPending;
-  return <section aria-label="Campaign"><section className="panel"><h2>Campaign Week</h2><p>Nothing publishes automatically. Review and approve each day individually.</p><form onSubmit={e => { e.preventDefault(); if (createBlocked) return; create.mutate(); }}><label htmlFor="campaign-idea">Idea</label><textarea id="campaign-idea" required maxLength={2000} value={idea} onChange={e => setIdea(e.target.value)} />{profilesPending && <p role="status">Loading agents...</p>}{profilesError && <p role="alert">{profilesError}</p>}<label htmlFor="campaign-scout">Scout agent</label><select id="campaign-scout" value={scout} onChange={e => setScout(e.target.value)} disabled={!agentsReady}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</select><label htmlFor="campaign-maker">Maker agent</label><select id="campaign-maker" value={agent} onChange={e => setAgent(e.target.value)} disabled={!agentsReady}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</select><label htmlFor="campaign-checker-agent">Checker agent</label><select id="campaign-checker-agent" value={checkerAgent} onChange={e => setCheckerAgent(e.target.value)} disabled={!agentsReady}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</select><p className="hint">Each agent runs its own stage. Original names and rules are kept in each day receipt.</p><label htmlFor="campaign-checker">Checker profile</label><select id="campaign-checker" value={checkerProfile} onChange={e => setCheckerProfile(e.target.value)}><option>standard</option><option>strict</option></select><SupportedPoliciesHint /><label className="checkbox"><input type="checkbox" checked={seed} onChange={e => setSeed(e.target.checked)} />{SEED_CLAIM_LABEL}</label><p className="hint">Opt-in demo only. Seeds the unsupported claim “best in Texas” on every day so each receipt shows the block and revision. Leave unchecked for a normal week.</p><fieldset><legend>Product facts mode</legend><label className="checkbox"><input type="radio" name="campaign-facts-mode" value="demo" checked={factsMode === 'demo'} onChange={() => pickFactsMode('demo')} />Bundled fictional demo-template mode</label><p className="hint">Omit product_facts entirely. Uses the bundled fictional demo template for all seven days.</p><label className="checkbox"><input type="radio" name="campaign-facts-mode" value="owner" checked={factsMode === 'owner'} onChange={() => pickFactsMode('owner')} />Owner-input mode</label><p className="hint">Send your confirmed facts as the typed product_facts object. Every day brief is built from those confirmed facts. Nothing is confirmed from brief text.</p></fieldset>{factsMode === 'owner' && <FactLibrarySection state={ownerFacts} selection={librarySelection} onSelectionChange={setLibrarySelection} onLoad={(next, snapshot) => { setOwnerFacts(next); setLibrarySelection(snapshot); }} notify={setNotice} fail={(e) => setNotice(e.message)} />}{factsMode === 'owner' && <ProductFactsForm state={ownerFacts} onChange={setOwnerFacts} />}{factsMode === 'owner' && <MissingFactsPrompt missing={missingCore} waived={waiveMissing} onWaive={setWaiveMissing} />}{factsMode === 'owner' && ownerEmpty && <p role="status">Add at least one owner fact or founder note, or use demo-template mode.</p>}{factsMode === 'owner' && ownerErrors.length > 0 && <div role="alert" className="message error"><ul>{ownerErrors.map((text, i) => <li key={i}>{text}</li>)}</ul></div>}<fieldset><legend>Campaign angles (choose exactly 7, one per day in order)</legend><p className="hint">Seven distinct angles are assigned to days 1 to 7 in the order checked here. In owner mode every day brief is built from your confirmed facts. Demo facts stay labeled as demo.</p>{CAMPAIGN_ANGLE_OPTIONS.map(angle => <label className="checkbox" key={angle} htmlFor={`campaign-angle-${angle}`}><input id={`campaign-angle-${angle}`} type="checkbox" checked={selectedAngles.includes(angle)} onChange={() => toggleAngle(angle)} />{angle}</label>)}</fieldset>{!anglesValid && <p role="alert">Select exactly 7 angles (currently {selectedAngles.length}).</p>}<Button type="submit" disabled={create.isPending || !agentsReady || createBlocked}>{create.isPending ? 'Creating week...' : 'Create week'}</Button></form><label htmlFor="campaign-select">Open a campaign</label><select id="campaign-select" value={id} onChange={e => setId(e.target.value)}><option value="">Select a week</option>{weeks.data?.map(week => <option key={week.id} value={week.id}>{week.idea} ({week.id})</option>)}</select></section>{error && <p role="alert">{error.message}</p>}{notice && <p role="status">{notice}</p>}{campaign.isFetching && <p>Refreshing week...</p>}{campaign.data && <section><h2>{campaign.data.idea}</h2><p><RunRef id={campaign.data.id} /></p>{campaign.data.days.map(day => <CampaignDayCard key={day.day} day={day} busy={busyDay} approve={() => approve.mutate({ day: day.day, revision: day.revision ?? 0 })} download={() => download.mutate({ day: day.day, revision: day.revision ?? 0 })} markdown={() => markdown.mutate({ day: day.day, revision: day.revision ?? 0 })} copy={() => copy.mutate({ day: day.day, revision: day.revision ?? 0 })} />)}</section>}</section>;
+  return <section aria-label="Campaign"><section className="panel"><h2>Campaign Week</h2><p>Nothing publishes automatically. Review and approve each day individually.</p><form onSubmit={e => { e.preventDefault(); if (createBlocked) return; create.mutate(); }}><label htmlFor="campaign-idea">Idea</label><textarea id="campaign-idea" required maxLength={2000} value={idea} onChange={e => setIdea(e.target.value)} />{profilesPending && <p role="status">Loading agents...</p>}{profilesError && <p role="alert">{profilesError}</p>}<label htmlFor="campaign-scout">Scout agent</label><select id="campaign-scout" value={scout} onChange={e => setScout(e.target.value)} disabled={!agentsReady}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</select><label htmlFor="campaign-maker">Maker agent</label><select id="campaign-maker" value={agent} onChange={e => setAgent(e.target.value)} disabled={!agentsReady}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</select><label htmlFor="campaign-checker-agent">Checker agent</label><select id="campaign-checker-agent" value={checkerAgent} onChange={e => setCheckerAgent(e.target.value)} disabled={!agentsReady}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</select><p className="hint">Each agent runs its own stage. Original names and rules are kept in each day receipt.</p><label htmlFor="campaign-checker">Checker profile</label><select id="campaign-checker" value={checkerProfile} onChange={e => setCheckerProfile(e.target.value)}><option>standard</option><option>strict</option></select><SupportedPoliciesHint /><label className="checkbox"><input type="checkbox" checked={seed} onChange={e => setSeed(e.target.checked)} />{SEED_CLAIM_LABEL}</label><p className="hint">Opt-in demo only. Seeds the unsupported claim “best in Texas” on every day so each receipt shows the block and revision. Leave unchecked for a normal week.</p><fieldset><legend>Product facts mode</legend><label className="checkbox"><input type="radio" name="campaign-facts-mode" value="demo" checked={factsMode === 'demo'} onChange={() => pickFactsMode('demo')} />Bundled fictional demo-template mode</label><p className="hint">Omit product_facts entirely. Uses the bundled fictional demo template for all seven days.</p><label className="checkbox"><input type="radio" name="campaign-facts-mode" value="owner" checked={factsMode === 'owner'} onChange={() => pickFactsMode('owner')} />Owner-input mode</label><p className="hint">Send your confirmed facts as the typed product_facts object. Every day brief is built from those confirmed facts. Nothing is confirmed from brief text.</p></fieldset>{factsMode === 'owner' && <FactLibrarySection state={ownerFacts} selection={librarySelection} onSelectionChange={setLibrarySelection} onLoad={(next, snapshot) => { setOwnerFacts(next); setLibrarySelection(snapshot); }} notify={setNotice} fail={(e) => setNotice(e.message)} />}{factsMode === 'owner' && <ProductFactsForm state={ownerFacts} onChange={setOwnerFacts} />}{factsMode === 'owner' && <MissingFactsPrompt missing={missingCore} waived={waiveMissing} onWaive={setWaiveMissing} />}{factsMode === 'owner' && ownerEmpty && <p role="status">Add at least one owner fact or founder note, or use demo-template mode.</p>}{factsMode === 'owner' && ownerErrors.length > 0 && <div role="alert" className="message error"><ul>{ownerErrors.map((text, i) => <li key={i}>{text}</li>)}</ul></div>}<fieldset><legend>Campaign angles (choose exactly 7, one per day in order)</legend><p className="hint">Seven distinct angles are assigned to days 1 to 7 in the order checked here. In owner mode every day brief is built from your confirmed facts. Demo facts stay labeled as demo.</p>{CAMPAIGN_ANGLE_OPTIONS.map(angle => <label className="checkbox" key={angle} htmlFor={`campaign-angle-${angle}`}><input id={`campaign-angle-${angle}`} type="checkbox" checked={selectedAngles.includes(angle)} onChange={() => toggleAngle(angle)} />{angle}</label>)}</fieldset>{!anglesValid && <p role="alert">Select exactly 7 angles (currently {selectedAngles.length}).</p>}<Button type="submit" disabled={create.isPending || !agentsReady || createBlocked}>{create.isPending ? 'Creating week...' : 'Create week'}</Button></form><label htmlFor="campaign-select">Open a campaign</label><select id="campaign-select" value={id} onChange={e => setId(e.target.value)}><option value="">Select a week</option>{weeks.data?.map(week => <option key={week.id} value={week.id}>{week.idea} ({shortId(week.id)})</option>)}</select></section>{error && <p role="alert">{error.message}</p>}{notice && <p role="status">{notice}</p>}{campaign.isFetching && <p>Refreshing week...</p>}{campaign.data && <section><h2>{campaign.data.idea}</h2><p><RunRef id={campaign.data.id} /></p>{campaign.data.days.map(day => <CampaignDayCard key={day.day} day={day} busy={busyDay} approve={() => approve.mutate({ day: day.day, revision: day.revision ?? 0 })} download={() => download.mutate({ day: day.day, revision: day.revision ?? 0 })} markdown={() => markdown.mutate({ day: day.day, revision: day.revision ?? 0 })} copy={() => copy.mutate({ day: day.day, revision: day.revision ?? 0 })} />)}</section>}</section>;
 }
 
 export function currentDraftOf(receipt: Receipt) {
@@ -477,9 +551,23 @@ export function revisionStatusOf(receipt: Receipt) {
   return receipt.approval_state === 'approved_for_export' ? 'approved' : 'pending approval';
 }
 
-/** Compact primary run reference. Full ID stays in the DOM and on hover. */
+/** Compact primary run reference. The shortened ID is shown while the full ID
+ *  stays in the DOM on hover and on click-to-copy. */
 export function RunRef({ id, className }: { id: string; className?: string }) {
-  return <span className={`run-id compact${className ? ` ${className}` : ''}`} title={id}>{id}</span>;
+  const [copied, setCopied] = useState(false);
+  return <span className={`run-id compact${className ? ` ${className}` : ''}`} title={id} data-full-id={id}>
+    {shortId(id)}
+    <button
+      type="button"
+      className="copy-id"
+      title={`Copy full ID ${id}`}
+      aria-label={`Copy full run ID ${id}`}
+      onClick={async () => {
+        const ok = await copyTextToClipboard(id);
+        setCopied(ok);
+      }}
+    >{copied ? 'Copied ID' : 'Copy ID'}</button>
+  </span>;
 }
 
 const PACK_STARTED_PREFIX = 'Pack started';
@@ -727,6 +815,12 @@ export function ChannelVariantsSection({ runId, revision }: { runId: string; rev
   const client = useQueryClient();
   const [copied, setCopied] = useState<string | null>(null);
   const [actionError, setActionError] = useState('');
+  // A new pack revision starts with a clean slate: no stale failure from
+  // another run or revision may display beside the fresh bundle.
+  useEffect(() => {
+    setActionError('');
+    setCopied(null);
+  }, [runId, revision]);
   const variants = useQuery({
     queryKey: ['channel-variants', runId],
     queryFn: () => unwrap(api.GET('/api/runs/{run_id}/channel-variants', { params: { path: { run_id: runId } } })),
@@ -778,7 +872,9 @@ export function ChannelVariantsSection({ runId, revision }: { runId: string; rev
       {variants.isPending && <p>Loading checked variants...</p>}
       {variants.error && <Alert variant="destructive"><AlertTitle>Variants unavailable</AlertTitle><AlertDescription>{variants.error.message} Checked variants are unavailable for this revision right now. They unlock after the run completes and you approve the latest revision with a clean final check.</AlertDescription></Alert>}
       {actionError && <Alert variant="destructive"><AlertTitle>Action failed</AlertTitle><AlertDescription>{actionError}</AlertDescription></Alert>}
-      {variants.data && <ChannelVariantsBundleView bundle={variants.data} copied={copied} busyChannel={busy ? (approve.variables ?? copy.variables) : undefined} locked={stale} onApprove={channel => { setActionError(''); setCopied(null); approve.mutate(channel); }} onCopy={channel => { setActionError(''); setCopied(null); copy.mutate(channel); }} />}
+      {stale
+        ? (!variants.isPending && <p role="status">Loading the fresh bundle for the current revision; stale variant text is hidden until it lands.</p>)
+        : (variants.data && <ChannelVariantsBundleView bundle={variants.data} copied={copied} busyChannel={busy ? (approve.variables ?? copy.variables) : undefined} locked={stale} onApprove={channel => { setActionError(''); setCopied(null); approve.mutate(channel); }} onCopy={channel => { setActionError(''); setCopied(null); copy.mutate(channel); }} />)}
     </CardContent>
   </Card>;
 }
@@ -821,6 +917,11 @@ function adPolicyOf(variant: ChannelVariant): { passed: boolean | null; hits: Ad
   return { passed, hits };
 }
 
+/** Human-readable ad policy hit category with the raw code inspectable. */
+export function adPolicyHitLabel(category: string): string {
+  return humanPolicyLabel(category);
+}
+
 function ChannelVariantCard({ label, variant, approval, copied, busy, locked, onApprove, onCopy }: { label: string; variant: ChannelVariant | undefined; approval: ChannelVariantApproval | null; copied: boolean; busy: boolean; locked: boolean; onApprove: () => void; onCopy: () => void }) {
   if (!variant) return null;
   const valid = variant.content_valid && !!variant.text;
@@ -832,12 +933,12 @@ function ChannelVariantCard({ label, variant, approval, copied, busy, locked, on
   return <Card aria-label={`${label} variant`}>
     <CardHeader>
       <CardTitle>{label}</CardTitle>
-      <CardDescription>{valid ? (locked ? 'Locked while the pack changed' : approvedCurrent ? 'Human-approved exact text' : 'Verified, awaiting your approval') : 'Needs revision'} · {variant.status || 'unknown status'} · {variant.char_count} chars{label === 'X' ? ' / 280' : ''}</CardDescription>
+      <CardDescription>{valid ? (locked ? 'Locked while the pack changed' : approvedCurrent ? 'Human-approved exact text' : 'Verified, awaiting your approval') : 'Needs revision'} · <span title={variant.status || 'unknown status'}>{humanStatusLabel(variant.status)}</span> · {variant.char_count} chars{label === 'X' ? ' / 280' : ''}</CardDescription>
     </CardHeader>
     <CardContent>
-      <p><Badge variant="outline">{variant.status || 'unknown status'}</Badge></p>
+      <p><Badge variant="outline" title={variant.status || 'unknown status'}>{humanStatusLabel(variant.status)}</Badge></p>
       {adFlagged
-        ? <Alert variant="destructive" aria-label={`Ad policy warning for ${label}`}><AlertTitle><Badge variant="destructive">Ad Policy: {adPolicy.hits.length} violation{adPolicy.hits.length === 1 ? '' : 's'}</Badge></AlertTitle><AlertDescription><ul className="scout-list">{adPolicy.hits.map((hit, i) => <li key={i} className="scout-fact"><div className="scout-row"><strong>{hit.category}</strong><span className="tag">{hit.match}</span></div><p className="hint">{hit.reason}</p></li>)}</ul></AlertDescription></Alert>
+        ? <Alert variant="destructive" aria-label={`Ad policy warning for ${label}`}><AlertTitle><Badge variant="destructive">Ad Policy: {adPolicy.hits.length} violation{adPolicy.hits.length === 1 ? '' : 's'}</Badge></AlertTitle><AlertDescription><ul className="scout-list">{adPolicy.hits.map((hit, i) => <li key={i} className="scout-fact"><div className="scout-row"><strong title={hit.category}>{adPolicyHitLabel(hit.category)}</strong><span className="tag">{hit.match}</span></div><p className="hint">{hit.reason}</p></li>)}</ul></AlertDescription></Alert>
         : adPolicy.passed === true
           ? <p><Badge variant="success">Ad Shield: Compliant</Badge></p>
           : null}
@@ -1032,7 +1133,8 @@ export function RunProgressSection({ runId, receipt }: { runId: string; receipt:
     queryFn: () => unwrap(api.GET('/api/runs/{run_id}/steps', { params: { path: { run_id: runId } } })),
     refetchInterval: 2000,
   });
-  const running = receipt.status === 'running';
+  // Terminal receipts never render as running: the final receipt decides.
+  const running = isLiveRun(receipt);
   const stages = describeStageProgress((steps.data?.steps ?? []) as StoredStep[]);
   return <>
     {steps.isPending && <p>Loading stage receipts...</p>}

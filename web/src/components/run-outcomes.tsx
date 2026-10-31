@@ -299,8 +299,8 @@ export function RunOutcomesSection({ runId, label }: { runId: string; label: str
   return (
     <section className="panel" aria-label={`Owner-reported outcomes for ${label}`}>
       <p className="eyebrow">OWNER-REPORTED OUTCOMES</p>
-      <h2>
-        {label}: {runId}
+      <h2 title={runId}>
+        {label}: {runId.length <= 12 ? runId : `${runId.slice(0, 8)}...`}
       </h2>
       <p className="hint">
         <span className="badge approved">{OUTCOME_SELF_REPORT}</span> {OUTCOME_PROVENANCE_NOTE}
