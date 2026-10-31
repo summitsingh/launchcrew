@@ -260,6 +260,13 @@
       "CalendarSlotOut": {
         "additionalProperties": false,
         "properties": {
+          "approved_channels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Approved Channels",
+            "type": "array"
+          },
           "campaign_day": {
             "anyOf": [
               {
@@ -294,6 +301,11 @@
             "title": "Pillar",
             "type": "string"
           },
+          "planned_time": {
+            "default": "09:00",
+            "title": "Planned Time",
+            "type": "string"
+          },
           "run_id": {
             "anyOf": [
               {
@@ -304,6 +316,18 @@
               }
             ],
             "title": "Run Id"
+          },
+          "schedule_state": {
+            "default": "draft",
+            "title": "Schedule State",
+            "type": "string"
+          },
+          "selected_channels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Selected Channels",
+            "type": "array"
           },
           "slot_date": {
             "title": "Slot Date",
@@ -5365,6 +5389,38 @@
         "title": "RunStepsOut",
         "type": "object"
       },
+      "ScheduleDefaultsIn": {
+        "additionalProperties": false,
+        "properties": {
+          "defaults": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Defaults",
+            "type": "object"
+          }
+        },
+        "required": [
+          "defaults"
+        ],
+        "title": "ScheduleDefaultsIn",
+        "type": "object"
+      },
+      "ScheduleDefaultsOut": {
+        "additionalProperties": true,
+        "properties": {
+          "defaults": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "default": {},
+            "title": "Defaults",
+            "type": "object"
+          }
+        },
+        "title": "ScheduleDefaultsOut",
+        "type": "object"
+      },
       "ScoutFact": {
         "additionalProperties": true,
         "properties": {
@@ -5452,6 +5508,97 @@
           }
         },
         "title": "ScoutSection",
+        "type": "object"
+      },
+      "SlotChannelsApproveIn": {
+        "additionalProperties": false,
+        "properties": {
+          "channels": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Channels",
+            "type": "array"
+          },
+          "expected_revision": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Revision"
+          }
+        },
+        "required": [
+          "channels"
+        ],
+        "title": "SlotChannelsApproveIn",
+        "type": "object"
+      },
+      "SlotScheduleIn": {
+        "additionalProperties": false,
+        "properties": {
+          "approved_channels": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved Channels"
+          },
+          "planned_date": {
+            "anyOf": [
+              {
+                "maxLength": 10,
+                "minLength": 10,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Planned Date"
+          },
+          "planned_time": {
+            "anyOf": [
+              {
+                "maxLength": 5,
+                "minLength": 5,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Planned Time"
+          },
+          "selected_channels": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected Channels"
+          }
+        },
+        "title": "SlotScheduleIn",
         "type": "object"
       },
       "StructuredImportIn": {
@@ -5740,6 +5887,61 @@
           }
         },
         "title": "TrendScreenIn",
+        "type": "object"
+      },
+      "ValidateReadyOut": {
+        "additionalProperties": true,
+        "properties": {
+          "checks": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "default": {},
+            "title": "Checks",
+            "type": "object"
+          },
+          "details": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Details",
+            "type": "array"
+          },
+          "failing_conditions": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Failing Conditions",
+            "type": "array"
+          },
+          "format_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Format Reason"
+          },
+          "ready_eligible": {
+            "default": false,
+            "title": "Ready Eligible",
+            "type": "boolean"
+          },
+          "unapproved_channels": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Unapproved Channels",
+            "type": "array"
+          }
+        },
+        "title": "ValidateReadyOut",
         "type": "object"
       },
       "ValidationError": {
@@ -6412,6 +6614,79 @@
         "summary": "Place Campaign On Calendar"
       }
     },
+    "/api/calendar/schedule-defaults": {
+      "get": {
+        "description": "Owner daily default planned times per slot type (planning only).",
+        "operationId": "get_schedule_defaults_api_calendar_schedule_defaults_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleDefaultsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Schedule Defaults"
+      },
+      "put": {
+        "description": "Set owner daily default planned times per slot type (planning only).",
+        "operationId": "put_schedule_defaults_api_calendar_schedule_defaults_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScheduleDefaultsIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduleDefaultsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Schedule Defaults"
+      }
+    },
+    "/api/calendar/schedule-export": {
+      "get": {
+        "description": "Export the validated schedule JSON hand-off (planning only).\n\nLists only Ready slots (marked Ready with every gate condition\nstill passing) with channel variants, times, and pack references.\nNon-Ready slots are excluded by name with their exact reasons.\nNothing is submitted anywhere; no publish, post, or send occurs.",
+        "operationId": "export_validated_schedule_api_calendar_schedule_export_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Export Validated Schedule"
+      }
+    },
     "/api/calendar/slots": {
       "get": {
         "operationId": "list_calendar_slots_api_calendar_slots_get",
@@ -6544,6 +6819,186 @@
           }
         },
         "summary": "Delete Calendar Slot"
+      }
+    },
+    "/api/calendar/slots/{slot_id}/approve-channels": {
+      "post": {
+        "description": "Approve exact channel variant texts for one slot through its run.\n\nEach named channel is human-approved on the linked run receipt\n(exact text, current revision, current pack binding); the slot\nmirrors the approvals. Pack approval and the exportable gate stay\nrequired with no override.",
+        "operationId": "approve_slot_channels_api_calendar_slots__slot_id__approve_channels_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slot_id",
+            "required": true,
+            "schema": {
+              "title": "Slot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SlotChannelsApproveIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CalendarSlotOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Approve Slot Channels"
+      }
+    },
+    "/api/calendar/slots/{slot_id}/mark-ready": {
+      "post": {
+        "description": "Mark one slot Ready only when all three gate conditions pass.\n\nNo override: any failing condition returns 409 naming each\nfailing condition instead of marking the slot Ready.",
+        "operationId": "mark_slot_ready_api_calendar_slots__slot_id__mark_ready_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slot_id",
+            "required": true,
+            "schema": {
+              "title": "Slot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CalendarSlotOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Mark Slot Ready"
+      }
+    },
+    "/api/calendar/slots/{slot_id}/schedule": {
+      "patch": {
+        "description": "Edit planning fields on one slot: date, time, channel selection.\n\nPlanning only; it never publishes. Changing the date, time, or\nchannel selection resets a Ready slot to draft for revalidation.",
+        "operationId": "update_slot_schedule_api_calendar_slots__slot_id__schedule_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slot_id",
+            "required": true,
+            "schema": {
+              "title": "Slot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SlotScheduleIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CalendarSlotOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Slot Schedule"
+      }
+    },
+    "/api/calendar/slots/{slot_id}/validate-ready": {
+      "get": {
+        "description": "Validate gate: name exactly which Ready conditions fail, if any.",
+        "operationId": "validate_slot_ready_api_calendar_slots__slot_id__validate_ready_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slot_id",
+            "required": true,
+            "schema": {
+              "title": "Slot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidateReadyOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Validate Slot Ready"
       }
     },
     "/api/campaigns": {

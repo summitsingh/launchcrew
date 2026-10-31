@@ -11,6 +11,26 @@ export type CalendarMode = 'week' | 'month';
 
 export const SLOT_TYPES = ['feed_post', 'story', 'reel'] as const;
 export const SLOT_STATUSES = ['drafted', 'checked', 'approved', 'exported', 'verified'] as const;
+export const SCHEDULE_CHANNELS = ['x', 'linkedin', 'instagram', 'email', 'facebook', 'tiktok', 'shopify'] as const;
+
+export type GateEvaluation = {
+  ready_eligible?: boolean;
+  failing_conditions?: string[];
+  checks?: { pack_approved?: boolean; format_passed?: boolean; variants_approved?: boolean };
+  details?: string[];
+  unapproved_channels?: string[];
+  format_reason?: string | null;
+};
+
+/** Validate-gate checklist rows: one row per mandatory condition, no override. */
+export function gateChecklistRows(evaluation: GateEvaluation | undefined): { code: string; label: string; passed: boolean }[] {
+  const checks = evaluation?.checks ?? {};
+  return [
+    { code: 'pack_not_approved', label: 'Pack is approved', passed: checks.pack_approved === true },
+    { code: 'format_check_failed', label: 'Format check passed', passed: checks.format_passed === true },
+    { code: 'unapproved_channel_variants', label: 'Channel variants approved', passed: checks.variants_approved === true },
+  ];
+}
 
 export function toISODate(value: Date): string {
   const year = value.getFullYear();
@@ -73,7 +93,119 @@ function SlotCard({ slot }: { slot: Slot }) {
     <p><strong>{slot.slot_type}</strong> <StatusBadge status={slot.status} /></p>
     <p className="hint">Pillar: {slot.pillar} · Format: {slot.format}</p>
     <p className="hint">{slot.run_id ? `Run ${slot.run_id}` : 'Unlinked slot'}{slot.campaign_id ? ` · Campaign ${slot.campaign_id} day ${slot.campaign_day ?? ''}`.trimEnd() : ''}</p>
+    <SlotScheduleCard slot={slot} />
   </article>;
+}
+
+export function ScheduleDefaultsPanel() {
+  const client = useQueryClient();
+  const [times, setTimes] = useState<Record<string, string>>({});
+  const [notice, setNotice] = useState('');
+  const defaults = useQuery({ queryKey: ['schedule-defaults'], queryFn: () => unwrap(api.GET('/api/calendar/schedule-defaults')) });
+  const saved = (defaults.data as { defaults?: Record<string, string> } | undefined)?.defaults ?? {};
+  const save = useMutation({
+    mutationFn: () => {
+      const body: Record<string, string> = {};
+      for (const slotType of SLOT_TYPES) body[slotType] = times[slotType] ?? saved[slotType] ?? '';
+      return unwrap(api.PUT('/api/calendar/schedule-defaults', { body: { defaults: body } }));
+    },
+    onSuccess: () => { setNotice('Defaults saved.'); setTimes({}); client.invalidateQueries({ queryKey: ['schedule-defaults'] }); client.invalidateQueries({ queryKey: ['calendar-slots'] }); },
+    onError: (error: Error) => setNotice(error.message),
+  });
+  return <section className="panel" data-testid="schedule-defaults-panel" aria-label="Schedule defaults">
+    <h2>Daily default times</h2>
+    <p className="hint">Planning only. New slots start at the daily default for their type.</p>
+    {SLOT_TYPES.map(slotType => <p key={slotType}>
+      <label htmlFor={`schedule-default-${slotType}`}>{slotType} default</label>
+      <input id={`schedule-default-${slotType}`} type="time" value={times[slotType] ?? saved[slotType] ?? ''} onChange={e => setTimes(prev => ({ ...prev, [slotType]: e.target.value }))} />
+    </p>)}
+    <div className="queue-actions">
+      <Button onClick={() => save.mutate()} disabled={save.isPending}>{save.isPending ? 'Saving...' : 'Save defaults'}</Button>
+    </div>
+    {notice && <p role="status">{notice}</p>}
+  </section>;
+}
+
+export function SlotScheduleCard({ slot }: { slot: Slot }) {
+  const client = useQueryClient();
+  const [notice, setNotice] = useState('');
+  const [plannedTime, setPlannedTime] = useState(slot.planned_time ?? '09:00');
+  const [selected, setSelected] = useState<string[]>(slot.selected_channels ?? []);
+  const gate = useQuery({
+    queryKey: ['slot-gate', slot.id],
+    queryFn: () => unwrap(api.GET('/api/calendar/slots/{slot_id}/validate-ready', { params: { path: { slot_id: slot.id } } })),
+  });
+  const evaluation = gate.data as GateEvaluation | undefined;
+  const rows = gateChecklistRows(evaluation);
+  const refresh = () => { client.invalidateQueries({ queryKey: ['calendar-slots'] }); client.invalidateQueries({ queryKey: ['slot-gate', slot.id] }); };
+  const saveSchedule = useMutation({
+    mutationFn: () => unwrap(api.PATCH('/api/calendar/slots/{slot_id}/schedule', { params: { path: { slot_id: slot.id } }, body: { planned_time: plannedTime, selected_channels: selected } })),
+    onSuccess: () => { setNotice('Schedule saved.'); refresh(); },
+    onError: (error: Error) => setNotice(error.message),
+  });
+  const approveChannel = useMutation({
+    mutationFn: (channel: string) => unwrap(api.POST('/api/calendar/slots/{slot_id}/approve-channels', { params: { path: { slot_id: slot.id } }, body: { channels: [channel] } })),
+    onSuccess: () => { setNotice('Channel variant approved.'); refresh(); },
+    onError: (error: Error) => setNotice(error.message),
+  });
+  const markReady = useMutation({
+    mutationFn: () => unwrap(api.POST('/api/calendar/slots/{slot_id}/mark-ready', { params: { path: { slot_id: slot.id } } })),
+    onSuccess: () => { setNotice('Slot marked Ready.'); refresh(); },
+    onError: (error: Error) => setNotice(error.message),
+  });
+  const toggleChannel = (channel: string) => setSelected(prev => prev.includes(channel) ? prev.filter(entry => entry !== channel) : [...prev, channel]);
+  return <div className="queue-card" data-slot-schedule={slot.id}>
+    <p className="hint">Planned at {slot.planned_time ?? '09:00'} · {slot.schedule_state ?? 'draft'}</p>
+    <p>
+      <label htmlFor={`slot-time-${slot.id}`}>Planned time</label>
+      <input id={`slot-time-${slot.id}`} type="time" value={plannedTime} onChange={e => setPlannedTime(e.target.value)} />
+    </p>
+    <fieldset>
+      <legend>Channels</legend>
+      {SCHEDULE_CHANNELS.map(channel => <p key={channel}>
+        <label>
+          <input type="checkbox" checked={selected.includes(channel)} onChange={() => toggleChannel(channel)} />
+          {channel}
+        </label>
+        <Button variant="outline" onClick={() => approveChannel.mutate(channel)} disabled={approveChannel.isPending}>Approve {channel}</Button>
+      </p>)}
+    </fieldset>
+    <div className="queue-actions">
+      <Button variant="outline" onClick={() => saveSchedule.mutate()} disabled={saveSchedule.isPending}>{saveSchedule.isPending ? 'Saving...' : 'Save schedule'}</Button>
+    </div>
+    <div data-testid="slot-validate-checklist" aria-label="Validate gate">
+      <p><strong>Validate gate</strong> (no override)</p>
+      {gate.isPending && <p className="hint">Checking validate gate...</p>}
+      {gate.error && <p role="alert">{gate.error.message}</p>}
+      {evaluation && <ul>
+        {rows.map(row => <li key={row.code}>{row.passed ? 'Pass' : 'Fail'}: {row.label} ({row.code})</li>)}
+        {(evaluation.details ?? []).map(detail => <li key={detail}>{detail}</li>)}
+      </ul>}
+    </div>
+    <div className="queue-actions">
+      <Button data-testid="slot-mark-ready-btn" data-slot-id={slot.id} onClick={() => markReady.mutate()} disabled={markReady.isPending}>{markReady.isPending ? 'Marking...' : 'Mark Ready'}</Button>
+    </div>
+    {notice && <p role="status">{notice}</p>}
+  </div>;
+}
+
+export function ScheduleExportPanel() {
+  const [document, setDocument] = useState<{ ready_slots?: unknown[] } | null>(null);
+  const [notice, setNotice] = useState('');
+  const runExport = useMutation({
+    mutationFn: async () => (await unwrap(api.GET('/api/calendar/schedule-export'))) as { ready_slots?: unknown[] },
+    onSuccess: (doc: { ready_slots?: unknown[] }) => { setDocument(doc); setNotice(`Exported ${(doc.ready_slots ?? []).length} ready slots. Nothing was published.`); },
+    onError: (error: Error) => setNotice(error.message),
+  });
+  return <section className="panel" aria-label="Schedule export">
+    <h2>Validated schedule export</h2>
+    <p className="hint">Planning only. The JSON hand-off lists Ready slots; nothing is submitted anywhere.</p>
+    <div className="queue-actions">
+      <Button data-testid="calendar-export-schedule-btn" onClick={() => runExport.mutate()} disabled={runExport.isPending}>{runExport.isPending ? 'Exporting...' : 'Export validated schedule JSON'}</Button>
+    </div>
+    {notice && <p role="status">{notice}</p>}
+    <pre data-testid="calendar-schedule-export-json">{document ? JSON.stringify(document, null, 2) : 'No export yet.'}</pre>
+  </section>;
 }
 
 function EmptySlotGap({ slotType, slotDate }: { slotType: string; slotDate: string }) {
@@ -163,6 +295,8 @@ export function CalendarView() {
     {slots.isPending && <p>Loading slots...</p>}
     {slots.error && <p role="alert">{slots.error.message}</p>}
     {days.map(slotDate => <DayCell key={slotDate} slotDate={slotDate} slots={grouped.get(slotDate) ?? []} />)}
+    <ScheduleDefaultsPanel />
+    <ScheduleExportPanel />
     <AddSlotFromRun />
     <FormatLibraryPanel
       formats={(formats.data ?? []) as { format: string; label: string; rule: string }[]}

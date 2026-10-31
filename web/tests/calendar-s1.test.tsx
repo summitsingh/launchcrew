@@ -7,7 +7,7 @@ import type { components } from '../src/lib/schema';
 type Slot = components['schemas']['CalendarSlotOut'];
 
 function slot(partial: Partial<Slot> & { id: string; slot_date: string }): Slot {
-  return { slot_type: 'feed_post', pillar: 'product', format: 'feed_post', status: 'drafted', run_id: null, campaign_id: null, campaign_day: null, ...partial };
+  return { slot_type: 'feed_post', pillar: 'product', format: 'feed_post', status: 'drafted', run_id: null, campaign_id: null, campaign_day: null, planned_time: '09:00', schedule_state: 'draft', selected_channels: [], approved_channels: [], ...partial };
 }
 
 function provider(children: React.ReactNode) {

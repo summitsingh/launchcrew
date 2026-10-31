@@ -9,6 +9,13 @@ from datetime import date as date_cls
 
 SLOT_TYPES = ('feed_post', 'story', 'reel')
 SLOT_STATUSES = ('drafted', 'checked', 'approved', 'exported', 'verified')
+SCHEDULE_STATES = ('draft', 'ready')
+
+DEFAULT_SCHEDULE_TIMES = {'feed_post': '09:00', 'story': '13:00', 'reel': '18:00'}
+
+PACK_NOT_APPROVED = 'pack_not_approved'
+FORMAT_CHECK_FAILED = 'format_check_failed'
+UNAPPROVED_CHANNEL_VARIANTS = 'unapproved_channel_variants'
 BUILTIN_PILLARS = ('product', 'lifestyle', 'styling', 'social_proof', 'offer')
 
 _STATUS_RANK = {'drafted': 0, 'checked': 1, 'approved': 2, 'exported': 3, 'verified': 4}
@@ -38,6 +45,42 @@ def normalize_slot_type(value):
     if value not in SLOT_TYPES:
         raise ValueError('slot_type must be one of feed_post, story, reel')
     return value
+
+
+def normalize_planned_time(value):
+    """Owner-set HH:MM daily time; planning only, never publishes."""
+    import re
+    if not isinstance(value, str) or not re.fullmatch(r'[0-9]{2}:[0-9]{2}', value.strip()):
+        raise ValueError('planned_time must be HH:MM')
+    hours, minutes = int(value.strip()[0:2]), int(value.strip()[3:5])
+    if hours > 23 or minutes > 59:
+        raise ValueError('planned_time must be a real time from 00:00 to 23:59')
+    return value.strip()
+
+
+def normalize_channel_list(value, field_name='selected_channels'):
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(field_name + ' must be a list of channel keys')
+    cleaned = []
+    for entry in value:
+        if not isinstance(entry, str) or not entry.strip():
+            raise ValueError(field_name + ' must list nonempty channel keys')
+        key = entry.strip()
+        if key not in cleaned:
+            cleaned.append(key)
+    return cleaned
+
+
+def normalize_schedule_state(value):
+    if value not in SCHEDULE_STATES:
+        raise ValueError("schedule_state must be one of draft, ready")
+    return value
+
+
+def default_time_for(slot_type):
+    return DEFAULT_SCHEDULE_TIMES.get(slot_type, '09:00')
 
 
 def parse_slot_date(value):

@@ -3218,6 +3218,10 @@ class CalendarSlotOut(Strict):
     run_id: str | None = None
     campaign_id: str | None = None
     campaign_day: int | None = None
+    planned_time: str = '09:00'
+    selected_channels: list[str] = Field(default_factory=list)
+    approved_channels: list[str] = Field(default_factory=list)
+    schedule_state: str = 'draft'
 
 
 class CalendarSlotIn(Strict):
@@ -3235,19 +3239,57 @@ class CalendarPlaceIn(Strict):
 
 
 _CALENDAR_PUBLIC_FIELDS = ('id', 'workspace_id', 'slot_date', 'slot_type', 'pillar',
-                           'format', 'status', 'run_id', 'campaign_id', 'campaign_day')
+                           'format', 'status', 'run_id', 'campaign_id', 'campaign_day',
+                           'planned_time', 'selected_channels', 'approved_channels',
+                           'schedule_state')
 _CALENDAR_PUBLIC_SELECT = ('id, workspace_id, slot_date, slot_type, pillar, format, '
-                           'status, run_id, campaign_id, campaign_day')
+                           'status, run_id, campaign_id, campaign_day, planned_time, '
+                           'selected_channels, approved_channels, schedule_state')
+
+_SCHEDULE_DEFAULT_TIMES = {'feed_post': '09:00', 'story': '13:00', 'reel': '18:00'}
 
 
 def _public_calendar_slot(row):
-    posted = row['slot_date']
+    from launchcrew import calendar as calendar_mod
+    if not isinstance(row, dict):
+        try:
+            row = dict(row)
+        except Exception:
+            row = {}
+    posted = row.get('slot_date', '')
     if hasattr(posted, 'isoformat'):
         posted = posted.isoformat()
+    planned = row.get('planned_time')
+    if not planned:
+        try:
+            planned = calendar_mod.default_time_for(row.get('slot_type', ''))
+        except Exception:
+            planned = '09:00'
+    selected = row.get('selected_channels')
+    approved = row.get('approved_channels')
+    state = row.get('schedule_state')
     return {'id': row['id'], 'slot_date': str(posted), 'slot_type': row['slot_type'],
             'pillar': row['pillar'], 'format': row['format'], 'status': row['status'],
             'run_id': row['run_id'], 'campaign_id': row['campaign_id'],
-            'campaign_day': row['campaign_day']}
+            'campaign_day': row['campaign_day'],
+            'planned_time': planned or '09:00',
+            'selected_channels': list(selected) if isinstance(selected, list) else [],
+            'approved_channels': list(approved) if isinstance(approved, list) else [],
+            'schedule_state': state if state in ('draft', 'ready') else 'draft'}
+
+
+def _schedule_defaults(db, workspace_id):
+    from launchcrew import calendar as calendar_mod
+    stored = db.execute(text('SELECT slot_type, planned_time FROM calendar_schedule_defaults WHERE workspace_id=:ws'),
+                        {'ws': workspace_id}).all()
+    defaults = dict(_SCHEDULE_DEFAULT_TIMES)
+    for slot_type, planned_time in stored:
+        try:
+            calendar_mod.normalize_slot_type(slot_type)
+            defaults[slot_type] = calendar_mod.normalize_planned_time(planned_time)
+        except ValueError:
+            continue
+    return defaults
 
 
 def _parse_calendar_date(value, field_name='slot_date'):
@@ -3336,13 +3378,16 @@ def create_calendar_slot(body: CalendarSlotIn, actor: str = Depends(auth.actor))
             if campaign is None:
                 raise HTTPException(404, 'Campaign not found')
         slot_id = 'slot_' + uuid4().hex
+        defaults = _schedule_defaults(db, workspace_id)
         try:
-            db.execute(text('INSERT INTO calendar_slots(id, workspace_id, slot_date, slot_type, pillar, format, status, run_id, campaign_id, campaign_day)'
-                            ' VALUES (:id, :ws, CAST(:slot_date AS date), :slot_type, :pillar, :format, :status, :run_id, :campaign_id, :campaign_day)'),
+            db.execute(text('INSERT INTO calendar_slots(id, workspace_id, slot_date, slot_type, pillar, format, status, run_id, campaign_id, campaign_day, planned_time, selected_channels, approved_channels, schedule_state)'
+                            " VALUES (:id, :ws, CAST(:slot_date AS date), :slot_type, :pillar, :format, :status, :run_id, :campaign_id, :campaign_day, :planned_time, CAST(:selected AS jsonb), CAST(:approved AS jsonb), 'draft')"),
                        {'id': slot_id, 'ws': workspace_id, 'slot_date': slot_date,
                         'slot_type': body.slot_type, 'pillar': pillar, 'format': slot_format,
                         'status': status, 'run_id': body.run_id, 'campaign_id': body.campaign_id,
-                        'campaign_day': body.campaign_day})
+                        'campaign_day': body.campaign_day,
+                        'planned_time': defaults.get(body.slot_type, '09:00'),
+                        'selected': '[]', 'approved': '[]'})
         except IntegrityError as error:
             raise HTTPException(422, 'Calendar slot could not be stored: %s' % (error.orig,))
         row = db.execute(text('SELECT ' + _CALENDAR_PUBLIC_SELECT + ' FROM calendar_slots WHERE id=:id AND workspace_id=:ws'),
@@ -3371,18 +3416,21 @@ def place_campaign_on_calendar(campaign_id: str, body: CalendarPlaceIn, actor: s
         if len(days) != 7:
             raise HTTPException(422, 'Campaign week needs seven days before calendar placement')
         placed = []
+        defaults = _schedule_defaults(db, workspace_id)
         for day, run_id, receipt in days:
             slot_date = (start + timedelta(days=int(day) - 1)).isoformat()
             slot_type = calendar_mod.slot_type_for_day(int(day))
             pillar = calendar_mod.pillar_for_day(int(day))
             status = calendar_mod.status_for_receipt(receipt)
             slot_id = 'slot_' + uuid4().hex
-            db.execute(text('INSERT INTO calendar_slots(id, workspace_id, slot_date, slot_type, pillar, format, status, run_id, campaign_id, campaign_day)'
-                            ' VALUES (:id, :ws, CAST(:slot_date AS date), :slot_type, :pillar, :format, :status, :run_id, :campaign_id, :campaign_day)'),
+            db.execute(text('INSERT INTO calendar_slots(id, workspace_id, slot_date, slot_type, pillar, format, status, run_id, campaign_id, campaign_day, planned_time, selected_channels, approved_channels, schedule_state)'
+                            " VALUES (:id, :ws, CAST(:slot_date AS date), :slot_type, :pillar, :format, :status, :run_id, :campaign_id, :campaign_day, :planned_time, CAST(:selected AS jsonb), CAST(:approved AS jsonb), 'draft')"),
                        {'id': slot_id, 'ws': workspace_id, 'slot_date': slot_date,
                         'slot_type': slot_type, 'pillar': pillar, 'format': slot_type,
                         'status': status, 'run_id': run_id, 'campaign_id': campaign_id,
-                        'campaign_day': int(day)})
+                        'campaign_day': int(day),
+                        'planned_time': defaults.get(slot_type, '09:00'),
+                        'selected': '[]', 'approved': '[]'})
             store.audit(db, run_id, 'calendar_slot_created', actor, workspace_id)
             placed.append(slot_id)
         rows = db.execute(text('SELECT ' + _CALENDAR_PUBLIC_SELECT + ' FROM calendar_slots WHERE id = ANY(:ids) ORDER BY slot_date, slot_type, id'),
@@ -3399,3 +3447,360 @@ def delete_calendar_slot(slot_id: str, actor: str = Depends(auth.actor)):
         if result.rowcount == 0:
             raise HTTPException(404, 'Calendar slot not found')
     return Response(status_code=204)
+
+
+# S4 schedule slots: planned times, validate gate, and schedule export.
+# Scheduling is planning only; it never publishes.
+
+
+class ScheduleDefaultsIn(Strict):
+    defaults: dict[str, str]
+
+
+class ScheduleDefaultsOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    defaults: dict[str, str] = {}
+
+
+class SlotScheduleIn(Strict):
+    planned_date: str | None = Field(default=None, min_length=10, max_length=10)
+    planned_time: str | None = Field(default=None, min_length=5, max_length=5)
+    selected_channels: list[str] | None = None
+    approved_channels: list[str] | None = None
+
+
+class SlotChannelsApproveIn(Strict):
+    channels: list[str] = Field(min_length=1)
+    expected_revision: StrictInt | None = Field(default=None, ge=0)
+
+
+class ValidateReadyOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    ready_eligible: bool = False
+    failing_conditions: list[str] = []
+    checks: dict[str, bool] = {}
+    details: list[str] = []
+    unapproved_channels: list[str] = []
+    format_reason: str | None = None
+
+
+def _load_slot(db, slot_id, workspace_id):
+    row = db.execute(text('SELECT ' + _CALENDAR_PUBLIC_SELECT + ' FROM calendar_slots WHERE id=:id AND workspace_id=:ws'),
+                     {'id': slot_id, 'ws': workspace_id}).mappings().first()
+    if row is None:
+        raise HTTPException(404, 'Calendar slot not found')
+    return dict(row)
+
+
+def _evaluate_slot_ready(slot, receipt):
+    """Validate gate: pack approval, format check, channel variant approval.
+
+    Zero overrides: every condition must pass. Returns a dict with
+    ready_eligible, failing_conditions (codes), checks, human details,
+    the unapproved channel list, and the exact format reason.
+    """
+    from launchcrew import calendar as calendar_mod
+    from launchcrew import channel_variants as channel_mod
+    from launchcrew import human_review
+    failing: list[str] = []
+    details: list[str] = []
+    pack_approved = (isinstance(receipt, dict)
+                     and receipt.get('approval_state') == 'approved_for_export')
+    if not pack_approved:
+        failing.append(calendar_mod.PACK_NOT_APPROVED)
+        details.append('Pack is not approved')
+    if not isinstance(receipt, dict):
+        format_passed = False
+        format_reason = 'Format check unavailable; link an approved run'
+    else:
+        format_reason = human_review.format_block_reason(receipt)
+        format_passed = format_reason is None
+    if not format_passed:
+        failing.append(calendar_mod.FORMAT_CHECK_FAILED)
+        details.append(format_reason or 'Format check failed')
+    selected = slot.get('selected_channels') if isinstance(slot, dict) else None
+    selected = list(selected) if isinstance(selected, list) else []
+    unapproved: list[str] = []
+    if not selected:
+        unapproved = []
+        details.append('No channels selected')
+        failing.append(calendar_mod.UNAPPROVED_CHANNEL_VARIANTS)
+        variants_approved = False
+    else:
+        for channel in selected:
+            _, current, _ = channel_mod.channel_approval_status(receipt, channel)
+            if not current:
+                unapproved.append(channel)
+        if unapproved:
+            failing.append(calendar_mod.UNAPPROVED_CHANNEL_VARIANTS)
+            details.append('Unapproved channel variants: ' + ', '.join(unapproved))
+        variants_approved = not unapproved
+    return {'ready_eligible': not failing,
+            'failing_conditions': failing,
+            'checks': {'pack_approved': pack_approved,
+                       'format_passed': format_passed,
+                       'variants_approved': variants_approved},
+            'details': details,
+            'unapproved_channels': unapproved,
+            'format_reason': format_reason if not format_passed else None}
+
+
+def _receipt_for_slot(db, slot, workspace_id):
+    run_id = slot.get('run_id')
+    if not run_id:
+        return None
+    row = db.execute(text('SELECT receipt FROM runs WHERE id=:id AND workspace_id=:ws'),
+                     {'id': run_id, 'ws': workspace_id}).fetchone()
+    if row is None:
+        return None
+    return row[0]
+
+
+@app.get('/api/calendar/schedule-defaults', response_model=ScheduleDefaultsOut)
+def get_schedule_defaults(actor: str = Depends(auth.actor)):
+    """Owner daily default planned times per slot type (planning only)."""
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        return {'defaults': _schedule_defaults(db, workspace_id)}
+
+
+@app.put('/api/calendar/schedule-defaults', response_model=ScheduleDefaultsOut)
+def put_schedule_defaults(body: ScheduleDefaultsIn, actor: str = Depends(auth.actor)):
+    """Set owner daily default planned times per slot type (planning only)."""
+    from launchcrew import calendar as calendar_mod
+    cleaned: dict[str, str] = {}
+    for slot_type, planned_time in (body.defaults or {}).items():
+        try:
+            calendar_mod.normalize_slot_type(slot_type)
+        except ValueError:
+            raise HTTPException(422, 'Unknown slot type: %s' % slot_type)
+        try:
+            cleaned[slot_type] = calendar_mod.normalize_planned_time(planned_time)
+        except ValueError:
+            raise HTTPException(422, 'planned_time for %s must be HH:MM' % slot_type)
+    if not cleaned:
+        raise HTTPException(422, 'defaults must name at least one slot type')
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        for slot_type, planned_time in cleaned.items():
+            db.execute(text('INSERT INTO calendar_schedule_defaults(workspace_id, slot_type, planned_time)'
+                            ' VALUES (:ws, :slot_type, :planned_time)'
+                            ' ON CONFLICT (workspace_id, slot_type) DO UPDATE SET planned_time=EXCLUDED.planned_time'),
+                       {'ws': workspace_id, 'slot_type': slot_type, 'planned_time': planned_time})
+        return {'defaults': _schedule_defaults(db, workspace_id)}
+
+
+@app.patch('/api/calendar/slots/{slot_id}/schedule', response_model=CalendarSlotOut)
+def update_slot_schedule(slot_id: str, body: SlotScheduleIn, actor: str = Depends(auth.actor)):
+    """Edit planning fields on one slot: date, time, channel selection.
+
+    Planning only; it never publishes. Changing the date, time, or
+    channel selection resets a Ready slot to draft for revalidation.
+    """
+    from launchcrew import calendar as calendar_mod
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        slot = _load_slot(db, slot_id, workspace_id)
+        updates: dict[str, Any] = {}
+        demote = False
+        if body.planned_date is not None:
+            _parse_calendar_date(body.planned_date, 'planned_date')
+            current_date = slot['slot_date']
+            if hasattr(current_date, 'isoformat'):
+                current_date = current_date.isoformat()
+            if body.planned_date != current_date:
+                updates['slot_date'] = body.planned_date
+                demote = True
+        if body.planned_time is not None:
+            try:
+                updates['planned_time'] = calendar_mod.normalize_planned_time(body.planned_time)
+            except ValueError:
+                raise HTTPException(422, 'planned_time must be HH:MM from 00:00 to 23:59')
+            if updates['planned_time'] != (slot.get('planned_time') or ''):
+                demote = True
+        if body.selected_channels is not None:
+            try:
+                selected = calendar_mod.normalize_channel_list(body.selected_channels, 'selected_channels')
+            except ValueError as error:
+                raise HTTPException(422, str(error))
+            updates['selected_channels'] = json.dumps(selected)
+            if selected != (slot.get('selected_channels') or []):
+                demote = True
+        if body.approved_channels is not None:
+            try:
+                approved = calendar_mod.normalize_channel_list(body.approved_channels, 'approved_channels')
+            except ValueError as error:
+                raise HTTPException(422, str(error))
+            updates['approved_channels'] = json.dumps(approved)
+        if not updates and not demote:
+            return _public_calendar_slot(slot)
+        clauses = []
+        params: dict[str, Any] = {'id': slot_id, 'ws': workspace_id}
+        if 'slot_date' in updates:
+            clauses.append('slot_date=CAST(:slot_date AS date)')
+            params['slot_date'] = updates['slot_date']
+        if 'planned_time' in updates:
+            clauses.append('planned_time=:planned_time')
+            params['planned_time'] = updates['planned_time']
+        if 'selected_channels' in updates:
+            clauses.append('selected_channels=CAST(:selected_channels AS jsonb)')
+            params['selected_channels'] = updates['selected_channels']
+        if 'approved_channels' in updates:
+            clauses.append('approved_channels=CAST(:approved_channels AS jsonb)')
+            params['approved_channels'] = updates['approved_channels']
+        if demote:
+            clauses.append("schedule_state='draft'")
+        clauses.append('updated_at=now()')
+        db.execute(text('UPDATE calendar_slots SET ' + ', '.join(clauses) + ' WHERE id=:id AND workspace_id=:ws'), params)
+        store.audit(db, slot.get('run_id'), 'calendar_slot_scheduled', actor, workspace_id)
+        return _public_calendar_slot(_load_slot(db, slot_id, workspace_id))
+
+
+@app.post('/api/calendar/slots/{slot_id}/approve-channels', response_model=CalendarSlotOut)
+def approve_slot_channels(slot_id: str, body: SlotChannelsApproveIn, actor: str = Depends(auth.actor)):
+    """Approve exact channel variant texts for one slot through its run.
+
+    Each named channel is human-approved on the linked run receipt
+    (exact text, current revision, current pack binding); the slot
+    mirrors the approvals. Pack approval and the exportable gate stay
+    required with no override.
+    """
+    from launchcrew import calendar as calendar_mod
+    from launchcrew import channel_variants as channel_mod
+    try:
+        channels = calendar_mod.normalize_channel_list(body.channels, 'channels')
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    if not channels:
+        raise HTTPException(422, 'channels must name at least one channel')
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        slot = _load_slot(db, slot_id, workspace_id)
+        run_id = slot.get('run_id')
+        if not run_id:
+            raise HTTPException(422, 'Slot has no linked run; link a run before approving channels')
+        for channel in channels:
+            receipt = _receipt_for_slot(db, slot, workspace_id)
+            if receipt is None:
+                raise HTTPException(404, 'Run not found')
+            try:
+                revised = channel_mod.approve_channel_variant(receipt, channel, actor, body.expected_revision)
+            except ValueError as error:
+                message = str(error)
+                if 'stale' in message.lower():
+                    raise HTTPException(409, message)
+                raise HTTPException(422, message)
+            result = db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id AND workspace_id=:ws'),
+                                {'receipt': json.dumps(revised), 'state': revised['approval_state'],
+                                 'id': run_id, 'ws': workspace_id})
+            if result.rowcount == 0:
+                raise HTTPException(404, 'Run not found')
+            store.audit(db, run_id, 'channel_variant_approval', actor, workspace_id)
+        merged = sorted(set((slot.get('approved_channels') or [])) | set(channels))
+        db.execute(text('UPDATE calendar_slots SET approved_channels=CAST(:approved AS jsonb), updated_at=now()'
+                        ' WHERE id=:id AND workspace_id=:ws'),
+                   {'approved': json.dumps(merged), 'id': slot_id, 'ws': workspace_id})
+        store.audit(db, run_id, 'calendar_slot_channels_approved', actor, workspace_id)
+        return _public_calendar_slot(_load_slot(db, slot_id, workspace_id))
+
+
+@app.get('/api/calendar/slots/{slot_id}/validate-ready', response_model=ValidateReadyOut)
+def validate_slot_ready(slot_id: str, actor: str = Depends(auth.actor)):
+    """Validate gate: name exactly which Ready conditions fail, if any."""
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        slot = _load_slot(db, slot_id, workspace_id)
+        receipt = _receipt_for_slot(db, slot, workspace_id)
+        return _evaluate_slot_ready(slot, receipt)
+
+
+@app.post('/api/calendar/slots/{slot_id}/mark-ready', response_model=CalendarSlotOut)
+def mark_slot_ready(slot_id: str, actor: str = Depends(auth.actor)):
+    """Mark one slot Ready only when all three gate conditions pass.
+
+    No override: any failing condition returns 409 naming each
+    failing condition instead of marking the slot Ready.
+    """
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        slot = _load_slot(db, slot_id, workspace_id)
+        receipt = _receipt_for_slot(db, slot, workspace_id)
+        evaluation = _evaluate_slot_ready(slot, receipt)
+        if not evaluation['ready_eligible']:
+            raise HTTPException(409, detail={'message': 'Slot is not ready; resolve every failing condition',
+                                            'failing_conditions': evaluation['failing_conditions'],
+                                            'details': evaluation['details'],
+                                            'checks': evaluation['checks'],
+                                            'unapproved_channels': evaluation['unapproved_channels'],
+                                            'format_reason': evaluation['format_reason']})
+        db.execute(text("UPDATE calendar_slots SET schedule_state='ready', updated_at=now()"
+                        ' WHERE id=:id AND workspace_id=:ws'),
+                   {'id': slot_id, 'ws': workspace_id})
+        store.audit(db, slot.get('run_id'), 'calendar_slot_marked_ready', actor, workspace_id)
+        return _public_calendar_slot(_load_slot(db, slot_id, workspace_id))
+
+
+@app.get('/api/calendar/schedule-export')
+def export_validated_schedule(actor: str = Depends(auth.actor)):
+    """Export the validated schedule JSON hand-off (planning only).
+
+    Lists only Ready slots (marked Ready with every gate condition
+    still passing) with channel variants, times, and pack references.
+    Non-Ready slots are excluded by name with their exact reasons.
+    Nothing is submitted anywhere; no publish, post, or send occurs.
+    """
+    from launchcrew import channel_variants as channel_mod
+    from launchcrew import human_review
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        rows = db.execute(text('SELECT ' + _CALENDAR_PUBLIC_SELECT + ' FROM calendar_slots WHERE workspace_id=:ws'
+                               ' ORDER BY slot_date, slot_type, id'),
+                          {'ws': workspace_id}).mappings().all()
+        ready_slots: list[dict[str, Any]] = []
+        excluded_slots: list[dict[str, Any]] = []
+        for raw in rows:
+            slot = _public_calendar_slot(dict(raw))
+            receipt = _receipt_for_slot(db, dict(raw), workspace_id)
+            evaluation = _evaluate_slot_ready(dict(raw), receipt)
+            if slot['schedule_state'] == 'ready' and evaluation['ready_eligible']:
+                variants = []
+                for channel in slot['selected_channels']:
+                    record, _, _ = channel_mod.channel_approval_status(receipt, channel)
+                    variants.append({'channel': channel, 'approved': True,
+                                     'approved_by': (record or {}).get('approved_by', ''),
+                                     'revision': (record or {}).get('revision')})
+                pack_reference: dict[str, Any] = {'run_id': slot['run_id'], 'approval_state': None,
+                                                  'revision': None, 'binding_digest': None}
+                if isinstance(receipt, dict):
+                    try:
+                        binding = human_review.approval_binding(receipt)
+                        digest = binding.get('digest')
+                    except Exception:
+                        digest = None
+                    pack_reference = {'run_id': slot['run_id'],
+                                      'approval_state': receipt.get('approval_state'),
+                                      'revision': human_review.current_revision(receipt),
+                                      'binding_digest': digest}
+                ready_slots.append({'slot_id': slot['id'], 'slot_date': slot['slot_date'],
+                                    'planned_time': slot['planned_time'], 'slot_type': slot['slot_type'],
+                                    'pillar': slot['pillar'], 'format_key': slot['format'],
+                                    'run_id': slot['run_id'], 'campaign_id': slot['campaign_id'],
+                                    'day_number': slot['campaign_day'],
+                                    'selected_channels': slot['selected_channels'],
+                                    'channel_variants': variants,
+                                    'pack_reference': pack_reference})
+            else:
+                if slot['schedule_state'] != 'ready' and evaluation['ready_eligible']:
+                    reasons = ['Slot is not marked Ready']
+                    codes = ['not_marked_ready']
+                else:
+                    reasons = evaluation['details']
+                    codes = evaluation['failing_conditions']
+                excluded_slots.append({'slot_id': slot['id'], 'slot_date': slot['slot_date'],
+                                       'slot_type': slot['slot_type'],
+                                       'failing_conditions': codes, 'reasons': reasons})
+        return {'schema_version': 'schedule-export/v1',
+                'exported_at': datetime.now(timezone.utc).isoformat(),
+                'publishing_mode': 'planning_only_never_publishes',
+                'ready_slots': ready_slots,
+                'excluded_slots': excluded_slots}

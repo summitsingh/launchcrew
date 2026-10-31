@@ -159,6 +159,55 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/calendar/schedule-defaults": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Schedule Defaults
+         * @description Owner daily default planned times per slot type (planning only).
+         */
+        get: operations["get_schedule_defaults_api_calendar_schedule_defaults_get"];
+        /**
+         * Put Schedule Defaults
+         * @description Set owner daily default planned times per slot type (planning only).
+         */
+        put: operations["put_schedule_defaults_api_calendar_schedule_defaults_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/calendar/schedule-export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export Validated Schedule
+         * @description Export the validated schedule JSON hand-off (planning only).
+         *
+         *     Lists only Ready slots (marked Ready with every gate condition
+         *     still passing) with channel variants, times, and pack references.
+         *     Non-Ready slots are excluded by name with their exact reasons.
+         *     Nothing is submitted anywhere; no publish, post, or send occurs.
+         */
+        get: operations["export_validated_schedule_api_calendar_schedule_export_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/calendar/slots": {
         parameters: {
             query?: never;
@@ -189,6 +238,97 @@ export interface paths {
         post?: never;
         /** Delete Calendar Slot */
         delete: operations["delete_calendar_slot_api_calendar_slots__slot_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/calendar/slots/{slot_id}/approve-channels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve Slot Channels
+         * @description Approve exact channel variant texts for one slot through its run.
+         *
+         *     Each named channel is human-approved on the linked run receipt
+         *     (exact text, current revision, current pack binding); the slot
+         *     mirrors the approvals. Pack approval and the exportable gate stay
+         *     required with no override.
+         */
+        post: operations["approve_slot_channels_api_calendar_slots__slot_id__approve_channels_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/calendar/slots/{slot_id}/mark-ready": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mark Slot Ready
+         * @description Mark one slot Ready only when all three gate conditions pass.
+         *
+         *     No override: any failing condition returns 409 naming each
+         *     failing condition instead of marking the slot Ready.
+         */
+        post: operations["mark_slot_ready_api_calendar_slots__slot_id__mark_ready_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/calendar/slots/{slot_id}/schedule": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update Slot Schedule
+         * @description Edit planning fields on one slot: date, time, channel selection.
+         *
+         *     Planning only; it never publishes. Changing the date, time, or
+         *     channel selection resets a Ready slot to draft for revalidation.
+         */
+        patch: operations["update_slot_schedule_api_calendar_slots__slot_id__schedule_patch"];
+        trace?: never;
+    };
+    "/api/calendar/slots/{slot_id}/validate-ready": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Validate Slot Ready
+         * @description Validate gate: name exactly which Ready conditions fail, if any.
+         */
+        get: operations["validate_slot_ready_api_calendar_slots__slot_id__validate_ready_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -1319,6 +1459,8 @@ export interface components {
         };
         /** CalendarSlotOut */
         CalendarSlotOut: {
+            /** Approved Channels */
+            approved_channels?: string[];
             /** Campaign Day */
             campaign_day?: number | null;
             /** Campaign Id */
@@ -1329,8 +1471,20 @@ export interface components {
             id: string;
             /** Pillar */
             pillar: string;
+            /**
+             * Planned Time
+             * @default 09:00
+             */
+            planned_time: string;
             /** Run Id */
             run_id?: string | null;
+            /**
+             * Schedule State
+             * @default draft
+             */
+            schedule_state: string;
+            /** Selected Channels */
+            selected_channels?: string[];
             /** Slot Date */
             slot_date: string;
             /**
@@ -3672,6 +3826,25 @@ export interface components {
             /** Worker Live */
             worker_live: boolean;
         };
+        /** ScheduleDefaultsIn */
+        ScheduleDefaultsIn: {
+            /** Defaults */
+            defaults: {
+                [key: string]: string;
+            };
+        };
+        /** ScheduleDefaultsOut */
+        ScheduleDefaultsOut: {
+            /**
+             * Defaults
+             * @default {}
+             */
+            defaults: {
+                [key: string]: string;
+            };
+        } & {
+            [key: string]: unknown;
+        };
         /** ScoutFact */
         ScoutFact: {
             /**
@@ -3717,6 +3890,24 @@ export interface components {
             sources: string[];
         } & {
             [key: string]: unknown;
+        };
+        /** SlotChannelsApproveIn */
+        SlotChannelsApproveIn: {
+            /** Channels */
+            channels: string[];
+            /** Expected Revision */
+            expected_revision?: number | null;
+        };
+        /** SlotScheduleIn */
+        SlotScheduleIn: {
+            /** Approved Channels */
+            approved_channels?: string[] | null;
+            /** Planned Date */
+            planned_date?: string | null;
+            /** Planned Time */
+            planned_time?: string | null;
+            /** Selected Channels */
+            selected_channels?: string[] | null;
         };
         /** StructuredImportIn */
         StructuredImportIn: {
@@ -3889,6 +4080,40 @@ export interface components {
              * @default
              */
             source_label: string;
+        };
+        /** ValidateReadyOut */
+        ValidateReadyOut: {
+            /**
+             * Checks
+             * @default {}
+             */
+            checks: {
+                [key: string]: boolean;
+            };
+            /**
+             * Details
+             * @default []
+             */
+            details: string[];
+            /**
+             * Failing Conditions
+             * @default []
+             */
+            failing_conditions: string[];
+            /** Format Reason */
+            format_reason?: string | null;
+            /**
+             * Ready Eligible
+             * @default false
+             */
+            ready_eligible: boolean;
+            /**
+             * Unapproved Channels
+             * @default []
+             */
+            unapproved_channels: string[];
+        } & {
+            [key: string]: unknown;
         };
         /** ValidationError */
         ValidationError: {
@@ -4304,6 +4529,79 @@ export interface operations {
             };
         };
     };
+    get_schedule_defaults_api_calendar_schedule_defaults_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduleDefaultsOut"];
+                };
+            };
+        };
+    };
+    put_schedule_defaults_api_calendar_schedule_defaults_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScheduleDefaultsIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduleDefaultsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_validated_schedule_api_calendar_schedule_export_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
     list_calendar_slots_api_calendar_slots_get: {
         parameters: {
             query?: {
@@ -4386,6 +4684,138 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    approve_slot_channels_api_calendar_slots__slot_id__approve_channels_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slot_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SlotChannelsApproveIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CalendarSlotOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    mark_slot_ready_api_calendar_slots__slot_id__mark_ready_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slot_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CalendarSlotOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_slot_schedule_api_calendar_slots__slot_id__schedule_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slot_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SlotScheduleIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CalendarSlotOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    validate_slot_ready_api_calendar_slots__slot_id__validate_ready_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slot_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidateReadyOut"];
+                };
             };
             /** @description Validation Error */
             422: {
