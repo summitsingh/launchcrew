@@ -906,6 +906,85 @@
         "title": "DriveImportOut",
         "type": "object"
       },
+      "DrivePhotoProposalOut": {
+        "additionalProperties": false,
+        "properties": {
+          "byte_size": {
+            "title": "Byte Size",
+            "type": "integer"
+          },
+          "confirmed": {
+            "const": false,
+            "default": false,
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "file_title": {
+            "title": "File Title",
+            "type": "string"
+          },
+          "height": {
+            "title": "Height",
+            "type": "integer"
+          },
+          "mime_type": {
+            "title": "Mime Type",
+            "type": "string"
+          },
+          "parser_version": {
+            "title": "Parser Version",
+            "type": "string"
+          },
+          "product_fact_source": {
+            "const": "drive_file",
+            "default": "drive_file",
+            "title": "Product Fact Source",
+            "type": "string"
+          },
+          "requires_approval": {
+            "const": true,
+            "default": true,
+            "title": "Requires Approval",
+            "type": "boolean"
+          },
+          "selection_context": {
+            "title": "Selection Context",
+            "type": "string"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          },
+          "source": {
+            "const": "drive_file",
+            "default": "drive_file",
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "const": "unconfirmed",
+            "default": "unconfirmed",
+            "title": "Status",
+            "type": "string"
+          },
+          "width": {
+            "title": "Width",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "file_title",
+          "mime_type",
+          "selection_context",
+          "width",
+          "height",
+          "byte_size",
+          "sha256",
+          "parser_version"
+        ],
+        "title": "DrivePhotoProposalOut",
+        "type": "object"
+      },
       "DrivePickerTokenOut": {
         "additionalProperties": false,
         "properties": {
@@ -946,6 +1025,16 @@
             "title": "Max Bytes",
             "type": "integer"
           },
+          "max_photo_bytes": {
+            "default": 1048576,
+            "title": "Max Photo Bytes",
+            "type": "integer"
+          },
+          "max_photo_pixels": {
+            "default": 8000000,
+            "title": "Max Photo Pixels",
+            "type": "integer"
+          },
           "scope": {
             "title": "Scope",
             "type": "string"
@@ -955,6 +1044,17 @@
               "type": "string"
             },
             "title": "Supported Mime Types",
+            "type": "array"
+          },
+          "supported_photo_mime_types": {
+            "default": [
+              "image/jpeg",
+              "image/png"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "title": "Supported Photo Mime Types",
             "type": "array"
           }
         },
@@ -988,6 +1088,16 @@
             "title": "Max Bytes",
             "type": "integer"
           },
+          "max_photo_bytes": {
+            "default": 1048576,
+            "title": "Max Photo Bytes",
+            "type": "integer"
+          },
+          "max_photo_pixels": {
+            "default": 8000000,
+            "title": "Max Photo Pixels",
+            "type": "integer"
+          },
           "max_requests": {
             "title": "Max Requests",
             "type": "integer"
@@ -1005,6 +1115,17 @@
               "type": "string"
             },
             "title": "Supported Mime Types",
+            "type": "array"
+          },
+          "supported_photo_mime_types": {
+            "default": [
+              "image/jpeg",
+              "image/png"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "title": "Supported Photo Mime Types",
             "type": "array"
           }
         },
@@ -1467,6 +1588,187 @@
           "parser_version"
         ],
         "title": "ImportSuggestionsOut",
+        "type": "object"
+      },
+      "LandingParityOut": {
+        "additionalProperties": true,
+        "properties": {
+          "ad_prices": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Ad Prices",
+            "type": "array"
+          },
+          "detected_policies": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Detected Policies",
+            "type": "array"
+          },
+          "landing_prices": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Landing Prices",
+            "type": "array"
+          },
+          "legal_compliance_passed": {
+            "default": false,
+            "title": "Legal Compliance Passed",
+            "type": "boolean"
+          },
+          "missing_policies": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing Policies",
+            "type": "array"
+          },
+          "overall_passed": {
+            "default": false,
+            "title": "Overall Passed",
+            "type": "boolean"
+          },
+          "parity_passed": {
+            "default": false,
+            "title": "Parity Passed",
+            "type": "boolean"
+          },
+          "unmatched_ad_prices": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Unmatched Ad Prices",
+            "type": "array"
+          },
+          "version": {
+            "default": "landing-parity/v1",
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "title": "LandingParityOut",
+        "type": "object"
+      },
+      "LaunchMatrixOut": {
+        "additionalProperties": true,
+        "properties": {
+          "all_content_valid": {
+            "default": false,
+            "title": "All Content Valid",
+            "type": "boolean"
+          },
+          "approval_state": {
+            "default": "",
+            "title": "Approval State",
+            "type": "string"
+          },
+          "binding_digest": {
+            "default": "",
+            "title": "Binding Digest",
+            "type": "string"
+          },
+          "binding_version": {
+            "default": "",
+            "title": "Binding Version",
+            "type": "string"
+          },
+          "bundle_version": {
+            "default": "checked-launch-matrix/v1",
+            "title": "Bundle Version",
+            "type": "string"
+          },
+          "channel_approvals": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Channel Approvals",
+            "type": "object"
+          },
+          "confirmed_claims_count": {
+            "default": 0,
+            "title": "Confirmed Claims Count",
+            "type": "integer"
+          },
+          "draft_source": {
+            "default": "current post draft",
+            "title": "Draft Source",
+            "type": "string"
+          },
+          "email": {
+            "$ref": "#/components/schemas/ChannelVariantOut"
+          },
+          "facebook": {
+            "$ref": "#/components/schemas/ChannelVariantOut"
+          },
+          "facts_label": {
+            "default": "",
+            "title": "Facts Label",
+            "type": "string"
+          },
+          "facts_mode": {
+            "default": "",
+            "title": "Facts Mode",
+            "type": "string"
+          },
+          "instagram": {
+            "$ref": "#/components/schemas/ChannelVariantOut"
+          },
+          "linkedin": {
+            "$ref": "#/components/schemas/ChannelVariantOut"
+          },
+          "no_auto_publish": {
+            "default": true,
+            "title": "No Auto Publish",
+            "type": "boolean"
+          },
+          "note": {
+            "default": "",
+            "title": "Note",
+            "type": "string"
+          },
+          "provenance": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Provenance",
+            "type": "object"
+          },
+          "receipt_id": {
+            "default": "",
+            "title": "Receipt Id",
+            "type": "string"
+          },
+          "revision": {
+            "default": 0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "shopify": {
+            "$ref": "#/components/schemas/ChannelVariantOut"
+          },
+          "template_used": {
+            "default": false,
+            "title": "Template Used",
+            "type": "boolean"
+          },
+          "tiktok": {
+            "$ref": "#/components/schemas/ChannelVariantOut"
+          },
+          "x": {
+            "$ref": "#/components/schemas/ChannelVariantOut"
+          }
+        },
+        "required": [
+          "x",
+          "linkedin",
+          "instagram",
+          "email",
+          "facebook",
+          "tiktok",
+          "shopify"
+        ],
+        "title": "LaunchMatrixOut",
         "type": "object"
       },
       "LearnMemory": {
@@ -3898,6 +4200,34 @@
         "title": "ValidationError",
         "type": "object"
       },
+      "VerifyLandingPageIn": {
+        "additionalProperties": false,
+        "properties": {
+          "landing_html": {
+            "maxLength": 200000,
+            "minLength": 1,
+            "title": "Landing Html",
+            "type": "string"
+          },
+          "landing_url": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Landing Url"
+          }
+        },
+        "required": [
+          "landing_html"
+        ],
+        "title": "VerifyLandingPageIn",
+        "type": "object"
+      },
       "VoiceProfileSection": {
         "additionalProperties": true,
         "properties": {
@@ -4656,6 +4986,44 @@
           }
         },
         "summary": "Drive Config"
+      }
+    },
+    "/api/drive-import/photo-suggestions": {
+      "post": {
+        "operationId": "drive_photo_suggestions_api_drive_import_photo_suggestions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DriveImportIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DrivePhotoProposalOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Drive Photo Suggestions"
       }
     },
     "/api/drive-import/picker-token": {
@@ -5473,6 +5841,45 @@
         "summary": "Export"
       }
     },
+    "/api/runs/{run_id}/launch-matrix": {
+      "get": {
+        "operationId": "launch_matrix_api_runs__run_id__launch_matrix_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LaunchMatrixOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Launch Matrix"
+      }
+    },
     "/api/runs/{run_id}/outcomes": {
       "get": {
         "description": "List owner self-reports for an owned run, oldest first.\n\nOwner-entered only, never provider-measured. Requires a signed-in\nactor, matching POST. Reads are workspace scoped and return 404 for\nforeign runs. Historical rows keep their stored export revision after\nlater edits; this read never gates on the current approval or export\nstate.",
@@ -5789,6 +6196,55 @@
           }
         },
         "summary": "Get Run Steps"
+      }
+    },
+    "/api/runs/{run_id}/verify-landing-page": {
+      "post": {
+        "operationId": "verify_landing_page_api_runs__run_id__verify_landing_page_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyLandingPageIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LandingParityOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Verify Landing Page"
       }
     }
   }

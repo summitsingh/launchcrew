@@ -690,6 +690,51 @@ class ChannelVariantsOut(BaseModel):
     provenance: dict[str, Any] = {}
 
 
+class LaunchMatrixOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    bundle_version: str = 'checked-launch-matrix/v1'
+    receipt_id: str = ''
+    revision: int = 0
+    approval_state: str = ''
+    binding_version: str = ''
+    binding_digest: str = ''
+    channel_approvals: dict[str, Any] = {}
+    facts_mode: str = ''
+    facts_label: str = ''
+    template_used: bool = False
+    confirmed_claims_count: int = 0
+    draft_source: str = 'current post draft'
+    all_content_valid: bool = False
+    no_auto_publish: bool = True
+    note: str = ''
+    x: ChannelVariantOut
+    linkedin: ChannelVariantOut
+    instagram: ChannelVariantOut
+    email: ChannelVariantOut
+    facebook: ChannelVariantOut
+    tiktok: ChannelVariantOut
+    shopify: ChannelVariantOut
+    provenance: dict[str, Any] = {}
+
+
+class VerifyLandingPageIn(Strict):
+    landing_html: str = Field(min_length=1, max_length=200000)
+    landing_url: str | None = Field(default=None, max_length=2000)
+
+
+class LandingParityOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    version: str = 'landing-parity/v1'
+    overall_passed: bool = False
+    parity_passed: bool = False
+    legal_compliance_passed: bool = False
+    ad_prices: list[str] = Field(default_factory=list)
+    landing_prices: list[str] = Field(default_factory=list)
+    unmatched_ad_prices: list[str] = Field(default_factory=list)
+    detected_policies: list[str] = Field(default_factory=list)
+    missing_policies: list[str] = Field(default_factory=list)
+
+
 @app.post('/api/runs', response_model=Receipt, status_code=201)
 def create_run(body: RunInput, actor: str = Depends(auth.actor)):
     from backend import model_admission
@@ -1084,6 +1129,51 @@ def copy_channel_variant(run_id: str, channel: str, body: ExportIn, actor: str =
             raise HTTPException(404, 'Run not found')
         store.audit(db, run_id, 'channel_copy', actor, workspace_id)
     return record
+
+
+@app.get('/api/runs/{run_id}/launch-matrix', response_model=LaunchMatrixOut)
+def launch_matrix(run_id: str, actor: str = Depends(auth.actor)):
+    # Checked launch matrix for one owned run. All seven presentation
+    # candidates derive verbatim from the current approved post draft
+    # and the receipt-bound confirmed claims, and the route refuses
+    # unless the receipt is currently exportable: human approval for
+    # export on the latest revision with a clean final check and a
+    # matching current approval binding. Read-only: no auto-publish,
+    # no auto-post, no auto-send.
+    from launchcrew import channel_variants as channel_mod
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        receipt = get_receipt(db, run_id, workspace_id)
+        _reject_when_running(receipt)
+        try:
+            bundle = channel_mod.checked_launch_matrix(receipt)
+        except ValueError as error:
+            message = str(error)
+            if 'stale' in message.lower():
+                raise HTTPException(409, message)
+            raise HTTPException(422, message)
+    return bundle
+
+
+@app.post('/api/runs/{run_id}/verify-landing-page', response_model=LandingParityOut)
+def verify_landing_page(run_id: str, body: VerifyLandingPageIn, actor: str = Depends(auth.actor)):
+    # Deterministic ad-to-landing-page parity audit for one owned run.
+    # Audits the caller-supplied landing HTML against the current post
+    # draft with no network access: every ad price must appear on the
+    # page and the page footer must link the required legal policies.
+    # Read-only: the receipt is never modified. landing_url is recorded
+    # context only and is never fetched.
+    from launchcrew import human_review, landing_parity
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        receipt = get_receipt(db, run_id, workspace_id)
+        _reject_when_running(receipt)
+        draft = human_review.current_draft(receipt)
+        post = draft.get('post') if isinstance(draft, dict) else None
+        if not isinstance(post, str) or not post.strip():
+            raise HTTPException(422, 'Run has no post draft to audit')
+        audit = landing_parity.audit_landing_page_parity(post, body.landing_html)
+    return audit
 
 
 @app.post('/api/runs/{run_id}/photo-check', response_model=PhotoCheckResponse)

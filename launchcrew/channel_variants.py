@@ -1154,6 +1154,7 @@ def build_launch_matrix(draft_text, confirmed_facts, audience=None, campaign_ang
 
 
 CHECKED_BUNDLE_VERSION = "checked-channel-variants/v1"
+CHECKED_LAUNCH_MATRIX_VERSION = "checked-launch-matrix/v1"
 CHECKED_DRAFT_SOURCE = "current post draft"
 CHECKED_NO_PUBLISH_NOTE = (
     "Checked export candidates only. No auto-publish, no auto-post, "
@@ -1592,6 +1593,85 @@ def checked_channel_variants(receipt):
             'current': bool(current_ok),
         }
     result['channel_approvals'] = approvals_echo
+    return result
+
+
+def checked_launch_matrix(receipt):
+    """Build checked launch matrix candidates for an approved receipt.
+
+    Same gate as :func:`checked_channel_variants`: refuses with
+    ValueError unless the receipt is currently exportable, meaning
+    human approval for export on the latest revision with a clean
+    final check and a matching current approval binding. Derives all
+    seven presentation candidates (x, linkedin, instagram, email,
+    facebook, tiktok, shopify) verbatim from the current approved
+    post draft and the receipt-bound confirmed claims via
+    :func:`build_launch_matrix`. No audience or campaign angle input
+    is used, so no angle is claimed. Every rendered candidate is
+    independently re-verified with :func:`verify_exact_variant_text`;
+    a verification failure downgrades that channel to needs-revision
+    with no text. Every candidate stays non independently exportable
+    with no auto-publish. The returned bundle echoes the binding
+    digest and revision it was checked against.
+    """
+    from .human_review import (approval_binding, current_draft,
+                               current_revision)
+    _require_checked_gate(receipt)
+    confirmed = _checked_confirmed_claims(receipt)
+    draft = current_draft(receipt)
+    post = draft.get('post')
+    if not isinstance(post, str) or not post.strip():
+        raise ValueError(
+            'Checked launch matrix requires a nonempty approved post draft')
+    voice_snapshot, voice_ref = _checked_voice(receipt)
+    matrix = build_launch_matrix(post, confirmed,
+                                 voice_snapshot=voice_snapshot,
+                                 voice_ref=voice_ref)
+    product = receipt.get('product_facts')
+    if not isinstance(product, dict):
+        raise ValueError(
+            'Checked launch matrix requires product facts on the receipt')
+    binding = approval_binding(receipt)
+    mode = product.get('mode')
+    label = product.get('template_label')
+    entries = {}
+    for channel in LAUNCH_MATRIX_CHANNELS:
+        entry = _checked_variant_entry(matrix[channel])
+        if entry['content_valid']:
+            ok, reason = verify_exact_variant_text(
+                channel, entry['text'], entry['subject'], post,
+                confirmed, voice_snapshot, voice_ref)
+            if not ok:
+                entry = dict(entry)
+                entry['content_valid'] = False
+                entry['status'] = STATUS_NEEDS_REVISION
+                entry['text'] = ''
+                entry['reason'] = ('Copy refused: exact rendered text failed '
+                                   're-verification: ' + reason)
+                entry['trim_note'] = ''
+                entry['char_count'] = 0
+                entry['kept_sentences'] = 0
+        entries[channel] = entry
+    result = {
+        'bundle_version': CHECKED_LAUNCH_MATRIX_VERSION,
+        'receipt_id': receipt.get('run_id', ''),
+        'revision': current_revision(receipt),
+        'approval_state': receipt.get('approval_state', ''),
+        'binding_version': binding['version'],
+        'binding_digest': binding['digest'],
+        'facts_mode': mode if isinstance(mode, str) else '',
+        'facts_label': label if isinstance(label, str) else '',
+        'template_used': bool(product.get('template_used')),
+        'confirmed_claims_count': len(confirmed),
+        'draft_source': CHECKED_DRAFT_SOURCE,
+        'all_content_valid': all(entry['content_valid']
+                                 for entry in entries.values()),
+        'no_auto_publish': True,
+        'note': CHECKED_NO_PUBLISH_NOTE,
+    }
+    result.update(entries)
+    result['provenance'] = matrix['provenance']
+    result['channel_approvals'] = {}
     return result
 
 

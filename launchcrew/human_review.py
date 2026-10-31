@@ -108,7 +108,7 @@ def snapshot_policies(receipt):
     if isinstance(raw, list):
         return sorted({str(p) for p in raw if isinstance(p, str)})
     profile = receipt.get('checker_profile', 'standard')
-    return ['superlatives'] if profile == 'strict' else []
+    return ['cliches', 'superlatives'] if profile == 'strict' else []
 
 
 def snapshot_profile_name(receipt, stage):

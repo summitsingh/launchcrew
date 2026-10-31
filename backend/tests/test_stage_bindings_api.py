@@ -48,11 +48,11 @@ def test_checker_policies_endpoint_documents_supported_subset(client):
     response = client.get('/api/checker-policies')
     assert response.status_code == 200
     body = response.json()
-    assert sorted(item['policy'] for item in body['supported']) == ['price_claims', 'superlatives']
+    assert sorted(item['policy'] for item in body['supported']) == ['cliches', 'price_claims', 'superlatives']
     assert 'cannot be relaxed' in body['floor_note']
     assert 'Exact match only' in body['matching']
     tokens = {item['veto_token'] for item in body['supported']}
-    assert tokens == {'superlatives', 'price_claims'}
+    assert tokens == {'superlatives', 'price_claims', 'cliches'}
 
 
 def test_preview_reports_enforced_and_advisory(client):

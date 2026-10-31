@@ -7,6 +7,8 @@ be relaxed by any profile.
 """
 import re
 
+from .cliche_scrubber import CLICHE_WORDS, has_cliche, lint_cliches
+
 STRICT_HYPE = ('amazing', 'incredible', 'revolutionary', 'unbeatable', 'perfect',
                'best', 'greatest', 'fastest', 'cheapest', 'only', 'guaranteed')
 
@@ -63,16 +65,24 @@ SUPPORTED_CHECKER_POLICIES = {
         'rule_line': 'Block price claims',
         'description': 'Block claims containing price values such as $49.',
     },
+    'cliches': {
+        'policy': 'cliches',
+        'veto_token': 'cliches',
+        'rule_line': 'Block marketing cliches',
+        'description': 'Block claims containing generic AI filler buzzwords and marketing cliches.',
+    },
 }
 
 SUPPORTED_VETO_EXACT = {
     'superlatives': 'superlatives',
     'price_claims': 'price_claims',
+    'cliches': 'cliches',
 }
 
 SUPPORTED_RULE_EXACT = {
     'block superlatives': 'superlatives',
     'block price claims': 'price_claims',
+    'block marketing cliches': 'cliches',
 }
 
 FLOOR_VETO_TOKENS = {'unverified_claims'} | SPECIFICITY_FLOOR_VETO_TOKENS
@@ -87,8 +97,8 @@ FLOOR_NOTE = ('Deterministic claim safety is always enforced and cannot be relax
               'and requires revision with concrete approved facts. '
               'Supported policies only add blocks.')
 
-MATCHING_NOTE = ('Exact match only. veto_scope must be exactly superlatives or price_claims. '
-                 'decision_rules must be exactly Block superlatives or Block price claims '
+MATCHING_NOTE = ('Exact match only. veto_scope must be exactly superlatives, price_claims, or cliches. '
+                 'decision_rules must be exactly Block superlatives, Block price claims, or Block marketing cliches '
                  '(case-insensitive). All other free-text rules are advisory only and never enforced.')
 
 
@@ -151,9 +161,26 @@ def effective_policies(checker_profile='standard', checker_agent=None):
     policies = set()
     if checker_profile == 'strict':
         policies.add('superlatives')
+        policies.add('cliches')
     if isinstance(checker_agent, dict):
         policies.update(parse_checker_agent(checker_agent)['enforced_policies'])
     return sorted(policies)
+
+
+def cliche_hits(claim):
+    """Sorted lint hits for marketing cliches in one claim string.
+
+    Each hit is a ``{"cliche": match, "reason": ...}`` dict from
+    :func:`launchcrew.cliche_scrubber.lint_cliches`. Matching covers
+    every entry in ``CLICHE_WORDS`` plus the scrubber phrase list.
+    Non-string input yields ``[]``.
+    """
+    if not isinstance(claim, str):
+        return []
+    hits = lint_cliches(claim)
+    if not CLICHE_WORDS:
+        return []
+    return [dict(hit) for hit in hits if isinstance(hit, dict)]
 
 
 def policy_blocks(policy, claim):
@@ -167,6 +194,8 @@ def policy_blocks(policy, claim):
         return any(word in STRICT_HYPE for word in cleaned if word)
     if policy == 'price_claims':
         return bool(PRICE_RE.search(claim))
+    if policy == 'cliches':
+        return has_cliche(claim)
     return False
 
 
@@ -175,6 +204,8 @@ def policy_reason(policy):
         return "Blocked by Checker policy 'superlatives': superlative or hype"
     if policy == 'price_claims':
         return "Blocked by Checker policy 'price_claims': price value"
+    if policy == 'cliches':
+        return "Blocked by Checker policy 'cliches': generic marketing cliche"
     return 'Blocked by Checker policy'
 
 

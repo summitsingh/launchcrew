@@ -197,7 +197,7 @@ class StageBindingTests(unittest.TestCase):
 
     def test_supported_policy_subset_documented(self):
         supported = describe_supported()
-        self.assertEqual(sorted(item['policy'] for item in supported), ['price_claims', 'superlatives'])
+        self.assertEqual(sorted(item['policy'] for item in supported), ['cliches', 'price_claims', 'superlatives'])
         for item in supported:
             self.assertTrue(item['veto_token'])
             self.assertTrue(item['rule_line'])
