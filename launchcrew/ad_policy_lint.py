@@ -20,8 +20,11 @@ period, exclamation, question marks, and newlines break adjacency, so
 
 Each hit is a dict with ``category``, ``match``, and a human-readable
 ``reason`` string. Hits are deduplicated and sorted by
-(category, match) so output is deterministic. Not wired into
-channel variants; integration happens later.
+(category, match) so output is deterministic. Wired into channel
+variants: ``channel_variants._candidate_success``,
+``channel_variants._needs_revision``, and
+``channel_variants._checked_variant_entry`` attach
+``ad_policy_passed`` and ``ad_policy_hits`` to every candidate.
 """
 
 import re

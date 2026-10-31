@@ -36,6 +36,8 @@ server-side on a fresh owner-scoped receipt read at click time.
 import copy
 import re
 
+from .ad_policy_lint import lint_ad_policy
+
 MODULE_VERSION = "channel-variants/v1"
 X_MAX_CHARS = 280
 FACEBOOK_MAX_CHARS = 2000
@@ -259,8 +261,32 @@ def _base_metadata(channel, confirmed_count, audience, campaign_angle):
     }
 
 
+def _ad_policy_fields(text, subject=None):
+    """Deterministic ad policy lint for one rendered variant.
+
+    Lints the rendered variant text, plus the subject for email
+    variants. Returns (passed, hits) where passed is True when
+    lint finds no hits and hits is the sorted list of hit dicts.
+    Never raises on content; lint failures yield no hits.
+    """
+    combined = text if isinstance(text, str) else ""
+    if isinstance(subject, str) and subject.strip():
+        combined = (combined + " " + subject).strip() if combined else subject
+    try:
+        hits = lint_ad_policy(combined)
+    except Exception:
+        hits = []
+    if not isinstance(hits, list):
+        hits = []
+    hits = [dict(hit) for hit in hits if isinstance(hit, dict)]
+    return len(hits) == 0, hits
+
+
 def _needs_revision(channel, confirmed_count, audience, campaign_angle, reason):
     metadata = _base_metadata(channel, confirmed_count, audience, campaign_angle)
+    passed, hits = _ad_policy_fields(
+        "", EMAIL_SUBJECT if channel == "email" else None
+    )
     metadata.update(
         {
             "char_count": 0,
@@ -271,6 +297,8 @@ def _needs_revision(channel, confirmed_count, audience, campaign_angle, reason):
             "exportable": False,
             "independently_exportable": False,
             "status": STATUS_NEEDS_REVISION,
+            "ad_policy_passed": passed,
+            "ad_policy_hits": [dict(hit) for hit in hits],
         }
     )
     variant = {
@@ -287,6 +315,8 @@ def _needs_revision(channel, confirmed_count, audience, campaign_angle, reason):
         "status": STATUS_NEEDS_REVISION,
         "reason": reason,
         "trim_note": None,
+        "ad_policy_passed": passed,
+        "ad_policy_hits": hits,
         "metadata": metadata,
     }
     if channel == "email":
@@ -330,6 +360,10 @@ def _abbreviation_fragment(sentences):
 def _candidate_success(channel, text, kept_count, total, omitted, char_count,
                        variant_tokens, unconfirmed, confirmed_count,
                        audience, campaign_angle, trim_note, extra=None):
+    subject = None
+    if isinstance(extra, dict) and isinstance(extra.get("subject"), str):
+        subject = extra["subject"]
+    passed, hits = _ad_policy_fields(text, subject)
     metadata = _base_metadata(channel, confirmed_count, audience, campaign_angle)
     metadata.update(
         {
@@ -343,6 +377,8 @@ def _candidate_success(channel, text, kept_count, total, omitted, char_count,
             "exportable": False,
             "independently_exportable": False,
             "status": STATUS_CANDIDATE,
+            "ad_policy_passed": passed,
+            "ad_policy_hits": [dict(hit) for hit in hits],
         }
     )
     variant = {
@@ -359,6 +395,8 @@ def _candidate_success(channel, text, kept_count, total, omitted, char_count,
         "status": STATUS_CANDIDATE,
         "reason": None,
         "trim_note": trim_note,
+        "ad_policy_passed": passed,
+        "ad_policy_hits": hits,
         "metadata": metadata,
     }
     if extra:
@@ -945,6 +983,18 @@ def _checked_variant_entry(variant):
     reason = variant.get('reason')
     trim_note = variant.get('trim_note')
     approval_note = variant.get('approval_note')
+    passed = variant.get('ad_policy_passed')
+    hits = variant.get('ad_policy_hits')
+    if not isinstance(passed, bool) or not isinstance(hits, list):
+        passed = metadata.get('ad_policy_passed')
+        hits = metadata.get('ad_policy_hits')
+    if not isinstance(passed, bool) or not isinstance(hits, list):
+        passed, hits = _ad_policy_fields(
+            text if isinstance(text, str) else '',
+            subject if isinstance(subject, str) else None,
+        )
+    hits = [dict(hit) for hit in hits if isinstance(hit, dict)]
+    passed = passed if isinstance(passed, bool) else len(hits) == 0
     return {
         'channel': variant.get('channel', ''),
         'variant_kind': variant.get('variant_kind', VARIANT_KIND),
@@ -962,6 +1012,8 @@ def _checked_variant_entry(variant):
         'total_sentences': _count('total_sentences'),
         'omitted_sentences': _count('omitted_sentences'),
         'approval_note': approval_note if isinstance(approval_note, str) else APPROVAL_NOTE,
+        'ad_policy_passed': passed,
+        'ad_policy_hits': hits,
     }
 
 

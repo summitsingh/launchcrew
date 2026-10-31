@@ -523,5 +523,122 @@ class ChannelVariantTests(unittest.TestCase):
         self.assertNotIn("caller_checked_draft", str(packed))
 
 
+class AdPolicyLintWiringTests(unittest.TestCase):
+    def assert_hit_shape(self, hits):
+        self.assertIsInstance(hits, list)
+        self.assertTrue(hits)
+        for hit in hits:
+            self.assertIsInstance(hit, dict)
+            self.assertIn("category", hit)
+            self.assertIn("match", hit)
+            self.assertIn("reason", hit)
+
+    def test_clean_variants_pass_policy(self):
+        draft = "Vegan leather wallet. Designed in Texas."
+        confirmed = ["Vegan leather wallet", "Designed in Texas"]
+        packed = build_channel_variants(draft, confirmed)
+        for key in ALL_CHANNELS:
+            with self.subTest(channel=key):
+                variant = packed[key]
+                assert_candidate_fields(self, variant, True)
+                self.assertTrue(variant["ad_policy_passed"])
+                self.assertEqual(variant["ad_policy_hits"], [])
+                self.assertTrue(variant["metadata"]["ad_policy_passed"])
+                self.assertEqual(variant["metadata"]["ad_policy_hits"], [])
+
+    def test_guaranteed_flags_absolute_claim_but_stays_valid(self):
+        draft = "This wallet is guaranteed to last. Designed in Texas."
+        confirmed = ["wallet", "Designed in Texas"]
+        for builder in (
+            build_x_variant,
+            build_linkedin_variant,
+            build_instagram_variant,
+            build_email_variant,
+            build_facebook_variant,
+        ):
+            with self.subTest(builder=builder.__name__):
+                variant = builder(draft, confirmed)
+                assert_candidate_fields(self, variant, True)
+                self.assertFalse(variant["ad_policy_passed"])
+                self.assert_hit_shape(variant["ad_policy_hits"])
+                self.assertTrue(
+                    any(
+                        h["category"] == "absolute_claim"
+                        and h["match"] == "guaranteed"
+                        for h in variant["ad_policy_hits"]
+                    )
+                )
+                self.assertFalse(variant["metadata"]["ad_policy_passed"])
+                self.assertEqual(
+                    variant["metadata"]["ad_policy_hits"],
+                    variant["ad_policy_hits"],
+                )
+
+    def test_percent_sign_flags_absolute_claim(self):
+        draft = "Save 100% today with this wallet. Designed in Texas."
+        confirmed = ["100%", "wallet", "Designed in Texas"]
+        variant = build_linkedin_variant(draft, confirmed)
+        assert_candidate_fields(self, variant, True)
+        self.assertFalse(variant["ad_policy_passed"])
+        self.assert_hit_shape(variant["ad_policy_hits"])
+        self.assertTrue(
+            any(
+                h["category"] == "absolute_claim" and h["match"] == "100%"
+                for h in variant["ad_policy_hits"]
+            )
+        )
+
+    def test_are_you_flags_personal_attribute(self):
+        draft = "Are you ready for this wallet. Designed in Texas."
+        confirmed = ["wallet", "Designed in Texas"]
+        variant = build_x_variant(draft, confirmed)
+        assert_candidate_fields(self, variant, True)
+        self.assertFalse(variant["ad_policy_passed"])
+        self.assert_hit_shape(variant["ad_policy_hits"])
+        self.assertTrue(
+            any(
+                h["category"] == "personal_attribute"
+                and h["match"] == "are you"
+                for h in variant["ad_policy_hits"]
+            )
+        )
+
+    def test_ugly_flags_shaming_comparison(self):
+        draft = "This ugly wallet ships soon. Designed in Texas."
+        confirmed = ["wallet", "Designed in Texas"]
+        variant = build_instagram_variant(draft, confirmed)
+        assert_candidate_fields(self, variant, True)
+        self.assertFalse(variant["ad_policy_passed"])
+        self.assert_hit_shape(variant["ad_policy_hits"])
+        self.assertTrue(
+            any(
+                h["category"] == "shaming_comparison" and h["match"] == "ugly"
+                for h in variant["ad_policy_hits"]
+            )
+        )
+
+    def test_needs_revision_variants_carry_clean_policy_fields(self):
+        variant = build_x_variant("   ", [])
+        assert_candidate_fields(self, variant, False)
+        self.assertTrue(variant["ad_policy_passed"])
+        self.assertEqual(variant["ad_policy_hits"], [])
+        self.assertTrue(variant["metadata"]["ad_policy_passed"])
+        self.assertEqual(variant["metadata"]["ad_policy_hits"], [])
+
+    def test_policy_hits_are_deterministic(self):
+        draft = "This wallet is guaranteed to last. Designed in Texas."
+        confirmed = ["wallet", "Designed in Texas"]
+        first = build_facebook_variant(draft, confirmed)
+        second = build_facebook_variant(draft, confirmed)
+        self.assertEqual(
+            first["ad_policy_hits"], second["ad_policy_hits"]
+        )
+        self.assertEqual(
+            first["ad_policy_passed"], second["ad_policy_passed"]
+        )
+        matches = [h["match"] for h in first["ad_policy_hits"]]
+        self.assertEqual(matches, sorted(matches))
+
+
 if __name__ == "__main__":
     unittest.main()

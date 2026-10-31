@@ -132,6 +132,27 @@ def test_unknown_run_returns_404(client, test_engine):
     assert response.status_code == 404, response.text
 
 
+def test_approved_bundle_exposes_ad_policy_fields(client, test_engine):
+    receipt = new_run(client)
+    run_id = receipt['run_id']
+    approve(client, run_id)
+    response = client.get(f'/api/runs/{run_id}/channel-variants')
+    assert response.status_code == 200, response.text
+    bundle = response.json()
+    for channel in CHANNELS:
+        variant = bundle[channel]
+        assert 'ad_policy_passed' in variant, channel
+        assert 'ad_policy_hits' in variant, channel
+        assert isinstance(variant['ad_policy_passed'], bool)
+        assert isinstance(variant['ad_policy_hits'], list)
+        assert variant['ad_policy_passed'] == (
+            len(variant['ad_policy_hits']) == 0)
+        for hit in variant['ad_policy_hits']:
+            assert 'category' in hit
+            assert 'match' in hit
+            assert 'reason' in hit
+
+
 def copy_text(client, run_id, channel, revision):
     return client.post(f'/api/runs/{run_id}/channel-variants/{channel}/copy',
                        json={'expected_revision': revision})

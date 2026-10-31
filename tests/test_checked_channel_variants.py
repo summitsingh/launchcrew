@@ -477,5 +477,67 @@ class CheckedChannelVariantsTests(unittest.TestCase):
         self.assertIn('binding', str(ctx_binding.exception).lower())
 
 
+class CheckedAdPolicyTests(unittest.TestCase):
+    def test_checked_entries_expose_policy_fields(self):
+        draft = 'Vegan leather wallet. Designed in Texas.'
+        confirmed = ['Vegan leather wallet', 'Designed in Texas']
+        packed = channel_variants.build_channel_variants(draft, confirmed)
+        for channel in ('x', 'linkedin', 'instagram', 'email', 'facebook'):
+            with self.subTest(channel=channel):
+                entry = channel_variants._checked_variant_entry(
+                    packed[channel])
+                self.assertIn('ad_policy_passed', entry)
+                self.assertIn('ad_policy_hits', entry)
+                self.assertIsInstance(entry['ad_policy_passed'], bool)
+                self.assertIsInstance(entry['ad_policy_hits'], list)
+                for hit in entry['ad_policy_hits']:
+                    self.assertIn('category', hit)
+                    self.assertIn('match', hit)
+                    self.assertIn('reason', hit)
+                self.assertEqual(
+                    entry['ad_policy_passed'],
+                    len(entry['ad_policy_hits']) == 0,
+                )
+
+    def test_checked_entry_matches_direct_lint(self):
+        from launchcrew.ad_policy_lint import lint_ad_policy
+        draft = 'This wallet is guaranteed to last. Designed in Texas.'
+        confirmed = ['wallet', 'Designed in Texas']
+        packed = channel_variants.build_channel_variants(draft, confirmed)
+        for channel in ('x', 'linkedin', 'instagram', 'email', 'facebook'):
+            with self.subTest(channel=channel):
+                variant = packed[channel]
+                self.assertTrue(variant['content_valid'])
+                entry = channel_variants._checked_variant_entry(variant)
+                combined = variant['text']
+                if channel == 'email':
+                    combined += ' ' + variant.get('subject', '')
+                self.assertEqual(
+                    entry['ad_policy_hits'], lint_ad_policy(combined)
+                )
+                self.assertFalse(entry['ad_policy_passed'])
+
+    def test_checked_entry_falls_back_to_lint_without_stored_fields(self):
+        from launchcrew.ad_policy_lint import lint_ad_policy
+        legacy = {
+            'channel': 'x',
+            'variant_kind': channel_variants.VARIANT_KIND,
+            'text': 'This wallet is guaranteed to last.',
+            'content_valid': True,
+            'status': 'candidate_pending_checker',
+            'metadata': {},
+        }
+        entry = channel_variants._checked_variant_entry(legacy)
+        self.assertFalse(entry['ad_policy_passed'])
+        self.assertEqual(
+            entry['ad_policy_hits'],
+            lint_ad_policy('This wallet is guaranteed to last.'),
+        )
+        self.assertTrue(
+            any(h['match'] == 'guaranteed'
+                for h in entry['ad_policy_hits'])
+        )
+
+
 if __name__ == '__main__':
     unittest.main()
