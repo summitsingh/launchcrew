@@ -483,12 +483,17 @@ async def sanitized_validation_error(request, error):
 
 @app.exception_handler(ValueError)
 async def invalid(request, error):
-    return JSONResponse({'detail': 'Validation failed'}, status_code=422)
+    # Surface the real validation reason so custom agent saves show why
+    # they failed instead of a bare 422 banner. Validator messages carry
+    # only field and rule names, never secrets or raw input.
+    return JSONResponse({'detail': 'Validation failed: ' + str(error)}, status_code=422)
 
 
 @app.exception_handler(IntegrityError)
 async def conflict(request, error):
-    return JSONResponse({'detail': 'Conflict'}, status_code=409)
+    # Name collisions on agent saves report the cause instead of a bare
+    # 409 banner. Only the constraint outcome is shared, never input.
+    return JSONResponse({'detail': 'Conflict: agent name already exists'}, status_code=409)
 
 
 @app.get('/api/health')

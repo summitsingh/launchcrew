@@ -20,7 +20,7 @@ def test_health(client):
 
 def test_agent_crud_clone_validation(client):
     profile = client.get('/api/agents/Maker').json()
-    assert len(client.get('/api/agents').json()) == 3
+    assert len(client.get('/api/agents').json()) == 7
     profile['name'] = 'WalletCrew'
     assert client.post('/api/agents', json=profile).status_code == 201
     assert client.post('/api/agents', json=profile).status_code == 409

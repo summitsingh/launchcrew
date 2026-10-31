@@ -17,8 +17,10 @@ Scope guarantees:
 * Pure stdlib, deterministic, no I/O, no network, no database, no
   model calls, no photo transport, no filesystem access.
 * Profiles validate through ``launchcrew.agents.validate`` with zero
-  spend, ``approve_each``, empty veto scope, and tools limited to the
-  existing ``ALLOWED_TOOLS`` set.
+  spend, ``approve_each``, one distinct enforced Checker policy each
+  (Support blocks price claims, Designer blocks superlatives, Analyst
+  blocks marketing cliches, Research bans the custom phrase moonshot),
+  and tools limited to the existing ``ALLOWED_TOOLS`` set.
 * Nothing here confirms facts, approves drafts, writes to any memory
   or approval store, or crosses the owner and workspace boundary.
   Every output requires owner confirmation and Checker approval
@@ -88,8 +90,9 @@ _SUPPORT_PROFILE = {
         "Mark any claim without a source as unverified and leave it for owner confirmation",
         "Prepare drafts for owner confirmation and Checker approval, and do not approve drafts or bypass review",
         "If sources conflict or are missing, ask for owner input instead of guessing",
+        "Block price claims",
     ],
-    "veto_scope": [],
+    "veto_scope": ["price_claims"],
     "tools_allowed": ["facts_file", "spark_strict_json", "receipt_log", "claim_check"],
     "spend_limit": 0,
     "approval_level": "approve_each",
@@ -123,8 +126,9 @@ _DESIGNER_PROFILE = {
         "Do not generate, view, alter, or process pixels, and do not claim to edit image files or to have inspected pixels",
         "Prepare suggestions for owner confirmation and Checker approval, and do not approve suggestions or bypass review",
         "If validated geometry, the original photo, or the brand note is missing, ask for owner input instead of guessing",
+        "Block superlatives",
     ],
-    "veto_scope": [],
+    "veto_scope": ["superlatives"],
     "tools_allowed": ["facts_file", "spark_strict_json", "receipt_log"],
     "spend_limit": 0,
     "approval_level": "approve_each",
@@ -158,8 +162,9 @@ _ANALYST_PROFILE = {
         "Do not invent metrics, totals, trends, targets, or comparisons",
         "Prepare summaries for owner confirmation and Checker approval, and do not approve summaries or bypass review",
         "If owner entries are missing, unclear, invalid, or from another workspace, fail closed and ask for owner input instead of guessing",
+        "Block marketing cliches",
     ],
-    "veto_scope": [],
+    "veto_scope": ["cliches"],
     "tools_allowed": ["facts_file", "spark_strict_json", "receipt_log"],
     "spend_limit": 0,
     "approval_level": "approve_each",
@@ -192,8 +197,9 @@ _RESEARCH_PROFILE = {
         "Mark any suggestion without a source as unverified, keep every suggestion unconfirmed, and never imply a lookup was performed",
         "Prepare suggestions for owner confirmation and Checker approval, and do not approve suggestions or bypass review",
         "If a source is missing or unclear, ask for owner input instead of guessing",
+        "Ban phrase moonshot",
     ],
-    "veto_scope": [],
+    "veto_scope": ["banned:moonshot"],
     "tools_allowed": ["facts_file", "spark_strict_json", "receipt_log", "claim_check"],
     "spend_limit": 0,
     "approval_level": "approve_each",

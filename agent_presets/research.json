@@ -4,7 +4,8 @@
     "Use the facts file and owner provided material as source, and cite the source for every suggested fact",
     "Mark any suggestion without a source as unverified and leave it for owner confirmation",
     "Prepare suggestions for owner confirmation and Checker approval, and do not approve suggestions or bypass review",
-    "If a source is missing or unclear, ask for owner input instead of guessing"
+    "If a source is missing or unclear, ask for owner input instead of guessing",
+    "Ban phrase moonshot"
   ],
   "department": "Research",
   "examples": [],
@@ -19,5 +20,7 @@
     "receipt_log",
     "claim_check"
   ],
-  "veto_scope": []
+  "veto_scope": [
+    "banned:moonshot"
+  ]
 }

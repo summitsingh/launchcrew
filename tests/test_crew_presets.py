@@ -82,7 +82,23 @@ class CrewPresetTests(unittest.TestCase):
                 self.assertIn("checker", text)
                 self.assertIn("intended", text)
                 self.assertIn("would", text)
-                self.assertEqual(profile["veto_scope"], [])
+
+    def test_distinct_enforced_checker_policies(self):
+        from launchcrew.checker_policies import parse_checker_agent
+        expected = {
+            "support.json": ["price_claims"],
+            "designer.json": ["superlatives"],
+            "analyst.json": ["cliches"],
+            "research.json": ["custom:moonshot"],
+        }
+        seen = set()
+        for filename, policies in expected.items():
+            with self.subTest(preset=filename):
+                profile = load_preset(filename)
+                enforced = parse_checker_agent(profile)["enforced_policies"]
+                self.assertEqual(enforced, policies)
+                seen.add(tuple(enforced))
+        self.assertEqual(len(seen), 4)
 
     def test_no_claim_of_auto_approval_or_active_running(self):
         forbidden_claims = (

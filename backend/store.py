@@ -180,6 +180,15 @@ def ensure_default_profiles(db, workspace_id):
     for profile in agents.list_agents(ROOT / 'agents'):
         db.execute(text('INSERT INTO agents(workspace_id,name,profile) VALUES (:ws,:name,CAST(:profile AS jsonb)) ON CONFLICT DO NOTHING'),
                    {'ws': workspace_id, 'name': profile['name'].lower(), 'profile': json.dumps(profile)})
+    # Functional crew presets (Support, Designer, Analyst, Research) seed
+    # alongside built-ins so they are selectable for any stage and execute
+    # on the existing facts, check, and approval spine. Each preset carries
+    # its own prompts and one distinct enforced Checker policy.
+    presets_dir = ROOT / 'agent_presets'
+    if presets_dir.is_dir():
+        for profile in agents.list_agents(presets_dir):
+            db.execute(text('INSERT INTO agents(workspace_id,name,profile) VALUES (:ws,:name,CAST(:profile AS jsonb)) ON CONFLICT DO NOTHING'),
+                       {'ws': workspace_id, 'name': profile['name'].lower(), 'profile': json.dumps(profile)})
 
 
 def ensure_workspace_seeded(db, actor):

@@ -82,7 +82,24 @@ class ProfileSpineTests(unittest.TestCase):
                 self.assertEqual(profile["spend_limit"], 0)
                 self.assertNotIsInstance(profile["spend_limit"], bool)
                 self.assertEqual(profile["approval_level"], "approve_each")
-                self.assertEqual(profile["veto_scope"], [])
+
+    def test_distinct_enforced_checker_policies(self):
+        from launchcrew.checker_policies import parse_checker_agent
+
+        expected = {
+            "support": ["price_claims"],
+            "designer": ["superlatives"],
+            "analyst": ["cliches"],
+            "research": ["custom:moonshot"],
+        }
+        seen = set()
+        for crew, policies in expected.items():
+            with self.subTest(crew=crew):
+                profile = extra_crews.get_extra_crew_profile(crew)
+                enforced = parse_checker_agent(profile)["enforced_policies"]
+                self.assertEqual(enforced, policies)
+                seen.add(tuple(enforced))
+        self.assertEqual(len(seen), 4)
 
     def test_tools_limited_to_spine(self):
         for profile in extra_crews.list_extra_crew_profiles():
