@@ -11,9 +11,9 @@ async function mockEmptyProduct(page: Page): Promise<void> {
   await page.route('**/api/queue', (route: Route) => route.fulfill({ json: [] }));
 }
 
-test('google-only sign-in link with no facebook link', async ({ page }) => {
+test('google sign-in link alone when facebook is not configured', async ({ page }) => {
   await page.route('**/api/auth/status', (route: Route) =>
-    route.fulfill({ json: { enabled: true, user: '', live_verified: false, providers: ['google'] } }),
+    route.fulfill({ json: { enabled: true, user: '', display: '', live_verified: false, providers: ['google'] } }),
   );
   await mockEmptyProduct(page);
   await page.goto('/');
@@ -22,6 +22,28 @@ test('google-only sign-in link with no facebook link', async ({ page }) => {
   await expect(signin.getByRole('link', { name: 'Google' })).toHaveAttribute('href', '/api/auth/google/login');
   await expect(page.locator('a[href*="facebook"]')).toHaveCount(0);
   await expect(page.getByText('Auth enabled, unverified')).toBeVisible();
+});
+
+test('facebook sign-in link next to google when both providers are configured', async ({ page }) => {
+  await page.route('**/api/auth/status', (route: Route) =>
+    route.fulfill({ json: { enabled: true, user: '', display: '', live_verified: false, providers: ['google', 'facebook'] } }),
+  );
+  await mockEmptyProduct(page);
+  await page.goto('/');
+  const signin = page.getByTestId('auth-signin');
+  await expect(signin).toBeVisible();
+  await expect(signin.getByRole('link', { name: 'Google' })).toHaveAttribute('href', '/api/auth/google/login');
+  await expect(signin.getByRole('link', { name: 'Facebook' })).toHaveAttribute('href', '/api/auth/facebook/login');
+});
+
+test('signed-in display name leads with raw id kept in data', async ({ page }) => {
+  await page.route('**/api/auth/status', (route: Route) =>
+    route.fulfill({ json: { enabled: true, user: 'facebook:synthetic-browser-02', display: 'Synthetic Friend', live_verified: false, providers: ['google', 'facebook'] } }),
+  );
+  await mockEmptyProduct(page);
+  await page.goto('/');
+  await expect(page.getByTestId('auth-display')).toContainText('Synthetic Friend');
+  await expect(page.getByTestId('auth-actor')).toContainText('facebook:synthetic-browser-02');
 });
 
 test('setup required when google provider is missing', async ({ page }) => {

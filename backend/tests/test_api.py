@@ -148,7 +148,7 @@ def test_openapi_matches_committed_document(client):
 
 
 def test_auth_disabled(client):
-    assert client.get('/api/auth/status').json() == {'enabled': False, 'user': '', 'live_verified': False, 'providers': []}
+    assert client.get('/api/auth/status').json() == {'enabled': False, 'user': '', 'display': '', 'live_verified': False, 'providers': []}
     assert client.get('/api/auth/google/login', follow_redirects=False).status_code == 404
 
 
@@ -217,7 +217,7 @@ def test_auth_mocked_state_callback_rotation(client, monkeypatch):
         assert client.get('/api/auth/status').json()['user'] == 'google:demo-test-subject'
     with store.connect() as db:
         sessions = db.execute(text('SELECT data FROM auth_sessions')).scalars().all()
-    assert sessions == [{'actor': 'google:demo-test-subject'}]
+    assert sessions == [{'actor': 'google:demo-test-subject', 'display': 'demo-test-subject'}]
     assert 'demo-transient-value' not in json.dumps(sessions)
 
 

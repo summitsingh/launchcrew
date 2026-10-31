@@ -74,7 +74,7 @@ def test_enable_refused_with_invalid_base_url(monkeypatch):
 
 def test_status_google_only_providers(client, monkeypatch):
     assert client.get('/api/auth/status').json() == {
-        'enabled': False, 'user': '', 'live_verified': False, 'providers': []}
+        'enabled': False, 'user': '', 'display': '', 'live_verified': False, 'providers': []}
     monkeypatch.setenv('AUTH_ENABLED', 'true')
     monkeypatch.delenv('GOOGLE_CLIENT_ID', raising=False)
     monkeypatch.delenv('GOOGLE_CLIENT_SECRET', raising=False)
@@ -143,7 +143,7 @@ def test_google_callback_uri_exact_prod(client, monkeypatch):
     assert client.get('/api/queue').status_code == 200
     with store.connect() as db:
         sessions = db.execute(text('SELECT data FROM auth_sessions')).scalars().all()
-    assert sessions == [{'actor': 'google:' + SYN_CALLBACK}]
+    assert sessions == [{'actor': 'google:' + SYN_CALLBACK, 'display': SYN_CALLBACK}]
     assert 'demo-transient-value' not in json.dumps(sessions)
 
 

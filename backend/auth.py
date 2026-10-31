@@ -1,11 +1,15 @@
 """Opt-in Authlib OAuth with opaque cookies and server-side Postgres sessions.
 
-Google-only priority: source wiring exposes only configured providers and
-requires Google configuration when enabled. Facebook code remains present but
-unpublished and inactive unless its credentials are explicitly configured.
-Only identity scopes. Provider tokens are never persisted or returned to clients.
-Live provider sign-in has not been verified. Status live_verified stays false
-until actual provider proof.
+Google and Facebook sign-in share one Authlib source. Status exposes only
+configured providers and requires Google configuration when enabled.
+Facebook login and callback activate as soon as its credentials are
+configured. Only identity scopes. Provider tokens are never persisted or
+returned to clients. Sessions store provider:subject as the actor plus a
+human display name or email; the UI labels the display value and keeps the
+raw subject id in data only. Live sign-in for both providers is unverified
+until the owner records real end-to-end proof per provider. Status
+live_verified and health enabled_verified stay false (enabled_unverified)
+until that owner-confirmed proof exists for both providers.
 """
 import hashlib
 import json
@@ -22,6 +26,7 @@ from backend import store
 router = APIRouter(prefix='/api/auth')
 COOKIE = 'launchcrew_session'
 SESSION_HOURS = 8
+LIVE_VERIFIED_PROVIDERS = ('google', 'facebook')
 
 
 def enabled():
@@ -109,10 +114,56 @@ def actor(request: Request):
     return data['actor']
 
 
+def display_label(data):
+    if not data:
+        return ''
+    display = str(data.get('display', '') or '').strip()
+    return display or str(data.get('actor', '') or '')
+
+
+def live_verified_providers():
+    try:
+        with store.connect() as db:
+            rows = db.execute(text('SELECT provider FROM auth_live_verifications')).scalars().all()
+    except Exception:
+        return []
+    return sorted({str(value) for value in rows if str(value) in LIVE_VERIFIED_PROVIDERS})
+
+
+def live_verified_both():
+    return all(provider in live_verified_providers() for provider in LIVE_VERIFIED_PROVIDERS)
+
+
+def record_live_verification(provider, note=''):
+    if provider not in LIVE_VERIFIED_PROVIDERS:
+        raise ValueError('Unknown provider')
+    label = str(note or '')[:200]
+    with store.connect() as db:
+        db.execute(
+            text('INSERT INTO auth_live_verifications(provider, note) VALUES (:provider, :note) '
+                 'ON CONFLICT (provider) DO UPDATE SET verified_at=now(), note=EXCLUDED.note'),
+            {'provider': provider, 'note': label})
+
+
+def health_auth_label():
+    if not enabled():
+        return 'disabled_demo'
+    return 'enabled_verified' if live_verified_both() else 'enabled_unverified'
+
+
+def sanitize_display(value, fallback=''):
+    text_value = str(value or '').strip()
+    if not text_value:
+        text_value = str(fallback or '').strip()
+    return text_value[:200]
+
+
 @router.get('/status')
 def status(request: Request) -> dict[str, str | bool | list[str]]:
     data = load_session(request) if enabled() else None
-    return {'enabled': enabled(), 'user': data.get('actor', '') if data else '', 'live_verified': False, 'providers': configured_providers() if enabled() else []}
+    return {'enabled': enabled(), 'user': data.get('actor', '') if data else '',
+            'display': display_label(data), 'live_verified': live_verified_both() if enabled() else False,
+            'providers': configured_providers() if enabled() else []}
 
 
 @router.get('/{provider}/login')
@@ -138,18 +189,21 @@ async def callback(provider: str, request: Request):
     try:
         token = await client.authorize_access_token(request)
         if provider == 'google':
-            user = token.get('userinfo', {})
+            user = token.get('userinfo', {}) or {}
             subject = user.get('sub')
+            display = sanitize_display(user.get('name') or user.get('email'), subject)
         else:
             result = await client.get('me', params={'fields': 'id,name,email'}, token=token)
-            subject = result.json().get('id')
+            profile = result.json() or {}
+            subject = profile.get('id')
+            display = sanitize_display(profile.get('name') or profile.get('email'), subject)
         if not subject:
             raise ValueError('Missing identity')
     except Exception:
         # No provider errors or tokens in responses, logs, receipts, or sessions.
         raise HTTPException(400, 'Identity verification failed') from None
     response = RedirectResponse('/', status_code=303)
-    save_session({'actor': provider + ':' + str(subject)}, response, request.cookies.get(COOKIE))
+    save_session({'actor': provider + ':' + str(subject), 'display': display}, response, request.cookies.get(COOKIE))
     return response
 
 

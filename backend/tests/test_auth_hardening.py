@@ -92,7 +92,7 @@ def test_rotation_mocked_callback_invalidates_old_cookie(client, monkeypatch):
     assert client.get('/api/queue').status_code == 200
     with store.connect() as db:
         sessions = db.execute(text('SELECT data FROM auth_sessions')).scalars().all()
-    assert sessions == [{'actor': ACTOR}]
+    assert sessions == [{'actor': ACTOR, 'display': 'demo-test-subject'}]
     assert 'demo-transient-value' not in json.dumps(sessions)
 
 
@@ -103,7 +103,7 @@ def test_expired_session_refused_and_status_empty(client, monkeypatch):
         db.execute(text("UPDATE auth_sessions SET expires_at=now()-interval '1 second'"))
     assert client.get('/api/queue').status_code == 401
     assert client.get('/api/auth/status').json() == {
-        'enabled': True, 'user': '', 'live_verified': False, 'providers': []}
+        'enabled': True, 'user': '', 'display': '', 'live_verified': False, 'providers': []}
     # The expired cookie does not become valid again on a later request.
     client.cookies.set(auth.COOKIE, opaque)
     assert client.get('/api/queue').status_code == 401

@@ -457,7 +457,7 @@ async def conflict(request, error):
 def health() -> dict[str, str]:
     with store.connect() as db:
         db.execute(text('SELECT 1'))
-    return {'status': 'ok', 'auth': 'enabled_unverified' if auth.enabled() else 'disabled_demo', 'approval_by': 'signed_in_user' if auth.enabled() else 'demo_placeholder'}
+    return {'status': 'ok', 'auth': auth.health_auth_label(), 'approval_by': 'signed_in_user' if auth.enabled() else 'demo_placeholder'}
 
 
 @app.get('/api/checker-policies', response_model=CheckerPoliciesOut)

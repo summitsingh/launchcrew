@@ -5,21 +5,30 @@ function desk(): string {
   return readFileSync('src/app/page.tsx', 'utf8');
 }
 
-describe('google-only auth UI', () => {
-  it('renders only the configured Google provider with no Facebook link', () => {
+describe('google and facebook auth UI', () => {
+  it('renders the Facebook option next to Google when configured', () => {
     const source = desk();
     expect(source).toContain("authProviders.includes('google')");
+    expect(source).toContain("authProviders.includes('facebook')");
     expect(source).toContain('/api/auth/google/login');
+    expect(source).toContain('/api/auth/facebook/login');
     expect(source).toContain('data-testid="auth-signin"');
     expect(source).toContain('Google provider setup is required');
-    expect(source.toLowerCase()).not.toContain('facebook');
-    expect(source).not.toContain('/api/auth/facebook/login');
   });
 
-  it('keeps status unverified and exposes providers from auth status', () => {
+  it('labels the display name first and keeps the raw id in data', () => {
+    const source = desk();
+    expect(source).toContain('data-testid="auth-display"');
+    expect(source).toContain('data-testid="auth-actor"');
+    expect(source).toContain('authDisplay');
+    expect(source).toContain('Signed in as');
+  });
+
+  it('keeps the verified badge honest and exposes providers from auth status', () => {
     const source = desk();
     expect(source).toContain('Auth enabled, unverified');
-    expect(source).not.toContain('Auth enabled, verified');
+    expect(source).toContain('Auth enabled, verified');
+    expect(source).toContain('authLiveVerified');
     expect(source).toContain("auth.data?.providers");
     expect(source).toContain('authProviders');
     expect(source).toContain('authEnabled');
@@ -58,6 +67,7 @@ describe('google-only auth UI', () => {
     const source = desk();
     expect(source).not.toContain('META_API_KEY');
     expect(source).not.toContain('GOOGLE_CLIENT_SECRET');
+    expect(source).not.toContain('FACEBOOK_CLIENT_SECRET');
     expect(source).not.toContain('apps.googleusercontent.com');
   });
 });

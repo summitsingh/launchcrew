@@ -11,7 +11,7 @@ Do not broaden sign-in scopes. Sign-in never requests Drive, publishing, Instagr
 - Google sign-in: openid profile email
 - Google Drive intake (separate user-initiated flow only): openid profile email plus https://www.googleapis.com/auth/drive.file, online with no refresh token
 
-Facebook Login stays unpublished and inactive in Google-only mode. No Facebook scope is requested and no Facebook link is shown. The backend keeps Facebook code for later work but Google-only deployment injects no Facebook credential.
+Facebook Login activates as soon as its credentials are configured. The Facebook scope is public_profile email, requested only on the Facebook flow, and the UI shows a Facebook link next to Google only when /api/auth/status providers includes facebook. Deployment injects no Facebook credential until the owner completes docs/facebook-signin-checklist.md; until then only Google appears.
 
 Identity scopes only for sign-in. The backend enforces Google sign-in scope in backend/auth.py oauth_client. backend/tests/test_api.py test_identity_only_scopes checks the Google sign-in scope set. The Drive scope is enforced separately in backend/drive_intake.py drive_oauth_client and checked in backend/tests/test_drive_intake_api.py. Sign-in scope is never broadened for Drive.
 
@@ -40,10 +40,10 @@ No credential value goes in the repo, in chat, in shell argv, in logs, or in doc
 
 Provider console reports one approved external test user. That count alone proves nothing about live sign-in from this source. Do not present it as production access or verified sign-in.
 
-## 4. Facebook and Meta, inactive in Google-only mode
+## 4. Facebook Login, active when configured
 
-- Facebook Login remains unpublished and inactive. No FACEBOOK_CLIENT_ID or FACEBOOK_CLIENT_SECRET is injected by deploy/aws/fargate.yaml.
-- The UI shows a Google link only when /api/auth/status providers includes google. It shows no Facebook link in Google-only mode.
+- No FACEBOOK_CLIENT_ID or FACEBOOK_CLIENT_SECRET is injected by deploy/aws/fargate.yaml until the owner completes docs/facebook-signin-checklist.md. That missing credential is the M4 blocker.
+- The UI shows a Google link when /api/auth/status providers includes google, plus a Facebook link next to it when providers includes facebook.
 - No Meta credential is injected for auth. Leave Meta OAuth and unrelated proposal integrations for later work.
 
 ## 5. Session, status, rotation, expiry, logout, and UI cache
@@ -51,7 +51,7 @@ Provider console reports one approved external test user. That count alone prove
 - Cookie name: launchcrew_session. Path: /api. Flags: Secure, HttpOnly, SameSite=lax, max age 8 hours.
 - Sessions live server-side in Postgres table auth_sessions. Only a hashed opaque id is the key; the raw cookie value is never stored.
 - Session lifetime: 8 hours (SESSION_HOURS in backend/auth.py). An expired session is refused with 401, and /api/auth/status reports no user.
-- Status: /api/auth/status returns enabled, user, live_verified false, and providers. Providers is ['google'] when Google credentials are configured and auth is enabled, otherwise []. live_verified stays false until actual provider proof. Covered by backend/tests/test_google_auth.py.
+- Status: /api/auth/status returns enabled, user, display, live_verified, and providers. Providers lists each configured provider (google, facebook) when auth is enabled, otherwise []. display carries the signed-in name or email with the raw provider:subject kept in user. live_verified stays false, and /api/health stays enabled_unverified, until the owner records real end-to-end proof for both providers. Covered by backend/tests/test_google_auth.py and backend/tests/test_facebook_auth.py.
 - Rotation: login saves the OAuth state session and callback saves the signed-in session with a new opaque value, deleting the old session row. After rotation, the old cookie must get 401 on a protected endpoint. Covered by backend/tests/test_auth_hardening.py and backend/tests/test_google_auth.py. Drive authorize and callback preserve the signed-in session without rotation and without demo replacement; the pending Drive binding is cleared after callback and the one-time grant lives in memory only, so a restart requires reauthorization.
 - Logout: POST /api/auth/logout deletes the server session row and expires the client cookie. Logout is idempotent: a missing or already invalid cookie still returns signed_out true. After logout, a protected endpoint must return 401. The UI shows an explicit Sign out button when signed in. Sign-out plus sign-in plus user switch clear React Query caches for agents, queue, and run plus actor view state (active run, notice, error, export marker), so no previous actor data shows while refetching. Covered by backend/tests/test_google_auth.py, web/tests/google-auth.test.tsx, and web/tests/e2e/google-auth.spec.ts.
 - Failure handling: callback failures return a generic identity verification failure. Provider errors and tokens are not put in responses, logs, receipts, or sessions.
@@ -60,16 +60,17 @@ Provider console reports one approved external test user. That count alone prove
 ## 6. approval_by recording
 
 - Disabled mode: approval_by is demo_placeholder everywhere, including receipt approvals, the approvals table, and audit actor.
-- Enabled and signed in: approval_by is the signed-in Google user (google:subject). Approving a run must record that same value in three places: the receipt approvals entry, the approvals table row, and the audit row for approved_for_export. Covered by backend/tests/test_google_auth.py two-actor isolation.
-- Never record a provider token, email address, or full profile as approval_by. Only provider:subject is recorded.
+- Enabled and signed in: approval_by is the signed-in user (google:subject or facebook:subject). Approving a run must record that same value in three places: the receipt approvals entry, the approvals table row, and the audit row for approved_for_export. Covered by backend/tests/test_google_auth.py two-actor isolation and backend/tests/test_facebook_auth.py.
+- Never record a provider token, email address, or full profile as approval_by. Only provider:subject is recorded. The display name or email is shown in the UI only, never as approval_by.
 
 ## 7. Test plan for live sign-in (requires explicit operator approval and deployment HTTPS, NOT in this task)
 
 Do not run this plan until explicit operator approval is recorded and deployment HTTPS is verified. This plan is live-proof, not source-only. Source-only coverage in this repo uses mocked auth status and synthetic subjects only, with no live provider call and no verified sign-in.
 
 - [ ] Confirm /api/health reports auth enabled_unverified and approval_by signed_in_user only after EnableGoogleAuth true plus the exact Google secret ARN is deployed.
-- [ ] Confirm /api/auth/status shows providers ['google'] and live_verified false before sign-in.
-- [ ] Google: open /api/auth/google/login, complete sign-in, confirm redirect to the app, confirm /api/auth/status shows the signed-in Google user, and confirm the callback URL matches section 2.
+- [ ] Confirm /api/auth/status shows the configured providers and live_verified false before sign-in.
+- [ ] Google: open /api/auth/google/login, complete sign-in, confirm redirect to the app, confirm /api/auth/status shows the signed-in Google display name, and confirm the callback URL matches section 2.
+- [ ] Facebook: same plan through /api/auth/facebook/login with the redirect URI in docs/facebook-signin-checklist.md, confirming the Facebook display name. Record proof per provider with scripts/verify_live_auth.py, then confirm /api/health reports enabled_verified.
 - [ ] Create a run, approve it, and confirm approval_by is the signed-in Google user in the receipt, the approvals table, and audit, not demo_placeholder.
 - [ ] Confirm second-actor isolation with two real test subjects: each sees only its own queue, runs, memory, and campaigns, with 404 across actors.
 - [ ] Confirm logout: after POST /api/auth/logout via the UI Sign out button, /api/auth/status shows no user and /api/queue returns 401, with no stale actor data shown.
