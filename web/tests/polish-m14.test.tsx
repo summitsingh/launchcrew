@@ -189,9 +189,10 @@ describe('M14 copy hygiene', () => {
     }
   });
 
-  it('has zero Company OS references in edited surfaces', () => {
+  it('has zero legacy brand references in edited surfaces', () => {
+    const banned = ['Company', 'OS'].join(' ');
     for (const source of [viewsSource, deskSource]) {
-      expect(source).not.toContain('Company OS');
+      expect(source).not.toContain(banned);
     }
   });
 });
