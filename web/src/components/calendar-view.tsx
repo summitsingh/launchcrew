@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { api, unwrap } from '@/lib/api';
+import { FormatLibraryPanel } from '@/components/format-library';
 import type { components } from '@/lib/schema';
 
 type Slot = components['schemas']['CalendarSlotOut'];
@@ -143,6 +144,8 @@ export function CalendarView() {
   const start = days[0];
   const end = days[days.length - 1];
   const slots = useQuery({ queryKey: ['calendar-slots', start, end], queryFn: () => unwrap(api.GET('/api/calendar/slots', { params: { query: { start_date: start, end_date: end } } })) });
+  const formats = useQuery({ queryKey: ['formats'], queryFn: () => unwrap(api.GET('/api/formats')) });
+  const capabilities = useQuery({ queryKey: ['channel-capabilities'], queryFn: () => unwrap(api.GET('/api/channel-capabilities')) });
   const grouped = groupSlotsByDate(slots.data ?? []);
   return <section aria-label="Calendar">
     <section className="panel"><h2>Content Calendar</h2><p>Nothing publishes automatically. Empty daily slots stay visible as gaps.</p>
@@ -161,5 +164,9 @@ export function CalendarView() {
     {slots.error && <p role="alert">{slots.error.message}</p>}
     {days.map(slotDate => <DayCell key={slotDate} slotDate={slotDate} slots={grouped.get(slotDate) ?? []} />)}
     <AddSlotFromRun />
+    <FormatLibraryPanel
+      formats={(formats.data ?? []) as { format: string; label: string; rule: string }[]}
+      capabilities={(capabilities.data ?? []) as { channel: string; allowed_formats: string[]; caption_limit: number; media_constraints: { aspect_ratios: string[]; min_frames: number; max_frames: number } }[]}
+    />
   </section>;
 }

@@ -118,6 +118,58 @@
         "title": "AsyncRunCreated",
         "type": "object"
       },
+      "BrandKitOut": {
+        "additionalProperties": true,
+        "properties": {
+          "banned_rules": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Banned Rules",
+            "type": "array"
+          },
+          "brand_colors": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Brand Colors",
+            "type": "array"
+          },
+          "digest": {
+            "default": "",
+            "title": "Digest",
+            "type": "string"
+          },
+          "fonts": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Fonts",
+            "type": "array"
+          },
+          "logo_reference": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Logo Reference"
+          },
+          "version": {
+            "default": "",
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "title": "BrandKitOut",
+        "type": "object"
+      },
       "CalendarPlaceIn": {
         "additionalProperties": false,
         "properties": {
@@ -434,6 +486,17 @@
             "description": "Facts-library variant to inherit confirmed facts from. Supply either this or product_facts, never both. The run binds a snapshot copy; later library edits never rewrite this run.",
             "title": "Fact Variant Id"
           },
+          "format_spec": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FormatSpec"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional S2 format spec (format_kind, frame_count, aspect_ratio, hook_text, shots, frame_ideas, target_surface). Checker enforces the format rules and records format_check on the receipt; a failed check blocks approval."
+          },
           "idea": {
             "maxLength": 2000,
             "minLength": 1,
@@ -540,6 +603,37 @@
         "title": "CampaignOut",
         "type": "object"
       },
+      "ChannelCapabilityOut": {
+        "additionalProperties": true,
+        "properties": {
+          "allowed_formats": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowed Formats",
+            "type": "array"
+          },
+          "caption_limit": {
+            "default": 0,
+            "title": "Caption Limit",
+            "type": "integer"
+          },
+          "channel": {
+            "default": "",
+            "title": "Channel",
+            "type": "string"
+          },
+          "media_constraints": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Media Constraints",
+            "type": "object"
+          }
+        },
+        "title": "ChannelCapabilityOut",
+        "type": "object"
+      },
       "ChannelCopyOut": {
         "additionalProperties": true,
         "properties": {
@@ -604,6 +698,18 @@
             "default": "",
             "title": "Approval Note",
             "type": "string"
+          },
+          "capability": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Capability"
           },
           "channel": {
             "default": "",
@@ -711,6 +817,15 @@
             "default": "checked-channel-variants/v1",
             "title": "Bundle Version",
             "type": "string"
+          },
+          "capabilities": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Capabilities",
+            "type": "array"
           },
           "channel_approvals": {
             "additionalProperties": true,
@@ -1966,6 +2081,224 @@
         "title": "FactVariantOut",
         "type": "object"
       },
+      "FormatCheckOut": {
+        "additionalProperties": true,
+        "properties": {
+          "format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Format"
+          },
+          "passed": {
+            "default": false,
+            "title": "Passed",
+            "type": "boolean"
+          },
+          "reasons": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "version": {
+            "default": "format-library/v1",
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "title": "FormatCheckOut",
+        "type": "object"
+      },
+      "FormatDefinitionOut": {
+        "additionalProperties": true,
+        "properties": {
+          "format": {
+            "default": "",
+            "title": "Format",
+            "type": "string"
+          },
+          "label": {
+            "default": "",
+            "title": "Label",
+            "type": "string"
+          },
+          "rule": {
+            "default": "",
+            "title": "Rule",
+            "type": "string"
+          }
+        },
+        "title": "FormatDefinitionOut",
+        "type": "object"
+      },
+      "FormatSpec": {
+        "additionalProperties": true,
+        "properties": {
+          "aspect_ratio": {
+            "anyOf": [
+              {
+                "maxLength": 16,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Aspect Ratio"
+          },
+          "format": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Format"
+          },
+          "format_kind": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Format Kind"
+          },
+          "frame_count": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frame Count"
+          },
+          "frame_ideas": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frame Ideas"
+          },
+          "frames": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frames"
+          },
+          "hook": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hook"
+          },
+          "hook_text": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hook Text"
+          },
+          "shot_list": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shot List"
+          },
+          "shots": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shots"
+          },
+          "surface": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Surface"
+          },
+          "target_surface": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Surface"
+          }
+        },
+        "title": "FormatSpec",
+        "type": "object"
+      },
       "FounderNoteField": {
         "additionalProperties": false,
         "properties": {
@@ -2402,6 +2735,15 @@
             "default": "checked-launch-matrix/v1",
             "title": "Bundle Version",
             "type": "string"
+          },
+          "capabilities": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Capabilities",
+            "type": "array"
           },
           "channel_approvals": {
             "additionalProperties": true,
@@ -3765,6 +4107,17 @@
             "title": "Audit",
             "type": "object"
           },
+          "brand_kit": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BrandKitOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "S2 brand kit version and digest recorded from the voice profile brand fields. Changing a brand color, font, logo reference, or banned rule changes the recorded version."
+          },
           "campaign_brief": {
             "anyOf": [
               {
@@ -3870,6 +4223,30 @@
               }
             ],
             "title": "Exported Revision"
+          },
+          "format_check": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FormatCheckOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "S2 Checker-enforced format check result. A failed check blocks approval with a plain rule reason."
+          },
+          "format_spec": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "S2 format spec supplied with the run, when any.",
+            "title": "Format Spec"
           },
           "human_check": {
             "anyOf": [
@@ -4758,6 +5135,17 @@
             ],
             "description": "Facts-library variant to inherit confirmed facts from. Supply either this or product_facts, never both. The run binds a snapshot copy; later library edits never rewrite this run.",
             "title": "Fact Variant Id"
+          },
+          "format_spec": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FormatSpec"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional S2 format spec (format_kind, frame_count, aspect_ratio, hook_text, shots, frame_ideas, target_surface). Checker enforces the format rules and records format_check on the receipt; a failed check blocks approval."
           },
           "idea": {
             "maxLength": 2000,
@@ -6229,6 +6617,29 @@
         "summary": "Export Campaign Day"
       }
     },
+    "/api/channel-capabilities": {
+      "get": {
+        "description": "Return the per-channel capabilities table (account_capabilities pattern, as data).",
+        "operationId": "list_channel_capabilities_api_channel_capabilities_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ChannelCapabilityOut"
+                  },
+                  "title": "Response List Channel Capabilities Api Channel Capabilities Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Channel Capabilities"
+      }
+    },
     "/api/checker-policies": {
       "get": {
         "operationId": "checker_policies_api_checker_policies_get",
@@ -6884,6 +7295,68 @@
           }
         },
         "summary": "Confirm Fact Variant"
+      }
+    },
+    "/api/formats": {
+      "get": {
+        "description": "List the S2 format library with each Checker-enforced rule.",
+        "operationId": "list_formats_api_formats_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/FormatDefinitionOut"
+                  },
+                  "title": "Response List Formats Api Formats Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Formats"
+      }
+    },
+    "/api/formats/check": {
+      "post": {
+        "description": "Check one format spec against the Checker-enforced format rules.\n\nStateless and read-only: no runs, memory writes, model calls, or\nnetwork. Returns a pass/fail record with plain human-readable\nreasons naming the rule that failed.",
+        "operationId": "check_format_route_api_formats_check_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FormatSpec"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FormatCheckOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Check Format Route"
       }
     },
     "/api/health": {

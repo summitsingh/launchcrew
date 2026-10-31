@@ -70,7 +70,9 @@ STYLE_ONLY_NOTICE = (
     "and never become confirmed facts."
 )
 
-_PROFILE_KEYS = frozenset({"examples", "banned_terms"})
+_PROFILE_KEYS = frozenset({"examples", "banned_terms", "brand_colors", "fonts",
+                           "logo_reference", "banned_rules", "brandColors",
+                           "logoReference", "bannedRules"})
 _EXAMPLE_KEYS = frozenset({"input", "output"})
 
 
@@ -219,14 +221,26 @@ def validate_profile(profile: Any) -> dict[str, Any]:
 
     ordered_terms = sorted(by_tokens.values(), key=lambda s: (s.casefold(), s))
 
+    from .brand_kit import normalize_brand_kit as _normalize_brand_kit
+    kit = _normalize_brand_kit(profile)
+    merged_terms = list(ordered_terms)
+    for rule in kit.get("banned_rules", []):
+        if rule not in merged_terms:
+            merged_terms.append(rule)
+    merged_terms = sorted(merged_terms, key=lambda s: (s.casefold(), s))
+
     return {
         "examples": copied,
-        "banned_terms": ordered_terms,
+        "banned_terms": merged_terms,
+        "brand_colors": list(kit.get("brand_colors", [])),
+        "fonts": list(kit.get("fonts", [])),
+        "logo_reference": kit.get("logo_reference"),
+        "banned_rules": list(kit.get("banned_rules", [])),
         "meta": {
             "style_only": True,
             "notice": STYLE_ONLY_NOTICE,
             "example_count": len(copied),
-            "banned_term_count": len(ordered_terms),
+            "banned_term_count": len(merged_terms),
         },
     }
 

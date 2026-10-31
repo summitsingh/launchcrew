@@ -18,6 +18,7 @@ import { FactLibrarySection, MissingFactsPrompt, type LibrarySelection } from '@
 import { ProductFactsForm } from '@/components/product-facts-form';
 import { RunOutcomesSection } from '@/components/run-outcomes';
 import { PlaceCampaignOnCalendar } from '@/components/calendar-view';
+import { BrandKitForm } from '@/components/format-library';
 import type { components } from '@/lib/schema';
 
 type Receipt = components['schemas']['Receipt'];
@@ -163,6 +164,7 @@ export function MemoryView() {
         <label htmlFor="memory-title">Title</label><input id="memory-title" required minLength={1} maxLength={200} value={title} onChange={e => setTitle(e.target.value)} />
         <label htmlFor="memory-content">Content JSON object</label><textarea id="memory-content" required rows={5} value={content} onChange={e => setContent(e.target.value)} />
         {kind === 'voice_profile' && <p className="hint">Voice shape: {"{\"examples\": [{\"input\": \"...\", \"output\": \"...\"}], \"banned_terms\": [\"...\"]}"}. Use synthetic samples only, 3 to 5 pairs. Banned terms block drafts and revisions with concrete reasons. Channel helper is tested only, no live channel UI.</p>}
+        {kind === 'voice_profile' && <BrandKitForm content={content} onContent={setContent} notify={setNotice} />}
         {create.error && <p role="alert">{create.error.message}</p>}
         <Button type="submit" disabled={create.isPending}>Create memory</Button>
       </form></section>

@@ -986,6 +986,11 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
         receipt['memory_claims'] = list(memory_claims or [])
         receipt['blocked_claims'] = list(blocked_claims or [])
         receipt['voice_profile'] = copy.deepcopy(voice_receipt_ref) if voice_receipt_ref is not None else None
+        try:
+            from .brand_kit import brand_kit_receipt as _brand_kit_receipt
+            receipt['brand_kit'] = _brand_kit_receipt(effective_voice) if effective_voice is not None else None
+        except Exception:
+            receipt['brand_kit'] = None
         snapshot_for_provenance = effective_voice
         if snapshot_for_provenance is None and isinstance(voice_snapshot, dict):
             snapshot_for_provenance = voice_snapshot
@@ -1033,6 +1038,12 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
             failure['voice_profile'] = copy.deepcopy(ref) if isinstance(ref, dict) else None
         except Exception:
             failure['voice_profile'] = None
+        try:
+            from .brand_kit import brand_kit_receipt as _failure_brand_kit_receipt
+            eff_voice = locals().get('effective_voice')
+            failure['brand_kit'] = _failure_brand_kit_receipt(eff_voice) if isinstance(eff_voice, dict) else None
+        except Exception:
+            failure['brand_kit'] = None
         try:
             eff = locals().get('effective_voice')
             norm_ref = locals().get('normalized_voice_ref', {})

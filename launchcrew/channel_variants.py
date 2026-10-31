@@ -37,12 +37,13 @@ import copy
 import re
 
 from .ad_policy_lint import lint_ad_policy
+from .format_library import CHANNEL_CAPABILITIES
 
 MODULE_VERSION = "channel-variants/v1"
-X_MAX_CHARS = 280
-FACEBOOK_MAX_CHARS = 2000
-TIKTOK_MAX_CHARS = 2200
-SHOPIFY_MAX_CHARS = 2000
+X_MAX_CHARS = int(CHANNEL_CAPABILITIES["x"]["caption_limit"])
+FACEBOOK_MAX_CHARS = int(CHANNEL_CAPABILITIES["facebook"]["caption_limit"])
+TIKTOK_MAX_CHARS = int(CHANNEL_CAPABILITIES["tiktok"]["caption_limit"])
+SHOPIFY_MAX_CHARS = int(CHANNEL_CAPABILITIES["shopify"]["caption_limit"])
 CHANNELS = ("x", "linkedin", "instagram", "email", "facebook", "tiktok", "shopify")
 LAUNCH_MATRIX_CHANNELS = ("x", "linkedin", "instagram", "email", "facebook", "tiktok", "shopify")
 
@@ -236,6 +237,67 @@ def _context_entry(value):
     if isinstance(value, dict):
         return {"value": copy.deepcopy(value), "note": CONTEXT_NOTE}
     raise TypeError("context must be a string, dict, or None")
+
+
+def list_channel_capabilities():
+    """Return the per-channel capabilities table rows in channel order."""
+    import copy as _copy
+
+    return [_copy.deepcopy(CHANNEL_CAPABILITIES[channel]) for channel in CHANNEL_CAPABILITIES]
+
+
+def get_channel_capability(channel):
+    """Return a copy of one channel capability row, or None when unknown."""
+    import copy as _copy
+
+    if not isinstance(channel, str):
+        return None
+    row = CHANNEL_CAPABILITIES.get(channel.strip().lower())
+    return _copy.deepcopy(row) if row is not None else None
+
+
+def apply_channel_capability(channel, text):
+    """Trim text to a channel capability row by rule or block plainly.
+
+    Keeps leading whole sentences that fit within the channel
+    caption_limit, dropping whole trailing sentences on a full
+    sentence boundary. Returns a dict with channel, capability
+    (the row), original_chars, text, trimmed (bool), blocked (bool),
+    and reason (plain string naming the capability when trimming or
+    blocking occurred, else None). The first sentence alone over the
+    limit blocks with the capability named; no fragment is emitted.
+    """
+    row = get_channel_capability(channel)
+    if row is None:
+        return {"channel": channel, "capability": None, "original_chars": len(text) if isinstance(text, str) else 0,
+                "text": "", "trimmed": False, "blocked": True,
+                "reason": "Unknown channel; no channel capability applies."}
+    limit = int(row.get("caption_limit", 0))
+    if not isinstance(text, str):
+        raise TypeError("text must be a string")
+    if len(text) <= limit:
+        return {"channel": row["channel"], "capability": row, "original_chars": len(text),
+                "text": text, "trimmed": False, "blocked": False, "reason": None}
+    sentences = split_sentences(text)
+    if not sentences:
+        return {"channel": row["channel"], "capability": row, "original_chars": len(text),
+                "text": "", "trimmed": False, "blocked": True,
+                "reason": "Blocked by the %s channel capability (%d characters); no sentences found." % (row["channel"], limit)}
+    if len(sentences[0]) > limit:
+        return {"channel": row["channel"], "capability": row, "original_chars": len(text),
+                "text": "", "trimmed": False, "blocked": True,
+                "reason": "Blocked by the %s channel capability (%d characters); first sentence is %d characters." % (row["channel"], limit, len(sentences[0]))}
+    kept = []
+    for sentence in sentences:
+        candidate = sentence if not kept else " ".join(kept + [sentence])
+        if len(candidate) <= limit:
+            kept.append(sentence)
+        else:
+            break
+    trimmed_text = " ".join(kept)
+    return {"channel": row["channel"], "capability": row, "original_chars": len(text),
+            "text": trimmed_text, "trimmed": True, "blocked": False,
+            "reason": "Trimmed by rule to %d of %d sentences on a full sentence boundary per the %s channel capability (%d characters)." % (len(kept), len(sentences), row["channel"], limit)}
 
 
 def _base_metadata(channel, confirmed_count, audience, campaign_angle):
@@ -445,8 +507,9 @@ def build_x_variant(draft_text, confirmed_facts, audience=None, campaign_angle=N
             audience,
             campaign_angle,
             "Non-exportable: first sentence is %d characters, over the "
-            "280 character X limit. Needs revision with a shorter "
-            "opening sentence. No fragment was exported." % first_len,
+            "X channel capability of %d characters. Blocked by the X "
+            "capability; needs revision with a shorter opening sentence. "
+            "No fragment was exported." % (first_len, X_MAX_CHARS),
         )
     fragment = _abbreviation_fragment(sentences)
     if fragment is not None:
@@ -504,9 +567,10 @@ def build_x_variant(draft_text, confirmed_facts, audience=None, campaign_angle=N
         )
     if omitted > 0:
         trim_note = (
-            "Trimmed to %d of %d sentences (%d/280 chars) on a full "
-            "sentence boundary; %d trailing sentence(s) omitted; no "
-            "sentence shortened." % (kept_count, total, char_count, omitted)
+            "Trimmed by rule to %d of %d sentences (%d/%d chars) on a full "
+            "sentence boundary per the X channel capability; %d trailing "
+            "sentence(s) omitted; no sentence shortened."
+            % (kept_count, total, char_count, X_MAX_CHARS, omitted)
         )
     else:
         trim_note = None
@@ -1043,6 +1107,7 @@ def build_channel_variants(draft_text, confirmed_facts, audience=None, campaign_
         "confirmed_facts_count": len(confirmed_copy),
         "audience_context": _context_entry(audience),
         "angle_context": _context_entry(campaign_angle),
+        "capabilities": list_channel_capabilities(),
         "limits": {
             "x_max_chars": X_MAX_CHARS,
             "facebook_max_chars": FACEBOOK_MAX_CHARS,
@@ -1127,6 +1192,7 @@ def build_launch_matrix(draft_text, confirmed_facts, audience=None, campaign_ang
         "confirmed_facts_count": len(confirmed_copy),
         "audience_context": _context_entry(audience),
         "angle_context": _context_entry(campaign_angle),
+        "capabilities": list_channel_capabilities(),
         "limits": {
             "x_max_chars": X_MAX_CHARS,
             "facebook_max_chars": FACEBOOK_MAX_CHARS,
@@ -1242,8 +1308,9 @@ def _checked_variant_entry(variant):
         )
     hits = [dict(hit) for hit in hits if isinstance(hit, dict)]
     passed = passed if isinstance(passed, bool) else len(hits) == 0
+    channel_name = variant.get('channel', '')
     return {
-        'channel': variant.get('channel', ''),
+        'channel': channel_name,
         'variant_kind': variant.get('variant_kind', VARIANT_KIND),
         'text': text if isinstance(text, str) else '',
         'subject': subject if isinstance(subject, str) else '',
@@ -1261,6 +1328,7 @@ def _checked_variant_entry(variant):
         'approval_note': approval_note if isinstance(approval_note, str) else APPROVAL_NOTE,
         'ad_policy_passed': passed,
         'ad_policy_hits': hits,
+        'capability': get_channel_capability(channel_name),
     }
 
 
@@ -1558,6 +1626,7 @@ def _build_checked_bundle(receipt):
     result.update(entries)
     result['provenance'] = bundle['provenance']
     result['channel_approvals'] = {}
+    result['capabilities'] = list_channel_capabilities()
     return result
 
 
@@ -1676,6 +1745,7 @@ def checked_launch_matrix(receipt):
     result.update(entries)
     result['provenance'] = matrix['provenance']
     result['channel_approvals'] = {}
+    result['capabilities'] = list_channel_capabilities()
     return result
 
 

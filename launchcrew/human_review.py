@@ -187,6 +187,25 @@ def voice_stale_reason(receipt):
     return None
 
 
+def format_block_reason(receipt):
+    """Plain format rule reason blocking approval, or None when clear."""
+    if not isinstance(receipt, dict):
+        return None
+    check = receipt.get('format_check')
+    if check is None:
+        return None
+    if not isinstance(check, dict):
+        return 'Format check is invalid; a new format check is required before approval'
+    if check.get('passed') is True:
+        return None
+    reasons = check.get('reasons')
+    if isinstance(reasons, list) and reasons:
+        for reason in reasons:
+            if isinstance(reason, str) and reason.strip():
+                return reason
+    return 'Format check failed; resolve the format rule before approval'
+
+
 def _canonical_binding_bytes(payload):
     # Fixed canonical JSON: sorted keys, compact separators, UTF-8.
     # Any non-serializable input raises and the caller fails closed.
@@ -739,6 +758,8 @@ def exportable(receipt):
         return False
     if voice_stale_reason(receipt) is not None:
         return False
+    if format_block_reason(receipt) is not None:
+        return False
     from backend.photo_review import photo_block_reason
     if photo_block_reason(receipt) is not None:
         return False
@@ -828,6 +849,9 @@ def approve_current(receipt, actor, expected_revision=None):
     stale = voice_stale_reason(receipt)
     if stale is not None:
         raise ValueError(stale)
+    format_reason = format_block_reason(receipt)
+    if format_reason is not None:
+        raise ValueError(format_reason)
     if receipt.get('approval_state') != 'pending_approval':
         raise ValueError('Run is not pending approval')
     current = current_revision(receipt)
@@ -879,6 +903,9 @@ def record_export(receipt, actor):
         stale = voice_stale_reason(receipt)
         if stale is not None:
             raise ValueError('Export refused: ' + stale)
+        format_reason = format_block_reason(receipt)
+        if format_reason is not None:
+            raise ValueError('Export refused: ' + format_reason)
         bound, reason = binding_status(receipt)
         if not bound and 'binding' in reason.lower():
             raise ValueError('Export refused: ' + reason)
@@ -910,6 +937,9 @@ def export_view(receipt):
         stale = voice_stale_reason(receipt)
         if stale is not None:
             raise ValueError('Export refused: ' + stale)
+        format_reason = format_block_reason(receipt)
+        if format_reason is not None:
+            raise ValueError('Export refused: ' + format_reason)
         bound, reason = binding_status(receipt)
         if not bound and 'binding' in reason.lower():
             raise ValueError('Export refused: ' + reason)

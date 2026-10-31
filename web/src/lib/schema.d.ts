@@ -263,6 +263,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/channel-capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Channel Capabilities
+         * @description Return the per-channel capabilities table (account_capabilities pattern, as data).
+         */
+        get: operations["list_channel_capabilities_api_channel_capabilities_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/checker-policies": {
         parameters: {
             query?: never;
@@ -501,6 +521,50 @@ export interface paths {
         put?: never;
         /** Confirm Fact Variant */
         post: operations["confirm_fact_variant_api_fact_variants__variant_id__confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/formats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Formats
+         * @description List the S2 format library with each Checker-enforced rule.
+         */
+        get: operations["list_formats_api_formats_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/formats/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Check Format Route
+         * @description Check one format spec against the Checker-enforced format rules.
+         *
+         *     Stateless and read-only: no runs, memory writes, model calls, or
+         *     network. Returns a pass/fail record with plain human-readable
+         *     reasons naming the rule that failed.
+         */
+        post: operations["check_format_route_api_formats_check_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1146,6 +1210,38 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** BrandKitOut */
+        BrandKitOut: {
+            /**
+             * Banned Rules
+             * @default []
+             */
+            banned_rules: string[];
+            /**
+             * Brand Colors
+             * @default []
+             */
+            brand_colors: string[];
+            /**
+             * Digest
+             * @default
+             */
+            digest: string;
+            /**
+             * Fonts
+             * @default []
+             */
+            fonts: string[];
+            /** Logo Reference */
+            logo_reference?: string | null;
+            /**
+             * Version
+             * @default
+             */
+            version: string;
+        } & {
+            [key: string]: unknown;
+        };
         /** CalendarPlaceIn */
         CalendarPlaceIn: {
             /** Start Date */
@@ -1270,6 +1366,8 @@ export interface components {
              * @description Facts-library variant to inherit confirmed facts from. Supply either this or product_facts, never both. The run binds a snapshot copy; later library edits never rewrite this run.
              */
             fact_variant_id?: string | null;
+            /** @description Optional S2 format spec (format_kind, frame_count, aspect_ratio, hook_text, shots, frame_ideas, target_surface). Checker enforces the format rules and records format_check on the receipt; a failed check blocks approval. */
+            format_spec?: components["schemas"]["FormatSpec"] | null;
             /** Idea */
             idea: string;
             /**
@@ -1316,6 +1414,33 @@ export interface components {
             id: string;
             /** Idea */
             idea: string;
+        };
+        /** ChannelCapabilityOut */
+        ChannelCapabilityOut: {
+            /**
+             * Allowed Formats
+             * @default []
+             */
+            allowed_formats: string[];
+            /**
+             * Caption Limit
+             * @default 0
+             */
+            caption_limit: number;
+            /**
+             * Channel
+             * @default
+             */
+            channel: string;
+            /**
+             * Media Constraints
+             * @default {}
+             */
+            media_constraints: {
+                [key: string]: unknown;
+            };
+        } & {
+            [key: string]: unknown;
         };
         /** ChannelCopyOut */
         ChannelCopyOut: {
@@ -1379,6 +1504,10 @@ export interface components {
              * @default
              */
             approval_note: string;
+            /** Capability */
+            capability?: {
+                [key: string]: unknown;
+            } | null;
             /**
              * Channel
              * @default
@@ -1484,6 +1613,13 @@ export interface components {
              * @default checked-channel-variants/v1
              */
             bundle_version: string;
+            /**
+             * Capabilities
+             * @default []
+             */
+            capabilities: {
+                [key: string]: unknown;
+            }[];
             /**
              * Channel Approvals
              * @default {}
@@ -2082,6 +2218,77 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** FormatCheckOut */
+        FormatCheckOut: {
+            /** Format */
+            format?: string | null;
+            /**
+             * Passed
+             * @default false
+             */
+            passed: boolean;
+            /**
+             * Reasons
+             * @default []
+             */
+            reasons: string[];
+            /**
+             * Version
+             * @default format-library/v1
+             */
+            version: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** FormatDefinitionOut */
+        FormatDefinitionOut: {
+            /**
+             * Format
+             * @default
+             */
+            format: string;
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+            /**
+             * Rule
+             * @default
+             */
+            rule: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** FormatSpec */
+        FormatSpec: {
+            /** Aspect Ratio */
+            aspect_ratio?: string | null;
+            /** Format */
+            format?: string | null;
+            /** Format Kind */
+            format_kind?: string | null;
+            /** Frame Count */
+            frame_count?: number | null;
+            /** Frame Ideas */
+            frame_ideas?: string[] | null;
+            /** Frames */
+            frames?: string[] | null;
+            /** Hook */
+            hook?: string | null;
+            /** Hook Text */
+            hook_text?: string | null;
+            /** Shot List */
+            shot_list?: string[] | null;
+            /** Shots */
+            shots?: string[] | null;
+            /** Surface */
+            surface?: string | null;
+            /** Target Surface */
+            target_surface?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
         /** FounderNoteField */
         FounderNoteField: {
             /**
@@ -2333,6 +2540,13 @@ export interface components {
              * @default checked-launch-matrix/v1
              */
             bundle_version: string;
+            /**
+             * Capabilities
+             * @default []
+             */
+            capabilities: {
+                [key: string]: unknown;
+            }[];
             /**
              * Channel Approvals
              * @default {}
@@ -3017,6 +3231,8 @@ export interface components {
             audit: {
                 [key: string]: unknown;
             };
+            /** @description S2 brand kit version and digest recorded from the voice profile brand fields. Changing a brand color, font, logo reference, or banned rule changes the recorded version. */
+            brand_kit?: components["schemas"]["BrandKitOut"] | null;
             /** Campaign Brief */
             campaign_brief?: string | null;
             /** Campaign Day */
@@ -3043,6 +3259,15 @@ export interface components {
             exported_draft?: components["schemas"]["Draft"] | components["schemas"]["HumanDraft"] | null;
             /** Exported Revision */
             exported_revision?: number | null;
+            /** @description S2 Checker-enforced format check result. A failed check blocks approval with a plain rule reason. */
+            format_check?: components["schemas"]["FormatCheckOut"] | null;
+            /**
+             * Format Spec
+             * @description S2 format spec supplied with the run, when any.
+             */
+            format_spec?: {
+                [key: string]: unknown;
+            } | null;
             human_check?: components["schemas"]["Check"] | null;
             human_draft?: components["schemas"]["HumanDraft"] | null;
             /**
@@ -3299,6 +3524,8 @@ export interface components {
              * @description Facts-library variant to inherit confirmed facts from. Supply either this or product_facts, never both. The run binds a snapshot copy; later library edits never rewrite this run.
              */
             fact_variant_id?: string | null;
+            /** @description Optional S2 format spec (format_kind, frame_count, aspect_ratio, hook_text, shots, frame_ideas, target_surface). Checker enforces the format rules and records format_check on the receipt; a failed check blocks approval. */
+            format_spec?: components["schemas"]["FormatSpec"] | null;
             /** Idea */
             idea: string;
             /**
@@ -4193,6 +4420,26 @@ export interface operations {
             };
         };
     };
+    list_channel_capabilities_api_channel_capabilities_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelCapabilityOut"][];
+                };
+            };
+        };
+    };
     checker_policies_api_checker_policies_get: {
         parameters: {
             query?: never;
@@ -4742,6 +4989,59 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FactVariantOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_formats_api_formats_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FormatDefinitionOut"][];
+                };
+            };
+        };
+    };
+    check_format_route_api_formats_check_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FormatSpec"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FormatCheckOut"];
                 };
             };
             /** @description Validation Error */

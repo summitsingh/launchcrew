@@ -133,6 +133,55 @@ class StructuredImportOut(Strict):
     parser_version: str
 
 
+class FormatSpec(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    format_kind: str | None = Field(default=None, max_length=64)
+    format: str | None = Field(default=None, max_length=64)
+    frame_count: int | None = Field(default=None, ge=0, le=100)
+    frames: list[str] | None = None
+    aspect_ratio: str | None = Field(default=None, max_length=16)
+    hook_text: str | None = Field(default=None, max_length=2000)
+    hook: str | None = Field(default=None, max_length=2000)
+    shots: list[str] | None = None
+    shot_list: list[str] | None = None
+    frame_ideas: list[str] | None = None
+    target_surface: str | None = Field(default=None, max_length=64)
+    surface: str | None = Field(default=None, max_length=64)
+
+
+class FormatCheckOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    passed: bool = False
+    format: str | None = None
+    version: str = 'format-library/v1'
+    reasons: list[str] = []
+
+
+class BrandKitOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    version: str = ''
+    digest: str = ''
+    brand_colors: list[str] = []
+    fonts: list[str] = []
+    logo_reference: str | None = None
+    banned_rules: list[str] = []
+
+
+class ChannelCapabilityOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    channel: str = ''
+    allowed_formats: list[str] = []
+    caption_limit: int = 0
+    media_constraints: dict[str, Any] = {}
+
+
+class FormatDefinitionOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    format: str = ''
+    label: str = ''
+    rule: str = ''
+
+
 class RunInput(Idea):
     agent_name: str = Field(description='Legacy Maker selector. Preserved for compatibility. Maker stage uses maker_name when provided, else agent_name.')
     scout_name: str | None = Field(default=None, description='Scout stage agent name. Defaults to built-in Scout.')
@@ -144,6 +193,7 @@ class RunInput(Idea):
     product_facts: ProductFactsInput | None = Field(default=None, description='Slice 1 owner product facts. Only explicitly confirmed fields become evidence; suggestions never do. Absent means legacy demo-template mode.')
     fact_variant_id: str | None = Field(default=None, max_length=128, description='Facts-library variant to inherit confirmed facts from. Supply either this or product_facts, never both. The run binds a snapshot copy; later library edits never rewrite this run.')
     waive_missing_core_facts: bool = Field(default=False, description='Explicit owner waiver for missing core facts (material, contents, size, price). When owner input lacks a confirmed core fact and this is false, the run is refused with 422. When true, the waiver is recorded on the receipt.')
+    format_spec: FormatSpec | None = Field(default=None, description='Optional S2 format spec (format_kind, frame_count, aspect_ratio, hook_text, shots, frame_ideas, target_surface). Checker enforces the format rules and records format_check on the receipt; a failed check blocks approval.')
 
 
 class Clone(Strict):
@@ -415,6 +465,9 @@ class Receipt(BaseModel):
     product_facts: ProductFactsSection | None = Field(default=None, description='Slice 1 confirmed product facts with provenance. Absent on historical or pending receipts.')
     voice_profile: VoiceProfileSection | None = Field(default=None, description='Slice 3 selected voice source/version with banned terms. Style samples stay in Memory and never become facts.')
     voice_stale: bool | None = Field(default=None, description='True when the selected voice was edited or deleted after this receipt; a new human revision check is required.')
+    brand_kit: BrandKitOut | None = Field(default=None, description='S2 brand kit version and digest recorded from the voice profile brand fields. Changing a brand color, font, logo reference, or banned rule changes the recorded version.')
+    format_spec: dict[str, Any] | None = Field(default=None, description='S2 format spec supplied with the run, when any.')
+    format_check: FormatCheckOut | None = Field(default=None, description='S2 Checker-enforced format check result. A failed check blocks approval with a plain rule reason.')
 
 
 class Preview(BaseModel):
@@ -506,6 +559,32 @@ def health() -> dict[str, str]:
 @app.get('/api/checker-policies', response_model=CheckerPoliciesOut)
 def checker_policies(actor: str = Depends(auth.actor)):
     return {'supported': describe_supported(), 'floor_note': FLOOR_NOTE, 'matching': MATCHING_NOTE}
+
+
+@app.get('/api/formats', response_model=list[FormatDefinitionOut])
+def list_formats(actor: str = Depends(auth.actor)):
+    """List the S2 format library with each Checker-enforced rule."""
+    from launchcrew.format_library import list_formats as _list_formats
+    return _list_formats()
+
+
+@app.post('/api/formats/check', response_model=FormatCheckOut)
+def check_format_route(body: FormatSpec, actor: str = Depends(auth.actor)):
+    """Check one format spec against the Checker-enforced format rules.
+
+    Stateless and read-only: no runs, memory writes, model calls, or
+    network. Returns a pass/fail record with plain human-readable
+    reasons naming the rule that failed.
+    """
+    from launchcrew.format_library import check_format as _check_format
+    return _check_format(body.model_dump(exclude_none=False))
+
+
+@app.get('/api/channel-capabilities', response_model=list[ChannelCapabilityOut])
+def list_channel_capabilities(actor: str = Depends(auth.actor)):
+    """Return the per-channel capabilities table (account_capabilities pattern, as data)."""
+    from launchcrew.format_library import list_channel_capabilities as _list_capabilities
+    return _list_capabilities()
 
 
 class QuickstartTemplateMeta(BaseModel):
@@ -788,6 +867,7 @@ class ChannelVariantOut(BaseModel):
     total_sentences: int = 0
     omitted_sentences: int = 0
     approval_note: str = ''
+    capability: dict[str, Any] | None = None
 
 
 class ChannelCopyOut(BaseModel):
@@ -824,6 +904,7 @@ class DraftCopyOut(BaseModel):
 
 class ChannelVariantsOut(BaseModel):
     model_config = ConfigDict(extra='allow')
+    capabilities: list[dict[str, Any]] = []
     bundle_version: str = 'checked-channel-variants/v1'
     receipt_id: str = ''
     revision: int = 0
@@ -851,6 +932,7 @@ class ChannelVariantsOut(BaseModel):
 
 class LaunchMatrixOut(BaseModel):
     model_config = ConfigDict(extra='allow')
+    capabilities: list[dict[str, Any]] = []
     bundle_version: str = 'checked-launch-matrix/v1'
     receipt_id: str = ''
     revision: int = 0
@@ -907,13 +989,14 @@ def create_run(body: RunInput, actor: str = Depends(auth.actor)):
         voice_selection = _capture_voice_selection(db, items, workspace_id)
     run_id = 'run_' + uuid4().hex
     factory = model_admission.admission_factory_for_run(store.engine(), run_id)
+    format_raw = body.format_spec.model_dump(exclude_none=False) if body.format_spec is not None else None
     receipt = adapter.execute(run_id, body.idea, legacy, body.seed_unverified_claim,
                               memory_items=items, checker_profile=body.checker_profile,
                               scout_profile=scout, maker_profile=maker, checker_agent=checker,
                               product_facts=product_facts_raw,
                               model_admission_factory=factory,
                               waive_missing_core_facts=body.waive_missing_core_facts,
-                              fact_library=library_ref)
+                              fact_library=library_ref, format_spec=format_raw)
     with store.connect() as db:
         workspace_id = store.ensure_workspace_seeded(db, actor)
         _mark_sync_voice_stale_if_changed(db, receipt, workspace_id, actor, lock=True, selection=voice_selection)
@@ -968,12 +1051,13 @@ def create_run_async(body: RunInput, actor: str = Depends(auth.actor)):
         # is retried here; the caller retries with a new request. The
         # context manager above already rolled the transaction back.
         raise HTTPException(503, 'Run acceptance unconfirmed; retry with a new request') from None
+    format_raw = body.format_spec.model_dump(exclude_none=False) if body.format_spec is not None else None
     started = run_jobs.start_async_run(run_id, body.idea, legacy, body.seed_unverified_claim, items,
                                        body.checker_profile, scout, maker, checker, maker_name, actor,
                                        workspace_id=store.workspace_for_actor(actor),
                                        product_facts=product_facts_raw,
                                        waive_missing_core_facts=body.waive_missing_core_facts,
-                                       fact_library=library_ref)
+                                       fact_library=library_ref, format_spec=format_raw)
     if not started:
         raise HTTPException(409, 'Run worker already active for this run')
     return {'run_id': run_id, 'status': 'running', 'receipt': pending}
@@ -2695,6 +2779,7 @@ def create_campaign(body: CampaignInput, actor: str = Depends(auth.actor)):
             seen.add(candidate)
             run_ids.append(candidate)
     staged = []
+    format_raw = body.format_spec.model_dump(exclude_none=False) if body.format_spec is not None else None
     for day, angle, brief, brief_claim in week_plan:
         run_id = run_ids[day - 1]
         try:
@@ -2706,7 +2791,7 @@ def create_campaign(body: CampaignInput, actor: str = Depends(auth.actor)):
                                       product_facts=product_facts_raw,
                                       model_admission_factory=factory,
                                       waive_missing_core_facts=body.waive_missing_core_facts,
-                                      fact_library=library_ref)
+                                      fact_library=library_ref, format_spec=format_raw)
             if isinstance(receipt, dict):
                 receipt['campaign_angle'] = angle
         except Exception as error:

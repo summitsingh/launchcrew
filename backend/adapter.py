@@ -127,7 +127,7 @@ def _memory_effects(memory_items):
     return claims, blocked, blocked_rules, expertise, approval_examples, used
 
 
-def execute(run_id, idea, profile, seed, memory_items=None, checker_profile='standard', brief=None, campaign_day=None, extra_claims=None, profile_expertise=None, scout_profile=None, maker_profile=None, checker_agent=None, progress_sink=None, stage_gate=None, product_facts=None, model_admission_factory=None, voice_snapshot=None, voice_ref=None, waive_missing_core_facts=False, fact_library=None):
+def execute(run_id, idea, profile, seed, memory_items=None, checker_profile='standard', brief=None, campaign_day=None, extra_claims=None, profile_expertise=None, scout_profile=None, maker_profile=None, checker_agent=None, progress_sink=None, stage_gate=None, product_facts=None, model_admission_factory=None, voice_snapshot=None, voice_ref=None, waive_missing_core_facts=False, fact_library=None, format_spec=None):
     # Invalid product-fact input fails before any pipeline work, so the
     # API reports 422 instead of storing a run.
     parsed_product = parse_product_facts(product_facts)
@@ -162,6 +162,8 @@ def execute(run_id, idea, profile, seed, memory_items=None, checker_profile='sta
     effective_checker = copy.deepcopy(checker_agent) if checker_agent is not None else agents.load_agent('Checker', ROOT / 'agents')
     for candidate in (effective_scout, effective_maker, effective_checker):
         agents.validate(candidate)
+    if format_spec is not None and not isinstance(format_spec, dict):
+        raise ValueError('format_spec must be an object')
     if expertise:
         effective_maker['expertise'] = expertise
     for example in approval_examples:
@@ -206,6 +208,23 @@ def execute(run_id, idea, profile, seed, memory_items=None, checker_profile='sta
     receipt = captured[0]
     receipt['memory_used'] = used
     receipt['checker_profile'] = checker_profile
+    try:
+        from launchcrew.brand_kit import brand_kit_receipt as _adapter_brand_kit
+        if receipt.get('brand_kit') is None and voice_snapshot is not None:
+            receipt['brand_kit'] = _adapter_brand_kit(voice_snapshot)
+    except Exception:
+        receipt.setdefault('brand_kit', None)
+    try:
+        from launchcrew.format_library import check_format as _check_format
+        if format_spec is not None:
+            checked = _check_format(format_spec)
+            receipt['format_spec'] = copy.deepcopy(format_spec)
+            receipt['format_check'] = checked
+    except ValueError:
+        raise
+    except Exception:
+        receipt['format_check'] = {'passed': False, 'format': None,
+                                   'reasons': ['Format check could not run.']}
     receipt['memory_claims'] = applied_memory
     if receipt.get('voice_profile') is None and voice_ref is not None:
         # Pipeline already stores the versioned snapshot; this fallback keeps
