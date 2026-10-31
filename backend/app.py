@@ -1902,6 +1902,73 @@ CAMPAIGN_BRIEFS = [
 ]
 CAMPAIGN_BRIEF_BY_DAY = {day: (angle, brief, claim) for day, angle, brief, claim in CAMPAIGN_BRIEFS}
 
+# Selectable campaign angles: the seven legacy week angles plus five
+# added angles. A seven-day week assigns seven distinct angles from
+# this roster in order.
+CAMPAIGN_ANGLES = (
+    'Origin story',
+    'Material and craft',
+    'Commuter use',
+    'Styling',
+    'Care and durability',
+    'Social proof',
+    'Launch offer',
+    'Build in public milestone',
+    'Customer problem story',
+    'Before and after',
+    'Objection answer',
+    'Founder lesson',
+)
+
+# Default owner-week lineup: opens and closes with familiar angles and
+# features all five added angles in between.
+OWNER_WEEK_ANGLES = (
+    'Origin story',
+    'Build in public milestone',
+    'Customer problem story',
+    'Before and after',
+    'Objection answer',
+    'Founder lesson',
+    'Launch offer',
+)
+
+
+def _owner_campaign_briefs(confirmed_claims, angles=None):
+    """Build seven distinct day briefs from the campaign's own confirmed facts.
+
+    Each day gets a distinct angle and a brief of the form
+    "Day N (<angle>): <confirmed claim>" with the claims rotating in
+    order, so every brief quotes a whole owner-confirmed fact verbatim
+    and no bundled demo-template text appears. The day marker keeps
+    all seven briefs distinct even when few facts were confirmed. When
+    the full brief would reach 140 chars, it falls back to
+    "Day N: <confirmed claim>" rather than truncating a fact. Raises
+    ValueError for missing facts or for an angles selection that is
+    not seven distinct roster names.
+    """
+    claims = [claim for claim in (confirmed_claims or [])
+              if isinstance(claim, str) and claim.strip()]
+    if not claims:
+        raise ValueError('Owner campaign weeks require at least one confirmed fact')
+    chosen = list(angles) if angles is not None else list(OWNER_WEEK_ANGLES)
+    if len(chosen) != 7 or len(set(chosen)) != 7:
+        raise ValueError('A campaign week needs seven distinct angles')
+    for angle in chosen:
+        if angle not in CAMPAIGN_ANGLES:
+            raise ValueError('Unknown campaign angle: %r' % (angle,))
+    plan = []
+    for position, angle in enumerate(chosen):
+        day = position + 1
+        claim = claims[position % len(claims)]
+        brief = 'Day %d (%s): %s' % (day, angle, claim)
+        if len(brief) >= 140:
+            brief = 'Day %d: %s' % (day, claim)
+        plan.append((day, angle, brief, claim))
+    briefs = [brief for _, _, brief, _ in plan]
+    if len(set(briefs)) != 7:
+        raise ValueError('Owner campaign briefs must be seven distinct texts')
+    return plan
+
 
 class CampaignDay(Strict):
     day: int
@@ -1925,6 +1992,22 @@ class CampaignOut(Strict):
     days: list[CampaignDay]
 
 
+class CampaignInput(RunInput):
+    angles: list[str] | None = Field(default=None, description='Optional seven distinct angle names from the campaign angle roster, assigned to days 1 to 7 in order. Absent means the bundled demo week in demo mode or the default owner lineup with confirmed facts.')
+
+    @field_validator('angles')
+    @classmethod
+    def _check_angles(cls, value):
+        if value is None:
+            return None
+        if len(value) != 7 or len(set(value)) != 7:
+            raise ValueError('angles must hold seven distinct angle names')
+        for angle in value:
+            if not isinstance(angle, str) or angle not in CAMPAIGN_ANGLES:
+                raise ValueError('Unknown campaign angle: %r' % (angle,))
+        return list(value)
+
+
 _CAMPAIGN_PUBLIC_FIELDS = ('id', 'idea', 'agent_name', 'created_at')
 
 
@@ -1939,6 +2022,11 @@ def campaign_detail(db, campaign_id, workspace_id):
     for day, receipt in db.execute(text('SELECT d.day,r.receipt FROM campaign_days d JOIN runs r ON r.id=d.run_id WHERE d.campaign_id=:id AND d.workspace_id=:ws AND r.workspace_id=:ws ORDER BY d.day'), {'id': campaign_id, 'ws': workspace_id}):
         from launchcrew import human_review
         angle, brief, _claim = CAMPAIGN_BRIEF_BY_DAY.get(day, ('', '', ''))
+        if isinstance(receipt, dict):
+            if isinstance(receipt.get('campaign_angle'), str) and receipt['campaign_angle'].strip():
+                angle = receipt['campaign_angle']
+            if isinstance(receipt.get('campaign_brief'), str) and receipt['campaign_brief'].strip():
+                brief = receipt['campaign_brief']
         current = human_review.current_draft(receipt)
         check = human_review.current_check(receipt)
         result['days'].append({'day': day, 'run_id': receipt['run_id'], 'approval_state': receipt['approval_state'],
@@ -1975,11 +2063,25 @@ def _insert_campaign_committed_day(db, campaign_id, day, run_id, receipt, maker_
 
 
 @app.post('/api/campaigns', response_model=CampaignOut, status_code=201)
-def create_campaign(body: RunInput, actor: str = Depends(auth.actor)):
+def create_campaign(body: CampaignInput, actor: str = Depends(auth.actor)):
     from launchcrew.facts import parse_product_facts
     from backend import model_admission
     product_facts_raw = body.product_facts.model_dump() if body.product_facts is not None else None
-    parse_product_facts(product_facts_raw)
+    parsed_product = parse_product_facts(product_facts_raw)
+    confirmed_claims = list(parsed_product['confirmed_claims']) if parsed_product is not None else []
+    if confirmed_claims:
+        # Owner mode: every day brief is built from the campaign's own
+        # confirmed facts. The bundled demo template is never used here.
+        week_plan = _owner_campaign_briefs(confirmed_claims, angles=body.angles)
+    else:
+        # Demo mode: the bundled fictional demo template stays available
+        # only when the owner confirmed nothing.
+        week_plan = []
+        for day in range(1, 8):
+            demo_angle, demo_brief, demo_claim = CAMPAIGN_BRIEF_BY_DAY[day]
+            if body.angles is not None:
+                demo_angle = body.angles[day - 1]
+            week_plan.append((day, demo_angle, demo_brief, demo_claim))
     campaign_id = 'camp_' + uuid4().hex
     engine = store.engine()
     with store.connect() as db:
@@ -1997,8 +2099,7 @@ def create_campaign(body: RunInput, actor: str = Depends(auth.actor)):
             seen.add(candidate)
             run_ids.append(candidate)
     staged = []
-    for day in range(1, 8):
-        _angle, brief, brief_claim = CAMPAIGN_BRIEF_BY_DAY[day]
+    for day, angle, brief, brief_claim in week_plan:
         run_id = run_ids[day - 1]
         try:
             factory = model_admission.admission_factory_for_run(engine, run_id)
@@ -2008,6 +2109,8 @@ def create_campaign(body: RunInput, actor: str = Depends(auth.actor)):
                                       scout_profile=scout, maker_profile=maker, checker_agent=checker,
                                       product_facts=product_facts_raw,
                                       model_admission_factory=factory)
+            if isinstance(receipt, dict):
+                receipt['campaign_angle'] = angle
         except Exception as error:
             failed = {'receipt_version': '1.0', 'run_id': run_id, 'generated_at': datetime.now(timezone.utc).isoformat(),
                       'status': 'failed', 'brand': 'LaunchCrew', 'mode': 'demo_no_submit',
@@ -2017,7 +2120,8 @@ def create_campaign(body: RunInput, actor: str = Depends(auth.actor)):
                       'stage_bindings': {'scout': scout_name, 'maker': maker_name, 'checker': checker_name},
                       'summary': {'submit_attempted': False, 'submit_completed': False},
                       'audit': {'event_log': [], 'stopped_reason': 'campaign_day_%d' % day},
-                      'voice_profile': voice_binding, 'campaign_day': day, 'campaign_brief': brief}
+                      'voice_profile': voice_binding, 'campaign_day': day, 'campaign_brief': brief,
+                      'campaign_angle': angle}
             staged.append((day, run_id, failed))
             continue
         staged.append((day, run_id, receipt))

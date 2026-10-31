@@ -12,7 +12,8 @@ import { Separator } from '@/components/ui/separator';
 import { api, unwrap } from '@/lib/api';
 import { canApproveDay, canExportDay, memoryEditPayload } from '@/lib/v2';
 import { dataModeCopy, dataModeLabel, dataModeNote } from '@/components/model-status';
-import { sourceLabel } from '@/lib/product-facts';
+import { buildProductFactsInput, emptyOwnerFacts, hasAnyOwnerValue, sourceLabel, validateOwnerFacts } from '@/lib/product-facts';
+import { ProductFactsForm } from '@/components/product-facts-form';
 import { RunOutcomesSection } from '@/components/run-outcomes';
 import type { components } from '@/lib/schema';
 
@@ -311,6 +312,36 @@ export function CampaignDayCard({ day, busy, approve, download, markdown, copy }
   return <article className="panel queue-card"><h3>Day {day.day}: {day.angle}</h3><p>{day.brief}</p><p><RunRef id={day.run_id} /></p><p className="draft">{day.draft_v2_post ?? ''}</p><p>{day.approval_state} · Status: {day.status} · Final blocked count: {day.checker_v2_blocked_count ?? 'unavailable'}</p><div className="queue-actions">{canApproveDay(day) && <Button onClick={approve} disabled={busy}>Approve for export</Button>}{canExportDay(day) && <><Button onClick={download} disabled={busy}>Export pack</Button>{markdown && <Button variant="outline" onClick={markdown} disabled={busy}>Export Markdown</Button>}{copy && <Button variant="outline" onClick={copy} disabled={busy}>Copy pack</Button>}</>}</div></article>;
 }
 
+/** Every selectable campaign angle. The last five are the added angles. */
+export const CAMPAIGN_ANGLE_OPTIONS = [
+  'Origin story',
+  'Material and craft',
+  'Commuter use',
+  'Styling',
+  'Care and durability',
+  'Social proof',
+  'Launch offer',
+  'Build in public milestone',
+  'Customer problem story',
+  'Before and after',
+  'Objection answer',
+  'Founder lesson',
+];
+
+/** Default seven-day lineup in demo mode: the bundled demo week. */
+export const CAMPAIGN_DEMO_DEFAULT_ANGLES = CAMPAIGN_ANGLE_OPTIONS.slice(0, 7);
+
+/** Default seven-day lineup in owner mode: opens and closes familiar, features the five added angles. */
+export const CAMPAIGN_OWNER_DEFAULT_ANGLES = [
+  'Origin story',
+  'Build in public milestone',
+  'Customer problem story',
+  'Before and after',
+  'Objection answer',
+  'Founder lesson',
+  'Launch offer',
+];
+
 export function CampaignView({ profiles, profilesPending, profilesError }: { profiles: components['schemas']['Profile'][]; profilesPending?: boolean; profilesError?: string }) {
   const client = useQueryClient();
   const [idea, setIdea] = useState(wallet);
@@ -319,12 +350,26 @@ export function CampaignView({ profiles, profilesPending, profilesError }: { pro
   const [checkerAgent, setCheckerAgent] = useState('Checker');
   const [checkerProfile, setCheckerProfile] = useState('standard');
   const [seed, setSeed] = useState(SEED_CLAIM_DEFAULT);
+  const [factsMode, setFactsMode] = useState<'demo' | 'owner'>('demo');
+  const [ownerFacts, setOwnerFacts] = useState(emptyOwnerFacts);
+  const [selectedAngles, setSelectedAngles] = useState<string[]>([...CAMPAIGN_DEMO_DEFAULT_ANGLES]);
   const [id, setId] = useState('');
   const [notice, setNotice] = useState('');
   const agentsReady = !profilesPending && !profilesError && profiles.length > 0;
+  const ownerErrors = factsMode === 'owner' ? validateOwnerFacts(ownerFacts) : [];
+  const ownerEmpty = factsMode === 'owner' && !hasAnyOwnerValue(ownerFacts);
+  const anglesValid = selectedAngles.length === 7;
+  const createBlocked = (factsMode === 'owner' && (ownerErrors.length > 0 || ownerEmpty)) || !anglesValid;
   const weeks = useQuery({ queryKey: ['campaigns'], queryFn: () => unwrap(api.GET('/api/campaigns')) });
   const campaign = useQuery({ queryKey: ['campaign', id], queryFn: () => unwrap(api.GET('/api/campaigns/{campaign_id}', { params: { path: { campaign_id: id } } })), enabled: !!id, refetchInterval: 3000 });
-  const create = useMutation({ mutationFn: () => unwrap(api.POST('/api/campaigns', { body: { idea, agent_name: agent, scout_name: scout, maker_name: agent, checker_name: checkerAgent, seed_unverified_claim: seed, checker_profile: checkerProfile as 'standard' | 'strict', memory_ids: [] } })), onSuccess: week => { setId(week.id); client.invalidateQueries({ queryKey: ['campaigns'] }); client.invalidateQueries({ queryKey: ['queue'] }); } });
+  const toggleAngle = (angle: string) => {
+    setSelectedAngles(prev => (prev.includes(angle) ? prev.filter(entry => entry !== angle) : [...prev, angle]));
+  };
+  const pickFactsMode = (mode: 'demo' | 'owner') => {
+    setFactsMode(mode);
+    setSelectedAngles(mode === 'owner' ? [...CAMPAIGN_OWNER_DEFAULT_ANGLES] : [...CAMPAIGN_DEMO_DEFAULT_ANGLES]);
+  };
+  const create = useMutation({ mutationFn: () => unwrap(api.POST('/api/campaigns', { body: { idea, agent_name: agent, scout_name: scout, maker_name: agent, checker_name: checkerAgent, seed_unverified_claim: seed, checker_profile: checkerProfile as 'standard' | 'strict', memory_ids: [], angles: selectedAngles, ...(factsMode === 'owner' ? { product_facts: buildProductFactsInput(ownerFacts) } : {}) } })), onSuccess: week => { setId(week.id); client.invalidateQueries({ queryKey: ['campaigns'] }); client.invalidateQueries({ queryKey: ['queue'] }); } });
   const approve = useMutation({ mutationFn: (input: { day: number; revision: number }) => unwrap(api.POST('/api/campaigns/{campaign_id}/days/{day}/approve', { params: { path: { campaign_id: id, day: input.day } }, body: { expected_revision: input.revision } })), onSuccess: () => { client.invalidateQueries({ queryKey: ['campaign', id] }); client.invalidateQueries({ queryKey: ['queue'] }); } });
   // Every export path below POSTs the day export first, so the server applies
   // the same approval and revision checks as the JSON download. Markdown and
@@ -345,7 +390,7 @@ export function CampaignView({ profiles, profilesPending, profilesError }: { pro
   });
   const error = create.error || campaign.error || weeks.error || approve.error || download.error || markdown.error || copy.error;
   const busyDay = approve.isPending || download.isPending || markdown.isPending || copy.isPending;
-  return <section aria-label="Campaign"><section className="panel"><h2>Campaign Week</h2><p>Nothing publishes automatically. Review and approve each day individually.</p><form onSubmit={e => { e.preventDefault(); create.mutate(); }}><label htmlFor="campaign-idea">Idea</label><textarea id="campaign-idea" required maxLength={2000} value={idea} onChange={e => setIdea(e.target.value)} />{profilesPending && <p role="status">Loading agents...</p>}{profilesError && <p role="alert">{profilesError}</p>}<label htmlFor="campaign-scout">Scout agent</label><select id="campaign-scout" value={scout} onChange={e => setScout(e.target.value)} disabled={!agentsReady}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</select><label htmlFor="campaign-maker">Maker agent</label><select id="campaign-maker" value={agent} onChange={e => setAgent(e.target.value)} disabled={!agentsReady}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</select><label htmlFor="campaign-checker-agent">Checker agent</label><select id="campaign-checker-agent" value={checkerAgent} onChange={e => setCheckerAgent(e.target.value)} disabled={!agentsReady}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</select><p className="hint">Each agent runs its own stage. Original names and rules are kept in each day receipt.</p><label htmlFor="campaign-checker">Checker profile</label><select id="campaign-checker" value={checkerProfile} onChange={e => setCheckerProfile(e.target.value)}><option>standard</option><option>strict</option></select><SupportedPoliciesHint /><label className="checkbox"><input type="checkbox" checked={seed} onChange={e => setSeed(e.target.checked)} />{SEED_CLAIM_LABEL}</label><p className="hint">Opt-in demo only. Seeds the unsupported claim “best in Texas” on every day so each receipt shows the block and revision. Leave unchecked for a normal week.</p><Button type="submit" disabled={create.isPending || !agentsReady}>{create.isPending ? 'Creating week...' : 'Create week'}</Button></form><label htmlFor="campaign-select">Open a campaign</label><select id="campaign-select" value={id} onChange={e => setId(e.target.value)}><option value="">Select a week</option>{weeks.data?.map(week => <option key={week.id} value={week.id}>{week.idea} ({week.id})</option>)}</select></section>{error && <p role="alert">{error.message}</p>}{notice && <p role="status">{notice}</p>}{campaign.isFetching && <p>Refreshing week...</p>}{campaign.data && <section><h2>{campaign.data.idea}</h2><p><RunRef id={campaign.data.id} /></p>{campaign.data.days.map(day => <CampaignDayCard key={day.day} day={day} busy={busyDay} approve={() => approve.mutate({ day: day.day, revision: day.revision ?? 0 })} download={() => download.mutate({ day: day.day, revision: day.revision ?? 0 })} markdown={() => markdown.mutate({ day: day.day, revision: day.revision ?? 0 })} copy={() => copy.mutate({ day: day.day, revision: day.revision ?? 0 })} />)}</section>}</section>;
+  return <section aria-label="Campaign"><section className="panel"><h2>Campaign Week</h2><p>Nothing publishes automatically. Review and approve each day individually.</p><form onSubmit={e => { e.preventDefault(); if (createBlocked) return; create.mutate(); }}><label htmlFor="campaign-idea">Idea</label><textarea id="campaign-idea" required maxLength={2000} value={idea} onChange={e => setIdea(e.target.value)} />{profilesPending && <p role="status">Loading agents...</p>}{profilesError && <p role="alert">{profilesError}</p>}<label htmlFor="campaign-scout">Scout agent</label><select id="campaign-scout" value={scout} onChange={e => setScout(e.target.value)} disabled={!agentsReady}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</select><label htmlFor="campaign-maker">Maker agent</label><select id="campaign-maker" value={agent} onChange={e => setAgent(e.target.value)} disabled={!agentsReady}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</select><label htmlFor="campaign-checker-agent">Checker agent</label><select id="campaign-checker-agent" value={checkerAgent} onChange={e => setCheckerAgent(e.target.value)} disabled={!agentsReady}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</select><p className="hint">Each agent runs its own stage. Original names and rules are kept in each day receipt.</p><label htmlFor="campaign-checker">Checker profile</label><select id="campaign-checker" value={checkerProfile} onChange={e => setCheckerProfile(e.target.value)}><option>standard</option><option>strict</option></select><SupportedPoliciesHint /><label className="checkbox"><input type="checkbox" checked={seed} onChange={e => setSeed(e.target.checked)} />{SEED_CLAIM_LABEL}</label><p className="hint">Opt-in demo only. Seeds the unsupported claim “best in Texas” on every day so each receipt shows the block and revision. Leave unchecked for a normal week.</p><fieldset><legend>Product facts mode</legend><label className="checkbox"><input type="radio" name="campaign-facts-mode" value="demo" checked={factsMode === 'demo'} onChange={() => pickFactsMode('demo')} />Bundled fictional demo-template mode</label><p className="hint">Omit product_facts entirely. Uses the bundled fictional demo template for all seven days.</p><label className="checkbox"><input type="radio" name="campaign-facts-mode" value="owner" checked={factsMode === 'owner'} onChange={() => pickFactsMode('owner')} />Owner-input mode</label><p className="hint">Send your confirmed facts as the typed product_facts object. Every day brief is built from those confirmed facts. Nothing is confirmed from brief text.</p></fieldset>{factsMode === 'owner' && <ProductFactsForm state={ownerFacts} onChange={setOwnerFacts} />}{factsMode === 'owner' && ownerEmpty && <p role="status">Add at least one owner fact or founder note, or use demo-template mode.</p>}{factsMode === 'owner' && ownerErrors.length > 0 && <div role="alert" className="message error"><ul>{ownerErrors.map((text, i) => <li key={i}>{text}</li>)}</ul></div>}<fieldset><legend>Campaign angles (choose exactly 7, one per day in order)</legend><p className="hint">Seven distinct angles are assigned to days 1 to 7 in the order checked here. In owner mode every day brief is built from your confirmed facts. Demo facts stay labeled as demo.</p>{CAMPAIGN_ANGLE_OPTIONS.map(angle => <label className="checkbox" key={angle} htmlFor={`campaign-angle-${angle}`}><input id={`campaign-angle-${angle}`} type="checkbox" checked={selectedAngles.includes(angle)} onChange={() => toggleAngle(angle)} />{angle}</label>)}</fieldset>{!anglesValid && <p role="alert">Select exactly 7 angles (currently {selectedAngles.length}).</p>}<Button type="submit" disabled={create.isPending || !agentsReady || createBlocked}>{create.isPending ? 'Creating week...' : 'Create week'}</Button></form><label htmlFor="campaign-select">Open a campaign</label><select id="campaign-select" value={id} onChange={e => setId(e.target.value)}><option value="">Select a week</option>{weeks.data?.map(week => <option key={week.id} value={week.id}>{week.idea} ({week.id})</option>)}</select></section>{error && <p role="alert">{error.message}</p>}{notice && <p role="status">{notice}</p>}{campaign.isFetching && <p>Refreshing week...</p>}{campaign.data && <section><h2>{campaign.data.idea}</h2><p><RunRef id={campaign.data.id} /></p>{campaign.data.days.map(day => <CampaignDayCard key={day.day} day={day} busy={busyDay} approve={() => approve.mutate({ day: day.day, revision: day.revision ?? 0 })} download={() => download.mutate({ day: day.day, revision: day.revision ?? 0 })} markdown={() => markdown.mutate({ day: day.day, revision: day.revision ?? 0 })} copy={() => copy.mutate({ day: day.day, revision: day.revision ?? 0 })} />)}</section>}</section>;
 }
 
 export function currentDraftOf(receipt: Receipt) {

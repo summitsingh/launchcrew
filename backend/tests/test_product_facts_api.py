@@ -191,8 +191,11 @@ def test_campaign_threads_product_facts(client):
     assert 'Full-grain leather' in receipt['maker_draft_v2']['post']
 
 
-def test_owner_campaign_briefs_stay_suggestions(client):
-    from backend.app import CAMPAIGN_BRIEF_BY_DAY
+def test_owner_campaign_briefs_built_from_confirmed_facts(client):
+    # Owner mode builds every day brief from the campaign's own confirmed
+    # facts. The bundled demo template is never used once the owner
+    # confirms facts, so the day brief claims are authorized evidence.
+    from backend.app import CAMPAIGN_ANGLES
     response = client.post('/api/campaigns', json=owner_payload())
     assert response.status_code == 201, response.text
     week = response.json()
@@ -201,26 +204,24 @@ def test_owner_campaign_briefs_stay_suggestions(client):
     assert len({day['angle'] for day in week['days']}) == 7
     assert len({day['brief'] for day in week['days']}) == 7
     for day in week['days']:
-        angle, brief, brief_claim = CAMPAIGN_BRIEF_BY_DAY[day['day']]
-        assert day['angle'] == angle
-        assert day['brief'] == brief
+        assert day['angle'] in CAMPAIGN_ANGLES
+        assert len(day['brief']) < 140
+        assert 'Full-grain leather' in day['brief'] or '$129' in day['brief']
+        for marker in DEMO_CLAIMS:
+            assert marker not in day['brief']
         receipt = client.get('/api/runs/' + day['run_id']).json()
         assert receipt['status'] == 'completed'
         assert receipt['campaign_day'] == day['day']
-        assert receipt['campaign_brief'] == brief
+        assert receipt['campaign_brief'] == day['brief']
+        assert receipt['campaign_angle'] == day['angle']
         assert 'Full-grain leather' in receipt['maker_draft_v2']['post']
         assert '$129' in receipt['maker_draft_v2']['post']
-        assert brief_claim not in receipt['maker_draft_v2']['post']
-        assert brief_claim not in receipt['maker_draft_v2']['email']
         section = receipt['product_facts']
         assert section['mode'] == 'owner_input'
         assert section['confirmed_claims'] == ['Full-grain leather', '$129']
         assert section['allowlist'] == ['Full-grain leather', '$129']
-        assert brief_claim not in section['allowlist']
         assert receipt['memory_claims'] == []
-        suggested = [s for s in section['suggested'] if s['value'] == brief_claim]
-        assert len(suggested) == 1
-        assert suggested[0]['source'] == 'campaign_brief'
+        assert section['suggested'] == []
         for entry in receipt['scout']['facts_used']:
             assert entry['verified'] is True
             assert entry['sources'] == ['owner_confirmed_input']

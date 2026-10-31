@@ -205,6 +205,113 @@
         "title": "CampaignDay",
         "type": "object"
       },
+      "CampaignInput": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_name": {
+            "description": "Legacy Maker selector. Preserved for compatibility. Maker stage uses maker_name when provided, else agent_name.",
+            "title": "Agent Name",
+            "type": "string"
+          },
+          "angles": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional seven distinct angle names from the campaign angle roster, assigned to days 1 to 7 in order. Absent means the bundled demo week in demo mode or the default owner lineup with confirmed facts.",
+            "title": "Angles"
+          },
+          "checker_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Checker stage agent name. Defaults to built-in Checker.",
+            "title": "Checker Name"
+          },
+          "checker_profile": {
+            "default": "standard",
+            "description": "Legacy strictness. Strict adds the superlatives policy. Checker agent policies add blocks on top.",
+            "enum": [
+              "standard",
+              "strict"
+            ],
+            "title": "Checker Profile",
+            "type": "string"
+          },
+          "idea": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Idea",
+            "type": "string"
+          },
+          "maker_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Maker stage agent name. Defaults to agent_name for compatibility.",
+            "title": "Maker Name"
+          },
+          "memory_ids": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Memory Ids",
+            "type": "array"
+          },
+          "product_facts": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProductFactsInput"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Slice 1 owner product facts. Only explicitly confirmed fields become evidence; suggestions never do. Absent means legacy demo-template mode."
+          },
+          "scout_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Scout stage agent name. Defaults to built-in Scout.",
+            "title": "Scout Name"
+          },
+          "seed_unverified_claim": {
+            "default": false,
+            "title": "Seed Unverified Claim",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "idea",
+          "agent_name"
+        ],
+        "title": "CampaignInput",
+        "type": "object"
+      },
       "CampaignOut": {
         "additionalProperties": false,
         "properties": {
@@ -4747,7 +4854,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/RunInput"
+                "$ref": "#/components/schemas/CampaignInput"
               }
             }
           },

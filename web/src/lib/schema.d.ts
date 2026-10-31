@@ -913,6 +913,55 @@ export interface components {
             /** Status */
             status: string;
         };
+        /** CampaignInput */
+        CampaignInput: {
+            /**
+             * Agent Name
+             * @description Legacy Maker selector. Preserved for compatibility. Maker stage uses maker_name when provided, else agent_name.
+             */
+            agent_name: string;
+            /**
+             * Angles
+             * @description Optional seven distinct angle names from the campaign angle roster, assigned to days 1 to 7 in order. Absent means the bundled demo week in demo mode or the default owner lineup with confirmed facts.
+             */
+            angles?: string[] | null;
+            /**
+             * Checker Name
+             * @description Checker stage agent name. Defaults to built-in Checker.
+             */
+            checker_name?: string | null;
+            /**
+             * Checker Profile
+             * @description Legacy strictness. Strict adds the superlatives policy. Checker agent policies add blocks on top.
+             * @default standard
+             * @enum {string}
+             */
+            checker_profile: "standard" | "strict";
+            /** Idea */
+            idea: string;
+            /**
+             * Maker Name
+             * @description Maker stage agent name. Defaults to agent_name for compatibility.
+             */
+            maker_name?: string | null;
+            /**
+             * Memory Ids
+             * @default []
+             */
+            memory_ids: string[];
+            /** @description Slice 1 owner product facts. Only explicitly confirmed fields become evidence; suggestions never do. Absent means legacy demo-template mode. */
+            product_facts?: components["schemas"]["ProductFactsInput"] | null;
+            /**
+             * Scout Name
+             * @description Scout stage agent name. Defaults to built-in Scout.
+             */
+            scout_name?: string | null;
+            /**
+             * Seed Unverified Claim
+             * @default false
+             */
+            seed_unverified_claim: boolean;
+        };
         /** CampaignOut */
         CampaignOut: {
             /** Agent Name */
@@ -3164,7 +3213,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["RunInput"];
+                "application/json": components["schemas"]["CampaignInput"];
             };
         };
         responses: {

@@ -35,6 +35,15 @@ describe('v2 review controls', () => {
     const html = renderToStaticMarkup(<QueryClientProvider client={new QueryClient()}><ReplayView queue={[]} /><CampaignView profiles={[]} /></QueryClientProvider>);
     for (const label of ['Replay', 'Run A id', 'Run B id', 'Compare', 'Pick from queue', 'Campaign Week', 'Create week', 'Nothing publishes automatically.']) expect(html).toContain(label);
   });
+  it('offers all twelve campaign angles and binds owner facts on the week form', () => {
+    const html = renderToStaticMarkup(<QueryClientProvider client={new QueryClient()}><CampaignView profiles={[]} /></QueryClientProvider>);
+    for (const angle of ['Origin story', 'Material and craft', 'Commuter use', 'Styling', 'Care and durability', 'Social proof', 'Launch offer', 'Build in public milestone', 'Customer problem story', 'Before and after', 'Objection answer', 'Founder lesson']) {
+      expect(html).toContain(angle);
+    }
+    for (const label of ['Campaign angles (choose exactly 7, one per day in order)', 'Product facts mode', 'Owner-input mode', 'Bundled fictional demo-template mode']) {
+      expect(html).toContain(label);
+    }
+  });
   it('renders draft, verdict, approval and receipt changes with a mismatch note', () => {
     const diff: components['schemas']['RunDiff'] = {
       run_a_id: 'run_a', run_b_id: 'run_b', same_idea: false, idea: 'Demo wallet',
