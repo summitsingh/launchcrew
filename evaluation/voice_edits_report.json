@@ -1,0 +1,302 @@
+{
+  "arm_a": "without voice profile",
+  "arm_b": "with synthetic voice profile (one banned term)",
+  "dataset_path": "evaluation/dataset_v1.json",
+  "dataset_sha256": "b0dbb187f9954028d1b84824757e5e0c9939dc41cc4845a4e5eaabb17746ef12",
+  "products": [
+    {
+      "arm_a": {
+        "v1_blocked": 0,
+        "v2_blocked": 0,
+        "v2_claims": 8,
+        "v2_email_chars": 185,
+        "v2_post_chars": 185
+      },
+      "arm_b": {
+        "v1_blocked": 3,
+        "v1_voice_blocks": 3,
+        "v2_blocked": 0,
+        "v2_claims": 6,
+        "v2_email_chars": 138,
+        "v2_post_chars": 138
+      },
+      "claims_total": 3,
+      "email_distance": 47,
+      "post_distance": 47,
+      "product": "Fictional Caldera side chair CC-45, synthetic evaluation only",
+      "sentences_changed": 2,
+      "voice_blocked_claims": 2
+    },
+    {
+      "arm_a": {
+        "v1_blocked": 0,
+        "v2_blocked": 0,
+        "v2_claims": 7,
+        "v2_email_chars": 159,
+        "v2_post_chars": 159
+      },
+      "arm_b": {
+        "v1_blocked": 2,
+        "v1_voice_blocks": 2,
+        "v2_blocked": 0,
+        "v2_claims": 6,
+        "v2_email_chars": 126,
+        "v2_post_chars": 126
+      },
+      "claims_total": 2,
+      "email_distance": 33,
+      "post_distance": 33,
+      "product": "Fictional Luma ceramic lamp LC-1, synthetic evaluation only",
+      "sentences_changed": 1,
+      "voice_blocked_claims": 1
+    },
+    {
+      "arm_a": {
+        "v1_blocked": 0,
+        "v2_blocked": 0,
+        "v2_claims": 8,
+        "v2_email_chars": 216,
+        "v2_post_chars": 216
+      },
+      "arm_b": {
+        "v1_blocked": 3,
+        "v1_voice_blocks": 3,
+        "v2_blocked": 0,
+        "v2_claims": 6,
+        "v2_email_chars": 142,
+        "v2_post_chars": 142
+      },
+      "claims_total": 3,
+      "email_distance": 74,
+      "post_distance": 74,
+      "product": "Fictional Luma desk lamp LM-3, synthetic evaluation only",
+      "sentences_changed": 2,
+      "voice_blocked_claims": 2
+    },
+    {
+      "arm_a": {
+        "v1_blocked": 0,
+        "v2_blocked": 0,
+        "v2_claims": 7,
+        "v2_email_chars": 140,
+        "v2_post_chars": 140
+      },
+      "arm_b": {
+        "v1_blocked": 2,
+        "v1_voice_blocks": 2,
+        "v2_blocked": 0,
+        "v2_claims": 6,
+        "v2_email_chars": 116,
+        "v2_post_chars": 116
+      },
+      "claims_total": 2,
+      "email_distance": 24,
+      "post_distance": 24,
+      "product": "Fictional Pebbleford coaster set PS-4, synthetic evaluation only",
+      "sentences_changed": 1,
+      "voice_blocked_claims": 1
+    },
+    {
+      "arm_a": {
+        "v1_blocked": 0,
+        "v2_blocked": 0,
+        "v2_claims": 7,
+        "v2_email_chars": 163,
+        "v2_post_chars": 163
+      },
+      "arm_b": {
+        "v1_blocked": 2,
+        "v1_voice_blocks": 2,
+        "v2_blocked": 0,
+        "v2_claims": 6,
+        "v2_email_chars": 120,
+        "v2_post_chars": 120
+      },
+      "claims_total": 2,
+      "email_distance": 43,
+      "post_distance": 43,
+      "product": "Fictional Pebbleford stoneware mug PM-2, synthetic evaluation only",
+      "sentences_changed": 1,
+      "voice_blocked_claims": 1
+    },
+    {
+      "arm_a": {
+        "v1_blocked": 0,
+        "v2_blocked": 0,
+        "v2_claims": 8,
+        "v2_email_chars": 177,
+        "v2_post_chars": 177
+      },
+      "arm_b": {
+        "v1_blocked": 3,
+        "v1_voice_blocks": 3,
+        "v2_blocked": 0,
+        "v2_claims": 6,
+        "v2_email_chars": 104,
+        "v2_post_chars": 104
+      },
+      "claims_total": 3,
+      "email_distance": 73,
+      "post_distance": 73,
+      "product": "Fictional Quenby canvas backpack QB-7, synthetic evaluation only",
+      "sentences_changed": 2,
+      "voice_blocked_claims": 2
+    },
+    {
+      "arm_a": {
+        "v1_blocked": 0,
+        "v2_blocked": 0,
+        "v2_claims": 7,
+        "v2_email_chars": 140,
+        "v2_post_chars": 140
+      },
+      "arm_b": {
+        "v1_blocked": 2,
+        "v1_voice_blocks": 2,
+        "v2_blocked": 0,
+        "v2_claims": 6,
+        "v2_email_chars": 119,
+        "v2_post_chars": 119
+      },
+      "claims_total": 2,
+      "email_distance": 21,
+      "post_distance": 21,
+      "product": "Fictional Quenby insulated bottle QB-12, synthetic evaluation only",
+      "sentences_changed": 1,
+      "voice_blocked_claims": 1
+    },
+    {
+      "arm_a": {
+        "v1_blocked": 0,
+        "v2_blocked": 0,
+        "v2_claims": 7,
+        "v2_email_chars": 158,
+        "v2_post_chars": 158
+      },
+      "arm_b": {
+        "v1_blocked": 2,
+        "v1_voice_blocks": 2,
+        "v2_blocked": 0,
+        "v2_claims": 6,
+        "v2_email_chars": 111,
+        "v2_post_chars": 111
+      },
+      "claims_total": 2,
+      "email_distance": 47,
+      "post_distance": 47,
+      "product": "Fictional Quenby insulated vessel QV-9, synthetic evaluation only",
+      "sentences_changed": 1,
+      "voice_blocked_claims": 1
+    },
+    {
+      "arm_a": {
+        "v1_blocked": 0,
+        "v2_blocked": 0,
+        "v2_claims": 7,
+        "v2_email_chars": 143,
+        "v2_post_chars": 143
+      },
+      "arm_b": {
+        "v1_blocked": 2,
+        "v1_voice_blocks": 2,
+        "v2_blocked": 0,
+        "v2_claims": 6,
+        "v2_email_chars": 121,
+        "v2_post_chars": 121
+      },
+      "claims_total": 2,
+      "email_distance": 22,
+      "post_distance": 22,
+      "product": "Fictional Vale area rug VR-12, synthetic evaluation only",
+      "sentences_changed": 1,
+      "voice_blocked_claims": 1
+    },
+    {
+      "arm_a": {
+        "v1_blocked": 0,
+        "v2_blocked": 0,
+        "v2_claims": 7,
+        "v2_email_chars": 151,
+        "v2_post_chars": 151
+      },
+      "arm_b": {
+        "v1_blocked": 2,
+        "v1_voice_blocks": 2,
+        "v2_blocked": 0,
+        "v2_claims": 6,
+        "v2_email_chars": 112,
+        "v2_post_chars": 112
+      },
+      "claims_total": 2,
+      "email_distance": 39,
+      "post_distance": 39,
+      "product": "Fictional Zintara electric kettle ZK-4, synthetic evaluation only",
+      "sentences_changed": 1,
+      "voice_blocked_claims": 1
+    },
+    {
+      "arm_a": {
+        "v1_blocked": 0,
+        "v2_blocked": 0,
+        "v2_claims": 7,
+        "v2_email_chars": 147,
+        "v2_post_chars": 147
+      },
+      "arm_b": {
+        "v1_blocked": 2,
+        "v1_voice_blocks": 2,
+        "v2_blocked": 0,
+        "v2_claims": 6,
+        "v2_email_chars": 114,
+        "v2_post_chars": 114
+      },
+      "claims_total": 2,
+      "email_distance": 33,
+      "post_distance": 33,
+      "product": "Fictional Zintara filter set ZF-2, synthetic evaluation only",
+      "sentences_changed": 1,
+      "voice_blocked_claims": 1
+    },
+    {
+      "arm_a": {
+        "v1_blocked": 0,
+        "v2_blocked": 0,
+        "v2_claims": 10,
+        "v2_email_chars": 201,
+        "v2_post_chars": 201
+      },
+      "arm_b": {
+        "v1_blocked": 3,
+        "v1_voice_blocks": 3,
+        "v2_blocked": 0,
+        "v2_claims": 8,
+        "v2_email_chars": 145,
+        "v2_post_chars": 145
+      },
+      "claims_total": 5,
+      "email_distance": 56,
+      "post_distance": 56,
+      "product": "Fictional Zintara stoneware mug ZX-100, synthetic evaluation only",
+      "sentences_changed": 2,
+      "voice_blocked_claims": 2
+    }
+  ],
+  "script": "voice-edits/v1",
+  "source_commit": {
+    "method": "explicit argument",
+    "sha": "a49f21137a2f75dea0d78595f00fac966e287ee8"
+  },
+  "summary": {
+    "median_arm_a_v1_blocked": 0.0,
+    "median_arm_b_v1_blocked": 2.0,
+    "median_email_distance": 41.0,
+    "median_post_distance": 41.0,
+    "median_sentences_changed": 1.0,
+    "product_count": 12,
+    "total_arm_a_v1_blocked": 0,
+    "total_arm_b_v1_blocked": 28,
+    "total_arm_b_v1_voice_blocks": 28,
+    "total_claims": 30,
+    "total_voice_blocked_claims": 16
+  }
+}
