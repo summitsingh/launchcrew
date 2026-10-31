@@ -268,6 +268,122 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/calendar/slots/{slot_id}/deliveries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Slot Deliveries
+         * @description List per-channel delivery rows and attempts for one slot.
+         */
+        get: operations["list_slot_deliveries_api_calendar_slots__slot_id__deliveries_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/calendar/slots/{slot_id}/deliveries/{channel}/fail": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Fail Delivery
+         * @description Record an owner-reported failure for one delivery row.
+         */
+        post: operations["fail_delivery_api_calendar_slots__slot_id__deliveries__channel__fail_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/calendar/slots/{slot_id}/deliveries/{channel}/mark-posted": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mark Delivery Posted
+         * @description Mark one slot channel posted with the live URL.
+         *
+         *     Records a posted attempt. When verify_now is true and live content
+         *     is available (explicit live_text or the live URL), verification runs
+         *     immediately and its attempt is appended after the posted attempt.
+         */
+        post: operations["mark_delivery_posted_api_calendar_slots__slot_id__deliveries__channel__mark_posted_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/calendar/slots/{slot_id}/deliveries/{channel}/outcomes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Delivery Outcome
+         * @description Attach outcome numbers from a verified board row to the outcome log.
+         *
+         *     Refuses with 409 unless the delivery row is verified. The linked
+         *     run must still hold an approved current exported revision, matching
+         *     the standard outcome gate. Delivery channels outside the outcome
+         *     channel set log under other.
+         */
+        post: operations["create_delivery_outcome_api_calendar_slots__slot_id__deliveries__channel__outcomes_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/calendar/slots/{slot_id}/deliveries/{channel}/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Verify Delivery
+         * @description Verify one delivery against the approved channel variant.
+         *
+         *     Compares the live post (explicit live_text wins; otherwise the
+         *     given or stored live URL is fetched with an SSRF guard) against
+         *     the approved variant text: exact match or trimmed-by-rule verifies,
+         *     any difference fails with the differing field named. Mismatch is a
+         *     visible failure state, never a silent pass. The verification is
+         *     appended as a new timestamped attempt.
+         */
+        post: operations["verify_delivery_api_calendar_slots__slot_id__deliveries__channel__verify_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/calendar/slots/{slot_id}/mark-ready": {
         parameters: {
             query?: never;
@@ -326,6 +442,29 @@ export interface paths {
          * @description Validate gate: name exactly which Ready conditions fail, if any.
          */
         get: operations["validate_slot_ready_api_calendar_slots__slot_id__validate_ready_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/calendar/verification-board": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Verification Board
+         * @description List slot-channel delivery rows, one row per channel per slot.
+         *
+         *     Rows mirror each slot selected channels; channels without a stored
+         *     delivery read as not_posted with an empty attempt trail.
+         */
+        get: operations["list_verification_board_api_calendar_verification_board_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1994,6 +2133,77 @@ export interface components {
         Clone: {
             /** Name */
             name: string;
+        };
+        /** DeliveryFailIn */
+        DeliveryFailIn: {
+            /** Live Url */
+            live_url?: string | null;
+            /** Reason */
+            reason: string;
+        };
+        /** DeliveryMarkPostedIn */
+        DeliveryMarkPostedIn: {
+            /** Live Subject */
+            live_subject?: string | null;
+            /** Live Text */
+            live_text?: string | null;
+            /** Live Url */
+            live_url: string;
+            /**
+             * Verify Now
+             * @default false
+             */
+            verify_now: boolean;
+        };
+        /** DeliveryOut */
+        DeliveryOut: {
+            /** Attempts */
+            attempts?: {
+                [key: string]: unknown;
+            }[];
+            /** Channel */
+            channel: string;
+            /**
+             * Delivery State
+             * @enum {string}
+             */
+            delivery_state: "not_posted" | "posted" | "verified" | "failed";
+            /** Differing Field */
+            differing_field?: string | null;
+            /** Failure Reason */
+            failure_reason?: string | null;
+            /** Id */
+            id: string;
+            /** Live Url */
+            live_url?: string | null;
+            /** Match Kind */
+            match_kind?: ("exact" | "trimmed_by_rule" | "mismatch") | null;
+            /** Slot Id */
+            slot_id: string;
+        };
+        /** DeliveryOutcomeIn */
+        DeliveryOutcomeIn: {
+            /** Clicks */
+            clicks: number;
+            /** Comments */
+            comments: number;
+            /** Likes */
+            likes: number;
+            /** Note */
+            note: string;
+            /** Posted Date */
+            posted_date: string;
+            /** Sales */
+            sales: number;
+        };
+        /** DeliveryVerifyIn */
+        DeliveryVerifyIn: {
+            /** Live Subject */
+            live_subject?: string | null;
+            /** Live Text */
+            live_text?: string | null;
+            /** Live Url */
+            live_url?: string | null;
         };
         /** Draft */
         Draft: {
@@ -4731,6 +4941,181 @@ export interface operations {
             };
         };
     };
+    list_slot_deliveries_api_calendar_slots__slot_id__deliveries_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slot_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeliveryOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    fail_delivery_api_calendar_slots__slot_id__deliveries__channel__fail_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slot_id: string;
+                channel: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeliveryFailIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeliveryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    mark_delivery_posted_api_calendar_slots__slot_id__deliveries__channel__mark_posted_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slot_id: string;
+                channel: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeliveryMarkPostedIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeliveryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_delivery_outcome_api_calendar_slots__slot_id__deliveries__channel__outcomes_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slot_id: string;
+                channel: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeliveryOutcomeIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OutcomeOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    verify_delivery_api_calendar_slots__slot_id__deliveries__channel__verify_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slot_id: string;
+                channel: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeliveryVerifyIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeliveryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     mark_slot_ready_api_calendar_slots__slot_id__mark_ready_post: {
         parameters: {
             query?: never;
@@ -4815,6 +5200,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ValidateReadyOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_verification_board_api_calendar_verification_board_get: {
+        parameters: {
+            query?: {
+                slot_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeliveryOut"][];
                 };
             };
             /** @description Validation Error */

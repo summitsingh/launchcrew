@@ -1198,6 +1198,265 @@
         "title": "Clone",
         "type": "object"
       },
+      "DeliveryFailIn": {
+        "additionalProperties": false,
+        "properties": {
+          "live_url": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Live Url"
+          },
+          "reason": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "DeliveryFailIn",
+        "type": "object"
+      },
+      "DeliveryMarkPostedIn": {
+        "additionalProperties": false,
+        "properties": {
+          "live_subject": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Live Subject"
+          },
+          "live_text": {
+            "anyOf": [
+              {
+                "maxLength": 20000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Live Text"
+          },
+          "live_url": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Live Url",
+            "type": "string"
+          },
+          "verify_now": {
+            "default": false,
+            "title": "Verify Now",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "live_url"
+        ],
+        "title": "DeliveryMarkPostedIn",
+        "type": "object"
+      },
+      "DeliveryOut": {
+        "additionalProperties": false,
+        "properties": {
+          "attempts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Attempts",
+            "type": "array"
+          },
+          "channel": {
+            "title": "Channel",
+            "type": "string"
+          },
+          "delivery_state": {
+            "enum": [
+              "not_posted",
+              "posted",
+              "verified",
+              "failed"
+            ],
+            "title": "Delivery State",
+            "type": "string"
+          },
+          "differing_field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Differing Field"
+          },
+          "failure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Reason"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "live_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Live Url"
+          },
+          "match_kind": {
+            "anyOf": [
+              {
+                "enum": [
+                  "exact",
+                  "trimmed_by_rule",
+                  "mismatch"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Match Kind"
+          },
+          "slot_id": {
+            "title": "Slot Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "slot_id",
+          "channel",
+          "delivery_state"
+        ],
+        "title": "DeliveryOut",
+        "type": "object"
+      },
+      "DeliveryOutcomeIn": {
+        "additionalProperties": false,
+        "properties": {
+          "clicks": {
+            "maximum": 1000000.0,
+            "minimum": 0.0,
+            "title": "Clicks",
+            "type": "integer"
+          },
+          "comments": {
+            "maximum": 1000000.0,
+            "minimum": 0.0,
+            "title": "Comments",
+            "type": "integer"
+          },
+          "likes": {
+            "maximum": 1000000.0,
+            "minimum": 0.0,
+            "title": "Likes",
+            "type": "integer"
+          },
+          "note": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Note",
+            "type": "string"
+          },
+          "posted_date": {
+            "maxLength": 10,
+            "minLength": 10,
+            "title": "Posted Date",
+            "type": "string"
+          },
+          "sales": {
+            "maximum": 1000000.0,
+            "minimum": 0.0,
+            "title": "Sales",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "posted_date",
+          "likes",
+          "comments",
+          "clicks",
+          "sales",
+          "note"
+        ],
+        "title": "DeliveryOutcomeIn",
+        "type": "object"
+      },
+      "DeliveryVerifyIn": {
+        "additionalProperties": false,
+        "properties": {
+          "live_subject": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Live Subject"
+          },
+          "live_text": {
+            "anyOf": [
+              {
+                "maxLength": 20000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Live Text"
+          },
+          "live_url": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Live Url"
+          }
+        },
+        "title": "DeliveryVerifyIn",
+        "type": "object"
+      },
       "Draft": {
         "properties": {
           "claims": {
@@ -6871,6 +7130,286 @@
         "summary": "Approve Slot Channels"
       }
     },
+    "/api/calendar/slots/{slot_id}/deliveries": {
+      "get": {
+        "description": "List per-channel delivery rows and attempts for one slot.",
+        "operationId": "list_slot_deliveries_api_calendar_slots__slot_id__deliveries_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slot_id",
+            "required": true,
+            "schema": {
+              "title": "Slot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/DeliveryOut"
+                  },
+                  "title": "Response List Slot Deliveries Api Calendar Slots  Slot Id  Deliveries Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Slot Deliveries"
+      }
+    },
+    "/api/calendar/slots/{slot_id}/deliveries/{channel}/fail": {
+      "post": {
+        "description": "Record an owner-reported failure for one delivery row.",
+        "operationId": "fail_delivery_api_calendar_slots__slot_id__deliveries__channel__fail_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slot_id",
+            "required": true,
+            "schema": {
+              "title": "Slot Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "channel",
+            "required": true,
+            "schema": {
+              "title": "Channel",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeliveryFailIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeliveryOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Fail Delivery"
+      }
+    },
+    "/api/calendar/slots/{slot_id}/deliveries/{channel}/mark-posted": {
+      "post": {
+        "description": "Mark one slot channel posted with the live URL.\n\nRecords a posted attempt. When verify_now is true and live content\nis available (explicit live_text or the live URL), verification runs\nimmediately and its attempt is appended after the posted attempt.",
+        "operationId": "mark_delivery_posted_api_calendar_slots__slot_id__deliveries__channel__mark_posted_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slot_id",
+            "required": true,
+            "schema": {
+              "title": "Slot Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "channel",
+            "required": true,
+            "schema": {
+              "title": "Channel",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeliveryMarkPostedIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeliveryOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Mark Delivery Posted"
+      }
+    },
+    "/api/calendar/slots/{slot_id}/deliveries/{channel}/outcomes": {
+      "post": {
+        "description": "Attach outcome numbers from a verified board row to the outcome log.\n\nRefuses with 409 unless the delivery row is verified. The linked\nrun must still hold an approved current exported revision, matching\nthe standard outcome gate. Delivery channels outside the outcome\nchannel set log under other.",
+        "operationId": "create_delivery_outcome_api_calendar_slots__slot_id__deliveries__channel__outcomes_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slot_id",
+            "required": true,
+            "schema": {
+              "title": "Slot Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "channel",
+            "required": true,
+            "schema": {
+              "title": "Channel",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeliveryOutcomeIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutcomeOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Delivery Outcome"
+      }
+    },
+    "/api/calendar/slots/{slot_id}/deliveries/{channel}/verify": {
+      "post": {
+        "description": "Verify one delivery against the approved channel variant.\n\nCompares the live post (explicit live_text wins; otherwise the\ngiven or stored live URL is fetched with an SSRF guard) against\nthe approved variant text: exact match or trimmed-by-rule verifies,\nany difference fails with the differing field named. Mismatch is a\nvisible failure state, never a silent pass. The verification is\nappended as a new timestamped attempt.",
+        "operationId": "verify_delivery_api_calendar_slots__slot_id__deliveries__channel__verify_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slot_id",
+            "required": true,
+            "schema": {
+              "title": "Slot Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "channel",
+            "required": true,
+            "schema": {
+              "title": "Channel",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeliveryVerifyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeliveryOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Verify Delivery"
+      }
+    },
     "/api/calendar/slots/{slot_id}/mark-ready": {
       "post": {
         "description": "Mark one slot Ready only when all three gate conditions pass.\n\nNo override: any failing condition returns 409 naming each\nfailing condition instead of marking the slot Ready.",
@@ -6999,6 +7538,57 @@
           }
         },
         "summary": "Validate Slot Ready"
+      }
+    },
+    "/api/calendar/verification-board": {
+      "get": {
+        "description": "List slot-channel delivery rows, one row per channel per slot.\n\nRows mirror each slot selected channels; channels without a stored\ndelivery read as not_posted with an empty attempt trail.",
+        "operationId": "list_verification_board_api_calendar_verification_board_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "slot_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Slot Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/DeliveryOut"
+                  },
+                  "title": "Response List Verification Board Api Calendar Verification Board Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Verification Board"
       }
     },
     "/api/campaigns": {

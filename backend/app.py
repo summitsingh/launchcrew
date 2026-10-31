@@ -3804,3 +3804,410 @@ def export_validated_schedule(actor: str = Depends(auth.actor)):
                 'publishing_mode': 'planning_only_never_publishes',
                 'ready_slots': ready_slots,
                 'excluded_slots': excluded_slots}
+
+
+# S5 cross-post verification board: one delivery row per slot per channel.
+# Delivery states are not_posted, posted, verified, and failed. Verification
+# compares fetched or supplied live content against the approved channel
+# variant text (exact, trimmed-by-rule, or mismatch). Every state change
+# appends a timestamped attempt; earlier attempts are never overwritten.
+# Verified rows feed the outcome log. Nothing here publishes anything.
+
+DeliveryState = Literal['not_posted', 'posted', 'verified', 'failed']
+DeliveryMatchKind = Literal['exact', 'trimmed_by_rule', 'mismatch']
+
+
+class DeliveryOut(Strict):
+    id: str
+    slot_id: str
+    channel: str
+    delivery_state: DeliveryState
+    live_url: str | None = None
+    match_kind: DeliveryMatchKind | None = None
+    differing_field: str | None = None
+    failure_reason: str | None = None
+    attempts: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class DeliveryMarkPostedIn(Strict):
+    live_url: str = Field(min_length=1, max_length=2000)
+    live_text: str | None = Field(default=None, max_length=20000)
+    live_subject: str | None = Field(default=None, max_length=2000)
+    verify_now: bool = False
+
+
+class DeliveryVerifyIn(Strict):
+    live_url: str | None = Field(default=None, max_length=2000)
+    live_text: str | None = Field(default=None, max_length=20000)
+    live_subject: str | None = Field(default=None, max_length=2000)
+
+
+class DeliveryFailIn(Strict):
+    reason: str = Field(min_length=1, max_length=2000)
+    live_url: str | None = Field(default=None, max_length=2000)
+
+
+class DeliveryOutcomeIn(Strict):
+    posted_date: str = Field(min_length=10, max_length=10)
+    likes: StrictInt = Field(ge=0, le=OUTCOME_MAX_COUNT)
+    comments: StrictInt = Field(ge=0, le=OUTCOME_MAX_COUNT)
+    clicks: StrictInt = Field(ge=0, le=OUTCOME_MAX_COUNT)
+    sales: StrictInt = Field(ge=0, le=OUTCOME_MAX_COUNT)
+    note: str = Field(min_length=1, max_length=OUTCOME_MAX_NOTE_LENGTH)
+
+
+_DELIVERY_PUBLIC_SELECT = ('id, slot_id, channel, delivery_state, live_url, '
+                           'match_kind, differing_field, failure_reason, attempts')
+
+
+def _public_delivery(row):
+    if not isinstance(row, dict):
+        try:
+            row = dict(row)
+        except Exception:
+            row = {}
+    attempts = row.get('attempts')
+    return {'id': row.get('id'), 'slot_id': row.get('slot_id'),
+            'channel': row.get('channel'),
+            'delivery_state': row.get('delivery_state', 'not_posted'),
+            'live_url': row.get('live_url'),
+            'match_kind': row.get('match_kind'),
+            'differing_field': row.get('differing_field'),
+            'failure_reason': row.get('failure_reason'),
+            'attempts': list(attempts) if isinstance(attempts, list) else []}
+
+
+def _normalize_delivery_channel(channel):
+    from launchcrew import verification_board as board_mod
+    try:
+        return board_mod.normalize_channel(channel)
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+
+
+def _load_or_init_delivery(db, slot, workspace_id, channel):
+    from launchcrew import verification_board as board_mod
+    row = db.execute(text('SELECT ' + _DELIVERY_PUBLIC_SELECT + ' FROM calendar_slot_deliveries'
+                          ' WHERE slot_id=:slot AND channel=:channel AND workspace_id=:ws'),
+                     {'slot': slot['id'], 'channel': channel, 'ws': workspace_id}).mappings().first()
+    if row is not None:
+        return dict(row)
+    delivery_id = 'del_' + uuid4().hex
+    db.execute(text('INSERT INTO calendar_slot_deliveries(id, workspace_id, slot_id, channel, delivery_state)'
+                    ' VALUES (:id, :ws, :slot, :channel, :state)'),
+               {'id': delivery_id, 'ws': workspace_id, 'slot': slot['id'],
+                'channel': channel, 'state': 'not_posted'})
+    created = db.execute(text('SELECT ' + _DELIVERY_PUBLIC_SELECT + ' FROM calendar_slot_deliveries'
+                              ' WHERE id=:id AND workspace_id=:ws'),
+                         {'id': delivery_id, 'ws': workspace_id}).mappings().first()
+    if created is None:
+        raise HTTPException(404, 'Calendar slot not found')
+    return dict(created)
+
+
+def _save_delivery_attempt(db, delivery, workspace_id, state, live_url=None,
+                           match_kind=None, differing_field=None, reason=None,
+                           live_text_excerpt=''):
+    from launchcrew import verification_board as board_mod
+    trail = delivery.get('attempts')
+    trail = list(trail) if isinstance(trail, list) else []
+    entry = board_mod.build_attempt(state, live_url=live_url, match_kind=match_kind,
+                                    differing_field=differing_field, reason=reason,
+                                    live_text_excerpt=live_text_excerpt or '')
+    updated_trail = board_mod.append_attempt(trail, entry)
+    db.execute(text('UPDATE calendar_slot_deliveries SET delivery_state=:state, live_url=:url,'
+                    ' match_kind=:match, differing_field=:field, failure_reason=:reason,'
+                    ' attempts=CAST(:attempts AS jsonb), updated_at=now()'
+                    ' WHERE id=:id AND workspace_id=:ws'),
+               {'state': state, 'url': live_url, 'match': match_kind, 'field': differing_field,
+                'reason': reason, 'attempts': json.dumps(updated_trail),
+                'id': delivery['id'], 'ws': workspace_id})
+    row = db.execute(text('SELECT ' + _DELIVERY_PUBLIC_SELECT + ' FROM calendar_slot_deliveries'
+                          ' WHERE id=:id AND workspace_id=:ws'),
+                     {'id': delivery['id'], 'ws': workspace_id}).mappings().first()
+    if row is None:
+        raise HTTPException(404, 'Calendar slot delivery not found')
+    return dict(row)
+
+
+def _approved_variant_for_slot(db, slot, workspace_id, channel):
+    from launchcrew import channel_variants as channel_mod
+    from launchcrew import verification_board as board_mod
+    run_id = slot.get('run_id')
+    if not run_id:
+        raise HTTPException(422, 'Slot has no linked run; link a run before verifying deliveries')
+    receipt = _receipt_for_slot(db, slot, workspace_id)
+    if receipt is None:
+        raise HTTPException(404, 'Run not found')
+    if channel not in channel_mod.CHANNELS:
+        raise HTTPException(422, 'Unknown channel: ' + channel)
+    try:
+        bundle = channel_mod.checked_channel_variants(receipt)
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    entry = bundle.get(channel) if isinstance(bundle, dict) else None
+    if not isinstance(entry, dict) or not entry.get('text'):
+        raise HTTPException(422, 'No approved variant text for channel: ' + channel)
+    approved_text, approved_subject = board_mod.approved_text_for_channel(entry)
+    if not approved_text:
+        raise HTTPException(422, 'No approved variant text for channel: ' + channel)
+    return approved_text, approved_subject
+
+
+def _sync_slot_verified(db, slot, workspace_id):
+    """Sync the slot status to verified once its channels verify.
+
+    When the slot names selected channels, all of them must reach
+    verified. When it names none, a single verified delivery row is
+    enough. Verified is terminal and automatic sync never demotes.
+    """
+    from launchcrew import calendar as calendar_mod
+    rows = db.execute(text('SELECT channel, delivery_state FROM calendar_slot_deliveries'
+                           ' WHERE slot_id=:slot AND workspace_id=:ws'),
+                      {'slot': slot['id'], 'ws': workspace_id}).mappings().all()
+    verified = {str(entry['channel']) for entry in rows
+                if entry.get('delivery_state') == 'verified'}
+    if not verified:
+        return
+    selected = slot.get('selected_channels')
+    selected = list(selected) if isinstance(selected, list) else []
+    ready = all(channel in verified for channel in selected) if selected else True
+    if ready and calendar_mod.should_advance(slot.get('status'), 'verified'):
+        db.execute(text("UPDATE calendar_slots SET status='verified', updated_at=now()"
+                        ' WHERE id=:id AND workspace_id=:ws'),
+                   {'id': slot['id'], 'ws': workspace_id})
+
+
+def _run_delivery_verification(db, slot, delivery, workspace_id, channel,
+                               live_url=None, live_text=None, live_subject=None):
+    from launchcrew import verification_board as board_mod
+    approved_text, approved_subject = _approved_variant_for_slot(db, slot, workspace_id, channel)
+    supplied_url = live_url if live_url is not None else delivery.get('live_url')
+    supplied_text = live_text
+    supplied_subject = live_subject
+    if supplied_text is None and supplied_url is None:
+        raise HTTPException(422, 'Provide live_text or a live_url to verify')
+    if supplied_url is not None:
+        try:
+            board_mod.normalize_live_url(supplied_url)
+        except ValueError as error:
+            raise HTTPException(422, str(error))
+    try:
+        live_content, live_sub, _ = board_mod.resolve_live_content(
+            live_url=supplied_url, live_text=supplied_text, live_subject=supplied_subject)
+    except ValueError as error:
+        updated = _save_delivery_attempt(db, delivery, workspace_id, 'failed',
+                                         live_url=supplied_url, match_kind='mismatch',
+                                         differing_field='text', reason=str(error),
+                                         live_text_excerpt='')
+        return _public_delivery(updated)
+    outcome = board_mod.compare_live_post_to_variant(
+        approved_text, live_content, approved_subject=approved_subject,
+        live_subject=live_sub, channel=channel)
+    updated = _save_delivery_attempt(
+        db, delivery, workspace_id, outcome['delivery_state'], live_url=supplied_url,
+        match_kind=outcome['match_kind'], differing_field=outcome['differing_field'],
+        reason=outcome['failure_reason'],
+        live_text_excerpt=board_mod.excerpt(live_content))
+    _sync_slot_verified(db, slot, workspace_id)
+    return _public_delivery(updated)
+
+
+@app.get('/api/calendar/verification-board', response_model=list[DeliveryOut])
+def list_verification_board(slot_id: str | None = None, actor: str = Depends(auth.actor)):
+    """List slot-channel delivery rows, one row per channel per slot.
+
+    Rows mirror each slot selected channels; channels without a stored
+    delivery read as not_posted with an empty attempt trail.
+    """
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        params: dict[str, Any] = {'ws': workspace_id}
+        slot_filter = ''
+        if slot_id is not None:
+            slot_filter = ' AND id=:slot'
+            params['slot'] = slot_id
+        slots = db.execute(text('SELECT ' + _CALENDAR_PUBLIC_SELECT + ' FROM calendar_slots'
+                                ' WHERE workspace_id=:ws' + slot_filter
+                                + ' ORDER BY slot_date, slot_type, id'),
+                           params).mappings().all()
+        board: list[dict[str, Any]] = []
+        for raw in slots:
+            slot = _public_calendar_slot(dict(raw))
+            selected = slot.get('selected_channels')
+            channels = list(selected) if isinstance(selected, list) else []
+            stored = db.execute(text('SELECT ' + _DELIVERY_PUBLIC_SELECT + ' FROM calendar_slot_deliveries'
+                                     ' WHERE slot_id=:slot AND workspace_id=:ws'),
+                                {'slot': slot['id'], 'ws': workspace_id}).mappings().all()
+            by_channel = {str(entry['channel']): dict(entry) for entry in stored}
+            for channel in channels:
+                if channel in by_channel:
+                    board.append(_public_delivery(by_channel[channel]))
+                else:
+                    board.append({'id': 'pending:' + slot['id'] + ':' + channel,
+                                  'slot_id': slot['id'], 'channel': channel,
+                                  'delivery_state': 'not_posted', 'live_url': None,
+                                  'match_kind': None, 'differing_field': None,
+                                  'failure_reason': None, 'attempts': []})
+        return board
+
+
+@app.get('/api/calendar/slots/{slot_id}/deliveries', response_model=list[DeliveryOut])
+def list_slot_deliveries(slot_id: str, actor: str = Depends(auth.actor)):
+    """List per-channel delivery rows and attempts for one slot."""
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        slot = _load_slot(db, slot_id, workspace_id)
+        rows = db.execute(text('SELECT ' + _DELIVERY_PUBLIC_SELECT + ' FROM calendar_slot_deliveries'
+                               ' WHERE slot_id=:slot AND workspace_id=:ws ORDER BY channel, id'),
+                          {'slot': slot['id'], 'ws': workspace_id}).mappings().all()
+        return [_public_delivery(dict(entry)) for entry in rows]
+
+
+@app.post('/api/calendar/slots/{slot_id}/deliveries/{channel}/mark-posted',
+          response_model=DeliveryOut)
+def mark_delivery_posted(slot_id: str, channel: str, body: DeliveryMarkPostedIn,
+                         actor: str = Depends(auth.actor)):
+    """Mark one slot channel posted with the live URL.
+
+    Records a posted attempt. When verify_now is true and live content
+    is available (explicit live_text or the live URL), verification runs
+    immediately and its attempt is appended after the posted attempt.
+    """
+    from launchcrew import verification_board as board_mod
+    key = _normalize_delivery_channel(channel)
+    try:
+        live_url = board_mod.normalize_live_url(body.live_url)
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    try:
+        live_text = board_mod.normalize_optional_text(body.live_text, 'live_text')
+        live_subject = board_mod.normalize_optional_text(body.live_subject, 'live_subject', 2000)
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        slot = _load_slot(db, slot_id, workspace_id)
+        delivery = _load_or_init_delivery(db, slot, workspace_id, key)
+        stored_url = delivery.get('live_url')
+        posted = _save_delivery_attempt(
+            db, delivery, workspace_id, 'posted',
+            live_url=live_url if live_url != stored_url or delivery.get('delivery_state') != 'posted' else stored_url,
+            live_text_excerpt=board_mod.excerpt(live_text or ''))
+        if body.verify_now and (live_text is not None or live_url):
+            return _run_delivery_verification(db, slot, posted, workspace_id, key,
+                                              live_url=live_url, live_text=live_text,
+                                              live_subject=live_subject)
+        return _public_delivery(posted)
+
+
+@app.post('/api/calendar/slots/{slot_id}/deliveries/{channel}/verify',
+          response_model=DeliveryOut)
+def verify_delivery(slot_id: str, channel: str, body: DeliveryVerifyIn,
+                    actor: str = Depends(auth.actor)):
+    """Verify one delivery against the approved channel variant.
+
+    Compares the live post (explicit live_text wins; otherwise the
+    given or stored live URL is fetched with an SSRF guard) against
+    the approved variant text: exact match or trimmed-by-rule verifies,
+    any difference fails with the differing field named. Mismatch is a
+    visible failure state, never a silent pass. The verification is
+    appended as a new timestamped attempt.
+    """
+    from launchcrew import verification_board as board_mod
+    key = _normalize_delivery_channel(channel)
+    try:
+        live_text = board_mod.normalize_optional_text(body.live_text, 'live_text')
+        live_subject = board_mod.normalize_optional_text(body.live_subject, 'live_subject', 2000)
+        live_url = None
+        if body.live_url is not None:
+            live_url = board_mod.normalize_live_url(body.live_url)
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        slot = _load_slot(db, slot_id, workspace_id)
+        delivery = _load_or_init_delivery(db, slot, workspace_id, key)
+        return _run_delivery_verification(db, slot, delivery, workspace_id, key,
+                                          live_url=live_url, live_text=live_text,
+                                          live_subject=live_subject)
+
+
+@app.post('/api/calendar/slots/{slot_id}/deliveries/{channel}/fail',
+          response_model=DeliveryOut)
+def fail_delivery(slot_id: str, channel: str, body: DeliveryFailIn,
+                  actor: str = Depends(auth.actor)):
+    """Record an owner-reported failure for one delivery row."""
+    from launchcrew import verification_board as board_mod
+    key = _normalize_delivery_channel(channel)
+    reason = body.reason.strip() if isinstance(body.reason, str) else ''
+    if not reason:
+        raise HTTPException(422, 'reason must be a nonempty string')
+    for char in reason:
+        code = ord(char)
+        if code < 32 or code == 127:
+            raise HTTPException(422, 'reason contains unsafe control characters')
+    try:
+        live_url = None
+        if body.live_url is not None:
+            live_url = board_mod.normalize_live_url(body.live_url)
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        slot = _load_slot(db, slot_id, workspace_id)
+        delivery = _load_or_init_delivery(db, slot, workspace_id, key)
+        kept_url = live_url if live_url is not None else delivery.get('live_url')
+        updated = _save_delivery_attempt(db, delivery, workspace_id, 'failed',
+                                         live_url=kept_url, reason=reason,
+                                         live_text_excerpt='')
+        return _public_delivery(updated)
+
+
+@app.post('/api/calendar/slots/{slot_id}/deliveries/{channel}/outcomes',
+          response_model=OutcomeOut, status_code=201)
+def create_delivery_outcome(slot_id: str, channel: str, body: DeliveryOutcomeIn,
+                            actor: str = Depends(auth.actor)):
+    """Attach outcome numbers from a verified board row to the outcome log.
+
+    Refuses with 409 unless the delivery row is verified. The linked
+    run must still hold an approved current exported revision, matching
+    the standard outcome gate. Delivery channels outside the outcome
+    channel set log under other.
+    """
+    if not actor or actor == 'demo_placeholder':
+        raise HTTPException(401, 'Sign in required to log owner-reported outcomes')
+    key = _normalize_delivery_channel(channel)
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        slot = _load_slot(db, slot_id, workspace_id)
+        delivery = _load_or_init_delivery(db, slot, workspace_id, key)
+        if delivery.get('delivery_state') != 'verified':
+            raise HTTPException(409, 'Outcome logging requires a verified delivery row')
+        run_id = slot.get('run_id')
+        if not run_id:
+            raise HTTPException(422, 'Slot has no linked run; link a run before logging outcomes')
+        receipt = get_receipt(db, run_id, workspace_id, True)
+        _reject_when_running(receipt)
+        export_revision = _outcome_export_revision(receipt)
+        outcome_channel = key if key in OUTCOME_KNOWN_CHANNELS else 'other'
+        try:
+            _parse_calendar_date(body.posted_date, 'posted_date')
+            posted_value = body.posted_date
+        except HTTPException as error:
+            raise HTTPException(422, 'posted_date must be a real calendar date in YYYY-MM-DD format') from error
+        if not body.note.strip():
+            raise HTTPException(422, 'note must not be empty')
+        outcome_id = 'out_' + uuid4().hex
+        db.execute(text('INSERT INTO run_outcomes(id, run_id, workspace_id, export_revision, channel, posted_date, likes, comments, clicks, sales, note, provenance, actor)'
+                        ' VALUES (:id, :run, :ws, :rev, :channel, CAST(:posted AS date), :likes, :comments, :clicks, :sales, :note, :prov, :actor)'),
+                   {'id': outcome_id, 'run': run_id, 'ws': workspace_id, 'rev': export_revision,
+                    'channel': outcome_channel, 'posted': posted_value, 'likes': body.likes,
+                    'comments': body.comments, 'clicks': body.clicks, 'sales': body.sales,
+                    'note': body.note, 'prov': OUTCOME_PROVENANCE, 'actor': actor})
+        store.audit(db, run_id, 'delivery_outcome_logged', actor, workspace_id)
+        row = db.execute(text('SELECT ' + _OUTCOME_PUBLIC_SELECT + ' FROM run_outcomes WHERE id=:id AND workspace_id=:ws'),
+                         {'id': outcome_id, 'ws': workspace_id}).mappings().first()
+        if row is None:
+            raise HTTPException(404, 'Run not found')
+        return _public_outcome(row)
