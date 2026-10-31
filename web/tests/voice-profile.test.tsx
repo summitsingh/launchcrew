@@ -96,6 +96,19 @@ describe('voice memory controls', () => {
     expect(html).toContain('invalidates dependent approvals until a new revision check passes');
   });
 
+  it('summarizes the Slice 3 voice evaluation read-only in the Memory view', () => {
+    const client = new QueryClient();
+    client.setQueryData(['memory'], []);
+    const html = renderToStaticMarkup(
+      <QueryClientProvider client={client}><MemoryView /></QueryClientProvider>,
+    );
+    expect(html).toContain('data-testid="voice-eval-summary"');
+    expect(html).toContain('evaluation/voice_edits_report.json');
+    expect(html).toContain('12 products evaluated');
+    expect(html).toContain('46 total edits without voice profile vs 0 edits with voice profile');
+    expect(html).toContain('mean 3.83 vs 0.0 edits per draft');
+  });
+
   it('documents the voice JSON shape in source for explicit entry', () => {
     const source = readFileSync('src/components/v2-views.tsx', 'utf8');
     expect(source).toContain('voice_profile');

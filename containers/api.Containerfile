@@ -28,6 +28,7 @@ RUN echo "$RDS_CA_SHA256  /app/rds-ca-bundle.pem" | sha256sum -c - \
 COPY launchcrew ./launchcrew
 COPY backend ./backend
 COPY agents ./agents
+COPY agent_presets ./agent_presets
 COPY facts ./facts
 COPY alembic.ini ./
 COPY containers/api-entrypoint.sh /usr/local/bin/api-entrypoint.sh

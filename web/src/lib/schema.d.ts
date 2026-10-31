@@ -791,6 +791,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/copy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Copy Draft */
+        post: operations["copy_draft_api_runs__run_id__copy_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/export": {
         parameters: {
             query?: never;
@@ -1527,6 +1544,66 @@ export interface components {
             model_written?: boolean | null;
             /** Post */
             post: string;
+        };
+        /** DraftCopyIn */
+        DraftCopyIn: {
+            /** Expected Revision */
+            expected_revision?: number | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "post" | "email";
+        };
+        /** DraftCopyOut */
+        DraftCopyOut: {
+            /**
+             * Approved By
+             * @default
+             */
+            approved_by: string;
+            /**
+             * Binding Digest
+             * @default
+             */
+            binding_digest: string;
+            /**
+             * Binding Version
+             * @default
+             */
+            binding_version: string;
+            /**
+             * Copy Authorized
+             * @default false
+             */
+            copy_authorized: boolean;
+            /**
+             * Kind
+             * @default
+             */
+            kind: string;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /**
+             * Receipt Id
+             * @default
+             */
+            receipt_id: string;
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+            /**
+             * Text
+             * @default
+             */
+            text: string;
+        } & {
+            [key: string]: unknown;
         };
         /** DriveFieldSuggestionItem */
         DriveFieldSuggestionItem: {
@@ -5055,6 +5132,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ChannelCopyOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    copy_draft_api_runs__run_id__copy_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DraftCopyIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DraftCopyOut"];
                 };
             };
             /** @description Validation Error */

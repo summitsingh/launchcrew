@@ -922,3 +922,73 @@ def export_view(receipt):
     view['exported_draft'] = draft
     view['exported_revision'] = current_revision(receipt)
     return view
+
+
+DRAFT_COPY_NOTE = (
+    'Copy authorized for offline use only at the stated revision '
+    'and approval binding, for the stated human-approved exact '
+    'draft text. No auto-publish, no auto-post, no auto-send. The exact '
+    'text below passed deterministic checks against the current '
+    'approved draft and confirmed facts, and a human approved '
+    'that exact text at the stated revision.'
+)
+
+
+def authorize_draft_copy(receipt, kind, expected_revision=None):
+    """Authorize copying the exact primary post/email draft text.
+
+    Re-reads the gate at action time: the receipt must be currently
+    exportable with a matching current approval binding, and
+    expected_revision must match the current revision (a concurrent
+    revision change refuses with a stale error). The returned text is
+    the exact current draft text bound to that approval; only the
+    returned text may be copied. Fails closed with ValueError on any
+    mismatch. The draft text itself stays non independently
+    exportable: only this record authorizes the copy.
+    """
+    if kind not in ('post', 'email'):
+        raise ValueError('Unknown draft kind.')
+    if not isinstance(receipt, dict):
+        raise ValueError('Receipt unavailable for draft copy')
+    current = current_revision(receipt)
+    if expected_revision is None:
+        if current > 0:
+            raise ValueError(
+                'Copy is stale; expected_revision is required for edited revisions')
+    else:
+        if isinstance(expected_revision, bool) or not isinstance(expected_revision, int):
+            raise ValueError('expected_revision must be an integer')
+        if int(expected_revision) != current:
+            raise ValueError('Copy is stale; the draft changed')
+    if receipt.get('status') == 'failed':
+        raise ValueError('Copy requires a completed run')
+    stale = voice_stale_reason(receipt)
+    if stale is not None:
+        raise ValueError('Copy refused: ' + stale)
+    if not exportable(receipt):
+        bound, reason = binding_status(receipt)
+        if not bound and 'binding' in reason.lower():
+            raise ValueError('Copy refused: ' + reason)
+        specificity_refusal = _specificity_floor_refusal(receipt)
+        if specificity_refusal is not None:
+            raise ValueError('Copy refused: ' + specificity_refusal)
+        raise ValueError('Copy requires human approval of the latest revision for export')
+    draft = current_draft(receipt)
+    text = draft.get(kind) if isinstance(draft, dict) else None
+    if not isinstance(text, str) or not text:
+        raise ValueError('Copy refused: draft text unavailable')
+    binding = approval_binding(receipt)
+    approvals = receipt.get('approvals')
+    last = approvals[-1] if isinstance(approvals, list) and approvals else {}
+    approver = last.get('approved_by') if isinstance(last, dict) else ''
+    return {
+        'kind': kind,
+        'text': text,
+        'revision': current,
+        'receipt_id': receipt.get('run_id', ''),
+        'binding_version': binding['version'],
+        'binding_digest': binding['digest'],
+        'approved_by': approver if isinstance(approver, str) else '',
+        'copy_authorized': True,
+        'note': DRAFT_COPY_NOTE,
+    }

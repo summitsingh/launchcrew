@@ -931,6 +931,88 @@
         "title": "Draft",
         "type": "object"
       },
+      "DraftCopyIn": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Revision"
+          },
+          "kind": {
+            "enum": [
+              "post",
+              "email"
+            ],
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "DraftCopyIn",
+        "type": "object"
+      },
+      "DraftCopyOut": {
+        "additionalProperties": true,
+        "properties": {
+          "approved_by": {
+            "default": "",
+            "title": "Approved By",
+            "type": "string"
+          },
+          "binding_digest": {
+            "default": "",
+            "title": "Binding Digest",
+            "type": "string"
+          },
+          "binding_version": {
+            "default": "",
+            "title": "Binding Version",
+            "type": "string"
+          },
+          "copy_authorized": {
+            "default": false,
+            "title": "Copy Authorized",
+            "type": "boolean"
+          },
+          "kind": {
+            "default": "",
+            "title": "Kind",
+            "type": "string"
+          },
+          "note": {
+            "default": "",
+            "title": "Note",
+            "type": "string"
+          },
+          "receipt_id": {
+            "default": "",
+            "title": "Receipt Id",
+            "type": "string"
+          },
+          "revision": {
+            "default": 0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "text": {
+            "default": "",
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "title": "DraftCopyOut",
+        "type": "object"
+      },
       "DriveFieldSuggestionItem": {
         "additionalProperties": false,
         "properties": {
@@ -7236,6 +7318,55 @@
           }
         },
         "summary": "Copy Channel Variant"
+      }
+    },
+    "/api/runs/{run_id}/copy": {
+      "post": {
+        "operationId": "copy_draft_api_runs__run_id__copy_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DraftCopyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DraftCopyOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Copy Draft"
       }
     },
     "/api/runs/{run_id}/export": {

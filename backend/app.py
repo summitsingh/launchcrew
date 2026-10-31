@@ -804,6 +804,24 @@ class ChannelCopyOut(BaseModel):
     note: str = ''
 
 
+class DraftCopyIn(Strict):
+    kind: Literal['post', 'email']
+    expected_revision: StrictInt | None = Field(default=None, ge=0)
+
+
+class DraftCopyOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    approved_by: str = ''
+    kind: str = ''
+    text: str = ''
+    revision: int = 0
+    receipt_id: str = ''
+    binding_version: str = ''
+    binding_digest: str = ''
+    copy_authorized: bool = False
+    note: str = ''
+
+
 class ChannelVariantsOut(BaseModel):
     model_config = ConfigDict(extra='allow')
     bundle_version: str = 'checked-channel-variants/v1'
@@ -1279,6 +1297,54 @@ def copy_channel_variant(run_id: str, channel: str, body: ExportIn, actor: str =
         if result.rowcount == 0:
             raise HTTPException(404, 'Run not found')
         store.audit(db, run_id, 'channel_copy', actor, workspace_id)
+    return record
+
+
+@app.post('/api/runs/{run_id}/copy', response_model=DraftCopyOut)
+def copy_draft(run_id: str, body: DraftCopyIn, actor: str = Depends(auth.actor)):
+    # Server-side copy authorization for the primary post/email draft
+    # text. Reads the run fresh in the owner workspace, rejects running
+    # receipts, requires the caller revision to match the current
+    # revision (a concurrent revision change refuses with 409), and
+    # requires a current human approval of the exact draft text plus
+    # the exportable gate, the approval binding, and the exact current
+    # draft text before authorizing. Only the returned text is copied by
+    # the UI; displayed text is never copied without this check. The
+    # authorization is recorded in the receipt audit log without
+    # changing approval, revision, or export state. No auto-publish, no
+    # auto-post.
+    from launchcrew import human_review
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        receipt = get_receipt(db, run_id, workspace_id, True)
+        _reject_when_running(receipt)
+        current = human_review.current_revision(receipt)
+        if current > 0 and body.expected_revision is None:
+            raise HTTPException(409, 'Copy is stale; expected_revision is required for edited revisions')
+        if body.expected_revision is not None and body.expected_revision != current:
+            raise HTTPException(409, 'Copy is stale; the draft changed')
+        try:
+            record = human_review.authorize_draft_copy(receipt, body.kind, body.expected_revision)
+        except ValueError as error:
+            message = str(error)
+            if 'stale' in message.lower():
+                raise HTTPException(409, message)
+            raise HTTPException(422, message)
+        revised = copy.deepcopy(receipt)
+        now = datetime.now(timezone.utc).isoformat()
+        events = list((revised.get('audit') or {}).get('event_log') or [])
+        events.append({'step': 'draft_copy', 'agent': 'human',
+                       'profile': actor or 'human',
+                       'action': ('Copied %s draft text at revision %d for offline use; '
+                                  'no publish, post, or send occurred'
+                                  % (record['kind'], record['revision'])),
+                       'timestamp': now, 'revision': record['revision'],
+                       'kind': record['kind']})
+        revised.setdefault('audit', {})['event_log'] = events
+        result = db.execute(text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state WHERE id=:id AND workspace_id=:ws'), {'receipt': json.dumps(revised), 'state': revised['approval_state'], 'id': run_id, 'ws': workspace_id})
+        if result.rowcount == 0:
+            raise HTTPException(404, 'Run not found')
+        store.audit(db, run_id, 'draft_copy', actor, workspace_id)
     return record
 
 

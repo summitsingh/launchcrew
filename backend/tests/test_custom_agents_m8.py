@@ -90,6 +90,13 @@ def test_saved_custom_agent_selects_stage_and_executes(client):
     assert receipt['approval_state'] == 'pending_approval'
 
 
+def test_container_packages_crew_presets():
+    from pathlib import Path
+    containerfile = Path(__file__).resolve().parents[2] / 'containers' / 'api.Containerfile'
+    assert containerfile.is_file(), containerfile
+    assert 'COPY agent_presets ./agent_presets' in containerfile.read_text()
+
+
 def test_crew_presets_seeded_and_selectable(client):
     names = {profile['name'] for profile in client.get('/api/agents').json()}
     for preset in ('Support', 'Designer', 'Analyst', 'Research'):

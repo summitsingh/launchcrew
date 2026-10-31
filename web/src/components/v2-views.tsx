@@ -12,7 +12,7 @@ import { Separator } from '@/components/ui/separator';
 import { api, unwrap } from '@/lib/api';
 import { canApproveDay, canExportDay, memoryEditPayload } from '@/lib/v2';
 import { dataModeCopy, dataModeLabel, dataModeNote } from '@/components/model-status';
-import { loadReplaySelection, saveReplaySelection } from '@/lib/replay-state';
+import { loadReplayDiff, loadReplaySelection, saveReplayDiff, saveReplaySelection } from '@/lib/replay-state';
 import { buildProductFactsInput, emptyOwnerFacts, hasAnyOwnerValue, missingCoreFacts, sourceLabel, validateOwnerFacts } from '@/lib/product-facts';
 import { FactLibrarySection, MissingFactsPrompt, type LibrarySelection } from '@/components/fact-library';
 import { ProductFactsForm } from '@/components/product-facts-form';
@@ -155,6 +155,7 @@ export function MemoryView() {
   return <section aria-label="Memory">
     <p className="boundary">No auto-learning, no auto-post, no auto-send, no publishing. Memory changes require your explicit action.</p>
     <p className="hint">Voice profiles hold 3 to 5 synthetic style examples plus banned terms. Samples are style references only and never become confirmed facts. Editing or deleting a selected voice invalidates dependent approvals until a new revision check passes. Samples stay in your actor workspace.</p>
+    <p className="hint" data-testid="voice-eval-summary">Voice evaluation (Slice 3, evaluation/voice_edits_report.json): 12 products evaluated, 46 total edits without voice profile vs 0 edits with voice profile, mean 3.83 vs 0.0 edits per draft.</p>
     <div className="two-column equal">
       <section className="panel"><h2>Create memory</h2><form onSubmit={e => { e.preventDefault(); setNotice(''); create.mutate(); }}>
         <label htmlFor="memory-kind">Kind</label><select id="memory-kind" value={kind} onChange={e => setKind(e.target.value as MemoryItem['kind'])}>{memoryKinds.map(value => <option key={value}>{value}</option>)}</select>
@@ -425,14 +426,31 @@ export function ScoutFactsSection({ receipt }: { receipt: Receipt }) {
 
 export function ReplayView({ queue }: { queue: Receipt[] }) {
   // Session-backed comparison: navigating away and back (or reloading)
-  // restores the same A/B pair instead of resetting the comparison.
+  // restores the same A/B pair instead of resetting the comparison. The
+  // last successful diff result is stored with its pair and rendered
+  // immediately on mount, so the comparison survives navigation too.
   const [a, setA] = useState(() => loadReplaySelection().a);
   const [b, setB] = useState(() => loadReplaySelection().b);
+  const [persistedDiff, setPersistedDiff] = useState(() => loadReplayDiff());
   useEffect(() => {
     saveReplaySelection({ a, b });
   }, [a, b]);
-  const compare = useMutation({ mutationFn: () => unwrap(api.GET('/api/runs/{run_a}/diff/{run_b}', { params: { path: { run_a: a, run_b: b } } })) });
-  return <section aria-label="Replay"><section className="panel"><h2>Replay</h2><form onSubmit={e => { e.preventDefault(); compare.mutate(); }}><label htmlFor="replay-a">Run A id</label><input id="replay-a" value={a} onChange={e => setA(e.target.value)} required /><label htmlFor="replay-b">Run B id</label><input id="replay-b" value={b} onChange={e => setB(e.target.value)} required /><Button type="submit" disabled={!a || !b || compare.isPending}>Compare</Button></form><h3>Pick from queue</h3><p className="hint">Queue refreshes every 3 seconds.</p>{queue.map(run => <div key={run.run_id} className="queue-card"><p><RunRef id={run.run_id} /></p><p>{run.idea}</p><div className="queue-actions"><Button variant="outline" onClick={() => setA(run.run_id)}>Use as A</Button><Button variant="outline" onClick={() => setB(run.run_id)}>Use as B</Button></div></div>)}</section>{compare.error && <p role="alert">{compare.error.message}</p>}{compare.data && <DiffResult diff={compare.data} />}{a && <RunOutcomesSection runId={a} label="Run A owner outcomes" />}{b && <RunOutcomesSection runId={b} label="Run B owner outcomes" />}</section>;
+  const compare = useMutation({
+    mutationFn: () => unwrap(api.GET('/api/runs/{run_a}/diff/{run_b}', { params: { path: { run_a: a, run_b: b } } })),
+    onSuccess: diff => {
+      saveReplayDiff({ a, b }, diff);
+      setPersistedDiff({ a, b, diff });
+    },
+  });
+  // A stored diff renders only for the exact pair it compared. Editing a
+  // or b away from that pair, or clearing the selection, hides it instead
+  // of showing a stale result for a different pair.
+  const storedDiff: Diff | null =
+    !compare.data && persistedDiff && persistedDiff.a === a && persistedDiff.b === b && a !== '' && b !== ''
+      ? (persistedDiff.diff as Diff)
+      : null;
+  const visibleDiff = compare.data ?? storedDiff;
+  return <section aria-label="Replay"><section className="panel"><h2>Replay</h2><form onSubmit={e => { e.preventDefault(); compare.mutate(); }}><label htmlFor="replay-a">Run A id</label><input id="replay-a" value={a} onChange={e => setA(e.target.value)} required /><label htmlFor="replay-b">Run B id</label><input id="replay-b" value={b} onChange={e => setB(e.target.value)} required /><Button type="submit" disabled={!a || !b || compare.isPending}>Compare</Button></form><h3>Pick from queue</h3><p className="hint">Queue refreshes every 3 seconds.</p>{queue.map(run => <div key={run.run_id} className="queue-card"><p><RunRef id={run.run_id} /></p><p>{run.idea}</p><div className="queue-actions"><Button variant="outline" onClick={() => setA(run.run_id)}>Use as A</Button><Button variant="outline" onClick={() => setB(run.run_id)}>Use as B</Button></div></div>)}</section>{compare.error && <p role="alert">{compare.error.message}</p>}{visibleDiff && <DiffResult diff={visibleDiff} />}{a && <RunOutcomesSection runId={a} label="Run A owner outcomes" />}{b && <RunOutcomesSection runId={b} label="Run B owner outcomes" />}</section>;
 }
 
 export function CampaignDayCard({ day, busy, approve, download, markdown, copy }: { day: Day; busy: boolean; approve: () => void; download: () => void; markdown?: () => void; copy?: () => void }) {

@@ -187,6 +187,7 @@ export function FactLibrarySection({
           maxLength={120}
         />
         <Button
+          type="button"
           variant="outline"
           data-testid="fact-product-create"
           disabled={createProduct.isPending || !newProductName.trim()}
@@ -214,6 +215,7 @@ export function FactLibrarySection({
           </select>
           <div className="queue-actions">
             <Button
+              type="button"
               variant="outline"
               data-testid="fact-variant-load"
               disabled={loadVariant.isPending || !variantId}
@@ -223,6 +225,7 @@ export function FactLibrarySection({
             </Button>
             {selectedVariant && !selectedVariant.confirmed && (
               <Button
+                type="button"
                 variant="outline"
                 data-testid="fact-variant-confirm"
                 disabled={confirmVariant.isPending}
@@ -255,6 +258,7 @@ export function FactLibrarySection({
           maxLength={120}
         />
         <Button
+          type="button"
           variant="outline"
           data-testid="fact-variant-save"
           disabled={saveVariant.isPending || !productId || !newVariantName.trim()}
