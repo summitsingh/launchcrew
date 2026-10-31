@@ -10,23 +10,33 @@ from launchcrew.channel_variants import (
     BUNDLE_KIND,
     CHANNELS,
     FACEBOOK_MAX_CHARS,
+    LAUNCH_MATRIX_CHANNELS,
+    SHOPIFY_MAX_CHARS,
     STATUS_CANDIDATE,
     STATUS_NEEDS_REVISION,
     SOURCE_LABEL,
+    TIKTOK_CLOSER,
+    TIKTOK_HEADER,
+    TIKTOK_MAX_CHARS,
     VARIANT_KIND,
     X_MAX_CHARS,
     build_channel_variants,
     build_email_variant,
     build_facebook_variant,
     build_instagram_variant,
+    build_launch_matrix,
     build_linkedin_variant,
+    build_shopify_variant,
+    build_tiktok_variant,
     build_x_variant,
     split_sentences,
     validate_facebook_variant,
     validate_x_variant,
+    verify_exact_variant_text,
 )
 
 ALL_CHANNELS = ("x", "linkedin", "instagram", "email", "facebook")
+ALL_MATRIX_CHANNELS = ("x", "linkedin", "instagram", "email", "facebook", "tiktok", "shopify")
 
 
 def assert_candidate_fields(testcase, variant, expect_valid):
@@ -638,6 +648,307 @@ class AdPolicyLintWiringTests(unittest.TestCase):
         )
         matches = [h["match"] for h in first["ad_policy_hits"]]
         self.assertEqual(matches, sorted(matches))
+
+
+class TiktokVariantTests(unittest.TestCase):
+    def test_tiktok_constants_match_platform_norms(self):
+        self.assertEqual(TIKTOK_MAX_CHARS, 2200)
+        self.assertGreater(TIKTOK_MAX_CHARS, X_MAX_CHARS)
+        self.assertEqual(TIKTOK_HEADER, "[Visual: 3-second hook]")
+        self.assertEqual(
+            TIKTOK_CLOSER, "[Audio: Original voice / CTA: Tap link in bio]"
+        )
+
+    def test_tiktok_builds_fixed_framing_with_verbatim_sentences(self):
+        draft = "Vegan leather wallet. Designed in Texas."
+        confirmed = ["Vegan leather wallet", "Designed in Texas"]
+        variant = build_tiktok_variant(draft, confirmed)
+        assert_candidate_fields(self, variant, True)
+        self.assertEqual(variant["channel"], "tiktok")
+        lines = variant["text"].split("\n")
+        self.assertEqual(lines[0], TIKTOK_HEADER)
+        self.assertEqual(lines[-1], TIKTOK_CLOSER)
+        body = lines[1:-1]
+        self.assertEqual(body, split_sentences(draft))
+        for sentence in body:
+            self.assertIn(sentence, draft)
+        self.assertTrue(variant["ad_policy_passed"])
+        self.assertEqual(variant["ad_policy_hits"], [])
+        self.assertTrue(variant["metadata"]["ad_policy_passed"])
+        self.assertEqual(variant["metadata"]["ad_policy_hits"], [])
+        self.assertLessEqual(len(variant["text"]), TIKTOK_MAX_CHARS)
+        ok, reason = verify_exact_variant_text(
+            "tiktok", variant["text"], "", draft, confirmed
+        )
+        self.assertTrue(ok, reason)
+
+    def test_tiktok_body_uses_single_newline_join(self):
+        draft = "Alpha launches today. Beta ships soon. Gamma follows later."
+        variant = build_tiktok_variant(draft, [])
+        assert_candidate_fields(self, variant, True)
+        body = variant["text"].split("\n")[1:-1]
+        self.assertEqual(len(body), 3)
+        self.assertEqual(" ".join(body), draft)
+
+    def test_tiktok_fails_closed_on_unconfirmed_measured_claims(self):
+        draft = "Vegan leather wallet at $99. Designed in Texas."
+        confirmed = ["Vegan leather wallet", "Designed in Texas"]
+        variant = build_tiktok_variant(draft, confirmed)
+        assert_candidate_fields(self, variant, False)
+        self.assertEqual(variant["text"], "")
+        self.assertIn("$99", variant["metadata"]["unconfirmed_measured_claims"])
+        self.assertIn("$99", variant["reason"])
+        self.assertIn("revision", variant["reason"].lower())
+
+    def test_tiktok_fails_closed_on_unconfirmed_percent_and_size(self):
+        draft = "Launch offer saves 20% today. Bottle holds 500 ml."
+        confirmed = ["Launch offer", "Bottle"]
+        variant = build_tiktok_variant(draft, confirmed)
+        assert_candidate_fields(self, variant, False)
+        self.assertEqual(variant["text"], "")
+        unconfirmed = variant["metadata"]["unconfirmed_measured_claims"]
+        self.assertIn("20%", unconfirmed)
+        self.assertTrue(any("500" in t and "ml" in t for t in unconfirmed))
+
+    def test_tiktok_empty_draft_needs_revision(self):
+        variant = build_tiktok_variant("   ", [])
+        assert_candidate_fields(self, variant, False)
+        self.assertEqual(variant["text"], "")
+        self.assertIn("revision", variant["reason"].lower())
+
+    def test_tiktok_overlong_script_needs_revision(self):
+        sentence = "S" * (TIKTOK_MAX_CHARS - 1) + "."
+        self.assertEqual(len(sentence), TIKTOK_MAX_CHARS)
+        variant = build_tiktok_variant(sentence, [])
+        assert_candidate_fields(self, variant, False)
+        self.assertEqual(variant["text"], "")
+        self.assertIn(str(TIKTOK_MAX_CHARS), variant["reason"])
+
+    def test_tiktok_flags_ad_policy_but_stays_valid(self):
+        draft = "This wallet is guaranteed to last. Designed in Texas."
+        confirmed = ["wallet", "Designed in Texas"]
+        variant = build_tiktok_variant(draft, confirmed)
+        assert_candidate_fields(self, variant, True)
+        self.assertFalse(variant["ad_policy_passed"])
+        self.assertTrue(variant["ad_policy_hits"])
+        self.assertFalse(variant["metadata"]["ad_policy_passed"])
+
+    def test_tiktok_audience_and_angle_never_rendered(self):
+        draft = "Vegan leather wallet. Designed in Texas."
+        confirmed = ["Vegan leather wallet", "Designed in Texas"]
+        variant = build_tiktok_variant(
+            draft, confirmed, audience="Mars explorers", campaign_angle="Mars launch"
+        )
+        assert_candidate_fields(self, variant, True)
+        self.assertNotIn("Mars", variant["text"])
+
+
+class ShopifyVariantTests(unittest.TestCase):
+    def test_shopify_limit_is_explicit_and_conservative(self):
+        self.assertEqual(SHOPIFY_MAX_CHARS, 2000)
+        self.assertGreater(SHOPIFY_MAX_CHARS, X_MAX_CHARS)
+
+    def test_shopify_builds_scannable_bullet_points(self):
+        draft = "Vegan leather wallet. Designed in Texas."
+        confirmed = ["Vegan leather wallet", "Designed in Texas"]
+        variant = build_shopify_variant(draft, confirmed)
+        assert_candidate_fields(self, variant, True)
+        self.assertEqual(variant["channel"], "shopify")
+        lines = variant["text"].split("\n")
+        self.assertEqual(len(lines), 2)
+        for line, sentence in zip(lines, split_sentences(draft)):
+            self.assertTrue(line.startswith("- "))
+            self.assertEqual(line[2:], sentence)
+            self.assertIn(sentence, draft)
+        self.assertTrue(variant["ad_policy_passed"])
+        self.assertEqual(variant["ad_policy_hits"], [])
+        ok, reason = verify_exact_variant_text(
+            "shopify", variant["text"], "", draft, confirmed
+        )
+        self.assertTrue(ok, reason)
+
+    def test_shopify_bullets_are_distinct_from_other_channels(self):
+        draft = "Vegan leather wallet. Designed in Texas."
+        confirmed = ["Vegan leather wallet", "Designed in Texas"]
+        packed = build_channel_variants(draft, confirmed)
+        shopify_text = build_shopify_variant(draft, confirmed)["text"]
+        for key in ALL_CHANNELS:
+            self.assertNotEqual(shopify_text, packed[key]["text"])
+
+    def test_shopify_fails_closed_on_unconfirmed_measured_claims(self):
+        draft = "Vegan leather wallet at $99. Designed in Texas."
+        confirmed = ["Vegan leather wallet", "Designed in Texas"]
+        variant = build_shopify_variant(draft, confirmed)
+        assert_candidate_fields(self, variant, False)
+        self.assertEqual(variant["text"], "")
+        self.assertIn("$99", variant["metadata"]["unconfirmed_measured_claims"])
+        self.assertIn("$99", variant["reason"])
+        self.assertIn("revision", variant["reason"].lower())
+
+    def test_shopify_fails_closed_on_unconfirmed_percent_and_size(self):
+        draft = "Launch offer saves 20% today. Bottle holds 500 ml."
+        confirmed = ["Launch offer", "Bottle"]
+        variant = build_shopify_variant(draft, confirmed)
+        assert_candidate_fields(self, variant, False)
+        self.assertEqual(variant["text"], "")
+        unconfirmed = variant["metadata"]["unconfirmed_measured_claims"]
+        self.assertIn("20%", unconfirmed)
+        self.assertTrue(any("500" in t and "ml" in t for t in unconfirmed))
+
+    def test_shopify_empty_draft_needs_revision(self):
+        variant = build_shopify_variant("   ", [])
+        assert_candidate_fields(self, variant, False)
+        self.assertEqual(variant["text"], "")
+        self.assertIn("revision", variant["reason"].lower())
+
+    def test_shopify_overlong_bullets_need_revision(self):
+        sentence = "P" * (SHOPIFY_MAX_CHARS - 1) + "."
+        self.assertEqual(len(sentence), SHOPIFY_MAX_CHARS)
+        variant = build_shopify_variant(sentence, [])
+        assert_candidate_fields(self, variant, False)
+        self.assertEqual(variant["text"], "")
+        self.assertIn(str(SHOPIFY_MAX_CHARS), variant["reason"])
+
+    def test_shopify_never_renders_confirmed_facts_or_context(self):
+        draft = "Vegan leather wallet. Designed in Texas."
+        confirmed = ["Vegan leather wallet", "Designed in Texas", "Unlisted fact"]
+        variant = build_shopify_variant(
+            draft, confirmed, audience="Mars explorers", campaign_angle="Mars launch"
+        )
+        assert_candidate_fields(self, variant, True)
+        self.assertNotIn("Unlisted fact", variant["text"])
+        self.assertNotIn("Mars", variant["text"])
+
+
+class LaunchMatrixTests(unittest.TestCase):
+    def test_matrix_channels_cover_all_seven(self):
+        self.assertEqual(
+            LAUNCH_MATRIX_CHANNELS,
+            ("x", "linkedin", "instagram", "email", "facebook", "tiktok", "shopify"),
+        )
+        self.assertEqual(len(LAUNCH_MATRIX_CHANNELS), 7)
+
+    def test_existing_channels_tuple_stays_backward_compatible(self):
+        self.assertEqual(CHANNELS, ALL_CHANNELS)
+        draft = "Vegan leather wallet. Designed in Texas."
+        confirmed = ["Vegan leather wallet", "Designed in Texas"]
+        packed = build_channel_variants(draft, confirmed)
+        self.assertEqual(set(packed.keys()), set(ALL_CHANNELS) | {"provenance"})
+        self.assertEqual(packed["provenance"]["channels"], list(ALL_CHANNELS))
+
+    def test_matrix_returns_all_seven_candidates_with_provenance(self):
+        draft = "Vegan leather wallet. Designed in Texas."
+        confirmed = ["Vegan leather wallet", "Designed in Texas"]
+        matrix = build_launch_matrix(draft, confirmed)
+        self.assertEqual(
+            set(matrix.keys()), set(ALL_MATRIX_CHANNELS) | {"provenance"}
+        )
+        for key in ALL_MATRIX_CHANNELS:
+            with self.subTest(channel=key):
+                assert_candidate_fields(self, matrix[key], True)
+                self.assertEqual(matrix[key]["channel"], key)
+        provenance = matrix["provenance"]
+        self.assertEqual(provenance["bundle_kind"], BUNDLE_KIND)
+        self.assertTrue(provenance["matrix"])
+        self.assertEqual(provenance["channels"], list(ALL_MATRIX_CHANNELS))
+        self.assertEqual(provenance["matrix_channels"], list(ALL_MATRIX_CHANNELS))
+        self.assertFalse(provenance["exportable"])
+        self.assertFalse(provenance["independently_exportable"])
+        self.assertTrue(provenance["requires_checker_binding"])
+        self.assertIsNone(provenance["checker_approval"])
+        self.assertIsNone(provenance["receipt_id"])
+        self.assertEqual(provenance["confirmed_facts_count"], 2)
+        self.assertEqual(provenance["limits"]["tiktok_max_chars"], TIKTOK_MAX_CHARS)
+        self.assertEqual(provenance["limits"]["shopify_max_chars"], SHOPIFY_MAX_CHARS)
+        self.assertEqual(
+            provenance["limits"]["facebook_max_chars"], FACEBOOK_MAX_CHARS
+        )
+        self.assertIn("matrix", provenance["note"].lower())
+
+    def test_matrix_formats_are_distinct_but_verbatim(self):
+        draft = "Vegan leather wallet. Designed in Texas."
+        confirmed = ["Vegan leather wallet", "Designed in Texas"]
+        matrix = build_launch_matrix(draft, confirmed)
+        texts = [matrix[k]["text"] for k in ALL_MATRIX_CHANNELS]
+        self.assertEqual(len(set(texts)), 7)
+        self.assertTrue(matrix["tiktok"]["text"].startswith(TIKTOK_HEADER))
+        self.assertTrue(matrix["tiktok"]["text"].endswith(TIKTOK_CLOSER))
+        for line in matrix["shopify"]["text"].split("\n"):
+            self.assertTrue(line.startswith("- "))
+            self.assertIn(line[2:], draft)
+
+    def test_matrix_fails_closed_on_unconfirmed_claims(self):
+        draft = "Vegan leather wallet at $99. Designed in Texas."
+        confirmed = ["Vegan leather wallet", "Designed in Texas"]
+        matrix = build_launch_matrix(draft, confirmed)
+        for key in ALL_MATRIX_CHANNELS:
+            with self.subTest(channel=key):
+                variant = matrix[key]
+                assert_candidate_fields(self, variant, False)
+                self.assertEqual(variant["text"], "")
+                self.assertIn(
+                    "$99", variant["metadata"]["unconfirmed_measured_claims"]
+                )
+        self.assertFalse(matrix["provenance"]["exportable"])
+
+    def test_matrix_audience_and_angle_are_never_rendered(self):
+        draft = "Vegan leather wallet. Designed in Texas."
+        confirmed = ["Vegan leather wallet", "Designed in Texas"]
+        matrix = build_launch_matrix(
+            draft, confirmed, audience="Mars explorers", campaign_angle="Mars launch"
+        )
+        for key in ALL_MATRIX_CHANNELS:
+            body = matrix[key]["body"] if key == "email" else matrix[key]["text"]
+            self.assertNotIn("Mars", body)
+        self.assertIn("Mars explorers", str(matrix["provenance"]["audience_context"]))
+        self.assertIn("Mars launch", str(matrix["provenance"]["angle_context"]))
+
+    def test_matrix_matches_single_builders(self):
+        draft = "Vegan leather wallet. Designed in Texas."
+        confirmed = ["Vegan leather wallet", "Designed in Texas"]
+        matrix = build_launch_matrix(draft, confirmed, audience="Austin commuters")
+        packed = build_channel_variants(draft, confirmed, audience="Austin commuters")
+        for key in ALL_CHANNELS:
+            with self.subTest(channel=key):
+                self.assertEqual(matrix[key], packed[key])
+        self.assertEqual(
+            matrix["tiktok"],
+            build_tiktok_variant(draft, confirmed, audience="Austin commuters"),
+        )
+        self.assertEqual(
+            matrix["shopify"],
+            build_shopify_variant(draft, confirmed, audience="Austin commuters"),
+        )
+
+    def test_matrix_repeat_calls_are_deterministic(self):
+        draft = "Vegan leather wallet. Designed in Texas."
+        confirmed = ["Vegan leather wallet", "Designed in Texas"]
+        first = build_launch_matrix(draft, confirmed)
+        second = build_launch_matrix(draft, confirmed)
+        self.assertEqual(first, second)
+
+    def test_matrix_voice_snapshot_vetoes_new_channels(self):
+        draft = "Vegan leather wallet. Designed in Texas."
+        confirmed = ["Vegan leather wallet", "Designed in Texas"]
+        voice = {"banned_terms": ["wallet"]}
+        matrix = build_launch_matrix(
+            draft, confirmed, voice_snapshot=voice, voice_ref={"title": "V", "version": 1}
+        )
+        for key in ALL_MATRIX_CHANNELS:
+            with self.subTest(channel=key):
+                variant = matrix[key]
+                assert_candidate_fields(self, variant, False)
+                self.assertEqual(variant["text"], "")
+        self.assertIsNotNone(matrix["provenance"]["voice"])
+
+    def test_matrix_caller_inputs_are_unchanged(self):
+        draft = "Vegan leather wallet. Designed in Texas."
+        confirmed = ["Vegan leather wallet", "Designed in Texas"]
+        draft_copy = copy.deepcopy(draft)
+        confirmed_copy = copy.deepcopy(confirmed)
+        build_launch_matrix(draft, confirmed, audience="Austin commuters")
+        self.assertEqual(draft, draft_copy)
+        self.assertEqual(confirmed, confirmed_copy)
 
 
 if __name__ == "__main__":

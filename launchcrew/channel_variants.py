@@ -41,13 +41,18 @@ from .ad_policy_lint import lint_ad_policy
 MODULE_VERSION = "channel-variants/v1"
 X_MAX_CHARS = 280
 FACEBOOK_MAX_CHARS = 2000
+TIKTOK_MAX_CHARS = 2200
+SHOPIFY_MAX_CHARS = 2000
 CHANNELS = ("x", "linkedin", "instagram", "email", "facebook")
+LAUNCH_MATRIX_CHANNELS = ("x", "linkedin", "instagram", "email", "facebook", "tiktok", "shopify")
 
 LINKEDIN_HEADER = "Update:"
 INSTAGRAM_CLOSER = "More soon."
 EMAIL_SUBJECT = "Quick update"
 EMAIL_GREETING = "Hello,"
 EMAIL_CLOSER = "Thanks,"
+TIKTOK_HEADER = "[Visual: 3-second hook]"
+TIKTOK_CLOSER = "[Audio: Original voice / CTA: Tap link in bio]"
 
 SOURCE_LABEL = "caller_supplied_draft"
 SOURCE_NOTE = (
@@ -243,6 +248,8 @@ def _base_metadata(channel, confirmed_count, audience, campaign_angle):
         "limits": {
             "x_max_chars": X_MAX_CHARS,
             "facebook_max_chars": FACEBOOK_MAX_CHARS,
+            "tiktok_max_chars": TIKTOK_MAX_CHARS,
+            "shopify_max_chars": SHOPIFY_MAX_CHARS,
         },
         "confirmed_facts_count": confirmed_count,
         "audience_context": _context_entry(audience),
@@ -795,6 +802,160 @@ def build_facebook_variant(draft_text, confirmed_facts, audience=None, campaign_
     )
 
 
+def build_tiktok_variant(draft_text, confirmed_facts, audience=None, campaign_angle=None):
+    """Build the TikTok/Reels script presentation candidate.
+
+    Fixed non-factual script framing wraps verbatim draft sentences:
+    TIKTOK_HEADER on the first line, one verbatim sentence per line
+    in the body, and TIKTOK_CLOSER on the last line. Keeps all whole
+    sentences with no rewording. Refuses with a non-exportable
+    needs-revision result when no sentence exists, when a sentence
+    boundary is an abbreviation fragment, when the framed script
+    exceeds TIKTOK_MAX_CHARS, or when the rendered text contains
+    price, percent, or size tokens absent from confirmed facts.
+    Success is a presentation candidate requiring downstream current
+    approved Checker/receipt binding; never independently exportable.
+    """
+    if not isinstance(draft_text, str):
+        raise TypeError("draft_text must be a string")
+    confirmed = _confirmed_list(confirmed_facts)
+    sentences = split_sentences(draft_text)
+    if not sentences:
+        return _needs_revision(
+            "tiktok",
+            len(confirmed),
+            audience,
+            campaign_angle,
+            "No sentences found in draft text. Needs revision.",
+        )
+    fragment = _abbreviation_fragment(sentences)
+    if fragment is not None:
+        return _needs_revision_with_claims(
+            "tiktok",
+            len(confirmed),
+            audience,
+            campaign_angle,
+            "Non-exportable: sentence boundary ambiguity near '%s'. "
+            "Needs revision with an expanded abbreviation or rewritten "
+            "draft. No fragment was exported." % fragment,
+            [],
+            [],
+            len(sentences),
+        )
+    text = TIKTOK_HEADER + "\n" + "\n".join(sentences) + "\n" + TIKTOK_CLOSER
+    if len(text) > TIKTOK_MAX_CHARS:
+        return _needs_revision_with_claims(
+            "tiktok",
+            len(confirmed),
+            audience,
+            campaign_angle,
+            "Non-exportable: framed script is %d characters, over the "
+            "%d character TikTok limit. Needs revision with fewer or "
+            "shorter sentences. No fragment was exported."
+            % (len(text), TIKTOK_MAX_CHARS),
+            [],
+            [],
+            len(sentences),
+        )
+    variant_tokens, unconfirmed = _split_measured(text, confirmed)
+    if unconfirmed:
+        return _needs_revision_with_claims(
+            "tiktok",
+            len(confirmed),
+            audience,
+            campaign_angle,
+            "Non-exportable: measured claims not in confirmed facts: "
+            + ", ".join(unconfirmed)
+            + ". Needs revision with exact confirmed facts. "
+            "No text exported.",
+            variant_tokens,
+            unconfirmed,
+            len(sentences),
+        )
+    return _candidate_success(
+        "tiktok", text, len(sentences), len(sentences), 0, len(text),
+        variant_tokens, unconfirmed, len(confirmed),
+        audience, campaign_angle, None,
+    )
+
+
+def build_shopify_variant(draft_text, confirmed_facts, audience=None, campaign_angle=None):
+    """Build the Shopify PDP bullet presentation candidate.
+
+    Formats each verbatim draft sentence as one scannable bullet
+    ("- " + sentence), one bullet per line. Confirmed facts gate
+    measured claims and are never rendered. Keeps all whole
+    sentences with no rewording. Refuses with a non-exportable
+    needs-revision result when no sentence exists, when a sentence
+    boundary is an abbreviation fragment, when the bullet list
+    exceeds SHOPIFY_MAX_CHARS, or when the rendered text contains
+    price, percent, or size tokens absent from confirmed facts.
+    Success is a presentation candidate requiring downstream current
+    approved Checker/receipt binding; never independently exportable.
+    """
+    if not isinstance(draft_text, str):
+        raise TypeError("draft_text must be a string")
+    confirmed = _confirmed_list(confirmed_facts)
+    sentences = split_sentences(draft_text)
+    if not sentences:
+        return _needs_revision(
+            "shopify",
+            len(confirmed),
+            audience,
+            campaign_angle,
+            "No sentences found in draft text. Needs revision.",
+        )
+    fragment = _abbreviation_fragment(sentences)
+    if fragment is not None:
+        return _needs_revision_with_claims(
+            "shopify",
+            len(confirmed),
+            audience,
+            campaign_angle,
+            "Non-exportable: sentence boundary ambiguity near '%s'. "
+            "Needs revision with an expanded abbreviation or rewritten "
+            "draft. No fragment was exported." % fragment,
+            [],
+            [],
+            len(sentences),
+        )
+    text = "\n".join("- " + sentence for sentence in sentences)
+    if len(text) > SHOPIFY_MAX_CHARS:
+        return _needs_revision_with_claims(
+            "shopify",
+            len(confirmed),
+            audience,
+            campaign_angle,
+            "Non-exportable: bullet list is %d characters, over the "
+            "%d character Shopify limit. Needs revision with fewer or "
+            "shorter sentences. No fragment was exported."
+            % (len(text), SHOPIFY_MAX_CHARS),
+            [],
+            [],
+            len(sentences),
+        )
+    variant_tokens, unconfirmed = _split_measured(text, confirmed)
+    if unconfirmed:
+        return _needs_revision_with_claims(
+            "shopify",
+            len(confirmed),
+            audience,
+            campaign_angle,
+            "Non-exportable: measured claims not in confirmed facts: "
+            + ", ".join(unconfirmed)
+            + ". Needs revision with exact confirmed facts. "
+            "No text exported.",
+            variant_tokens,
+            unconfirmed,
+            len(sentences),
+        )
+    return _candidate_success(
+        "shopify", text, len(sentences), len(sentences), 0, len(text),
+        variant_tokens, unconfirmed, len(confirmed),
+        audience, campaign_angle, None,
+    )
+
+
 def _voice_block_for_candidate(text, voice_snapshot, voice_ref):
     if not isinstance(voice_snapshot, dict):
         return None
@@ -883,6 +1044,8 @@ def build_channel_variants(draft_text, confirmed_facts, audience=None, campaign_
         "limits": {
             "x_max_chars": X_MAX_CHARS,
             "facebook_max_chars": FACEBOOK_MAX_CHARS,
+            "tiktok_max_chars": TIKTOK_MAX_CHARS,
+            "shopify_max_chars": SHOPIFY_MAX_CHARS,
         },
         "independently_exportable": False,
         "exportable": False,
@@ -909,6 +1072,85 @@ def build_channel_variants(draft_text, confirmed_facts, audience=None, campaign_
         "facebook": variants["facebook"],
         "provenance": provenance,
     }
+
+
+def build_launch_matrix(draft_text, confirmed_facts, audience=None, campaign_angle=None, voice_snapshot=None, voice_ref=None):
+    """Build all seven launch matrix presentation candidates plus provenance.
+
+    Covers LAUNCH_MATRIX_CHANNELS (x, linkedin, instagram, email,
+    facebook, tiktok, shopify). Candidate text comes only from
+    verbatim draft sentences plus fixed non-factual framing. Audience
+    and campaign angle inputs are kept in metadata as suggestions
+    and never rendered as facts. Every candidate requires
+    downstream current approved Checker/receipt binding; none is
+    independently exportable. When a voice snapshot is supplied,
+    candidates containing banned terms refuse with a concrete voice
+    reason and needs-revision status.
+    """
+    confirmed_copy = _confirmed_list(confirmed_facts)
+    builders = {
+        "x": build_x_variant,
+        "linkedin": build_linkedin_variant,
+        "instagram": build_instagram_variant,
+        "email": build_email_variant,
+        "facebook": build_facebook_variant,
+        "tiktok": build_tiktok_variant,
+        "shopify": build_shopify_variant,
+    }
+    variants = {
+        channel: builders[channel](draft_text, confirmed_copy, audience, campaign_angle)
+        for channel in LAUNCH_MATRIX_CHANNELS
+    }
+    if isinstance(voice_snapshot, dict) and isinstance(voice_snapshot.get('banned_terms'), list) and voice_snapshot.get('banned_terms'):
+        for channel in list(variants.keys()):
+            variants[channel] = _apply_voice_to_variant(
+                variants[channel], voice_snapshot, voice_ref,
+                len(confirmed_copy), audience, campaign_angle)
+    voice_info = None
+    if isinstance(voice_snapshot, dict) and isinstance(voice_snapshot.get('banned_terms'), list) and voice_snapshot.get('banned_terms'):
+        ref = voice_ref if isinstance(voice_ref, dict) else {}
+        voice_info = {'title': ref.get('title'), 'version': ref.get('version'),
+                      'banned_term_count': len(voice_snapshot.get('banned_terms', []))}
+    provenance = {
+        "module": MODULE_VERSION,
+        "source": SOURCE_LABEL,
+        "source_note": SOURCE_NOTE,
+        "bundle_kind": BUNDLE_KIND,
+        "variant_kind": VARIANT_KIND,
+        "matrix": True,
+        "channels": list(LAUNCH_MATRIX_CHANNELS),
+        "matrix_channels": list(LAUNCH_MATRIX_CHANNELS),
+        "confirmed_facts_count": len(confirmed_copy),
+        "audience_context": _context_entry(audience),
+        "angle_context": _context_entry(campaign_angle),
+        "limits": {
+            "x_max_chars": X_MAX_CHARS,
+            "facebook_max_chars": FACEBOOK_MAX_CHARS,
+            "tiktok_max_chars": TIKTOK_MAX_CHARS,
+            "shopify_max_chars": SHOPIFY_MAX_CHARS,
+        },
+        "independently_exportable": False,
+        "exportable": False,
+        "requires_checker_binding": True,
+        "checker_approval": None,
+        "receipt_id": None,
+        "approval_note": APPROVAL_NOTE,
+        "voice": voice_info,
+        "note": (
+            "Launch matrix presentation candidates only; not "
+            "independently exportable. Covers all seven launch "
+            "channels in one call. No new factual assertions. "
+            "Audience and angle are suggestions, not verified "
+            "facts. Price, material, contents, and size wording is "
+            "copied verbatim or the candidate refuses. No Checker "
+            "approval or receipt binding claimed. Requires "
+            "downstream current approved Checker/receipt binding "
+            "before any export."
+        ),
+    }
+    result = {channel: variants[channel] for channel in LAUNCH_MATRIX_CHANNELS}
+    result["provenance"] = provenance
+    return result
 
 
 CHECKED_BUNDLE_VERSION = "checked-channel-variants/v1"
@@ -1064,6 +1306,14 @@ def _strip_framing(channel, text):
         if not (text.startswith(prefix) and text.endswith(suffix)):
             return None
         return text[len(prefix):-len(suffix)]
+    if channel == 'tiktok':
+        prefix = TIKTOK_HEADER + '\n'
+        suffix = '\n' + TIKTOK_CLOSER
+        if not (text.startswith(prefix) and text.endswith(suffix)):
+            return None
+        return text[len(prefix):-len(suffix)]
+    if channel == 'shopify':
+        return text
     return text
 
 
@@ -1080,7 +1330,7 @@ def verify_exact_variant_text(channel, rendered_text, rendered_subject,
     are introduced; voice matching stays the receipt's own
     context-aware profile. Returns (True, '') or (False, reason).
     """
-    if channel not in CHANNELS:
+    if channel not in LAUNCH_MATRIX_CHANNELS:
         return False, 'Unknown channel.'
     if not isinstance(rendered_text, str) or not rendered_text.strip():
         return False, 'No variant text to verify.'
@@ -1111,6 +1361,28 @@ def verify_exact_variant_text(channel, rendered_text, rendered_subject,
             return False, 'Variant text is not the exact leading draft prefix within limits.'
         if len(rendered_text) > limit:
             return False, 'Variant text exceeds the channel limit.'
+    elif channel == 'tiktok':
+        if len(rendered_text) > TIKTOK_MAX_CHARS:
+            return False, 'Variant text exceeds the channel limit.'
+        try:
+            core_sentences = split_sentences(core)
+        except TypeError:
+            return False, 'Variant text has no verifiable sentences.'
+        if core_sentences != draft_sentences:
+            return False, ('Variant sentences are not the exact approved '
+                           'draft sentences in order.')
+    elif channel == 'shopify':
+        if len(rendered_text) > SHOPIFY_MAX_CHARS:
+            return False, 'Variant text exceeds the channel limit.'
+        lines = [line for line in core.splitlines() if line.strip()]
+        core_sentences = []
+        for line in lines:
+            if not line.startswith('- '):
+                return False, 'Variant framing is not the fixed framing.'
+            core_sentences.append(line[2:])
+        if core_sentences != draft_sentences:
+            return False, ('Variant sentences are not the exact approved '
+                           'draft sentences in order.')
     else:
         try:
             core_sentences = split_sentences(core)
