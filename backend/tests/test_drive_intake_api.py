@@ -526,6 +526,7 @@ def test_unconfirmed_stays_suggestion_until_explicit_confirmation(client, drive_
     assert [s['text'] for s in intake['suggestions']] == ['Canvas tote', 'Large', '$49']
     unconfirmed = client.post('/api/runs', json={
         'idea': IDEA, 'agent_name': 'Maker',
+        'waive_missing_core_facts': True,
         'product_facts': {
             'material': {'value': 'Canvas tote', 'confirmed': True, 'source': 'drive_file'},
             'size': {'value': 'Large', 'confirmed': False, 'source': 'drive_file'},
@@ -534,6 +535,7 @@ def test_unconfirmed_stays_suggestion_until_explicit_confirmation(client, drive_
     receipt = unconfirmed.json()
     assert 'Canvas tote' in receipt['maker_draft_v2']['post']
     assert 'Large' not in receipt['maker_draft_v2']['post']
+    assert receipt['product_facts']['missing_core_waived'] is True
     assert client.get('/api/memory').json() == []
 
 

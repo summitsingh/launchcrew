@@ -161,6 +161,7 @@ def test_unconfirmed_intake_stays_suggestion_until_explicit_confirmation(client)
     assert [s['text'] for s in intake['suggestions']] == ['Full-grain leather', 'Bifold compact']
     unconfirmed = client.post('/api/runs', json={
         'idea': IDEA, 'agent_name': 'Maker',
+        'waive_missing_core_facts': True,
         'product_facts': {
             'material': {'value': 'Full-grain leather', 'confirmed': True, 'source': 'listing'},
             'size': {'value': 'Bifold compact', 'confirmed': False, 'source': 'listing'},
@@ -173,16 +174,20 @@ def test_unconfirmed_intake_stays_suggestion_until_explicit_confirmation(client)
     assert 'Bifold compact' not in receipt['product_facts']['confirmed_claims']
     assert 'Bifold compact' not in receipt['product_facts']['allowlist']
     assert [s['value'] for s in receipt['product_facts']['suggested']] == ['Bifold compact']
+    assert receipt['product_facts']['missing_core_waived'] is True
     confirmed = client.post('/api/runs', json={
         'idea': IDEA, 'agent_name': 'Maker',
         'product_facts': {
             'material': {'value': 'Full-grain leather', 'confirmed': True, 'source': 'listing'},
+            'contents': {'value': 'Six card slots', 'confirmed': True, 'source': 'listing'},
             'size': {'value': 'Bifold compact', 'confirmed': True, 'source': 'listing'},
+            'price': {'value': '$129', 'confirmed': True, 'source': 'listing'},
         }})
     assert confirmed.status_code == 201, confirmed.text
     receipt = confirmed.json()
     assert 'Bifold compact' in receipt['maker_draft_v2']['post']
     assert 'Bifold compact' in receipt['product_facts']['confirmed_claims']
+    assert receipt['product_facts']['missing_core_waived'] is False
 
 
 def test_unsupported_pasted_claim_never_enters_evidence(client):
@@ -195,6 +200,9 @@ def test_unsupported_pasted_claim_never_enters_evidence(client):
         'idea': IDEA, 'agent_name': 'Maker',
         'product_facts': {
             'material': {'value': 'Full-grain leather', 'confirmed': True},
+            'contents': {'value': 'Six card slots', 'confirmed': True},
+            'size': {'value': 'Bifold compact', 'confirmed': True},
+            'price': {'value': '$129', 'confirmed': True},
             'allowed_claims': [{'value': pasted, 'confirmed': False, 'source': 'pasted_text'}],
         }})
     assert response.status_code == 201, response.text

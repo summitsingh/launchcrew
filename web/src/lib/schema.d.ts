@@ -347,6 +347,114 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/fact-products": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Fact Products */
+        get: operations["list_fact_products_api_fact_products_get"];
+        put?: never;
+        /** Create Fact Product */
+        post: operations["create_fact_product_api_fact_products_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/fact-products/{product_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Fact Product */
+        get: operations["get_fact_product_api_fact_products__product_id__get"];
+        /** Rename Fact Product */
+        put: operations["rename_fact_product_api_fact_products__product_id__put"];
+        post?: never;
+        /** Delete Fact Product */
+        delete: operations["delete_fact_product_api_fact_products__product_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/fact-products/{product_id}/variants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Fact Variants */
+        get: operations["list_fact_variants_api_fact_products__product_id__variants_get"];
+        put?: never;
+        /** Create Fact Variant */
+        post: operations["create_fact_variant_api_fact_products__product_id__variants_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/fact-products/{product_id}/variants/from-run/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Save Fact Variant From Run */
+        post: operations["save_fact_variant_from_run_api_fact_products__product_id__variants_from_run__run_id__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/fact-variants/{variant_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Fact Variant */
+        get: operations["get_fact_variant_api_fact_variants__variant_id__get"];
+        /** Edit Fact Variant */
+        put: operations["edit_fact_variant_api_fact_variants__variant_id__put"];
+        post?: never;
+        /** Delete Fact Variant */
+        delete: operations["delete_fact_variant_api_fact_variants__variant_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/fact-variants/{variant_id}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Confirm Fact Variant */
+        post: operations["confirm_fact_variant_api_fact_variants__variant_id__confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/health": {
         parameters: {
             query?: never;
@@ -937,6 +1045,11 @@ export interface components {
              * @enum {string}
              */
             checker_profile: "standard" | "strict";
+            /**
+             * Fact Variant Id
+             * @description Facts-library variant to inherit confirmed facts from. Supply either this or product_facts, never both. The run binds a snapshot copy; later library edits never rewrite this run.
+             */
+            fact_variant_id?: string | null;
             /** Idea */
             idea: string;
             /**
@@ -961,6 +1074,12 @@ export interface components {
              * @default false
              */
             seed_unverified_claim: boolean;
+            /**
+             * Waive Missing Core Facts
+             * @description Explicit owner waiver for missing core facts (material, contents, size, price). When owner input lacks a confirmed core fact and this is false, the run is refused with 422. When true, the waiver is recorded on the receipt.
+             * @default false
+             */
+            waive_missing_core_facts: boolean;
         };
         /** CampaignOut */
         CampaignOut: {
@@ -1543,6 +1662,93 @@ export interface components {
         ExportIn: {
             /** Expected Revision */
             expected_revision?: number | null;
+        };
+        /** FactProductDetail */
+        FactProductDetail: {
+            /** Created At */
+            created_at?: string | null;
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Updated At */
+            updated_at?: string | null;
+            /**
+             * Variants
+             * @default []
+             */
+            variants: components["schemas"]["FactVariantOut"][];
+        } & {
+            [key: string]: unknown;
+        };
+        /** FactProductIn */
+        FactProductIn: {
+            /** Name */
+            name: string;
+        };
+        /** FactProductOut */
+        FactProductOut: {
+            /**
+             * Confirmed Variants
+             * @default 0
+             */
+            confirmed_variants: number;
+            /** Created At */
+            created_at?: string | null;
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Updated At */
+            updated_at?: string | null;
+            /**
+             * Variant Count
+             * @default 0
+             */
+            variant_count: number;
+        } & {
+            [key: string]: unknown;
+        };
+        /** FactVariantEdit */
+        FactVariantEdit: {
+            /** Name */
+            name?: string | null;
+            product_facts?: components["schemas"]["ProductFactsInput"] | null;
+        };
+        /** FactVariantFromRunIn */
+        FactVariantFromRunIn: {
+            /** Name */
+            name: string;
+        };
+        /** FactVariantIn */
+        FactVariantIn: {
+            /** Name */
+            name: string;
+            product_facts: components["schemas"]["ProductFactsInput"];
+        };
+        /** FactVariantOut */
+        FactVariantOut: {
+            /**
+             * Confirmed
+             * @default false
+             */
+            confirmed: boolean;
+            /** Created At */
+            created_at?: string | null;
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Product Facts */
+            product_facts: {
+                [key: string]: unknown;
+            };
+            /** Product Id */
+            product_id: string;
+            /** Updated At */
+            updated_at?: string | null;
+        } & {
+            [key: string]: unknown;
         };
         /** FounderNoteField */
         FounderNoteField: {
@@ -2344,6 +2550,16 @@ export interface components {
                 [key: string]: string;
             };
             /**
+             * Missing Core Facts
+             * @default []
+             */
+            missing_core_facts: string[];
+            /**
+             * Missing Core Waived
+             * @default false
+             */
+            missing_core_waived: boolean;
+            /**
              * Mode
              * @default demo_template
              */
@@ -2704,6 +2920,11 @@ export interface components {
              * @enum {string}
              */
             checker_profile: "standard" | "strict";
+            /**
+             * Fact Variant Id
+             * @description Facts-library variant to inherit confirmed facts from. Supply either this or product_facts, never both. The run binds a snapshot copy; later library edits never rewrite this run.
+             */
+            fact_variant_id?: string | null;
             /** Idea */
             idea: string;
             /**
@@ -2728,6 +2949,12 @@ export interface components {
              * @default false
              */
             seed_unverified_claim: boolean;
+            /**
+             * Waive Missing Core Facts
+             * @description Explicit owner waiver for missing core facts (material, contents, size, price). When owner input lacks a confirmed core fact and this is false, the run is refused with 422. When true, the waiver is recorded on the receipt.
+             * @default false
+             */
+            waive_missing_core_facts: boolean;
         };
         /** RunStep */
         RunStep: {
@@ -3513,6 +3740,382 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DriveImportOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_fact_products_api_fact_products_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FactProductOut"][];
+                };
+            };
+        };
+    };
+    create_fact_product_api_fact_products_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FactProductIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FactProductOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_fact_product_api_fact_products__product_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                product_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FactProductDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rename_fact_product_api_fact_products__product_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                product_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FactProductIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FactProductOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_fact_product_api_fact_products__product_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                product_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_fact_variants_api_fact_products__product_id__variants_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                product_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FactVariantOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_fact_variant_api_fact_products__product_id__variants_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                product_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FactVariantIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FactVariantOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_fact_variant_from_run_api_fact_products__product_id__variants_from_run__run_id__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                product_id: string;
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FactVariantFromRunIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FactVariantOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_fact_variant_api_fact_variants__variant_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                variant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FactVariantOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    edit_fact_variant_api_fact_variants__variant_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                variant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FactVariantEdit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FactVariantOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_fact_variant_api_fact_variants__variant_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                variant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    confirm_fact_variant_api_fact_variants__variant_id__confirm_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                variant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FactVariantOut"];
                 };
             };
             /** @description Validation Error */

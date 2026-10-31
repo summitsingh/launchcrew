@@ -788,6 +788,52 @@ def parse_product_facts(raw):
             'founder_note': founder}
 
 
+# Core facts required before drafting. A run in owner mode that lacks a
+# confirmed value for any of these fields must either prompt for the
+# missing facts or record an explicit owner waiver on the receipt.
+# Silent drafts on partial facts are refused.
+CORE_FACT_FIELDS = ('material', 'contents', 'size', 'price')
+
+
+def missing_core_facts(parsed):
+    """List core field names lacking a confirmed non-empty value.
+
+    Returns [] for None (demo-template mode uses the bundled template)
+    and for fully confirmed owner input. Never raises.
+    """
+    if parsed is None:
+        return []
+    try:
+        fields = parsed.get('fields') if isinstance(parsed, dict) else None
+    except Exception:
+        return list(CORE_FACT_FIELDS)
+    if not isinstance(fields, list):
+        return list(CORE_FACT_FIELDS)
+    confirmed = set()
+    for entry in fields:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get('field')
+        if name not in CORE_FACT_FIELDS:
+            continue
+        value = entry.get('value')
+        if entry.get('confirmed') is True and isinstance(value, str) and value.strip():
+            confirmed.add(name)
+    return [name for name in CORE_FACT_FIELDS if name not in confirmed]
+
+
+def require_core_facts(parsed, waived=False):
+    """Return missing core facts, raising unless waived or complete.
+
+    Raises ValueError naming the missing fields when owner input lacks
+    a core fact and no explicit owner waiver was supplied.
+    """
+    missing = missing_core_facts(parsed)
+    if missing and not waived:
+        raise ValueError('Missing core product facts: ' + ', '.join(missing))
+    return missing
+
+
 def founder_variant(founder, base_post, base_email):
     """Build the explicitly unauthorized founder-note draft variant.
 
@@ -810,7 +856,7 @@ def founder_variant(founder, base_post, base_email):
             'note': 'Founder note is owner-supplied and unverified; it authorizes no factual claim.'}
 
 
-def product_section(parsed, allowlist, draft_variant=None):
+def product_section(parsed, allowlist, draft_variant=None, missing_core_facts=None, missing_core_waived=False):
     """Assemble the receipt product-facts section with provenance.
 
     Demo mode labels the bundled fictional template explicitly. Owner
@@ -825,7 +871,8 @@ def product_section(parsed, allowlist, draft_variant=None):
                 'fields': [], 'confirmed_claims': list(allowlist),
                 'allowlist': list(allowlist), 'suggested': [],
                 'founder_note': None, 'draft_variant': None,
-                'labels': dict(PRODUCT_FIELD_LABELS)}
+                'labels': dict(PRODUCT_FIELD_LABELS),
+                'missing_core_facts': [], 'missing_core_waived': False}
     return {'mode': 'owner_input', 'template': DEMO_TEMPLATE_NAME,
             'template_label': DEMO_TEMPLATE_LABEL, 'template_used': False,
             'template_note': 'Bundled fictional demo fixture; not used as owner facts for this run.',
@@ -835,4 +882,6 @@ def product_section(parsed, allowlist, draft_variant=None):
             'suggested': [dict(entry) for entry in parsed['suggested']],
             'founder_note': dict(parsed['founder_note']) if parsed['founder_note'] else None,
             'draft_variant': dict(draft_variant) if draft_variant else None,
-            'labels': dict(PRODUCT_FIELD_LABELS)}
+            'labels': dict(PRODUCT_FIELD_LABELS),
+            'missing_core_facts': list(missing_core_facts or []),
+            'missing_core_waived': bool(missing_core_waived)}

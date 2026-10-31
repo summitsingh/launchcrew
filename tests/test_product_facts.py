@@ -27,7 +27,7 @@ def field(value, confirmed, source='owner'):
     return {'value': value, 'confirmed': confirmed, 'source': source}
 
 
-def offline_execute(run_id, product_facts, memory_items=None, seed=False, brief=None, campaign_day=None, extra_claims=None):
+def offline_execute(run_id, product_facts, memory_items=None, seed=False, brief=None, campaign_day=None, extra_claims=None, waive=False):
     profile = agents.load_agent('Maker', ROOT / 'agents')
     env = {'META_API_KEY': '', 'META_WONDER_MODEL': ''}
     with patch.dict(os.environ, env):
@@ -37,7 +37,21 @@ def offline_execute(run_id, product_facts, memory_items=None, seed=False, brief=
                                    memory_items=memory_items or [],
                                    product_facts=product_facts,
                                    brief=brief, campaign_day=campaign_day,
-                                   extra_claims=extra_claims)
+                                   extra_claims=extra_claims,
+                                   waive_missing_core_facts=waive)
+
+
+FULL_CORE = {'contents': ('Six card slots', True, 'owner'),
+             'size': ('Bifold compact', True, 'owner'),
+             'price': ('$129', True, 'owner')}
+
+
+def full_facts(**extra):
+    facts = {'material': field('Full-grain leather', True)}
+    for name, (value, confirmed, source) in FULL_CORE.items():
+        facts[name] = field(value, confirmed, source)
+    facts.update(extra)
+    return facts
 
 
 class ParseTests(unittest.TestCase):
@@ -167,10 +181,7 @@ class PipelineTests(unittest.TestCase):
         self.assertIsNone(section['draft_variant'])
 
     def test_owner_confirmed_claims_authorize_drafts(self):
-        receipt = offline_execute('run_owner_ok', {
-            'material': field('Full-grain leather', True),
-            'price': field('$129', True),
-        })
+        receipt = offline_execute('run_owner_ok', full_facts())
         self.assertEqual(receipt['status'], 'completed')
         self.assertIn('Full-grain leather', receipt['maker_draft_v2']['post'])
         self.assertIn('$129', receipt['maker_draft_v2']['post'])
@@ -179,7 +190,10 @@ class PipelineTests(unittest.TestCase):
         section = receipt['product_facts']
         self.assertEqual(section['mode'], 'owner_input')
         self.assertFalse(section['template_used'])
-        self.assertEqual(section['confirmed_claims'], ['Full-grain leather', '$129'])
+        self.assertEqual(section['confirmed_claims'],
+                         ['Full-grain leather', 'Six card slots', 'Bifold compact', '$129'])
+        self.assertEqual(section['missing_core_facts'], [])
+        self.assertFalse(section['missing_core_waived'])
         self.assertEqual(section['fields'][0]['label'], 'Material')
         for entry in receipt['scout']['facts_used']:
             self.assertTrue(entry['verified'])
@@ -190,7 +204,8 @@ class PipelineTests(unittest.TestCase):
         receipt = offline_execute('run_owner_suggest', {
             'material': field('Full-grain leather', True),
             'size': field('Bifold compact', False, 'pasted_text'),
-        })
+        }, waive=True)
+        self.assertEqual(receipt['status'], 'completed')
         for key in ('post', 'email'):
             self.assertNotIn('Bifold compact', receipt['maker_draft_v1'][key])
             self.assertNotIn('Bifold compact', receipt['maker_draft_v2'][key])
@@ -198,13 +213,14 @@ class PipelineTests(unittest.TestCase):
         self.assertNotIn('Bifold compact', receipt['product_facts']['allowlist'])
         self.assertEqual([s['value'] for s in receipt['product_facts']['suggested']],
                          ['Bifold compact'])
+        self.assertTrue(receipt['product_facts']['missing_core_waived'])
 
     def test_unconfirmed_memory_cannot_authorize(self):
         memory = [{'id': 'mem_1', 'kind': 'brand_fact', 'title': 'Fact',
                    'content': {'claim': 'Handmade vegan wallet for commuters'}}]
         receipt = offline_execute('run_owner_mem', {
             'material': field('Full-grain leather', True),
-        }, memory_items=memory)
+        }, memory_items=memory, waive=True)
         self.assertEqual(receipt['status'], 'completed')
         self.assertNotIn('Handmade vegan wallet for commuters',
                          receipt['maker_draft_v2']['post'])
@@ -220,9 +236,9 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(receipt['memory_used'][0]['id'], 'mem_1')
 
     def test_memory_sourced_confirmation_authorizes_with_provenance(self):
-        receipt = offline_execute('run_owner_memsrc', {
-            'material': field('Handmade vegan wallet for commuters', True, 'memory'),
-        })
+        facts = full_facts()
+        facts['material'] = field('Handmade vegan wallet for commuters', True, 'memory')
+        receipt = offline_execute('run_owner_memsrc', facts)
         self.assertIn('Handmade vegan wallet for commuters',
                       receipt['maker_draft_v2']['post'])
         self.assertIn('Handmade vegan wallet for commuters',
@@ -230,7 +246,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(receipt['product_facts']['fields'][0]['source'], 'memory')
 
     def test_demo_template_never_confirmed_in_owner_mode(self):
-        receipt = offline_execute('run_owner_nodemo', {'price': field('$129', True)})
+        receipt = offline_execute('run_owner_nodemo', {'price': field('$129', True)}, waive=True)
         section = receipt['product_facts']
         self.assertFalse(section['template_used'])
         for demo in DEMO_CLAIMS:
@@ -241,9 +257,7 @@ class PipelineTests(unittest.TestCase):
     def test_blocked_rule_veto_preserved_in_owner_mode(self):
         memory = [{'id': 'mem_v', 'kind': 'blocked_rule', 'title': 'Veto',
                    'content': {'claim': 'Full-grain leather'}}]
-        receipt = offline_execute('run_owner_veto', {
-            'material': field('Full-grain leather', True),
-        }, memory_items=memory)
+        receipt = offline_execute('run_owner_veto', full_facts(), memory_items=memory)
         self.assertEqual(receipt['checker_v1']['blocked_count'], 1)
         self.assertEqual(receipt['checker_v1']['blocked_claims'][0]['claim'],
                          'Full-grain leather')
@@ -251,12 +265,25 @@ class PipelineTests(unittest.TestCase):
         self.assertNotIn('Full-grain leather', receipt['maker_draft_v2']['post'])
 
     def test_empty_owner_input_completes_honestly_without_approval_context(self):
-        receipt = offline_execute('run_owner_empty', {})
+        receipt = offline_execute('run_owner_empty', {}, waive=True)
         self.assertEqual(receipt['status'], 'completed')
         self.assertEqual(receipt['product_facts']['mode'], 'owner_input')
         self.assertEqual(receipt['product_facts']['confirmed_claims'], [])
+        self.assertTrue(receipt['product_facts']['missing_core_waived'])
         ok, _ = human_review.valid_revision_context(receipt)
         self.assertFalse(ok)
+
+    def test_missing_core_facts_fail_closed_without_waiver(self):
+        # Milestone M5: a silent draft on partial facts is refused. The
+        # pipeline returns an honest failed receipt recording the missing
+        # facts instead of drafting.
+        receipt = offline_execute('run_owner_gate', {
+            'material': field('Full-grain leather', True),
+        })
+        self.assertEqual(receipt['status'], 'failed')
+        self.assertEqual(receipt['product_facts']['missing_core_facts'],
+                         ['contents', 'size', 'price'])
+        self.assertFalse(receipt['product_facts']['missing_core_waived'])
 
     def test_invalid_product_facts_raise_before_pipeline(self):
         with self.assertRaisesRegex(ValueError, 'Duplicate or empty'):
@@ -266,10 +293,9 @@ class PipelineTests(unittest.TestCase):
             })
 
     def test_founder_note_variant_end_to_end(self):
-        receipt = offline_execute('run_owner_note', {
-            'material': field('Full-grain leather', True),
-            'founder_note': field('I built this wallet for my commute.', True),
-        })
+        facts = full_facts()
+        facts['founder_note'] = field('I built this wallet for my commute.', True)
+        receipt = offline_execute('run_owner_note', facts)
         self.assertEqual(receipt['status'], 'completed')
         variant = receipt['product_facts']['draft_variant']
         self.assertIn('I built this wallet for my commute.', variant['post'])
@@ -284,7 +310,8 @@ class PipelineTests(unittest.TestCase):
     def test_unconfirmed_founder_feeds_no_variant(self):
         receipt = offline_execute('run_owner_note_sug', {
             'founder_note': field('I built this wallet for my commute.', False),
-        })
+        }, waive=True)
+        self.assertEqual(receipt['status'], 'completed')
         self.assertIsNone(receipt['product_facts']['draft_variant'])
         self.assertEqual([s['value'] for s in receipt['product_facts']['suggested']],
                          ['I built this wallet for my commute.'])
@@ -292,7 +319,7 @@ class PipelineTests(unittest.TestCase):
     def test_owner_seed_still_blocked_by_deterministic_checker(self):
         receipt = offline_execute('run_owner_seed', {
             'material': field('Full-grain leather', True),
-        }, seed=True)
+        }, seed=True, waive=True)
         self.assertIn('best in Texas', [c['claim'] for c in receipt['checker_v1']['blocked_claims']])
         self.assertEqual(receipt['checker_v2']['blocked_count'], 0)
         self.assertNotIn('best in Texas', receipt['maker_draft_v2']['post'])
@@ -300,10 +327,8 @@ class PipelineTests(unittest.TestCase):
     def test_owner_campaign_brief_stays_suggestion(self):
         brief = '100% vegan PU leather, made to last'
         brief_claim = '100% vegan PU leather, $49'
-        receipt = offline_execute('run_owner_campaign', {
-            'material': field('Full-grain leather', True),
-            'price': field('$129', True),
-        }, brief=brief, campaign_day=2, extra_claims=[brief_claim])
+        receipt = offline_execute('run_owner_campaign', full_facts(),
+                                  brief=brief, campaign_day=2, extra_claims=[brief_claim])
         self.assertEqual(receipt['status'], 'completed')
         self.assertIn('Full-grain leather', receipt['maker_draft_v2']['post'])
         self.assertIn('$129', receipt['maker_draft_v2']['post'])
@@ -313,7 +338,7 @@ class PipelineTests(unittest.TestCase):
         self.assertNotIn(brief_claim, receipt['product_facts']['confirmed_claims'])
         self.assertNotIn(brief_claim, receipt['product_facts']['allowlist'])
         self.assertEqual(receipt['product_facts']['allowlist'],
-                         ['Full-grain leather', '$129'])
+                         ['Full-grain leather', 'Six card slots', 'Bifold compact', '$129'])
         self.assertEqual(receipt['memory_claims'], [])
         self.assertEqual(receipt['campaign_brief'], brief)
         self.assertEqual(receipt['campaign_day'], 2)
@@ -328,11 +353,11 @@ class PipelineTests(unittest.TestCase):
 
     def test_owner_confirmed_campaign_claim_authorizes(self):
         brief_claim = '100% vegan PU leather, $49'
-        receipt = offline_execute('run_owner_campaign_ok', {
-            'material': field('Full-grain leather', True),
-            'allowed_claims': [field(brief_claim, True, 'campaign_brief')],
-        }, brief='100% vegan PU leather, made to last',
-            campaign_day=2, extra_claims=[brief_claim])
+        facts = full_facts()
+        facts['allowed_claims'] = [field(brief_claim, True, 'campaign_brief')]
+        receipt = offline_execute('run_owner_campaign_ok', facts,
+                                  brief='100% vegan PU leather, made to last',
+                                  campaign_day=2, extra_claims=[brief_claim])
         self.assertIn(brief_claim, receipt['maker_draft_v2']['post'])
         self.assertIn(brief_claim, receipt['product_facts']['confirmed_claims'])
         self.assertIn(brief_claim, receipt['product_facts']['allowlist'])

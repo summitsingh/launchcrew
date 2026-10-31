@@ -183,6 +183,9 @@ class DistinctCopyTests(unittest.TestCase):
 
     def test_model_founder_note_never_becomes_approved(self):
         product = {'material': {'value': 'Full-grain leather', 'confirmed': True, 'source': 'owner'},
+                   'contents': {'value': 'Six card slots', 'confirmed': True, 'source': 'owner'},
+                   'size': {'value': 'Bifold compact', 'confirmed': True, 'source': 'owner'},
+                   'price': {'value': '$129', 'confirmed': True, 'source': 'owner'},
                    'founder_note': {'value': NOTE, 'confirmed': True, 'source': 'owner'}}
         receipt = self.run_demo({'claims': [NOTE],
                                  'post_lines': [NOTE],

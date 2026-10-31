@@ -81,6 +81,8 @@ def test_clean_run_binds_exports_and_reads_back(client):
 def test_owner_run_binds_confirmed_facts(client):
     payload = {'idea': IDEA, 'agent_name': 'Maker',
                'product_facts': {'material': {'value': 'Full-grain leather', 'confirmed': True},
+                                 'contents': {'value': 'Six card slots', 'confirmed': True},
+                                 'size': {'value': 'Bifold compact', 'confirmed': True},
                                  'price': {'value': '$129', 'confirmed': True}}}
     response = client.post('/api/runs', json=payload)
     assert response.status_code == 201, response.text

@@ -51,6 +51,8 @@ def _live_transport(request, timeout=None):
 
 def _product_facts():
     return {'material': {'value': 'Full-grain leather', 'confirmed': True, 'source': 'owner'},
+            'contents': {'value': 'Six card slots', 'confirmed': True, 'source': 'owner'},
+            'size': {'value': 'Bifold compact', 'confirmed': True, 'source': 'owner'},
             'price': {'value': '$49', 'confirmed': True, 'source': 'owner'},
             'founder_note': {'value': NOTE, 'confirmed': True, 'source': 'owner'}}
 

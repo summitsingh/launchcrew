@@ -35,10 +35,19 @@ def field(value, confirmed, source='owner'):
 
 
 def owner_payload(**extra):
+    # Milestone M5: owner runs must confirm every core fact (material,
+    # contents, size, price) or carry an explicit owner waiver. The base
+    # payload confirms all four; partial-fact refusal is covered by the
+    # facts-library gate tests.
     return {'idea': IDEA, 'agent_name': 'Maker',
             'product_facts': {'material': field('Full-grain leather', True),
+                              'contents': field('Six card slots', True),
+                              'size': field('Bifold compact', True),
                               'price': field('$129', True),
                               **extra}}
+
+
+FULL_CONFIRMED = ['Full-grain leather', 'Six card slots', 'Bifold compact', '$129']
 
 
 def wait_completed(client, run_id, timeout=30.0):
@@ -55,24 +64,25 @@ def wait_completed(client, run_id, timeout=30.0):
 
 
 def test_owner_input_confirmed_flows_to_receipt(client):
-    payload = owner_payload(size=field('Bifold compact', False, 'pasted_text'),
-                            founder_note=field(NOTE, True))
+    payload = owner_payload(founder_note=field(NOTE, True))
+    payload['product_facts']['allowed_claims'] = [field('Oversized tote', False, 'pasted_text')]
     response = client.post('/api/runs', json=payload)
     assert response.status_code == 201, response.text
     receipt = response.json()
     assert receipt['status'] == 'completed'
     assert 'Full-grain leather' in receipt['maker_draft_v2']['post']
     assert '$129' in receipt['maker_draft_v2']['post']
-    assert 'Bifold compact' not in receipt['maker_draft_v2']['post']
+    assert 'Bifold compact' in receipt['maker_draft_v2']['post']
+    assert 'Oversized tote' not in receipt['maker_draft_v2']['post']
     for demo in DEMO_CLAIMS:
         assert demo not in receipt['maker_draft_v2']['post']
     section = receipt['product_facts']
     assert section['mode'] == 'owner_input'
     assert section['template_used'] is False
-    assert section['confirmed_claims'] == ['Full-grain leather', '$129']
+    assert section['confirmed_claims'] == FULL_CONFIRMED
     assert section['labels']['material'] == 'Material'
     assert section['labels']['founder_note'] == 'Founder note'
-    assert [entry['value'] for entry in section['suggested']] == ['Bifold compact']
+    assert [entry['value'] for entry in section['suggested']] == ['Oversized tote']
     assert section['founder_note']['authorized_as_fact'] is False
     variant = section['draft_variant']
     assert NOTE in variant['post'] and NOTE in variant['email']
@@ -81,7 +91,9 @@ def test_owner_input_confirmed_flows_to_receipt(client):
     assert receipt['checker_v2']['blocked_count'] == 0
     # The stored receipt carries the same section for later binding.
     reread = client.get('/api/runs/' + receipt['run_id']).json()
-    assert reread['product_facts']['confirmed_claims'] == ['Full-grain leather', '$129']
+    assert reread['product_facts']['confirmed_claims'] == FULL_CONFIRMED
+    assert reread['product_facts']['missing_core_facts'] == []
+    assert reread['product_facts']['missing_core_waived'] is False
 
 
 def test_unconfirmed_memory_and_listing_cannot_authorize(client):
@@ -90,7 +102,8 @@ def test_unconfirmed_memory_and_listing_cannot_authorize(client):
         'content': {'claim': 'Handmade vegan wallet for commuters'}})
     assert memory.status_code == 201
     item = memory.json()
-    payload = owner_payload(size=field('Oversized tote', False, 'listing'))
+    payload = owner_payload()
+    payload['product_facts']['allowed_claims'] = [field('Oversized tote', False, 'listing')]
     payload['memory_ids'] = [item['id']]
     response = client.post('/api/runs', json=payload)
     assert response.status_code == 201, response.text
@@ -150,7 +163,7 @@ def test_async_carries_product_facts(client):
     section = receipt['product_facts']
     assert section['mode'] == 'owner_input'
     assert section['template_used'] is False
-    assert section['confirmed_claims'] == ['Full-grain leather', '$129']
+    assert section['confirmed_claims'] == FULL_CONFIRMED
     assert receipt['checker_v2']['blocked_count'] == 0
 
 
@@ -171,12 +184,20 @@ def test_approval_export_preserved_for_owner_run(client):
     exported = client.post(f'/api/runs/{run_id}/export', json={})
     assert exported.status_code == 200, exported.text
     assert 'attachment' in exported.headers['content-disposition']
-    # An owner run with nothing confirmed completes but cannot be approved.
+    # An owner run with nothing confirmed is refused unless the owner
+    # records an explicit waiver for the missing core facts. A waived
+    # empty run completes with the waiver on the receipt but cannot be
+    # approved.
+    refused = client.post('/api/runs', json={'idea': IDEA, 'agent_name': 'Maker',
+                                             'product_facts': {}})
+    assert refused.status_code == 422, refused.text
     empty = client.post('/api/runs', json={'idea': IDEA, 'agent_name': 'Maker',
-                                           'product_facts': {}})
+                                           'product_facts': {},
+                                           'waive_missing_core_facts': True})
     assert empty.status_code == 201, empty.text
     empty_id = empty.json()['run_id']
     assert empty.json()['product_facts']['confirmed_claims'] == []
+    assert empty.json()['product_facts']['missing_core_waived'] is True
     assert client.post(f'/api/runs/{empty_id}/approve', json={}).status_code == 422
 
 
@@ -187,7 +208,8 @@ def test_campaign_threads_product_facts(client):
     receipt = client.get('/api/runs/' + day['run_id']).json()
     section = receipt['product_facts']
     assert section['mode'] == 'owner_input'
-    assert section['confirmed_claims'] == ['Full-grain leather', '$129']
+    assert section['confirmed_claims'] == FULL_CONFIRMED
+    assert section['missing_core_facts'] == []
     assert 'Full-grain leather' in receipt['maker_draft_v2']['post']
 
 
@@ -206,7 +228,7 @@ def test_owner_campaign_briefs_built_from_confirmed_facts(client):
     for day in week['days']:
         assert day['angle'] in CAMPAIGN_ANGLES
         assert len(day['brief']) < 140
-        assert 'Full-grain leather' in day['brief'] or '$129' in day['brief']
+        assert any(claim in day['brief'] for claim in FULL_CONFIRMED)
         for marker in DEMO_CLAIMS:
             assert marker not in day['brief']
         receipt = client.get('/api/runs/' + day['run_id']).json()
@@ -218,8 +240,8 @@ def test_owner_campaign_briefs_built_from_confirmed_facts(client):
         assert '$129' in receipt['maker_draft_v2']['post']
         section = receipt['product_facts']
         assert section['mode'] == 'owner_input'
-        assert section['confirmed_claims'] == ['Full-grain leather', '$129']
-        assert section['allowlist'] == ['Full-grain leather', '$129']
+        assert section['confirmed_claims'] == FULL_CONFIRMED
+        assert section['allowlist'] == FULL_CONFIRMED
         assert receipt['memory_claims'] == []
         assert section['suggested'] == []
         for entry in receipt['scout']['facts_used']:
@@ -240,6 +262,9 @@ def test_owner_confirmed_campaign_claim_authorizes(client):
     _, _, brief_claim = CAMPAIGN_BRIEF_BY_DAY[2]
     payload = {'idea': IDEA, 'agent_name': 'Maker',
                'product_facts': {'material': field('Full-grain leather', True),
+                                 'contents': field('Six card slots', True),
+                                 'size': field('Bifold compact', True),
+                                 'price': field('$129', True),
                                  'allowed_claims': [field(brief_claim, True, 'campaign_brief')]}}
     response = client.post('/api/campaigns', json=payload)
     assert response.status_code == 201, response.text

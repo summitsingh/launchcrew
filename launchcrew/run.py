@@ -9,8 +9,8 @@ from time import perf_counter
 from . import agents
 from .checker_policies import effective_policies, parse_checker_agent, policy_blocks, policy_reason, specificity_hits, specificity_reason
 from .facts import (OWNER_SOURCE_LABEL, check_claim, check_sentence, check_claims, check_draft,
-                     founder_variant, load_facts, normalize, parse_product_facts,
-                     product_section, split_sentences)
+                     founder_variant, load_facts, missing_core_facts, normalize, parse_product_facts,
+                     product_section, require_core_facts, split_sentences)
 from .receipts import create_receipt, save_receipt, timestamp, failed_receipt
 from .model_meta import (DATA_BASIS_V2, data_mode_for_attempts, sanitize_model_name,
                          variant_for_attempt)
@@ -603,7 +603,7 @@ def _voice_blocks_claim(claim, voice_snapshot, voice_ref):
     return voice_single_block_for_text(voice_snapshot, claim, voice_ref) is not None
 
 
-def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverified_claim=False, receipt_writer=save_receipt, model_enabled=True, visual_verifier=None, memory_claims=None, blocked_claims=None, checker_profile='standard', brief=None, campaign_day=None, scout_profile=None, maker_profile=None, checker_agent=None, progress=None, stage_gate=None, product_facts=None, model_admission_factory=None, voice_snapshot=None, voice_ref=None, voice_samples=None, voice_snapshot_version=None, context_policy=None, context_scope=None, summit_scope=None, scope=None, policy=None):
+def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverified_claim=False, receipt_writer=save_receipt, model_enabled=True, visual_verifier=None, memory_claims=None, blocked_claims=None, checker_profile='standard', brief=None, campaign_day=None, scout_profile=None, maker_profile=None, checker_agent=None, progress=None, stage_gate=None, product_facts=None, model_admission_factory=None, voice_snapshot=None, voice_ref=None, voice_samples=None, voice_snapshot_version=None, context_policy=None, context_scope=None, summit_scope=None, scope=None, policy=None, waive_missing_core_facts=False):
     """Optional progress(event) is called at real stage boundaries only: each
     call corresponds to pipeline work that already happened (completed) or
     is about to happen (started). The event dict carries stage, state,
@@ -642,6 +642,15 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
         enforcement['legacy_checker_profile'] = checker_profile
         step = 'load_facts'
         parsed_product = parse_product_facts(product_facts)
+        # Core-fact gate: owner mode with partial facts refuses before any
+        # draft unless the owner explicitly waived the missing core facts.
+        # Demo-template mode carries no gate. The waiver is recorded on
+        # the receipt product-facts section below.
+        missing_core = list(missing_core_facts(parsed_product))
+        if missing_core and not bool(waive_missing_core_facts):
+            require_core_facts(parsed_product, waived=False)
+            missing_core = list(missing_core_facts(parsed_product))
+        missing_core_waived = bool(missing_core and waive_missing_core_facts)
         facts, _ = load_facts(facts_path)
         if parsed_product is None:
             claims = list(facts['approved_claims'])
@@ -963,7 +972,11 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
         founder_note = parsed_product['founder_note'] if parsed_product else None
         receipt['product_facts'] = product_section(
             parsed_product, product_allowlist,
-            founder_variant(founder_note, v2['post'], v2['email']))
+            founder_variant(founder_note, v2['post'], v2['email']),
+            missing_core_facts=locals().get('missing_core', []),
+            missing_core_waived=locals().get('missing_core_waived', False))
+        receipt['missing_core_facts'] = list(locals().get('missing_core', []))
+        receipt['missing_facts_waived'] = bool(locals().get('missing_core_waived', False))
         receipt['checker_policies'] = list(effective)
         receipt['checker_enforcement'] = enforcement
         receipt['stage_agents'] = {stage.lower(): _stage_snapshot(profiles[stage]) for stage in ('Scout', 'Maker', 'Checker')}
@@ -1031,7 +1044,10 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
         failure['seed_unverified_claim'] = _seed_marker(seed_unverified_claim)
         if product_facts is None or parsed_product is not None:
             try:
-                failure['product_facts'] = product_section(parsed_product, product_allowlist)
+                failure['product_facts'] = product_section(
+                    parsed_product, product_allowlist,
+                    missing_core_facts=locals().get('missing_core', []),
+                    missing_core_waived=False)
             except Exception:
                 pass
         try:

@@ -53,8 +53,13 @@ def field(value, confirmed, source='owner'):
 def owner_payload(**extra):
     return {'idea': IDEA, 'agent_name': 'Maker',
             'product_facts': {'material': field('Full-grain leather', True),
+                              'contents': field('Six card slots', True),
+                              'size': field('Bifold compact', True),
                               'price': field('$129', True),
                               **extra}}
+
+
+FULL_CONFIRMED = ['Full-grain leather', 'Six card slots', 'Bifold compact', '$129']
 
 
 def test_new_angles_are_selectable_alongside_existing():
@@ -79,7 +84,7 @@ def test_owner_week_builds_seven_distinct_briefs_from_confirmed_facts(client):
         for brief in briefs:
             assert marker not in brief, (marker, brief)
     for day in week['days']:
-        assert 'Full-grain leather' in day['brief'] or '$129' in day['brief']
+        assert any(claim in day['brief'] for claim in FULL_CONFIRMED)
         receipt = client.get('/api/runs/' + day['run_id']).json()
         assert receipt['status'] == 'completed'
         assert receipt['campaign_day'] == day['day']

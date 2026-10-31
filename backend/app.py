@@ -108,6 +108,8 @@ class RunInput(Idea):
     memory_ids: list[str] = []
     checker_profile: Literal['standard', 'strict'] = Field(default='standard', description='Legacy strictness. Strict adds the superlatives policy. Checker agent policies add blocks on top.')
     product_facts: ProductFactsInput | None = Field(default=None, description='Slice 1 owner product facts. Only explicitly confirmed fields become evidence; suggestions never do. Absent means legacy demo-template mode.')
+    fact_variant_id: str | None = Field(default=None, max_length=128, description='Facts-library variant to inherit confirmed facts from. Supply either this or product_facts, never both. The run binds a snapshot copy; later library edits never rewrite this run.')
+    waive_missing_core_facts: bool = Field(default=False, description='Explicit owner waiver for missing core facts (material, contents, size, price). When owner input lacks a confirmed core fact and this is false, the run is refused with 422. When true, the waiver is recorded on the receipt.')
 
 
 class Clone(Strict):
@@ -324,6 +326,8 @@ class ProductFactsSection(BaseModel):
     founder_note: FounderNoteState | None = None
     draft_variant: FounderVariant | None = None
     labels: dict[str, str] = {}
+    missing_core_facts: list[str] = []
+    missing_core_waived: bool = False
 
 
 class VoiceProfileSection(BaseModel):
@@ -745,6 +749,8 @@ def create_run(body: RunInput, actor: str = Depends(auth.actor)):
         workspace_id = store.ensure_workspace_seeded(db, actor)
         legacy, scout, maker, checker = load_stage_profiles(db, body, workspace_id)
         items = load_memory_selection(db, body.memory_ids, workspace_id)
+        product_facts_raw, library_ref = _resolve_run_product_facts(db, body, workspace_id)
+        _enforce_missing_core_gate(product_facts_raw, body.waive_missing_core_facts)
         _, maker_name, _ = stage_names(body)
         voice_selection = _capture_voice_selection(db, items, workspace_id)
     run_id = 'run_' + uuid4().hex
@@ -752,8 +758,10 @@ def create_run(body: RunInput, actor: str = Depends(auth.actor)):
     receipt = adapter.execute(run_id, body.idea, legacy, body.seed_unverified_claim,
                               memory_items=items, checker_profile=body.checker_profile,
                               scout_profile=scout, maker_profile=maker, checker_agent=checker,
-                              product_facts=body.product_facts.model_dump() if body.product_facts is not None else None,
-                              model_admission_factory=factory)
+                              product_facts=product_facts_raw,
+                              model_admission_factory=factory,
+                              waive_missing_core_facts=body.waive_missing_core_facts,
+                              fact_library=library_ref)
     with store.connect() as db:
         workspace_id = store.ensure_workspace_seeded(db, actor)
         _mark_sync_voice_stale_if_changed(db, receipt, workspace_id, actor, lock=True, selection=voice_selection)
@@ -772,13 +780,17 @@ def create_run_async(body: RunInput, actor: str = Depends(auth.actor)):
     from launchcrew import receipts as receipt_mod
     from launchcrew.facts import parse_product_facts
     from backend import run_jobs
-    product_facts_raw = body.product_facts.model_dump() if body.product_facts is not None else None
+    inline_raw = body.product_facts.model_dump() if body.product_facts is not None else None
+    if inline_raw is not None and body.fact_variant_id:
+        raise HTTPException(422, 'Supply either product_facts or fact_variant_id, never both')
     # Invalid product-fact input fails with 422 before accept, never 503.
-    parse_product_facts(product_facts_raw)
+    parse_product_facts(inline_raw)
     try:
         with store.connect() as db:
             workspace_id = store.ensure_workspace_seeded(db, actor)
             legacy, scout, maker, checker = load_stage_profiles(db, body, workspace_id)
+            product_facts_raw, library_ref = _resolve_run_product_facts(db, body, workspace_id)
+            _enforce_missing_core_gate(product_facts_raw, body.waive_missing_core_facts)
             items = load_memory_selection(db, body.memory_ids, workspace_id, lock=True)
             scout_name, maker_name, checker_name = stage_names(body)
             run_id = 'run_' + uuid4().hex
@@ -807,7 +819,9 @@ def create_run_async(body: RunInput, actor: str = Depends(auth.actor)):
     started = run_jobs.start_async_run(run_id, body.idea, legacy, body.seed_unverified_claim, items,
                                        body.checker_profile, scout, maker, checker, maker_name, actor,
                                        workspace_id=store.workspace_for_actor(actor),
-                                       product_facts=product_facts_raw)
+                                       product_facts=product_facts_raw,
+                                       waive_missing_core_facts=body.waive_missing_core_facts,
+                                       fact_library=library_ref)
     if not started:
         raise HTTPException(409, 'Run worker already active for this run')
     return {'run_id': run_id, 'status': 'running', 'receipt': pending}
@@ -1774,6 +1788,380 @@ def learn_memory(run_id: str, body: LearnMemory, actor: str = Depends(auth.actor
         return insert_memory(db, item, actor, 'memory_item_learned', workspace_id, run_id)
 
 
+# Facts library (Gap 5): named products with per-variant fact sets.
+# A variant stores one product-facts input object plus an explicit
+# confirmed flag. A run picks a variant and binds a snapshot copy of
+# its facts; later library edits never rewrite the stored run receipt.
+FACT_LIBRARY_NAME_MAX = 120
+
+
+class FactProductIn(Strict):
+    name: str = Field(min_length=1, max_length=FACT_LIBRARY_NAME_MAX)
+
+
+class FactProductOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    id: str
+    name: str
+    variant_count: int = 0
+    confirmed_variants: int = 0
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class FactVariantIn(Strict):
+    name: str = Field(min_length=1, max_length=FACT_LIBRARY_NAME_MAX)
+    product_facts: ProductFactsInput
+
+
+class FactVariantEdit(Strict):
+    name: str | None = Field(default=None, min_length=1, max_length=FACT_LIBRARY_NAME_MAX)
+    product_facts: ProductFactsInput | None = None
+
+
+class FactVariantOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    id: str
+    product_id: str
+    name: str
+    product_facts: dict[str, Any]
+    confirmed: bool = False
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class FactProductDetail(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    id: str
+    name: str
+    variants: list[FactVariantOut] = []
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class FactVariantFromRunIn(Strict):
+    name: str = Field(min_length=1, max_length=FACT_LIBRARY_NAME_MAX)
+
+
+def _clean_fact_library_name(value, what):
+    if not isinstance(value, str):
+        raise HTTPException(422, what + ' name must be a string')
+    name = value.strip()
+    if not name:
+        raise HTTPException(422, what + ' name must not be empty')
+    if len(name) > FACT_LIBRARY_NAME_MAX:
+        raise HTTPException(422, what + ' name exceeds the length limit')
+    return name
+
+
+def _get_fact_product(db, product_id, workspace_id, lock=False):
+    row = db.execute(text('SELECT id, name, created_at, updated_at FROM fact_products WHERE id=:id AND workspace_id=:ws' + (' FOR UPDATE' if lock else '')),
+                     {'id': product_id, 'ws': workspace_id}).mappings().first()
+    if row is None:
+        raise HTTPException(404, 'Fact product not found')
+    return row
+
+
+def _get_fact_variant(db, variant_id, workspace_id, lock=False):
+    row = db.execute(text('SELECT id, product_id, name, facts, confirmed, created_at, updated_at FROM fact_variants WHERE id=:id AND workspace_id=:ws' + (' FOR UPDATE' if lock else '')),
+                     {'id': variant_id, 'ws': workspace_id}).mappings().first()
+    if row is None:
+        raise HTTPException(404, 'Fact variant not found')
+    return row
+
+
+def _public_fact_variant(row):
+    facts = row['facts']
+    return {'id': row['id'], 'product_id': row['product_id'], 'name': row['name'],
+            'product_facts': copy.deepcopy(facts) if isinstance(facts, dict) else {},
+            'confirmed': bool(row['confirmed']),
+            'created_at': row['created_at'], 'updated_at': row['updated_at']}
+
+
+def _product_variant_counts(db, product_id, workspace_id):
+    row = db.execute(text('SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE confirmed) AS confirmed FROM fact_variants WHERE product_id=:id AND workspace_id=:ws'),
+                     {'id': product_id, 'ws': workspace_id}).mappings().first()
+    return (int(row['total'] or 0), int(row['confirmed'] or 0))
+
+
+def _validate_variant_facts(raw):
+    from launchcrew.facts import parse_product_facts
+    try:
+        parse_product_facts(raw)
+    except ValueError:
+        raise HTTPException(422, 'Variant facts are invalid; confirm each fact explicitly')
+    return raw
+
+
+def _resolve_run_product_facts(db, body, workspace_id):
+    """Return (product_facts_raw, library_ref) for a run create body.
+
+    Either inline product_facts or a library fact_variant_id, never
+    both. The variant snapshot is a deep copy: the run binds these
+    facts and later library edits never rewrite the stored receipt.
+    """
+    inline = body.product_facts.model_dump() if body.product_facts is not None else None
+    variant_id = body.fact_variant_id
+    if inline is not None and variant_id:
+        raise HTTPException(422, 'Supply either product_facts or fact_variant_id, never both')
+    if not variant_id:
+        return inline, None
+    row = _get_fact_variant(db, variant_id, workspace_id)
+    raw = copy.deepcopy(row['facts']) if isinstance(row['facts'], dict) else {}
+    _validate_variant_facts(raw)
+    product = _get_fact_product(db, row['product_id'], workspace_id)
+    ref = {'product_id': row['product_id'], 'product_name': product['name'],
+           'variant_id': row['id'], 'variant_name': row['name'],
+           'confirmed': bool(row['confirmed'])}
+    return raw, ref
+
+
+def _enforce_missing_core_gate(product_facts_raw, waived):
+    """Refuse owner-partial runs before drafting unless explicitly waived.
+
+    Demo-template mode (None) carries no gate. Returns silently when
+    every core fact is confirmed or when the owner waiver flag is set;
+    otherwise raises 422 naming the missing facts so the UI can prompt
+    for them or request the waiver flag.
+    """
+    if product_facts_raw is None:
+        return
+    from launchcrew.facts import missing_core_facts, parse_product_facts
+    try:
+        parsed = parse_product_facts(product_facts_raw)
+    except ValueError:
+        raise
+    missing = missing_core_facts(parsed)
+    if missing and not waived:
+        raise HTTPException(422, {'message': 'Missing core product facts: ' + ', '.join(missing),
+                                  'missing_facts': missing, 'requires_waiver': True})
+
+
+@app.get('/api/fact-products', response_model=list[FactProductOut])
+def list_fact_products(actor: str = Depends(auth.actor)):
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        rows = db.execute(text('SELECT id, name, created_at, updated_at FROM fact_products WHERE workspace_id=:ws ORDER BY name, id'),
+                          {'ws': workspace_id}).mappings().all()
+        result = []
+        for row in rows:
+            total, confirmed = _product_variant_counts(db, row['id'], workspace_id)
+            result.append({'id': row['id'], 'name': row['name'], 'variant_count': total,
+                           'confirmed_variants': confirmed,
+                           'created_at': row['created_at'], 'updated_at': row['updated_at']})
+        return result
+
+
+@app.post('/api/fact-products', response_model=FactProductOut, status_code=201)
+def create_fact_product(body: FactProductIn, actor: str = Depends(auth.actor)):
+    name = _clean_fact_library_name(body.name, 'Product')
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        existing = db.execute(text('SELECT id FROM fact_products WHERE workspace_id=:ws AND LOWER(name)=LOWER(:name)'),
+                              {'ws': workspace_id, 'name': name}).fetchone()
+        if existing:
+            raise HTTPException(409, 'A product with this name already exists')
+        product_id = 'fprod_' + uuid4().hex
+        db.execute(text('INSERT INTO fact_products(id, workspace_id, name) VALUES (:id,:ws,:name)'),
+                   {'id': product_id, 'ws': workspace_id, 'name': name})
+        store.audit(db, None, 'fact_product_created', actor, workspace_id)
+        row = _get_fact_product(db, product_id, workspace_id)
+        return {'id': row['id'], 'name': row['name'], 'variant_count': 0,
+                'confirmed_variants': 0, 'created_at': row['created_at'], 'updated_at': row['updated_at']}
+
+
+@app.get('/api/fact-products/{product_id}', response_model=FactProductDetail)
+def get_fact_product(product_id: str, actor: str = Depends(auth.actor)):
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        row = _get_fact_product(db, product_id, workspace_id)
+        variants = db.execute(text('SELECT id, product_id, name, facts, confirmed, created_at, updated_at FROM fact_variants WHERE product_id=:id AND workspace_id=:ws ORDER BY name, id'),
+                              {'id': product_id, 'ws': workspace_id}).mappings().all()
+        return {'id': row['id'], 'name': row['name'],
+                'variants': [_public_fact_variant(item) for item in variants],
+                'created_at': row['created_at'], 'updated_at': row['updated_at']}
+
+
+@app.put('/api/fact-products/{product_id}', response_model=FactProductOut)
+def rename_fact_product(product_id: str, body: FactProductIn, actor: str = Depends(auth.actor)):
+    name = _clean_fact_library_name(body.name, 'Product')
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        _get_fact_product(db, product_id, workspace_id, lock=True)
+        clash = db.execute(text('SELECT id FROM fact_products WHERE workspace_id=:ws AND LOWER(name)=LOWER(:name) AND id != :id'),
+                           {'ws': workspace_id, 'name': name, 'id': product_id}).fetchone()
+        if clash:
+            raise HTTPException(409, 'A product with this name already exists')
+        db.execute(text('UPDATE fact_products SET name=:name,updated_at=now() WHERE id=:id AND workspace_id=:ws'),
+                   {'name': name, 'id': product_id, 'ws': workspace_id})
+        store.audit(db, None, 'fact_product_renamed', actor, workspace_id)
+        row = _get_fact_product(db, product_id, workspace_id)
+        total, confirmed = _product_variant_counts(db, product_id, workspace_id)
+        return {'id': row['id'], 'name': row['name'], 'variant_count': total,
+                'confirmed_variants': confirmed, 'created_at': row['created_at'], 'updated_at': row['updated_at']}
+
+
+@app.delete('/api/fact-products/{product_id}', status_code=204)
+def delete_fact_product(product_id: str, actor: str = Depends(auth.actor)):
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        _get_fact_product(db, product_id, workspace_id, lock=True)
+        db.execute(text('DELETE FROM fact_variants WHERE product_id=:id AND workspace_id=:ws'),
+                   {'id': product_id, 'ws': workspace_id})
+        result = db.execute(text('DELETE FROM fact_products WHERE id=:id AND workspace_id=:ws'),
+                            {'id': product_id, 'ws': workspace_id})
+        if result.rowcount == 0:
+            raise HTTPException(404, 'Fact product not found')
+        store.audit(db, None, 'fact_product_deleted', actor, workspace_id)
+    return Response(status_code=204)
+
+
+@app.get('/api/fact-products/{product_id}/variants', response_model=list[FactVariantOut])
+def list_fact_variants(product_id: str, actor: str = Depends(auth.actor)):
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        _get_fact_product(db, product_id, workspace_id)
+        rows = db.execute(text('SELECT id, product_id, name, facts, confirmed, created_at, updated_at FROM fact_variants WHERE product_id=:id AND workspace_id=:ws ORDER BY name, id'),
+                          {'id': product_id, 'ws': workspace_id}).mappings().all()
+        return [_public_fact_variant(row) for row in rows]
+
+
+@app.post('/api/fact-products/{product_id}/variants', response_model=FactVariantOut, status_code=201)
+def create_fact_variant(product_id: str, body: FactVariantIn, actor: str = Depends(auth.actor)):
+    name = _clean_fact_library_name(body.name, 'Variant')
+    raw = _validate_variant_facts(body.product_facts.model_dump())
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        _get_fact_product(db, product_id, workspace_id)
+        clash = db.execute(text('SELECT id FROM fact_variants WHERE product_id=:id AND LOWER(name)=LOWER(:name)'),
+                           {'id': product_id, 'name': name}).fetchone()
+        if clash:
+            raise HTTPException(409, 'A variant with this name already exists for this product')
+        variant_id = 'fvar_' + uuid4().hex
+        db.execute(text('INSERT INTO fact_variants(id, product_id, workspace_id, name, facts, confirmed) VALUES (:id,:prod,:ws,:name,CAST(:facts AS jsonb),:confirmed)'),
+                   {'id': variant_id, 'prod': product_id, 'ws': workspace_id, 'name': name,
+                    'facts': json.dumps(raw), 'confirmed': False})
+        store.audit(db, None, 'fact_variant_created', actor, workspace_id)
+        return _public_fact_variant(_get_fact_variant(db, variant_id, workspace_id))
+
+
+def _receipt_facts_snapshot(receipt):
+    """Rebuild a product-facts input object from a run bound section.
+
+    Copies only the stored per-field value, confirmation, and source,
+    so the library variant starts from exactly what the run bound.
+    """
+    section = receipt.get('product_facts') if isinstance(receipt, dict) else None
+    if not isinstance(section, dict):
+        raise HTTPException(422, 'Run has no bound product facts to save')
+    if section.get('mode') != 'owner_input':
+        raise HTTPException(422, 'Only owner-input runs can be saved to the facts library')
+    raw: dict[str, Any] = {}
+    claims: list[dict[str, Any]] = []
+    for entry in section.get('fields') or []:
+        if not isinstance(entry, dict):
+            continue
+        field = entry.get('field')
+        value = entry.get('value')
+        confirmed = entry.get('confirmed')
+        source = entry.get('source') or 'owner'
+        item = {'value': value if isinstance(value, str) else '',
+                'confirmed': confirmed is True, 'source': source}
+        if field == 'allowed_claim':
+            claims.append(item)
+        elif field in ('material', 'contents', 'size', 'price'):
+            raw[field] = item
+    if claims:
+        raw['allowed_claims'] = claims
+    note = section.get('founder_note')
+    if isinstance(note, dict) and isinstance(note.get('value'), str) and note.get('value'):
+        raw['founder_note'] = {'value': note['value'], 'confirmed': note.get('confirmed') is True,
+                               'source': note.get('source') or 'owner'}
+    return _validate_variant_facts(raw)
+
+
+@app.post('/api/fact-products/{product_id}/variants/from-run/{run_id}', response_model=FactVariantOut, status_code=201)
+def save_fact_variant_from_run(product_id: str, run_id: str, body: FactVariantFromRunIn, actor: str = Depends(auth.actor)):
+    name = _clean_fact_library_name(body.name, 'Variant')
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        _get_fact_product(db, product_id, workspace_id)
+        receipt = get_receipt(db, run_id, workspace_id)
+        raw = _receipt_facts_snapshot(receipt)
+        clash = db.execute(text('SELECT id FROM fact_variants WHERE product_id=:id AND LOWER(name)=LOWER(:name)'),
+                           {'id': product_id, 'name': name}).fetchone()
+        if clash:
+            raise HTTPException(409, 'A variant with this name already exists for this product')
+        variant_id = 'fvar_' + uuid4().hex
+        db.execute(text('INSERT INTO fact_variants(id, product_id, workspace_id, name, facts, confirmed) VALUES (:id,:prod,:ws,:name,CAST(:facts AS jsonb),:confirmed)'),
+                   {'id': variant_id, 'prod': product_id, 'ws': workspace_id, 'name': name,
+                    'facts': json.dumps(raw), 'confirmed': False})
+        store.audit(db, run_id, 'fact_variant_saved_from_run', actor, workspace_id)
+        return _public_fact_variant(_get_fact_variant(db, variant_id, workspace_id))
+
+
+@app.get('/api/fact-variants/{variant_id}', response_model=FactVariantOut)
+def get_fact_variant(variant_id: str, actor: str = Depends(auth.actor)):
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        return _public_fact_variant(_get_fact_variant(db, variant_id, workspace_id))
+
+
+@app.put('/api/fact-variants/{variant_id}', response_model=FactVariantOut)
+def edit_fact_variant(variant_id: str, body: FactVariantEdit, actor: str = Depends(auth.actor)):
+    if body.name is None and body.product_facts is None:
+        raise HTTPException(422, 'Supply a name, product_facts, or both to edit a variant')
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        row = _get_fact_variant(db, variant_id, workspace_id, lock=True)
+        updates: dict[str, Any] = {}
+        if body.name is not None:
+            name = _clean_fact_library_name(body.name, 'Variant')
+            clash = db.execute(text('SELECT id FROM fact_variants WHERE product_id=:prod AND LOWER(name)=LOWER(:name) AND id != :id'),
+                               {'prod': row['product_id'], 'name': name, 'id': variant_id}).fetchone()
+            if clash:
+                raise HTTPException(409, 'A variant with this name already exists for this product')
+            updates['name'] = name
+        if body.product_facts is not None:
+            raw = _validate_variant_facts(body.product_facts.model_dump())
+            updates['facts'] = json.dumps(raw)
+            # Edited facts need a fresh explicit confirmation.
+            updates['confirmed_reset'] = True
+        if 'name' in updates:
+            db.execute(text('UPDATE fact_variants SET name=:name,updated_at=now() WHERE id=:id AND workspace_id=:ws'),
+                       {'name': updates['name'], 'id': variant_id, 'ws': workspace_id})
+        if 'facts' in updates:
+            db.execute(text('UPDATE fact_variants SET facts=CAST(:facts AS jsonb),confirmed=false,updated_at=now() WHERE id=:id AND workspace_id=:ws'),
+                       {'facts': updates['facts'], 'id': variant_id, 'ws': workspace_id})
+        store.audit(db, None, 'fact_variant_edited', actor, workspace_id)
+        return _public_fact_variant(_get_fact_variant(db, variant_id, workspace_id))
+
+
+@app.post('/api/fact-variants/{variant_id}/confirm', response_model=FactVariantOut)
+def confirm_fact_variant(variant_id: str, actor: str = Depends(auth.actor)):
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        row = _get_fact_variant(db, variant_id, workspace_id, lock=True)
+        _validate_variant_facts(copy.deepcopy(row['facts']) if isinstance(row['facts'], dict) else {})
+        db.execute(text('UPDATE fact_variants SET confirmed=true,updated_at=now() WHERE id=:id AND workspace_id=:ws'),
+                   {'id': variant_id, 'ws': workspace_id})
+        store.audit(db, None, 'fact_variant_confirmed', actor, workspace_id)
+        return _public_fact_variant(_get_fact_variant(db, variant_id, workspace_id))
+
+
+@app.delete('/api/fact-variants/{variant_id}', status_code=204)
+def delete_fact_variant(variant_id: str, actor: str = Depends(auth.actor)):
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        _get_fact_variant(db, variant_id, workspace_id, lock=True)
+        result = db.execute(text('DELETE FROM fact_variants WHERE id=:id AND workspace_id=:ws'),
+                            {'id': variant_id, 'ws': workspace_id})
+        if result.rowcount == 0:
+            raise HTTPException(404, 'Fact variant not found')
+        store.audit(db, None, 'fact_variant_deleted', actor, workspace_id)
+    return Response(status_code=204)
+
+
 class RunDiff(Strict):
     run_a_id: str
     run_b_id: str
@@ -2066,7 +2454,13 @@ def _insert_campaign_committed_day(db, campaign_id, day, run_id, receipt, maker_
 def create_campaign(body: CampaignInput, actor: str = Depends(auth.actor)):
     from launchcrew.facts import parse_product_facts
     from backend import model_admission
-    product_facts_raw = body.product_facts.model_dump() if body.product_facts is not None else None
+    if body.product_facts is not None and body.fact_variant_id:
+        raise HTTPException(422, 'Supply either product_facts or fact_variant_id, never both')
+    with store.connect() as db:
+        _resolve_ws = store.ensure_workspace_seeded(db, actor)
+        _raw, _ref = _resolve_run_product_facts(db, body, _resolve_ws)
+        _enforce_missing_core_gate(_raw, body.waive_missing_core_facts)
+    product_facts_raw, library_ref = _raw, _ref
     parsed_product = parse_product_facts(product_facts_raw)
     confirmed_claims = list(parsed_product['confirmed_claims']) if parsed_product is not None else []
     if confirmed_claims:
@@ -2108,7 +2502,9 @@ def create_campaign(body: CampaignInput, actor: str = Depends(auth.actor)):
                                       brief=brief, campaign_day=day, extra_claims=[brief_claim],
                                       scout_profile=scout, maker_profile=maker, checker_agent=checker,
                                       product_facts=product_facts_raw,
-                                      model_admission_factory=factory)
+                                      model_admission_factory=factory,
+                                      waive_missing_core_facts=body.waive_missing_core_facts,
+                                      fact_library=library_ref)
             if isinstance(receipt, dict):
                 receipt['campaign_angle'] = angle
         except Exception as error:

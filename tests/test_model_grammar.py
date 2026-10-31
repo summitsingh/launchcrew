@@ -214,6 +214,8 @@ class GrammarTests(unittest.TestCase):
 
     def test_owner_no_demo_memory_brief(self):
         product = {'material': {'value': 'Full-grain leather', 'confirmed': True, 'source': 'owner'},
+                   'contents': {'value': 'Six card slots', 'confirmed': True, 'source': 'owner'},
+                   'size': {'value': 'Bifold compact', 'confirmed': True, 'source': 'owner'},
                    'price': {'value': '$129', 'confirmed': True, 'source': 'owner'}}
         demo_claim = '100% vegan PU leather'
         receipt = self.run_demo({'claims': [demo_claim],
@@ -232,8 +234,10 @@ class GrammarTests(unittest.TestCase):
         section = receipt['product_facts']
         self.assertEqual(section['mode'], 'owner_input')
         self.assertFalse(section['template_used'])
-        self.assertEqual(section['confirmed_claims'], ['Full-grain leather', '$129'])
-        self.assertEqual(section['allowlist'], ['Full-grain leather', '$129'])
+        self.assertEqual(section['confirmed_claims'],
+                         ['Full-grain leather', 'Six card slots', 'Bifold compact', '$129'])
+        self.assertEqual(section['allowlist'],
+                         ['Full-grain leather', 'Six card slots', 'Bifold compact', '$129'])
         for entry in receipt['scout']['facts_used']:
             self.assertTrue(entry['verified'])
             self.assertEqual(entry['sources'], ['owner_confirmed_input'])

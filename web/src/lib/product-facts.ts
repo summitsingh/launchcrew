@@ -18,6 +18,71 @@ export const PRODUCT_FACT_SOURCES: readonly ProductFactSource[] = [
 export const PRODUCT_FACT_FIELDS = ['material', 'contents', 'size', 'price'] as const;
 export type ProductFactName = (typeof PRODUCT_FACT_FIELDS)[number];
 
+/** Core facts required before drafting. Owner input missing a confirmed
+ *  value for any of these fields must prompt for it or carry an explicit
+ *  owner waiver on the receipt. Demo-template mode carries no gate. */
+export const CORE_FACT_FIELDS = ['material', 'contents', 'size', 'price'] as const;
+export type CoreFactName = (typeof CORE_FACT_FIELDS)[number];
+
+/** Core field names lacking a confirmed non-empty value in form state. */
+export function missingCoreFacts(state: OwnerFactsState): CoreFactName[] {
+  const out: CoreFactName[] = [];
+  for (const name of CORE_FACT_FIELDS) {
+    const fact = state[name];
+    if (!(fact && fact.confirmed && fact.value.trim())) out.push(name);
+  }
+  return out;
+}
+
+/** Rebuild form state from a stored facts-library variant input object.
+ *  Unknown sources fall back to owner. Confirmation flags are preserved
+ *  exactly as stored; nothing is confirmed by loading. */
+export function ownerFactsFromInput(input: ProductFactsInput): OwnerFactsState {
+  const next = emptyOwnerFacts();
+  const record = input as unknown as Record<string, unknown>;
+  for (const name of PRODUCT_FACT_FIELDS) {
+    const item = record[name];
+    if (item && typeof item === 'object') {
+      const field = item as { value?: unknown; confirmed?: unknown; source?: unknown };
+      next[name] = {
+        value: typeof field.value === 'string' ? field.value : '',
+        confirmed: field.confirmed === true,
+        source: PRODUCT_FACT_SOURCES.includes(field.source as ProductFactSource)
+          ? (field.source as ProductFactSource)
+          : 'owner',
+      };
+    }
+  }
+  const claims = Array.isArray(record.allowed_claims) ? record.allowed_claims : [];
+  next.allowed_claims = claims
+    .filter(c => c && typeof c === 'object')
+    .map(c => {
+      const field = c as { value?: unknown; confirmed?: unknown; source?: unknown };
+      return {
+        value: typeof field.value === 'string' ? field.value : '',
+        confirmed: field.confirmed === true,
+        source: PRODUCT_FACT_SOURCES.includes(field.source as ProductFactSource)
+          ? (field.source as ProductFactSource)
+          : 'owner',
+      };
+    })
+    .filter(f => f.value.trim());
+  const note = record.founder_note;
+  if (note && typeof note === 'object') {
+    const field = note as { value?: unknown; confirmed?: unknown; source?: unknown };
+    if (typeof field.value === 'string' && field.value.trim()) {
+      next.founder_note = {
+        value: field.value,
+        confirmed: field.confirmed === true,
+        source: PRODUCT_FACT_SOURCES.includes(field.source as ProductFactSource)
+          ? (field.source as ProductFactSource)
+          : 'owner',
+      };
+    }
+  }
+  return next;
+}
+
 export const PRODUCT_FACT_VALUE_MAX = 200;
 export const FOUNDER_NOTE_MAX = 280;
 export const ALLOWED_CLAIMS_MAX = 12;
