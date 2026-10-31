@@ -17,7 +17,7 @@ from sqlalchemy import text
 from launchcrew import channel_variants
 
 IDEA = 'Vegan leather wallet, $49, for Austin commuters, launch on Instagram'
-CHANNELS = ('x', 'linkedin', 'instagram', 'email', 'facebook')
+CHANNELS = ('x', 'linkedin', 'instagram', 'email', 'facebook', 'tiktok', 'shopify')
 
 
 @pytest.fixture(autouse=True)

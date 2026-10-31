@@ -35,7 +35,7 @@ from launchcrew.channel_variants import (
     verify_exact_variant_text,
 )
 
-ALL_CHANNELS = ("x", "linkedin", "instagram", "email", "facebook")
+ALL_CHANNELS = ("x", "linkedin", "instagram", "email", "facebook", "tiktok", "shopify")
 ALL_MATRIX_CHANNELS = ("x", "linkedin", "instagram", "email", "facebook", "tiktok", "shopify")
 
 
@@ -173,7 +173,7 @@ class ChannelVariantTests(unittest.TestCase):
         confirmed = ["Vegan leather wallet", "Designed in Texas"]
         packed = build_channel_variants(draft, confirmed)
         texts = [packed[k]["text"] for k in ALL_CHANNELS]
-        self.assertEqual(len(set(texts)), 5)
+        self.assertEqual(len(set(texts)), 7)
         self.assertEqual(packed["x"]["text"], draft)
         self.assertTrue(packed["linkedin"]["text"].startswith("Update:"))
         self.assertTrue(packed["instagram"]["text"].endswith("More soon."))
@@ -183,6 +183,13 @@ class ChannelVariantTests(unittest.TestCase):
         self.assertIn("\n\n", packed["facebook"]["text"])
         for key in ALL_CHANNELS:
             body = packed[key]["body"] if key == "email" else packed[key]["text"]
+            if key == "tiktok":
+                body = "\n".join(body.split("\n")[1:-1])
+            elif key == "shopify":
+                body = "\n".join(
+                    line[2:] if line.startswith("- ") else line
+                    for line in body.split("\n")
+                )
             for sentence in split_sentences(body):
                 if sentence in ("Update:", "More soon.", "Hello,", "Thanks,"):
                     continue
@@ -332,6 +339,8 @@ class ChannelVariantTests(unittest.TestCase):
             build_instagram_variant,
             build_email_variant,
             build_facebook_variant,
+            build_tiktok_variant,
+            build_shopify_variant,
         ):
             variant = builder(draft, confirmed)
             assert_candidate_fields(self, variant, False)
@@ -441,7 +450,9 @@ class ChannelVariantTests(unittest.TestCase):
         confirmed = ["Vegan leather wallet", "Designed in Texas"]
         packed = build_channel_variants(draft, confirmed)
         facebook_text = packed["facebook"]["text"]
-        for other in ("x", "linkedin", "instagram", "email"):
+        for other in ALL_CHANNELS:
+            if other == "facebook":
+                continue
             self.assertNotEqual(facebook_text, packed[other]["text"])
         for sentence in split_sentences(facebook_text):
             self.assertIn(sentence, draft)
@@ -565,6 +576,8 @@ class AdPolicyLintWiringTests(unittest.TestCase):
             build_instagram_variant,
             build_email_variant,
             build_facebook_variant,
+            build_tiktok_variant,
+            build_shopify_variant,
         ):
             with self.subTest(builder=builder.__name__):
                 variant = builder(draft, confirmed)
@@ -773,6 +786,8 @@ class ShopifyVariantTests(unittest.TestCase):
         packed = build_channel_variants(draft, confirmed)
         shopify_text = build_shopify_variant(draft, confirmed)["text"]
         for key in ALL_CHANNELS:
+            if key == "shopify":
+                continue
             self.assertNotEqual(shopify_text, packed[key]["text"])
 
     def test_shopify_fails_closed_on_unconfirmed_measured_claims(self):
@@ -828,8 +843,13 @@ class LaunchMatrixTests(unittest.TestCase):
         )
         self.assertEqual(len(LAUNCH_MATRIX_CHANNELS), 7)
 
-    def test_existing_channels_tuple_stays_backward_compatible(self):
+    def test_channels_tuple_covers_all_seven(self):
+        self.assertEqual(
+            CHANNELS,
+            ("x", "linkedin", "instagram", "email", "facebook", "tiktok", "shopify"),
+        )
         self.assertEqual(CHANNELS, ALL_CHANNELS)
+        self.assertEqual(CHANNELS, LAUNCH_MATRIX_CHANNELS)
         draft = "Vegan leather wallet. Designed in Texas."
         confirmed = ["Vegan leather wallet", "Designed in Texas"]
         packed = build_channel_variants(draft, confirmed)

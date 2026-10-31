@@ -121,6 +121,42 @@ class CheckedLaunchMatrixTests(unittest.TestCase):
                     self.assertEqual(bundle[channel]['text'],
                                      matrix[channel]['text'])
 
+    def test_all_seven_matrix_entries_approve_and_copy(self):
+        for channel in MATRIX_CHANNELS:
+            with self.subTest(channel=channel):
+                approved = approved_receipt()
+                bundle = channel_variants.checked_launch_matrix(approved)
+                entry = bundle[channel]
+                self.assertTrue(entry['content_valid'], entry.get('reason'))
+                self.assertNotEqual(entry['text'], '')
+                if channel == 'tiktok':
+                    self.assertTrue(entry['text'].startswith(
+                        channel_variants.TIKTOK_HEADER))
+                    self.assertTrue(entry['text'].endswith(
+                        channel_variants.TIKTOK_CLOSER))
+                if channel == 'shopify':
+                    for line in entry['text'].splitlines():
+                        if line.strip():
+                            self.assertTrue(line.startswith('- '))
+                bound = channel_variants.approve_channel_variant(
+                    approved, channel, 'matrix_human', 0)
+                stored = bound['channel_approvals'][channel]
+                self.assertEqual(stored['text'], entry['text'])
+                record = channel_variants.authorize_channel_copy(bound, channel, 0)
+                self.assertTrue(record['copy_authorized'])
+                self.assertEqual(record['text'], entry['text'])
+                self.assertEqual(record['revision'], 0)
+
+    def test_unknown_matrix_channel_fails_closed(self):
+        approved = approved_receipt()
+        for unknown in ('sms', 'threads', ''):
+            with self.subTest(unknown=unknown):
+                with self.assertRaises(ValueError):
+                    channel_variants.approve_channel_variant(
+                        approved, unknown, 'matrix_human', 0)
+                with self.assertRaises(ValueError):
+                    channel_variants.authorize_channel_copy(approved, unknown, 0)
+
     def test_tiktok_and_shopify_framing_preserved(self):
         approved = approved_receipt()
         bundle = channel_variants.checked_launch_matrix(approved)

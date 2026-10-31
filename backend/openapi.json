@@ -479,10 +479,16 @@
             "title": "Revision",
             "type": "integer"
           },
+          "shopify": {
+            "$ref": "#/components/schemas/ChannelVariantOut"
+          },
           "template_used": {
             "default": false,
             "title": "Template Used",
             "type": "boolean"
+          },
+          "tiktok": {
+            "$ref": "#/components/schemas/ChannelVariantOut"
           },
           "x": {
             "$ref": "#/components/schemas/ChannelVariantOut"
@@ -493,7 +499,9 @@
           "linkedin",
           "instagram",
           "email",
-          "facebook"
+          "facebook",
+          "tiktok",
+          "shopify"
         ],
         "title": "ChannelVariantsOut",
         "type": "object"
@@ -5839,6 +5847,80 @@
           }
         },
         "summary": "Export"
+      }
+    },
+    "/api/runs/{run_id}/export/bundle": {
+      "get": {
+        "operationId": "export_bundle_markdown_api_runs__run_id__export_bundle_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Export Bundle Markdown"
+      }
+    },
+    "/api/runs/{run_id}/export/markdown": {
+      "get": {
+        "operationId": "export_bundle_markdown_api_runs__run_id__export_markdown_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Export Bundle Markdown"
       }
     },
     "/api/runs/{run_id}/launch-matrix": {

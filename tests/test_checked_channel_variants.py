@@ -99,7 +99,7 @@ class CheckedChannelVariantsTests(unittest.TestCase):
     def test_bundle_shape_echoes_binding(self):
         approved = approved_receipt()
         bundle = channel_variants.checked_channel_variants(approved)
-        for channel in ('x', 'linkedin', 'instagram', 'email', 'facebook'):
+        for channel in ('x', 'linkedin', 'instagram', 'email', 'facebook', 'tiktok', 'shopify'):
             self.assertIn(channel, bundle)
         self.assertIn('provenance', bundle)
         self.assertEqual(bundle['bundle_version'],
@@ -124,7 +124,7 @@ class CheckedChannelVariantsTests(unittest.TestCase):
     def test_variants_not_independently_exportable(self):
         approved = approved_receipt()
         bundle = channel_variants.checked_channel_variants(approved)
-        for channel in ('x', 'linkedin', 'instagram', 'email', 'facebook'):
+        for channel in ('x', 'linkedin', 'instagram', 'email', 'facebook', 'tiktok', 'shopify'):
             with self.subTest(channel=channel):
                 variant = bundle[channel]
                 self.assertFalse(variant['exportable'])
@@ -167,7 +167,7 @@ class CheckedChannelVariantsTests(unittest.TestCase):
         approved = approved_receipt()
         confirmed = approved['product_facts']['confirmed_claims']
         bundle = channel_variants.checked_channel_variants(approved)
-        for channel in ('x', 'linkedin', 'instagram', 'email', 'facebook'):
+        for channel in ('x', 'linkedin', 'instagram', 'email', 'facebook', 'tiktok', 'shopify'):
             variant = bundle[channel]
             if not variant['content_valid']:
                 self.assertEqual(variant['text'], '')
@@ -200,7 +200,7 @@ class CheckedChannelVariantsTests(unittest.TestCase):
         bundle = channel_variants.checked_channel_variants(approved)
         self.assertIsNone(bundle['provenance']['audience_context'])
         self.assertIsNone(bundle['provenance']['angle_context'])
-        for channel in ('x', 'linkedin', 'instagram', 'email', 'facebook'):
+        for channel in ('x', 'linkedin', 'instagram', 'email', 'facebook', 'tiktok', 'shopify'):
             with self.subTest(channel=channel):
                 self.assertEqual(bundle[channel]['channel'], channel)
 
@@ -251,7 +251,7 @@ class CheckedChannelVariantsTests(unittest.TestCase):
         post = human_review.current_draft(approved)['post']
         confirmed = approved['product_facts']['confirmed_claims']
         bundle = channel_variants.checked_channel_variants(approved)
-        for channel in ('x', 'linkedin', 'instagram', 'email', 'facebook'):
+        for channel in ('x', 'linkedin', 'instagram', 'email', 'facebook', 'tiktok', 'shopify'):
             with self.subTest(channel=channel):
                 variant = bundle[channel]
                 if not variant['content_valid']:
@@ -310,7 +310,7 @@ class CheckedChannelVariantsTests(unittest.TestCase):
         with patch.object(channel_variants, 'verify_exact_variant_text',
                           return_value=(False, 'probe failure')):
             bundle = channel_variants.checked_channel_variants(approved)
-        for channel in ('x', 'linkedin', 'instagram', 'email', 'facebook'):
+        for channel in ('x', 'linkedin', 'instagram', 'email', 'facebook', 'tiktok', 'shopify'):
             with self.subTest(channel=channel):
                 variant = bundle[channel]
                 self.assertFalse(variant['content_valid'])
@@ -321,7 +321,7 @@ class CheckedChannelVariantsTests(unittest.TestCase):
     def test_authorize_copy_binds_exact_text(self):
         approved = approved_receipt()
         bundle = channel_variants.checked_channel_variants(approved)
-        channel = next(c for c in ('x', 'linkedin', 'instagram', 'email', 'facebook')
+        channel = next(c for c in ('x', 'linkedin', 'instagram', 'email', 'facebook', 'tiktok', 'shopify')
                        if bundle[c]['content_valid'] and bundle[c]['text'])
         bound = channel_variants.approve_channel_variant(approved, channel, 'checked_human', 0)
         record = channel_variants.authorize_channel_copy(bound, channel, 0)
@@ -341,11 +341,11 @@ class CheckedChannelVariantsTests(unittest.TestCase):
     def test_authorize_copy_fields_cohere(self):
         approved = approved_receipt()
         bundle = channel_variants.checked_channel_variants(approved)
-        for channel in ('x', 'linkedin', 'instagram', 'email', 'facebook'):
+        for channel in ('x', 'linkedin', 'instagram', 'email', 'facebook', 'tiktok', 'shopify'):
             with self.subTest(channel=channel):
                 self.assertIsNone(bundle[channel].get('checker_approval'))
                 self.assertIsNone(bundle[channel].get('receipt_id'))
-        channel = next(c for c in ('x', 'linkedin', 'instagram', 'email', 'facebook')
+        channel = next(c for c in ('x', 'linkedin', 'instagram', 'email', 'facebook', 'tiktok', 'shopify')
                        if bundle[c]['content_valid'] and bundle[c]['text'])
         bound = channel_variants.approve_channel_variant(approved, channel, 'checked_human', 0)
         record = channel_variants.authorize_channel_copy(bound, channel, 0)
@@ -359,7 +359,7 @@ class CheckedChannelVariantsTests(unittest.TestCase):
     def test_variant_approval_binds_exact_text_and_owner(self):
         approved = approved_receipt()
         bundle = channel_variants.checked_channel_variants(approved)
-        channel = next(c for c in ('x', 'linkedin', 'instagram', 'email', 'facebook')
+        channel = next(c for c in ('x', 'linkedin', 'instagram', 'email', 'facebook', 'tiktok', 'shopify')
                        if bundle[c]['content_valid'] and bundle[c]['text'])
         bound = channel_variants.approve_channel_variant(approved, channel, 'checked_human', 0)
         stored = bound['channel_approvals'][channel]
@@ -389,7 +389,7 @@ class CheckedChannelVariantsTests(unittest.TestCase):
         voiced = with_voice(pending, [term])
         bound_pack = human_review.approve_current(voiced, 'checked_human')
         bundle = channel_variants.checked_channel_variants(bound_pack)
-        vetoed = [c for c in ('x', 'linkedin', 'instagram', 'email', 'facebook')
+        vetoed = [c for c in ('x', 'linkedin', 'instagram', 'email', 'facebook', 'tiktok', 'shopify')
                   if not bundle[c]['content_valid']]
         self.assertTrue(vetoed)
         for channel in vetoed:
@@ -402,7 +402,7 @@ class CheckedChannelVariantsTests(unittest.TestCase):
     def test_variant_approval_stale_on_revision_and_reapproval(self):
         approved = approved_receipt()
         bundle = channel_variants.checked_channel_variants(approved)
-        channel = next(c for c in ('x', 'linkedin', 'instagram', 'email', 'facebook')
+        channel = next(c for c in ('x', 'linkedin', 'instagram', 'email', 'facebook', 'tiktok', 'shopify')
                        if bundle[c]['content_valid'] and bundle[c]['text'])
         with self.assertRaises(ValueError) as ctx_wrong:
             channel_variants.approve_channel_variant(approved, channel, 'checked_human', 99)
@@ -430,7 +430,7 @@ class CheckedChannelVariantsTests(unittest.TestCase):
     def test_variant_approval_fails_closed_on_tampering(self):
         approved = approved_receipt()
         bundle = channel_variants.checked_channel_variants(approved)
-        channel = next(c for c in ('x', 'linkedin', 'instagram', 'email', 'facebook')
+        channel = next(c for c in ('x', 'linkedin', 'instagram', 'email', 'facebook', 'tiktok', 'shopify')
                        if bundle[c]['content_valid'] and bundle[c]['text'])
         bound = channel_variants.approve_channel_variant(approved, channel, 'checked_human', 0)
         edited = copy.deepcopy(bound)
@@ -476,13 +476,74 @@ class CheckedChannelVariantsTests(unittest.TestCase):
             channel_variants.authorize_channel_copy(tampered, 'x', 0)
         self.assertIn('binding', str(ctx_binding.exception).lower())
 
+    def test_all_seven_channels_approve_and_copy_at_current_revision(self):
+        for channel in ('x', 'linkedin', 'instagram', 'email', 'facebook', 'tiktok', 'shopify'):
+            with self.subTest(channel=channel):
+                approved = approved_receipt()
+                bundle = channel_variants.checked_channel_variants(approved)
+                variant = bundle[channel]
+                self.assertTrue(variant['content_valid'], variant.get('reason'))
+                self.assertNotEqual(variant['text'], '')
+                bound = channel_variants.approve_channel_variant(
+                    approved, channel, 'checked_human', 0)
+                stored = bound['channel_approvals'][channel]
+                self.assertEqual(stored['text'], variant['text'])
+                self.assertEqual(stored['subject'], variant['subject'])
+                self.assertEqual(stored['revision'], 0)
+                self.assertEqual(stored['pack_binding_digest'],
+                                 approved['approval_binding']['digest'])
+                self.assertEqual(stored['approved_by'], 'checked_human')
+                expected = channel_variants.variant_approval_digest(
+                    channel, stored['text'], stored['subject'], 0,
+                    approved['approval_binding']['digest'])
+                self.assertEqual(stored['variant_digest'], expected)
+                record, current, reason = channel_variants.channel_approval_status(
+                    bound, channel)
+                self.assertTrue(current, reason)
+                copy_record = channel_variants.authorize_channel_copy(bound, channel, 0)
+                self.assertTrue(copy_record['copy_authorized'])
+                self.assertEqual(copy_record['text'], variant['text'])
+                self.assertEqual(copy_record['channel'], channel)
+                self.assertEqual(copy_record['revision'], 0)
+                self.assertEqual(copy_record['approved_by'], 'checked_human')
+                self.assertEqual(copy_record['binding_digest'],
+                                 approved['approval_binding']['digest'])
+
+    def test_unknown_channels_fail_closed_everywhere(self):
+        approved = approved_receipt()
+        bundle = channel_variants.checked_channel_variants(approved)
+        channel = next(c for c in ('x', 'linkedin', 'instagram', 'email', 'facebook', 'tiktok', 'shopify')
+                       if bundle[c]['content_valid'] and bundle[c]['text'])
+        for unknown in ('sms', 'SMS', '', 'email2', 'web'):
+            with self.subTest(unknown=unknown):
+                with self.assertRaises(ValueError) as ctx_approve:
+                    channel_variants.approve_channel_variant(
+                        approved, unknown, 'checked_human', 0)
+                self.assertIn('unknown channel', str(ctx_approve.exception).lower())
+                with self.assertRaises(ValueError) as ctx_copy:
+                    channel_variants.authorize_channel_copy(approved, unknown, 0)
+                self.assertIn('unknown channel', str(ctx_copy.exception).lower())
+                record, current, reason = channel_variants.channel_approval_status(
+                    approved, unknown)
+                self.assertIsNone(record)
+                self.assertFalse(current)
+                self.assertIn('unknown channel', reason.lower())
+                with self.assertRaises(ValueError):
+                    channel_variants.variant_approval_digest(
+                        unknown, 'text', '', 0, '0' * 64)
+                ok, reason = channel_variants.verify_exact_variant_text(
+                    unknown, 'text', '', 'Post.', [])
+                self.assertFalse(ok)
+                self.assertIn('unknown channel', reason.lower())
+        self.assertIn(channel, channel_variants.CHANNELS)
+
 
 class CheckedAdPolicyTests(unittest.TestCase):
     def test_checked_entries_expose_policy_fields(self):
         draft = 'Vegan leather wallet. Designed in Texas.'
         confirmed = ['Vegan leather wallet', 'Designed in Texas']
         packed = channel_variants.build_channel_variants(draft, confirmed)
-        for channel in ('x', 'linkedin', 'instagram', 'email', 'facebook'):
+        for channel in ('x', 'linkedin', 'instagram', 'email', 'facebook', 'tiktok', 'shopify'):
             with self.subTest(channel=channel):
                 entry = channel_variants._checked_variant_entry(
                     packed[channel])
@@ -504,7 +565,7 @@ class CheckedAdPolicyTests(unittest.TestCase):
         draft = 'This wallet is guaranteed to last. Designed in Texas.'
         confirmed = ['wallet', 'Designed in Texas']
         packed = channel_variants.build_channel_variants(draft, confirmed)
-        for channel in ('x', 'linkedin', 'instagram', 'email', 'facebook'):
+        for channel in ('x', 'linkedin', 'instagram', 'email', 'facebook', 'tiktok', 'shopify'):
             with self.subTest(channel=channel):
                 variant = packed[channel]
                 self.assertTrue(variant['content_valid'])

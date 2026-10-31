@@ -12,6 +12,7 @@ import unittest
 from launchcrew.checker_policies import (
     SUPPORTED_CHECKER_POLICIES,
     cliche_hits,
+    custom_terms_for_agent,
     describe_supported,
     effective_policies,
     parse_checker_agent,
@@ -170,6 +171,92 @@ class CheckPackIntegrationTests(unittest.TestCase):
         reasons = ' '.join(
             item['reason'] for item in packed['blocked_claims'])
         self.assertIn('cliches', reasons)
+
+
+class CustomBannedTermTests(unittest.TestCase):
+    def custom_checker(self, veto=None, rules=None):
+        return {
+            'name': 'CustomGuard',
+            'role': 'Checker',
+            'department': 'Growth',
+            'personality': 'Strict',
+            'expertise': 'Policy',
+            'decision_rules': list(rules or []),
+            'veto_scope': list(veto or []),
+            'tools_allowed': ['facts_file', 'claim_check'],
+            'spend_limit': 0,
+            'approval_level': 'approve_each',
+            'examples': [],
+        }
+
+    def test_veto_prefixes_parse_competitor_and_phrase(self):
+        agent = self.custom_checker(
+            veto=['competitor:Acme', 'banned:miracle cure', 'phrase:risk-free'])
+        parsed = parse_checker_agent(agent)
+        self.assertEqual(
+            sorted(parsed['enforced_policies']),
+            ['custom:acme', 'custom:miracle cure', 'custom:risk-free'])
+        self.assertTrue(parsed['floor_enforced'])
+        self.assertEqual(parsed['advisory_only'], [])
+        self.assertEqual(
+            custom_terms_for_agent(agent),
+            ['acme', 'miracle cure', 'risk-free'])
+
+    def test_rule_lines_parse_block_competitor_and_ban_phrase(self):
+        agent = self.custom_checker(
+            rules=['Block competitor Globex', 'Ban phrase miracle cure',
+                   'Block term: carbon neutral'])
+        parsed = parse_checker_agent(agent)
+        self.assertEqual(
+            sorted(parsed['enforced_policies']),
+            ['custom:carbon neutral', 'custom:globex', 'custom:miracle cure'])
+        self.assertEqual(
+            custom_terms_for_agent(agent),
+            ['carbon neutral', 'globex', 'miracle cure'])
+
+    def test_custom_matching_is_case_insensitive_whole_word(self):
+        self.assertTrue(policy_blocks('custom:acme', 'The ACME wallet ships soon.'))
+        self.assertFalse(policy_blocks('custom:acme', 'The AcmeCorp wallet ships soon.'))
+        self.assertTrue(
+            policy_blocks('custom:miracle cure', 'A Miracle Cure for commuters.'))
+        self.assertFalse(policy_blocks('custom:acme', 'Full-grain leather wallet.'))
+        for value in (None, 123, ['acme']):
+            self.assertFalse(policy_blocks('custom:acme', value))
+
+    def test_custom_reason_names_term(self):
+        reason = policy_reason('custom:globex')
+        self.assertIn('custom:globex', reason)
+        self.assertIn('globex', reason)
+
+    def test_unprefixed_free_text_stays_advisory(self):
+        agent = self.custom_checker(
+            veto=['Acme'], rules=['Block Acme whenever possible'])
+        parsed = parse_checker_agent(agent)
+        self.assertEqual(parsed['enforced_policies'], [])
+        self.assertEqual(len(parsed['advisory_only']), 2)
+        self.assertFalse(policy_blocks('unknown_policy', 'Acme wallet.'))
+
+    def test_custom_terms_add_blocks_without_relaxing_floor(self):
+        claim = 'Acme vegan wallet for commuters'
+        facts = owner_facts([claim])
+        draft = {'claims': [claim], 'post': claim + '.', 'email': claim + '.'}
+        agent = self.custom_checker(veto=['competitor:Acme'])
+        packed = check_pack(draft, facts, checker_agent=agent)
+        self.assertGreater(packed['blocked_count'], 0)
+        reasons = ' '.join(item['reason'] for item in packed['blocked_claims'])
+        self.assertIn('custom:acme', reasons)
+        clean = 'Vegan leather wallet for commuters'
+        clean_facts = owner_facts([clean])
+        clean_draft = {'claims': [clean], 'post': clean + '.', 'email': clean + '.'}
+        clean_pack = check_pack(clean_draft, clean_facts, checker_agent=agent)
+        self.assertEqual(clean_pack['blocked_count'], 0)
+        unverified = check_pack(draft, {'approved_claims': [], 'sources': []},
+                                checker_agent=agent)
+        self.assertGreater(unverified['blocked_count'], 0)
+
+    def test_effective_policies_include_custom_on_standard(self):
+        agent = self.custom_checker(veto=['competitor:Acme'])
+        self.assertEqual(effective_policies('standard', agent), ['custom:acme'])
 
 
 if __name__ == '__main__':

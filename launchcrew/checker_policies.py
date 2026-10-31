@@ -1,9 +1,11 @@
 """Supported Checker policy subset with exact matching only.
 
-Only exact case-insensitive matches are enforced. Free-text rules that do
-not exactly match a supported token are recorded as advisory only and are
-never enforced. Deterministic claim safety is always enforced and cannot
-be relaxed by any profile.
+Only exact case-insensitive matches are enforced. Custom banned terms
+use explicit prefixed syntax (documented below) and are enforced
+deterministically as whole-word case-insensitive matches. All other
+free-text rules are recorded as advisory only and are never enforced.
+Deterministic claim safety is always enforced and cannot be relaxed by
+any profile.
 """
 import re
 
@@ -99,7 +101,92 @@ FLOOR_NOTE = ('Deterministic claim safety is always enforced and cannot be relax
 
 MATCHING_NOTE = ('Exact match only. veto_scope must be exactly superlatives, price_claims, or cliches. '
                  'decision_rules must be exactly Block superlatives, Block price claims, or Block marketing cliches '
-                 '(case-insensitive). All other free-text rules are advisory only and never enforced.')
+                 '(case-insensitive). Custom banned terms use explicit prefixes: veto_scope entries shaped like '
+                 '"banned:<phrase>", "term:<phrase>", "phrase:<phrase>", or "competitor:<name>", and decision_rules '
+                 'shaped like "Block competitor <name>", "Ban phrase <phrase>", or "Block term <phrase>" '
+                 '(case-insensitive, optional colon). Custom terms are enforced as whole-word case-insensitive '
+                 'matches. All other free-text rules are advisory only and never enforced.')
+
+CUSTOM_VETO_PREFIXES = ('banned:', 'ban:', 'term:', 'phrase:', 'competitor:', 'custom:')
+
+_CUSTOM_RULE_RE = re.compile(
+    r'^(?:block|ban|veto)\s+'
+    r'(?:competitors?|phrases?|terms?|banned\s+(?:phrases?|terms?)|custom\s+terms?)'
+    r'\s*:?\s*(.+)$',
+    re.IGNORECASE,
+)
+
+_CUSTOM_TERM_MAX_LENGTH = 120
+
+
+def _normalize_custom_term(raw):
+    """Normalize a caller-supplied custom term, or return None when unusable."""
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip().strip('"\'').strip()
+    text = ' '.join(text.split())
+    if len(text) < 2 or len(text) > _CUSTOM_TERM_MAX_LENGTH:
+        return None
+    if not any(ch.isalnum() for ch in text):
+        return None
+    return text.lower()
+
+
+def _custom_policy_id(term):
+    return 'custom:' + term
+
+
+def _custom_terms_from_veto(entry):
+    """Custom terms from one veto_scope entry, or [] when not custom syntax."""
+    if not isinstance(entry, str):
+        return []
+    lowered = entry.strip().lower()
+    for prefix in CUSTOM_VETO_PREFIXES:
+        if lowered.startswith(prefix):
+            raw = entry.strip()[len(prefix):]
+            terms = []
+            for piece in re.split(r'[,;]+', raw):
+                term = _normalize_custom_term(piece)
+                if term is not None:
+                    terms.append(term)
+            return terms
+    return []
+
+
+def _custom_terms_from_rule(entry):
+    """Custom terms from one decision_rules entry, or [] when not custom syntax."""
+    if not isinstance(entry, str):
+        return []
+    match = _CUSTOM_RULE_RE.match(entry.strip())
+    if not match:
+        return []
+    terms = []
+    for piece in re.split(r'[,;]+', match.group(1)):
+        term = _normalize_custom_term(piece)
+        if term is not None:
+            terms.append(term)
+    return terms
+
+
+def custom_terms_for_agent(agent):
+    """Sorted custom banned terms parsed from one Checker agent dict."""
+    found = set()
+    if isinstance(agent, dict):
+        for entry in agent.get('veto_scope', []) or []:
+            for term in _custom_terms_from_veto(entry):
+                found.add(term)
+        for entry in agent.get('decision_rules', []) or []:
+            for term in _custom_terms_from_rule(entry):
+                found.add(term)
+    return sorted(found)
+
+
+def _custom_match(term, claim):
+    pattern = r'(?<![A-Za-z0-9])' + re.escape(term) + r'(?![A-Za-z0-9])'
+    try:
+        return re.search(pattern, claim, re.IGNORECASE) is not None
+    except re.error:
+        return False
 
 
 def describe_supported():
@@ -134,8 +221,15 @@ def parse_checker_agent(agent):
                 floor_policy = 'floor_unverified_claims'
             evidence.append({'source': 'veto_scope', 'entry': entry, 'policy': floor_policy})
         else:
-            advisory.append({'source': 'veto_scope', 'entry': entry,
-                             'note': 'Advisory only. Not enforced. See supported policies.'})
+            custom_terms = _custom_terms_from_veto(entry)
+            if custom_terms:
+                for term in custom_terms:
+                    policy = _custom_policy_id(term)
+                    enforced.add(policy)
+                    evidence.append({'source': 'veto_scope', 'entry': entry, 'policy': policy})
+            else:
+                advisory.append({'source': 'veto_scope', 'entry': entry,
+                                 'note': 'Advisory only. Not enforced. See supported policies.'})
     for entry in items_rules:
         if not isinstance(entry, str):
             continue
@@ -151,8 +245,15 @@ def parse_checker_agent(agent):
                 floor_policy = 'floor_claim_safety'
             evidence.append({'source': 'decision_rules', 'entry': entry, 'policy': floor_policy})
         else:
-            advisory.append({'source': 'decision_rules', 'entry': entry,
-                             'note': 'Advisory only. Not enforced. See supported policies.'})
+            custom_terms = _custom_terms_from_rule(entry)
+            if custom_terms:
+                for term in custom_terms:
+                    policy = _custom_policy_id(term)
+                    enforced.add(policy)
+                    evidence.append({'source': 'decision_rules', 'entry': entry, 'policy': policy})
+            else:
+                advisory.append({'source': 'decision_rules', 'entry': entry,
+                                 'note': 'Advisory only. Not enforced. See supported policies.'})
     return {'enforced_policies': sorted(enforced), 'supported_evidence': evidence,
             'advisory_only': advisory, 'floor_enforced': True, 'floor_note': FLOOR_NOTE}
 
@@ -196,6 +297,11 @@ def policy_blocks(policy, claim):
         return bool(PRICE_RE.search(claim))
     if policy == 'cliches':
         return has_cliche(claim)
+    if isinstance(policy, str) and policy.startswith('custom:'):
+        term = policy[len('custom:'):]
+        if term and _custom_match(term, claim):
+            return True
+        return False
     return False
 
 
@@ -206,6 +312,12 @@ def policy_reason(policy):
         return "Blocked by Checker policy 'price_claims': price value"
     if policy == 'cliches':
         return "Blocked by Checker policy 'cliches': generic marketing cliche"
+    if isinstance(policy, str) and policy.startswith('custom:'):
+        term = policy[len('custom:'):]
+        if term:
+            return ("Blocked by Checker policy '" + policy + "': custom banned phrase "
+                    "'" + term + "'")
+        return "Blocked by Checker policy 'custom': custom banned phrase"
     return 'Blocked by Checker policy'
 
 

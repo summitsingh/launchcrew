@@ -18,7 +18,7 @@ campaign angles are recorded as unverified context in metadata and
 are never rendered as product facts.
 
 Slice 4 product integration: checked_channel_variants(receipt)
-derives the five candidates from the current approved post draft
+derives the seven candidates from the current approved post draft
 and the receipt-bound confirmed claims. It refuses unless the
 receipt is currently exportable, meaning human approval for export
 on the latest revision with a clean final check and a matching
@@ -43,7 +43,7 @@ X_MAX_CHARS = 280
 FACEBOOK_MAX_CHARS = 2000
 TIKTOK_MAX_CHARS = 2200
 SHOPIFY_MAX_CHARS = 2000
-CHANNELS = ("x", "linkedin", "instagram", "email", "facebook")
+CHANNELS = ("x", "linkedin", "instagram", "email", "facebook", "tiktok", "shopify")
 LAUNCH_MATRIX_CHANNELS = ("x", "linkedin", "instagram", "email", "facebook", "tiktok", "shopify")
 
 LINKEDIN_HEADER = "Update:"
@@ -1003,7 +1003,7 @@ def _apply_voice_to_variant(variant, voice_snapshot, voice_ref, confirmed_count,
 
 
 def build_channel_variants(draft_text, confirmed_facts, audience=None, campaign_angle=None, voice_snapshot=None, voice_ref=None):
-    """Build all five presentation candidates plus provenance.
+    """Build all seven presentation candidates plus provenance.
 
     Candidate text comes only from verbatim draft sentences plus fixed
     non-factual framing. Audience and campaign angle inputs are kept in
@@ -1020,6 +1020,8 @@ def build_channel_variants(draft_text, confirmed_facts, audience=None, campaign_
         "instagram": build_instagram_variant(draft_text, confirmed_copy, audience, campaign_angle),
         "email": build_email_variant(draft_text, confirmed_copy, audience, campaign_angle),
         "facebook": build_facebook_variant(draft_text, confirmed_copy, audience, campaign_angle),
+        "tiktok": build_tiktok_variant(draft_text, confirmed_copy, audience, campaign_angle),
+        "shopify": build_shopify_variant(draft_text, confirmed_copy, audience, campaign_angle),
     }
     if isinstance(voice_snapshot, dict) and isinstance(voice_snapshot.get('banned_terms'), list) and voice_snapshot.get('banned_terms'):
         for channel in list(variants.keys()):
@@ -1070,6 +1072,8 @@ def build_channel_variants(draft_text, confirmed_facts, audience=None, campaign_
         "instagram": variants["instagram"],
         "email": variants["email"],
         "facebook": variants["facebook"],
+        "tiktok": variants["tiktok"],
+        "shopify": variants["shopify"],
         "provenance": provenance,
     }
 
@@ -1560,7 +1564,7 @@ def _build_checked_bundle(receipt):
 def checked_channel_variants(receipt):
     """Build checked channel export candidates for an approved receipt.
 
-    Derives all five candidates verbatim from the current approved
+    Derives all seven candidates verbatim from the current approved
     post draft and the receipt-bound confirmed claims. Refuses with
     ValueError unless the receipt is currently exportable: human
     approval for export on the latest revision, a clean final check,

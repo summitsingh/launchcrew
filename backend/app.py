@@ -687,6 +687,8 @@ class ChannelVariantsOut(BaseModel):
     instagram: ChannelVariantOut
     email: ChannelVariantOut
     facebook: ChannelVariantOut
+    tiktok: ChannelVariantOut
+    shopify: ChannelVariantOut
     provenance: dict[str, Any] = {}
 
 
@@ -1153,6 +1155,181 @@ def launch_matrix(run_id: str, actor: str = Depends(auth.actor)):
                 raise HTTPException(409, message)
             raise HTTPException(422, message)
     return bundle
+
+
+def _pack_filename(run_id):
+    safe = ''.join(ch for ch in str(run_id) if ch.isalnum() or ch in ('-', '_'))
+    return 'launchcrew-pack-%s.md' % (safe or 'run')
+
+
+def _fenced(text):
+    body = text if isinstance(text, str) else ''
+    if '```' in body:
+        body = body.replace('```', "'''")
+    return '```text\n' + body + '\n```'
+
+
+def _build_launch_pack_markdown(receipt):
+    """Render the complete approved Launch Pack as Markdown.
+
+    Raises ValueError when the receipt cannot supply the pack. Callers
+    gate on human_review.exportable first; this builder re-verifies the
+    matrix from the current approved draft and facts.
+    """
+    from launchcrew import channel_variants as channel_mod
+    from launchcrew import human_review, landing_parity
+    from launchcrew.ad_policy_lint import AD_POLICY_LINT_VERSION, lint_ad_policy
+    binding = human_review.approval_binding(receipt)
+    current = human_review.current_revision(receipt)
+    draft = human_review.current_draft(receipt)
+    post = draft.get('post') if isinstance(draft, dict) else ''
+    email = draft.get('email') if isinstance(draft, dict) else ''
+    if not isinstance(post, str):
+        post = ''
+    if not isinstance(email, str):
+        email = ''
+    approvals = receipt.get('approvals') if isinstance(receipt, dict) else None
+    last = approvals[-1] if isinstance(approvals, list) and approvals else {}
+    approver = last.get('approved_by') if isinstance(last, dict) else ''
+    approved_at = last.get('timestamp') if isinstance(last, dict) else ''
+    generated_at = receipt.get('generated_at', '')
+    scout = receipt.get('scout') if isinstance(receipt.get('scout'), dict) else {}
+    facts_used = scout.get('facts_used') if isinstance(scout.get('facts_used'), list) else []
+    risks = scout.get('risks') if isinstance(scout.get('risks'), list) else []
+    scout_sources = scout.get('sources') if isinstance(scout.get('sources'), list) else []
+    matrix = channel_mod.checked_launch_matrix(receipt)
+    lines = []
+    lines.append('# LaunchCrew Approved Launch Pack')
+    lines.append('')
+    lines.append('## Header')
+    lines.append('')
+    lines.append('- Run ID: %s' % receipt.get('run_id', ''))
+    lines.append('- Approved revision: %d' % current)
+    lines.append('- Approver: %s' % (approver or ''))
+    lines.append('- Binding version: %s' % binding['version'])
+    lines.append('- Binding digest: %s' % binding['digest'])
+    lines.append('- Approved at: %s' % (approved_at or ''))
+    lines.append('- Generated at: %s' % (generated_at or ''))
+    lines.append('')
+    lines.append('## Scout Grounded Facts')
+    lines.append('')
+    if facts_used:
+        for fact in facts_used:
+            if not isinstance(fact, dict):
+                continue
+            claim = fact.get('claim', '')
+            verified = fact.get('verified', False)
+            sources = fact.get('sources') if isinstance(fact.get('sources'), list) else []
+            lines.append('- Claim: %s' % claim)
+            lines.append('  - Verified: %s' % ('yes' if verified else 'no'))
+            lines.append('  - Sources: %s' % (', '.join(str(s) for s in sources) or 'none'))
+    else:
+        lines.append('- No grounded facts recorded.')
+    if scout_sources:
+        lines.append('')
+        lines.append('Scout sources: %s' % ', '.join(str(s) for s in scout_sources))
+    lines.append('')
+    lines.append('## Identified Risks')
+    lines.append('')
+    if risks:
+        for risk in risks:
+            lines.append('- %s' % risk)
+    else:
+        lines.append('- No risks recorded.')
+    lines.append('')
+    lines.append('## Maker Primary Drafts')
+    lines.append('')
+    lines.append('### Post')
+    lines.append('')
+    lines.append(_fenced(post))
+    lines.append('')
+    lines.append('### Email')
+    lines.append('')
+    lines.append(_fenced(email))
+    lines.append('')
+    lines.append('## 7-Channel Launch Matrix')
+    lines.append('')
+    for channel in channel_mod.LAUNCH_MATRIX_CHANNELS:
+        entry = matrix.get(channel, {})
+        record, current_ok, reason = channel_mod.channel_approval_status(receipt, channel)
+        lines.append('### %s' % channel)
+        lines.append('')
+        lines.append('- Status: %s' % entry.get('status', ''))
+        lines.append('- Content valid: %s' % ('yes' if entry.get('content_valid') else 'no'))
+        lines.append('- Ad policy passed: %s' % ('yes' if entry.get('ad_policy_passed') else 'no'))
+        hits = entry.get('ad_policy_hits') if isinstance(entry.get('ad_policy_hits'), list) else []
+        if hits:
+            lines.append('- Ad policy hits: %s' % ', '.join(
+                '%s (%s)' % (h.get('match', ''), h.get('category', '')) for h in hits if isinstance(h, dict)))
+        if entry.get('subject'):
+            lines.append('- Subject: %s' % entry.get('subject'))
+        if entry.get('trim_note'):
+            lines.append('- Trim note: %s' % entry.get('trim_note'))
+        if record is not None and current_ok:
+            lines.append('- Channel approval: approved by %s at revision %s (current)' % (
+                record.get('approved_by', ''), record.get('revision', '')))
+        elif record is not None:
+            lines.append('- Channel approval: approved by %s at revision %s (stale: %s)' % (
+                record.get('approved_by', ''), record.get('revision', ''), reason))
+        else:
+            lines.append('- Channel approval: none (%s)' % reason)
+        if entry.get('text'):
+            lines.append('')
+            lines.append(_fenced(entry.get('text')))
+        elif entry.get('reason'):
+            lines.append('- Reason: %s' % entry.get('reason'))
+        lines.append('')
+    lines.append('## Ad Policy Audit Receipt')
+    lines.append('')
+    lines.append('- Linter version: %s' % AD_POLICY_LINT_VERSION)
+    for label, text in (('Post', post), ('Email', email)):
+        hits = lint_ad_policy(text if isinstance(text, str) else '')
+        lines.append('- %s: %s (%d hit%s)' % (
+            label, 'passed' if not hits else 'flagged', len(hits), '' if len(hits) == 1 else 's'))
+        for hit in hits:
+            if isinstance(hit, dict):
+                lines.append('  - %s (%s): %s' % (
+                    hit.get('match', ''), hit.get('category', ''), hit.get('reason', '')))
+    lines.append('')
+    lines.append('## Landing Page Parity Audit Receipt')
+    lines.append('')
+    lines.append('- Auditor version: %s' % landing_parity.LANDING_PARITY_VERSION)
+    ad_prices = landing_parity.extract_prices(post)
+    lines.append('- Ad prices in approved post: %s' % (
+        ', '.join(ad_prices) if ad_prices else 'none'))
+    lines.append('- Landing page audit: not stored on this receipt. Run '
+                 'POST /api/runs/{run_id}/verify-landing-page with the '
+                 'landing HTML to record a full price-parity and legal-footer audit.')
+    lines.append('')
+    lines.append('No auto-publish, no auto-post, no auto-send. Offline copy only.')
+    lines.append('')
+    return '\n'.join(lines)
+
+
+@app.get('/api/runs/{run_id}/export/bundle')
+@app.get('/api/runs/{run_id}/export/markdown')
+def export_bundle_markdown(run_id: str, actor: str = Depends(auth.actor)):
+    # Complete approved Launch Pack as a structured Markdown document.
+    # Read-only: refuses unless the receipt is currently exportable
+    # (human approval for export on the latest revision with a clean
+    # final check and a matching current approval binding). No
+    # auto-publish, no auto-post, no auto-send.
+    from launchcrew import channel_variants as channel_mod
+    from launchcrew import human_review
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        receipt = get_receipt(db, run_id, workspace_id)
+        _reject_when_running(receipt)
+        if receipt.get('approval_state') != 'approved_for_export':
+            raise HTTPException(409, 'Launch pack export requires human approval for export')
+        if not human_review.exportable(receipt):
+            raise HTTPException(422, 'Launch pack is not currently exportable; reapprove the latest revision')
+        try:
+            doc = _build_launch_pack_markdown(receipt)
+        except ValueError as error:
+            raise HTTPException(422, str(error))
+    return Response(content=doc, media_type='text/markdown; charset=utf-8',
+                    headers={'Content-Disposition': 'attachment; filename="%s"' % _pack_filename(run_id)})
 
 
 @app.post('/api/runs/{run_id}/verify-landing-page', response_model=LandingParityOut)
