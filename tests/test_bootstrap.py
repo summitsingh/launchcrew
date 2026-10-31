@@ -32,6 +32,7 @@ SECRET_MG = f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:launchcrew-migrat
 SECRET_MASTER = f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:launchcrew-master-MnOpQr"
 SECRET_TLS = f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:launchcrew-tls-QrStUv"
 SECRET_GOOGLE = f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:launchcrew-google-AbCdEf"
+SECRET_META = f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:launchcrew-meta-AbCdEf"
 TOPIC_ARN = f"arn:aws:sns:{REGION}:{ACCOUNT}:launchcrew-foundation-BudgetTopic-ABC123"
 SUB_ARN = f"{TOPIC_ARN}:12345678-90ab-cdef-1234-567890abcdef"
 CERT_ARN = f"arn:aws:acm:{REGION}:{ACCOUNT}:certificate/12345678-90ab-cdef-1234-567890abcde1"
@@ -361,6 +362,11 @@ def policy_bad_replacement():
     entry = policy_exact()
     entry["ResourceChange"] = dict(entry["ResourceChange"], Replacement="True")
     return entry
+def policy_meta_exact():
+    return {"Type": "Resource", "ResourceChange": {
+        "Action": "Add", "LogicalResourceId": "ApiMetaSecretPolicy",
+        "PhysicalResourceId": "", "ResourceType": "AWS::IAM::Policy",
+        "Replacement": "False", "Scope": ["Properties"], "Details": []}}
 if mode == "malformed":
     print("not-json{{{")
 elif mode == "empty":
@@ -421,6 +427,10 @@ elif mode == "google_bad_replacement":
     print(json.dumps(base(FULL + [policy_bad_replacement()], iparams())))
 elif mode == "google_extra":
     print(json.dumps(base(FULL[:8] + [policy_exact(), FOREIGN_DB], iparams())))
+elif mode == "meta_exact":
+    print(json.dumps(base(FULL + [policy_meta_exact()], iparams())))
+elif mode == "meta_foreign":
+    print(json.dumps(base(FULL[:8] + [policy_meta_exact(), FOREIGN_DB], iparams())))
 else:
     print(json.dumps(base(FULL, iparams())))
 PYEOF
@@ -625,6 +635,19 @@ if [ "$1" = "cloudformation" ] && [ "$2" = "describe-stack-resource" ]; then
         printf 'launchcrew-demo-ApiGoogleAuthPolicy-FLIPPED\\n'; exit 0
       fi
       printf 'launchcrew-demo-ApiGoogleAuthPolicy-ABC123\\n'; exit 0 ;;
+    ApiMetaSecretPolicy)
+      if [ "${FAKE_META_POLICY_ABSENT:-no}" = "yes" ]; then
+        echo "An error occurred (ValidationError) when calling the DescribeStackResource operation: resource does not exist" >&2
+        exit 254
+      fi
+      if [ "${FAKE_META_POLICY_PRESENT:-no}" = "yes" ]; then
+        printf 'launchcrew-demo-ApiMetaSecretPolicy-UNEXPECTED\\n'; exit 0
+      fi
+      if [ -z "${FAKE_META_ARN:-}" ]; then
+        echo "An error occurred (ValidationError) when calling the DescribeStackResource operation: resource does not exist" >&2
+        exit 254
+      fi
+      printf 'launchcrew-demo-ApiMetaSecretPolicy-ABC123\\n'; exit 0 ;;
     ApiExecutionRole|WebExecutionRole|MigrationExecutionRole|BootstrapExecutionRole|VerifyExecutionRole|SdkInitExecutionRole|SdkMaterialExecutionRole|RoleStateExecutionRole|ApiTaskRole|WebTaskRole|MigrationTaskRole|BootstrapTaskRole|VerifyTaskRole|SdkInitTaskRole|SdkMaterialTaskRole|RoleStateTaskRole) printf '%s-physical\\n' "$RESOURCE_LOGICAL"; exit 0 ;;
   esac
   echo "fake-aws: unexpected resource lookup: $*" >&2
@@ -1289,6 +1312,7 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-task""-definition" ]; then
   SEC_MASTER="${FAKE_MASTER_ARN:-}"
   SEC_TLS="${FAKE_TLS_ARN:-}"
   SEC_GOOGLE="${FAKE_GOOGLE_ARN:-}"
+  SEC_META="${FAKE_META_ARN:-}"
   if [ "$MODE" = "taskdef_image_mismatch" ]; then
     IMG_API="111122223333.dkr.ecr.us-east-1.amazonaws.com/wrong-repo:bad"
     IMG_WEB="111122223333.dkr.ecr.us-east-1.amazonaws.com/wrong-repo:bad"
@@ -1322,8 +1346,12 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-task""-definition" ]; then
   ORIG_BOOT_IMG="${FAKE_ORIG_BOOTSTRAP_IMAGE:-$IMG_BOOT}"
   case "$TASKDEF" in
     *launchcrew-demo-api*)
-      if [ -n "$SEC_GOOGLE" ]; then
+      if [ -n "$SEC_GOOGLE" ] && [ -n "$SEC_META" ]; then
+        printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/ApiExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/ApiTaskRole%s","containerDefinitions":[{"name":"api","essential":true,"image":"%s","secrets":[{"name":"DATABASE_URL","valueFrom":"%s:database-url::"},{"name":"TLS_CERT_B64","valueFrom":"%s:tls-cert-b64::"},{"name":"TLS_KEY_B64","valueFrom":"%s:tls-key-b64::"},{"name":"GOOGLE_CLIENT_ID","valueFrom":"%s:google-client-id::"},{"name":"GOOGLE_CLIENT_SECRET","valueFrom":"%s:google-client-secret::"},{"name":"META_API_KEY","valueFrom":"%s:meta-api-key::"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_API" "$SEC_RT" "$SEC_TLS" "$SEC_TLS" "$SEC_GOOGLE" "$SEC_GOOGLE" "$SEC_META"
+      elif [ -n "$SEC_GOOGLE" ]; then
         printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/ApiExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/ApiTaskRole%s","containerDefinitions":[{"name":"api","essential":true,"image":"%s","secrets":[{"name":"DATABASE_URL","valueFrom":"%s:database-url::"},{"name":"TLS_CERT_B64","valueFrom":"%s:tls-cert-b64::"},{"name":"TLS_KEY_B64","valueFrom":"%s:tls-key-b64::"},{"name":"GOOGLE_CLIENT_ID","valueFrom":"%s:google-client-id::"},{"name":"GOOGLE_CLIENT_SECRET","valueFrom":"%s:google-client-secret::"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_API" "$SEC_RT" "$SEC_TLS" "$SEC_TLS" "$SEC_GOOGLE" "$SEC_GOOGLE"
+      elif [ -n "$SEC_META" ]; then
+        printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/ApiExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/ApiTaskRole%s","containerDefinitions":[{"name":"api","essential":true,"image":"%s","secrets":[{"name":"DATABASE_URL","valueFrom":"%s:database-url::"},{"name":"TLS_CERT_B64","valueFrom":"%s:tls-cert-b64::"},{"name":"TLS_KEY_B64","valueFrom":"%s:tls-key-b64::"},{"name":"META_API_KEY","valueFrom":"%s:meta-api-key::"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_API" "$SEC_RT" "$SEC_TLS" "$SEC_TLS" "$SEC_META"
       else
         printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/ApiExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/ApiTaskRole%s","containerDefinitions":[{"name":"api","essential":true,"image":"%s","secrets":[{"name":"DATABASE_URL","valueFrom":"%s:database-url::"},{"name":"TLS_CERT_B64","valueFrom":"%s:tls-cert-b64::"},{"name":"TLS_KEY_B64","valueFrom":"%s:tls-key-b64::"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_API" "$SEC_RT" "$SEC_TLS" "$SEC_TLS"
       fi
@@ -1515,6 +1543,7 @@ class BootstrapHarness(unittest.TestCase):
         "--master-secret-arn": "MasterDbPasswordSecretArn",
         "--tls-secret-arn": "TlsSecretArn",
         "--google-secret-arn": "GoogleOAuthSecretArn",
+        "--meta-secret-arn": "MetaSecretArn",
     }
     IMAGE_ENV = {
         "--api-image": "FAKE_API_IMAGE",
@@ -1529,6 +1558,7 @@ class BootstrapHarness(unittest.TestCase):
         "--master-secret-arn": "FAKE_MASTER_ARN",
         "--tls-secret-arn": "FAKE_TLS_ARN",
         "--google-secret-arn": "FAKE_GOOGLE_ARN",
+        "--meta-secret-arn": "FAKE_META_ARN",
     }
 
     def run_bootstrap(self, args, mode="success", extra_env=None,
@@ -2765,9 +2795,9 @@ class TemplateStagingTests(unittest.TestCase):
                           "MigrationDbUrlSecretArn", "TlsSecretArn",
                           "MasterDbPasswordSecretArn", "DatabaseUsername",
                           "EnableServices", "EnableGoogleAuth",
-                          "GoogleOAuthSecretArn"})
+                          "GoogleOAuthSecretArn", "MetaSecretArn"})
         for key in ("BootstrapImageUri", "EnableServices", "EnableGoogleAuth",
-                    "GoogleOAuthSecretArn"):
+                    "GoogleOAuthSecretArn", "MetaSecretArn"):
             self.assertIn(key, self.example)
         self.assertNotIn("BudgetLimitUsd", self.example)
         self.assertNotIn("BudgetNotifyEmail", self.example)
@@ -3696,7 +3726,7 @@ class InfraGooglePolicyTests(BootstrapHarness):
                 params_overrides=params, shared_dir=shared_tmp)
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
         combined = result.stdout + result.stderr
-        self.assertIn("Google policy unchanged", combined)
+        self.assertIn("Google plus Meta policies unchanged", combined)
         self.assertIn("BOOTSTRAP COMPLETE", result.stdout)
         self.assertTrue(any("EnableServices=true" in call for call in calls))
         self.assertFalse(any("run-task" in call for call in calls))
@@ -5118,6 +5148,173 @@ class GoogleAuthGateTests(BootstrapHarness):
         combined = result.stdout + result.stderr
         self.assertIn("MISSING", combined)
         self.assertFalse(any("deploy " in call and "EnableServices=true" in call for call in calls))
+
+
+class MetaKeyGateTests(BootstrapHarness):
+    def test_meta_four_secret_images_success(self):
+        args = self.base_args(**{"--meta-secret-arn": SECRET_META})
+        result, calls = self.run_bootstrap(
+            [*args, "--phase", "images"],
+            params_overrides={"MetaSecretArn": SECRET_META})
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        combined = result.stdout + result.stderr
+        self.assertIn("Verified Meta key gate", combined)
+        self.assertIn("ApiTaskDefinition", combined)
+
+    def test_meta_google_six_secret_images_success(self):
+        base = self.base_args(**{"--google-secret-arn": SECRET_GOOGLE,
+                                 "--meta-secret-arn": SECRET_META})
+        result, calls = self.run_bootstrap(
+            [*base, "--phase", "images"],
+            params_overrides={"EnableGoogleAuth": "true",
+                              "GoogleOAuthSecretArn": SECRET_GOOGLE,
+                              "MetaSecretArn": SECRET_META})
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        combined = result.stdout + result.stderr
+        self.assertIn("EnableGoogleAuth true plus exact owned Google secret", combined)
+        self.assertIn("Verified Meta key gate", combined)
+
+    def test_meta_placeholder_refused_before_mutation(self):
+        args = self.base_args(**{"--meta-secret-arn": SECRET_META})
+        result, calls = self.run_bootstrap(
+            [*args, "--phase", "images"],
+            params_overrides={"MetaSecretArn": "REPLACE_WITH_META_KEY_SECRET_ARN"})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("MetaSecretArn is a placeholder", combined)
+        self.assertFalse(any("run-task" in call for call in calls))
+
+    def test_meta_missing_cli_refused_before_mutation(self):
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "images"],
+            params_overrides={"MetaSecretArn": SECRET_META})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("exact --meta-secret-arn is required", combined)
+        self.assertFalse(any("run-task" in call for call in calls))
+
+    def test_meta_mismatched_cli_file_refused_before_mutation(self):
+        other = f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:launchcrew-meta-Other99"
+        args = self.base_args(**{"--meta-secret-arn": other})
+        result, calls = self.run_bootstrap(
+            [*args, "--phase", "images"],
+            params_overrides={"MetaSecretArn": SECRET_META})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("does not equal the validated CLI value", combined)
+        self.assertFalse(any("run-task" in call for call in calls))
+
+    def test_meta_cli_without_file_refused(self):
+        import json as _json
+        args = self.base_args(**{"--meta-secret-arn": SECRET_META})
+        given = {}
+        index = 0
+        while index < len(args):
+            key = args[index]
+            if key in self.PARAM_KEYS and index + 1 < len(args):
+                given[self.PARAM_KEYS[key]] = args[index + 1]
+                index += 2
+            else:
+                index += 1
+        given["AcmCertificateArn"] = CERT_ARN
+        given["DatabaseUsername"] = "launchcrew_app"
+        given.pop("MetaSecretArn", None)
+        raw = _json.dumps([{"ParameterKey": key, "ParameterValue": value}
+                           for key, value in sorted(given.items())])
+        result, calls = self.run_bootstrap([*args, "--phase", "images"], params_raw=raw)
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("--meta-secret-arn", combined)
+        self.assertFalse(any("run-task" in call for call in calls))
+
+    def test_meta_taskdef_three_when_four_expected_refused(self):
+        args = self.base_args(**{"--meta-secret-arn": SECRET_META})
+        result, calls = self.run_bootstrap(
+            [*args, "--phase", "images"],
+            extra_env={"FAKE_META_ARN": ""},
+            params_overrides={"MetaSecretArn": SECRET_META})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("MISSING", combined)
+
+
+class MetaInfraPolicyTests(BootstrapHarness):
+    def meta_infra_args(self):
+        return [*self.base_args(**{"--meta-secret-arn": SECRET_META}),
+                "--phase", "infra"]
+
+    def meta_params(self):
+        return {"MetaSecretArn": SECRET_META}
+
+    def test_infra_meta_exact_policy_add_succeeds(self):
+        result, calls = self.run_bootstrap(
+            self.meta_infra_args(),
+            extra_env={"FAKE_INFRA_CHANGESET": "meta_exact"},
+            params_overrides=self.meta_params())
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        combined = result.stdout + result.stderr
+        self.assertIn("Verified Meta policy least privilege", combined)
+        self.assertIn("Verified infra Meta policy present: ApiMetaSecretPolicy", combined)
+        executes = [call for call in calls if "execute-change-set" in call]
+        self.assertEqual(len(executes), 1)
+        self.assertFalse(any("delete-change-set" in call for call in calls))
+        self.assertFalse(any("run-task" in call for call in calls))
+        self.assertIn("BOOTSTRAP COMPLETE", result.stdout)
+
+    def test_infra_rejects_meta_foreign_db(self):
+        result, calls = self.run_bootstrap(
+            self.meta_infra_args(),
+            extra_env={"FAKE_INFRA_CHANGESET": "meta_foreign"},
+            params_overrides=self.meta_params())
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("FOREIGN_Database", combined)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
+
+    def test_infra_meta_missing_policy_after_execute_refused(self):
+        result, calls = self.run_bootstrap(
+            self.meta_infra_args(),
+            extra_env={"FAKE_INFRA_CHANGESET": "meta_exact",
+                       "FAKE_META_POLICY_ABSENT": "yes"},
+            params_overrides=self.meta_params())
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("Meta policy missing after update", combined)
+        self.assertTrue(any("execute-change-set" in call for call in calls))
+        self.assertNotIn("BOOTSTRAP COMPLETE", result.stdout)
+
+    def test_infra_unexpected_meta_policy_while_disabled_refused(self):
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "infra"],
+            extra_env={"FAKE_META_POLICY_PRESENT": "yes"})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("Meta policy present while MetaSecretArn empty", combined)
+        self.assertNotIn("BOOTSTRAP COMPLETE", result.stdout)
+
+    def test_enable_meta_policy_stable_succeeds(self):
+        import tempfile as _tmp
+        with _tmp.TemporaryDirectory() as shared_tmp:
+            base = self.base_args(**{"--meta-secret-arn": SECRET_META})
+            release = "head008-testabc"
+            params = {"MetaSecretArn": SECRET_META}
+            for phase in ("material", "dbroles", "migrate"):
+                result_prior, _ = self.run_bootstrap(
+                    [*base, "--phase", phase,
+                     "--release-generation", release],
+                    params_overrides=params, shared_dir=shared_tmp)
+                self.assertEqual(result_prior.returncode, 0,
+                                 msg=result_prior.stdout + result_prior.stderr)
+            result, calls = self.run_bootstrap(
+                [*base, "--phase", "enable",
+                 "--release-generation", release],
+                params_overrides=params, shared_dir=shared_tmp)
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        combined = result.stdout + result.stderr
+        self.assertIn("Google plus Meta policies unchanged", combined)
+        self.assertIn("BOOTSTRAP COMPLETE", result.stdout)
+        self.assertTrue(any("EnableServices=true" in call for call in calls))
+        self.assertFalse(any("run-task" in call for call in calls))
 
 
 class InitRecoveryTests(BootstrapHarness):

@@ -60,6 +60,10 @@ Parameters:
     Type: String
     Default: ''
     Description: Secrets Manager ARN for the Google OAuth client, JSON keys google-client-id and google-client-secret, placeholder only, no value in this file. Used only when EnableGoogleAuth is true. The API task receives GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET only then, via ECS task secrets. Empty default means no secret and auth stays disabled.
+  MetaSecretArn:
+    Type: String
+    Default: ''
+    Description: Secrets Manager ARN for the dedicated LaunchCrew product Meta key, JSON key meta-api-key, placeholder only, no value in this file. Created outside this stack by the reviewed loader. The API task receives META_API_KEY only when this ARN is set, via ECS task secrets. Empty default keeps the runtime keyless with deterministic fallback.
 Rules:
   GoogleAuthRequiresSecret:
     RuleCondition: !Equals ['true', !Ref EnableGoogleAuth]
@@ -69,6 +73,7 @@ Rules:
 Conditions:
   ServicesEnabled: !Equals ['true', !Ref EnableServices]
   GoogleAuthEnabled: !And [!Equals ['true', !Ref EnableGoogleAuth], !Not [!Equals ['', !Ref GoogleOAuthSecretArn]]]
+  MetaKeyEnabled: !Not [!Equals ['', !Ref MetaSecretArn]]
 Resources:
   Vpc:
     Type: AWS::EC2::VPC
@@ -606,6 +611,18 @@ Resources:
             Action: [secretsmanager:GetSecretValue]
             Resource: [!Ref GoogleOAuthSecretArn]
       Roles: [!Ref ApiExecutionRole]
+  ApiMetaSecretPolicy:
+    Type: AWS::IAM::Policy
+    Condition: MetaKeyEnabled
+    Properties:
+      PolicyName: api-meta-secret-only
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: [secretsmanager:GetSecretValue]
+            Resource: [!Ref MetaSecretArn]
+      Roles: [!Ref ApiExecutionRole]
   ApiTaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
@@ -629,16 +646,32 @@ Resources:
             - { Name: DATABASE_SSL_ROOTCERT, Value: /app/rds-ca-bundle.pem }
             - { Name: PUBLIC_BASE_URL, Value: 'https://launchcrew.summitsingh.com' }
             - { Name: AUTH_ENABLED, Value: !If [GoogleAuthEnabled, 'true', 'false'] }
+            - { Name: META_MODEL, Value: muse-spark-1.3 }
+            - { Name: META_API_BASE_URL, Value: https://api.meta.ai/v1 }
           Secrets: !If
             - GoogleAuthEnabled
-            - - { Name: DATABASE_URL, ValueFrom: !Sub '${RuntimeDbUrlSecretArn}:database-url::' }
-              - { Name: TLS_CERT_B64, ValueFrom: !Sub '${TlsSecretArn}:tls-cert-b64::' }
-              - { Name: TLS_KEY_B64, ValueFrom: !Sub '${TlsSecretArn}:tls-key-b64::' }
-              - { Name: GOOGLE_CLIENT_ID, ValueFrom: !Sub '${GoogleOAuthSecretArn}:google-client-id::' }
-              - { Name: GOOGLE_CLIENT_SECRET, ValueFrom: !Sub '${GoogleOAuthSecretArn}:google-client-secret::' }
-            - - { Name: DATABASE_URL, ValueFrom: !Sub '${RuntimeDbUrlSecretArn}:database-url::' }
-              - { Name: TLS_CERT_B64, ValueFrom: !Sub '${TlsSecretArn}:tls-cert-b64::' }
-              - { Name: TLS_KEY_B64, ValueFrom: !Sub '${TlsSecretArn}:tls-key-b64::' }
+            - !If
+              - MetaKeyEnabled
+              - - { Name: DATABASE_URL, ValueFrom: !Sub '${RuntimeDbUrlSecretArn}:database-url::' }
+                - { Name: TLS_CERT_B64, ValueFrom: !Sub '${TlsSecretArn}:tls-cert-b64::' }
+                - { Name: TLS_KEY_B64, ValueFrom: !Sub '${TlsSecretArn}:tls-key-b64::' }
+                - { Name: GOOGLE_CLIENT_ID, ValueFrom: !Sub '${GoogleOAuthSecretArn}:google-client-id::' }
+                - { Name: GOOGLE_CLIENT_SECRET, ValueFrom: !Sub '${GoogleOAuthSecretArn}:google-client-secret::' }
+                - { Name: META_API_KEY, ValueFrom: !Sub '${MetaSecretArn}:meta-api-key::' }
+              - - { Name: DATABASE_URL, ValueFrom: !Sub '${RuntimeDbUrlSecretArn}:database-url::' }
+                - { Name: TLS_CERT_B64, ValueFrom: !Sub '${TlsSecretArn}:tls-cert-b64::' }
+                - { Name: TLS_KEY_B64, ValueFrom: !Sub '${TlsSecretArn}:tls-key-b64::' }
+                - { Name: GOOGLE_CLIENT_ID, ValueFrom: !Sub '${GoogleOAuthSecretArn}:google-client-id::' }
+                - { Name: GOOGLE_CLIENT_SECRET, ValueFrom: !Sub '${GoogleOAuthSecretArn}:google-client-secret::' }
+            - !If
+              - MetaKeyEnabled
+              - - { Name: DATABASE_URL, ValueFrom: !Sub '${RuntimeDbUrlSecretArn}:database-url::' }
+                - { Name: TLS_CERT_B64, ValueFrom: !Sub '${TlsSecretArn}:tls-cert-b64::' }
+                - { Name: TLS_KEY_B64, ValueFrom: !Sub '${TlsSecretArn}:tls-key-b64::' }
+                - { Name: META_API_KEY, ValueFrom: !Sub '${MetaSecretArn}:meta-api-key::' }
+              - - { Name: DATABASE_URL, ValueFrom: !Sub '${RuntimeDbUrlSecretArn}:database-url::' }
+                - { Name: TLS_CERT_B64, ValueFrom: !Sub '${TlsSecretArn}:tls-cert-b64::' }
+                - { Name: TLS_KEY_B64, ValueFrom: !Sub '${TlsSecretArn}:tls-key-b64::' }
           LogConfiguration:
             LogDriver: awslogs
             Options:

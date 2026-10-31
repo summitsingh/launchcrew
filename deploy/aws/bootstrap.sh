@@ -10,9 +10,11 @@
 #                 a bounded change set allowing only owned task definition
 #                 image or service taskdef Modify with replacement only on the
 #                 eight task definitions plus optional exact ApiGoogleAuthPolicy
-#                 Add only when Google explicitly enabled with least privilege
-#                 proof, then execute the same reviewed change set ID and
-#                 re-prove 0/0/0, never deleting a same-name pending set),
+#                 Add only when Google explicitly enabled plus optional exact
+#                 ApiMetaSecretPolicy Add only when MetaSecretArn is set, each
+#                 with least privilege proof, then execute the same reviewed
+#                 change set ID and re-prove 0/0/0, never deleting a
+#                 same-name pending set),
 #                 so VPC, ECR repositories, RDS, and task definitions
 #                 exist with both ECS services at DesiredCount 0 and no app running
 #   phase quiesce safe maintenance to stop the owned app before an update:
@@ -130,6 +132,7 @@ MIGRATION_SECRET_ARN=""
 MASTER_SECRET_ARN=""
 TLS_SECRET_ARN=""
 GOOGLE_SECRET_ARN=""
+META_SECRET_ARN=""
 FOUNDATION_STACK_NAME=""
 PREREQS_STACK_NAME=""
 FOUNDATION_TEMPLATE_FILE=""
@@ -203,6 +206,8 @@ while [ $# -gt 0 ]; do
     --tls-secret-arn=*) TLS_SECRET_ARN="${1#--tls-secret-arn=}"; shift ;;
     --google-secret-arn) GOOGLE_SECRET_ARN="${2:-}"; shift 2 ;;
     --google-secret-arn=*) GOOGLE_SECRET_ARN="${1#--google-secret-arn=}"; shift ;;
+    --meta-secret-arn) META_SECRET_ARN="${2:-}"; shift 2 ;;
+    --meta-secret-arn=*) META_SECRET_ARN="${1#--meta-secret-arn=}"; shift ;;
     --foundation-stack-name) FOUNDATION_STACK_NAME="${2:-}"; shift 2 ;;
     --foundation-stack-name=*) FOUNDATION_STACK_NAME="${1#--foundation-stack-name=}"; shift ;;
     --prereqs-stack-name) PREREQS_STACK_NAME="${2:-}"; shift 2 ;;
@@ -278,6 +283,7 @@ phase_plan() {
   echo "  enable needs the five image URIs and all four secret ARNs to re-prove refs, bindings, and verify."
   echo "  Google auth, when EnableGoogleAuth true in the parameters file: images, infra, and enable need"
   echo "  --google-secret-arn with the exact owned Google secret for five secret API binding proof."
+  echo "  --meta-secret-arn with the exact owned Meta key secret for live model API binding proof."
   echo "  all needs everything enable needs plus --foundation-stack-name, --prereqs-stack-name,"
   echo "  and --foundation-parameters-file for the readiness chain."
   echo "Each phase re-verifies its own preconditions from live state, so a single phase can resume"
@@ -393,7 +399,7 @@ needs_secret_checks() {
   case "$PHASE" in
     init|material|dbroles|migrate|enable|all) return 0 ;;
   esac
-  [ -n "$RUNTIME_SECRET_ARN" ] || [ -n "$MIGRATION_SECRET_ARN" ] || [ -n "$MASTER_SECRET_ARN" ] || [ -n "$TLS_SECRET_ARN" ] || [ -n "$GOOGLE_SECRET_ARN" ]
+  [ -n "$RUNTIME_SECRET_ARN" ] || [ -n "$MIGRATION_SECRET_ARN" ] || [ -n "$MASTER_SECRET_ARN" ] || [ -n "$TLS_SECRET_ARN" ] || [ -n "$GOOGLE_SECRET_ARN" ] || [ -n "$META_SECRET_ARN" ]
 }
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -752,6 +758,7 @@ if needs_secret_checks; then
   if [ -n "$MASTER_SECRET_ARN" ]; then check_secret_arn "$MASTER_SECRET_ARN" "master"; fi
   if [ -n "$TLS_SECRET_ARN" ]; then check_secret_arn "$TLS_SECRET_ARN" "tls"; fi
   if [ -n "$GOOGLE_SECRET_ARN" ]; then check_secret_arn "$GOOGLE_SECRET_ARN" "google"; fi
+  if [ -n "$META_SECRET_ARN" ]; then check_secret_arn "$META_SECRET_ARN" "meta"; fi
 fi
 
 # The parameters file is what the stack deploys from, so every CLI image URI
@@ -764,7 +771,7 @@ check_params_match() {
 import json, sys
 KNOWN_SECRET_KEYS = {"RuntimeDbUrlSecretArn", "MigrationDbUrlSecretArn",
                      "MasterDbPasswordSecretArn", "TlsSecretArn",
-                     "GoogleOAuthSecretArn"}
+                     "GoogleOAuthSecretArn", "MetaSecretArn"}
 MOVED_BUDGET_KEYS = {"BudgetLimitUsd", "BudgetNotifyEmail"}
 try:
     with open(sys.argv[1]) as handle:
@@ -819,6 +826,7 @@ PYEOF
   PARAM_MATCH MasterDbPasswordSecretArn "$MASTER_SECRET_ARN" || exit 1
   PARAM_MATCH TlsSecretArn "$TLS_SECRET_ARN" || exit 1
   PARAM_MATCH GoogleOAuthSecretArn "$GOOGLE_SECRET_ARN" || exit 1
+  PARAM_MATCH MetaSecretArn "$META_SECRET_ARN" || exit 1
   echo "Verified CLI images and secret ARNs match the parameters file being deployed"
 }
 
@@ -866,6 +874,36 @@ check_google_auth_gate() {
   fi
 }
 
+# Meta key gate, fail-closed before any mutation. Reads MetaSecretArn from
+# the parameters file being deployed. Empty keeps the runtime keyless with
+# deterministic fallback. A placeholder or malformed value refuses. A set
+# value requires an exact validated CLI Meta ARN that equals the file value
+# and passes exact ARN shape plus account plus region plus returned ARN plus
+# Project LaunchCrew plus Environment demo metadata. No secret value appears
+# in argv, files, or logs.
+check_meta_key_gate() {
+  META_GATE_LABEL="${1:-all}"
+  META_FILE_ARN="$(params_file_value MetaSecretArn 2>/dev/null || true)"
+  META_FILE_ARN="$(printf '%s' "$META_FILE_ARN" | tr -d '[:space:]')"
+  if [ -z "$META_FILE_ARN" ]; then
+    if [ -n "$META_SECRET_ARN" ]; then
+      echo "refused: --meta-secret-arn with empty MetaSecretArn in the parameters file validates one secret while deploying another, no change made" >&2
+      phase_failed "$META_GATE_LABEL"
+    fi
+    echo "Verified Meta key gate: MetaSecretArn empty, keyless runtime with deterministic fallback"
+    return 0
+  fi
+  case "$META_FILE_ARN" in
+    *REPLACE_WITH*|*PLACEHOLDER*)
+      echo "refused: MetaSecretArn is a placeholder, replace with the exact owned Meta secret ARN before any mutation" >&2
+      phase_failed "$META_GATE_LABEL" ;;
+  esac
+  [ -n "$META_SECRET_ARN" ] || { echo "refused: MetaSecretArn is set, exact --meta-secret-arn is required, missing CLI value refused before any mutation" >&2; phase_failed "$META_GATE_LABEL"; }
+  [ "$META_FILE_ARN" = "$META_SECRET_ARN" ] || { echo "refused: parameters file MetaSecretArn does not equal the validated CLI value, validating one set while deploying another is refused" >&2; phase_failed "$META_GATE_LABEL"; }
+  check_secret_arn "$META_SECRET_ARN" "meta"
+  echo "Verified Meta key gate: exact owned Meta secret $META_SECRET_ARN"
+}
+
 # Least privilege proof for the conditional Google IAM policy, fail-closed
 # before any infra mutation when Google is enabled. Reads the deployed
 # template file and proves ApiGoogleAuthPolicy carries exactly one Allow
@@ -889,7 +927,9 @@ start = text.find(marker)
 if start < 0:
     print("POLICY_ABSENT")
     sys.exit(0)
-end = text.find("\n  ApiTaskDefinition:", start)
+end = text.find("\n  ApiMetaSecretPolicy:", start)
+if end < 0:
+    end = text.find("\n  ApiTaskDefinition:", start)
 if end < 0:
     end = len(text)
 block = text[start:end]
@@ -936,6 +976,75 @@ PYEOF
     phase_failed "$POLICY_LABEL"
   fi
   echo "Verified Google policy least privilege: ApiGoogleAuthPolicy allows only GetSecretValue on the exact owned secret for the exact API execution role"
+}
+
+# Least privilege proof for the conditional Meta IAM policy, fail-closed
+# before any infra mutation when a Meta key is configured. Reads the deployed
+# template file and proves ApiMetaSecretPolicy carries exactly one Allow
+# for secretsmanager:GetSecretValue on only the exact Meta secret ref,
+# attached to only the exact ApiExecutionRole ref, with no wildcard, no
+# extra action, no extra resource, and no KMS grant. Secret ownership plus
+# CLI and file equality is already proven by the Meta gate before this
+# runs. Any other shape refuses with no mutation.
+verify_meta_policy_least_privilege() {
+  META_POLICY_LABEL="${1:-infra}"
+  META_POLICY_PROOF="$(python3 - "$TEMPLATE_FILE" 2>/dev/null <<'PYEOF'
+import sys
+path = sys.argv[1]
+try:
+    text = open(path, encoding="utf-8").read()
+except Exception:
+    print("TEMPLATE_UNREADABLE")
+    sys.exit(0)
+marker = "ApiMetaSecretPolicy:"
+start = text.find(marker)
+if start < 0:
+    print("POLICY_ABSENT")
+    sys.exit(0)
+end = text.find("\n  ApiTaskDefinition:", start)
+if end < 0:
+    end = len(text)
+block = text[start:end]
+def has(piece):
+    return piece in block
+required = [
+    "Type: AWS::IAM::Policy",
+    "Condition: MetaKeyEnabled",
+    "PolicyName: api-meta-secret-only",
+    "Action: [secretsmanager:GetSecretValue]",
+    "Resource: [!Ref MetaSecretArn]",
+    "Roles: [!Ref ApiExecutionRole]",
+    "Effect: Allow",
+]
+for piece in required:
+    if not has(piece):
+        print("POLICY_MISSING")
+        sys.exit(0)
+if "*" in block:
+    print("POLICY_WILDCARD")
+    sys.exit(0)
+lowered = block.lower()
+if "putsecretvalue" in lowered or "kms:" in lowered:
+    print("POLICY_EXTRA_ACTION")
+    sys.exit(0)
+if block.count("Resource:") != 1:
+    print("POLICY_EXTRA_RESOURCE")
+    sys.exit(0)
+if block.count("Action:") != 1:
+    print("POLICY_EXTRA_ACTION")
+    sys.exit(0)
+if "Effect: Deny" in block:
+    print("POLICY_DENY")
+    sys.exit(0)
+print("OK")
+PYEOF
+)" || META_POLICY_PROOF="UNREADABLE"
+  META_POLICY_PROOF="$(printf '%s' "$META_POLICY_PROOF" | tr -d '[:space:]')"
+  if [ "$META_POLICY_PROOF" != "OK" ]; then
+    echo "refused: Meta policy least privilege proof is $META_POLICY_PROOF, expected only GetSecretValue on the exact Meta secret for the exact API execution role with no wildcard, no change made." >&2
+    phase_failed "$META_POLICY_LABEL"
+  fi
+  echo "Verified Meta policy least privilege: ApiMetaSecretPolicy allows only GetSecretValue on the exact owned secret for the exact API execution role"
 }
 
 # Cost allocation tag admission, read-only and fail-closed. It runs before
@@ -1925,6 +2034,10 @@ case "$PHASE" in
   infra|images|init|material|dbroles|migrate|enable|all) check_google_auth_gate "$PHASE" ;;
 esac
 
+case "$PHASE" in
+  infra|images|init|material|dbroles|migrate|enable|all) check_meta_key_gate "$PHASE" ;;
+esac
+
 # Read-only prereqs readiness for every paid app phase, never a deploy. It
 # verifies the owned prereqs stack tags and COMPLETE status, binds the exact
 # READY physical refs to the actual app parameter AcmCertificateArn plus the
@@ -2556,6 +2669,23 @@ if wants_phase infra; then
       phase_failed infra
     fi
   fi
+  INFRA_META_ARN="$(params_file_value MetaSecretArn 2>/dev/null || true)"
+  INFRA_META_ARN="$(printf '%s' "$INFRA_META_ARN" | tr -d '[:space:]')"
+  if [ -n "$INFRA_META_ARN" ]; then
+    case "$INFRA_META_ARN" in
+      *REPLACE_WITH*|*PLACEHOLDER*)
+        echo "refused: infra MetaSecretArn is a placeholder, replace with the exact owned Meta secret ARN, no change made" >&2
+        phase_failed infra ;;
+    esac
+    [ -n "$META_SECRET_ARN" ] || { echo "refused: infra MetaSecretArn requires exact --meta-secret-arn for infra staging, no change made" >&2; phase_failed infra; }
+    [ "$INFRA_META_ARN" = "$META_SECRET_ARN" ] || { echo "refused: infra MetaSecretArn does not equal the validated CLI value, no change made" >&2; phase_failed infra; }
+    verify_meta_policy_least_privilege infra
+  else
+    if [ -n "$META_SECRET_ARN" ]; then
+      echo "refused: --meta-secret-arn requires MetaSecretArn in the parameters file for infra staging, validating one secret while deploying another is refused" >&2
+      phase_failed infra
+    fi
+  fi
   if [ "$WAS_NEW" -eq 1 ]; then
     echo "Infra: proving both owned services stopped before any task definition update."
     verify_ecs_service_stopped ApiService api infra
@@ -2675,12 +2805,13 @@ PYEOF
       echo "refused: infra change set has unreviewed pages after 3, no change made. Pending change set $INFRA_CHANGESET preserved for inspection." >&2
       phase_failed infra
     fi
-    INFRA_RAW="$(python3 - "$INFRA_PAGES_DIR" "$STACK_NAME" "$STACK_ID" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$INFRA_CHANGESET" "$PARAMETERS_FILE" "$INFRA_GOOGLE_ENABLE" "$INFRA_GOOGLE_ARN" 2>/dev/null <<'PYEOF'
+    INFRA_RAW="$(python3 - "$INFRA_PAGES_DIR" "$STACK_NAME" "$STACK_ID" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$INFRA_CHANGESET" "$PARAMETERS_FILE" "$INFRA_GOOGLE_ENABLE" "$INFRA_GOOGLE_ARN" "$INFRA_META_ARN" 2>/dev/null <<'PYEOF'
 import glob, json, os, sys
 pages_dir, want_stack, want_id = sys.argv[1:4]
 want_account, want_region, want_name, params_file = sys.argv[4:8]
 google_enable = sys.argv[8] if len(sys.argv) > 8 else "false"
 google_arn = sys.argv[9] if len(sys.argv) > 9 else ""
+meta_arn = sys.argv[10] if len(sys.argv) > 10 else ""
 pages = sorted(glob.glob(os.path.join(pages_dir, "page-*.json")))
 if not pages:
     print("MALFORMED")
@@ -2772,6 +2903,56 @@ for entry in changes:
         if not google_arn.startswith(
                 "arn:aws:secretsmanager:%s:%s:secret:" % (want_region, want_account)):
             print("GOOGLE_ARN_FOREIGN")
+            sys.exit(0)
+        if logical in seen:
+            print("DUPLICATE_%s" % logical)
+            sys.exit(0)
+        seen.add(logical)
+        if action != "Add":
+            print("ACTION_%s_%s" % (logical, action or "EMPTY"))
+            sys.exit(0)
+        if rtype != "AWS::IAM::Policy":
+            print("TYPE_%s_%s" % (logical, rtype or "EMPTY"))
+            sys.exit(0)
+        if str(replacement) != "False":
+            print("REPLACEMENT_%s_%s" % (logical, str(replacement)))
+            sys.exit(0)
+        scope = rc.get("Scope", None)
+        if scope is not None:
+            if not isinstance(scope, list):
+                print("SCOPE_%s" % logical)
+                sys.exit(0)
+            if len(scope) == 0:
+                pass
+            elif scope != ["Properties"]:
+                for item in scope:
+                    if item != "Properties":
+                        print("SCOPE_%s_%s" % (logical, str(item)))
+                        sys.exit(0)
+                print("SCOPE_%s" % logical)
+                sys.exit(0)
+        details = rc.get("Details", None)
+        if not isinstance(details, list):
+            print("DETAILS_%s_MALFORMED" % logical)
+            sys.exit(0)
+        if len(details) != 0:
+            try:
+                blob = json.dumps(details)
+            except Exception:
+                blob = ""
+            if "*" in blob:
+                print("WILDCARD_%s" % logical)
+                sys.exit(0)
+            print("DETAILS_%s_UNEXPECTED" % logical)
+            sys.exit(0)
+        continue
+    if logical == "ApiMetaSecretPolicy":
+        if not meta_arn or "REPLACE_WITH" in meta_arn or "PLACEHOLDER" in meta_arn:
+            print("META_ARN_EMPTY")
+            sys.exit(0)
+        if not meta_arn.startswith(
+                "arn:aws:secretsmanager:%s:%s:secret:" % (want_region, want_account)):
+            print("META_ARN_FOREIGN")
             sys.exit(0)
         if logical in seen:
             print("DUPLICATE_%s" % logical)
@@ -2921,6 +3102,10 @@ if google_enable == "true":
     if expected.get("GoogleOAuthSecretArn", "") != google_arn:
         print("PARAMS_GOOGLE_ARN")
         sys.exit(0)
+if meta_arn:
+    if expected.get("MetaSecretArn", "") != meta_arn:
+        print("PARAMS_META_ARN")
+        sys.exit(0)
 if len(expected) > 20:
     print("PARAMS_MANY")
     sys.exit(0)
@@ -2982,7 +3167,7 @@ PYEOF
       fi
     elif [ "$INFRA_REVIEW" != "OK" ]; then
       rm -rf "$INFRA_PAGES_DIR"
-      echo "refused: infra review proof is $INFRA_REVIEW, expected only owned task definition image or service taskdef Modify with taskdef-only replacement plus optional exact ApiGoogleAuthPolicy Add only when Google explicitly enabled with least privilege proof, and no DB, network, cert, or other secrets change. Pending change set $INFRA_CHANGESET preserved for inspection, no execute made, no delete made." >&2
+      echo "refused: infra review proof is $INFRA_REVIEW, expected only owned task definition image or service taskdef Modify with taskdef-only replacement plus optional exact ApiGoogleAuthPolicy Add only when Google explicitly enabled and optional exact ApiMetaSecretPolicy Add only when MetaSecretArn is set, each with least privilege proof, and no DB, network, cert, or other secrets change. Pending change set $INFRA_CHANGESET preserved for inspection, no execute made, no delete made." >&2
       phase_failed infra
     else
       INFRA_CHANGESET_ID="$(printf '%s\n' "$INFRA_RAW" | awk -F'\t' '$1=="ID"{print $2}')"
@@ -3024,6 +3209,24 @@ PYEOF
         fi
       fi
     fi
+    if [ -n "$INFRA_META_ARN" ]; then
+      INFRA_META_PHYSICAL=""
+      if ! INFRA_META_PHYSICAL="$(stack_resource ApiMetaSecretPolicy 2>"$TMP_ERR")"; then
+        echo "refused: infra Meta policy missing after update, expected exact ApiMetaSecretPolicy, no later phase started." >&2
+        phase_failed infra
+      fi
+      INFRA_META_PHYSICAL="$(printf '%s' "$INFRA_META_PHYSICAL" | tr -d '[:space:]')"
+      [ -n "$INFRA_META_PHYSICAL" ] && [ "$INFRA_META_PHYSICAL" != "None" ] || { echo "refused: infra Meta policy physical ID missing after update, no later phase started." >&2; phase_failed infra; }
+      echo "Verified infra Meta policy present: ApiMetaSecretPolicy"
+    else
+      if INFRA_META_PHYSICAL="$(stack_resource ApiMetaSecretPolicy 2>/dev/null)"; then
+        INFRA_META_PHYSICAL="$(printf '%s' "$INFRA_META_PHYSICAL" | tr -d '[:space:]')"
+        if [ -n "$INFRA_META_PHYSICAL" ] && [ "$INFRA_META_PHYSICAL" != "None" ]; then
+          echo "refused: infra Meta policy present while MetaSecretArn empty, expected absent, no later phase started." >&2
+          phase_failed infra
+        fi
+      fi
+    fi
   fi
   if [ "$WAS_NEW" -eq 0 ]; then
     if ! cloudformation_deploy "$TARGET_SERVICES" infra; then
@@ -3048,6 +3251,24 @@ PYEOF
         INFRA_POLICY_PHYSICAL="$(printf '%s' "$INFRA_POLICY_PHYSICAL" | tr -d '[:space:]')"
         if [ -n "$INFRA_POLICY_PHYSICAL" ] && [ "$INFRA_POLICY_PHYSICAL" != "None" ]; then
           echo "refused: infra Google policy present while EnableGoogleAuth false, expected absent, no later phase started." >&2
+          phase_failed infra
+        fi
+      fi
+    fi
+    if [ -n "$INFRA_META_ARN" ]; then
+      INFRA_META_PHYSICAL=""
+      if ! INFRA_META_PHYSICAL="$(stack_resource ApiMetaSecretPolicy 2>"$TMP_ERR")"; then
+        echo "refused: infra Meta policy missing after create, expected exact ApiMetaSecretPolicy, no later phase started." >&2
+        phase_failed infra
+      fi
+      INFRA_META_PHYSICAL="$(printf '%s' "$INFRA_META_PHYSICAL" | tr -d '[:space:]')"
+      [ -n "$INFRA_META_PHYSICAL" ] && [ "$INFRA_META_PHYSICAL" != "None" ] || { echo "refused: infra Meta policy physical ID missing after create, no later phase started." >&2; phase_failed infra; }
+      echo "Verified infra Meta policy present: ApiMetaSecretPolicy"
+    else
+      if INFRA_META_PHYSICAL="$(stack_resource ApiMetaSecretPolicy 2>/dev/null)"; then
+        INFRA_META_PHYSICAL="$(printf '%s' "$INFRA_META_PHYSICAL" | tr -d '[:space:]')"
+        if [ -n "$INFRA_META_PHYSICAL" ] && [ "$INFRA_META_PHYSICAL" != "None" ]; then
+          echo "refused: infra Meta policy present while MetaSecretArn empty, expected absent, no later phase started." >&2
           phase_failed infra
         fi
       fi
@@ -3646,29 +3867,64 @@ verify_historical_image() {
   return 0
 }
 
-# API task definition binding with Google shape awareness. Reads EnableGoogleAuth
-# from the parameters file being deployed. True proves the five secret Google
-# shape with exact owned Google client ID plus secret refs. False proves the
-# keyless three secret shape. No secret value appears here, only ARNs plus key
-# names. Called in images plus enable before any boot.
+# API task definition binding with Google plus Meta shape awareness. Reads
+# EnableGoogleAuth and MetaSecretArn from the parameters file being deployed.
+# Google true proves the five secret Google shape with exact owned Google
+# client ID plus secret refs. A set MetaSecretArn adds the exact owned Meta
+# key ref on top of either shape. Both empty proves the keyless three secret
+# shape. No secret value appears here, only ARNs plus key names. Called in
+# images plus enable before any boot.
 check_api_taskdef_binding() {
   API_BIND_LABEL="${1:-images}"
   API_BIND_ENABLE="$(params_file_value EnableGoogleAuth 2>/dev/null || true)"
   API_BIND_ENABLE="$(printf '%s' "$API_BIND_ENABLE" | tr -d '[:space:]')"
   if [ -z "$API_BIND_ENABLE" ]; then API_BIND_ENABLE="false"; fi
-  if [ "$API_BIND_ENABLE" = "true" ]; then
-    [ -n "$GOOGLE_SECRET_ARN" ] || { echo "refused: EnableGoogleAuth true requires exact --google-secret-arn for five secret API binding proof" >&2; phase_failed "$API_BIND_LABEL"; }
-    check_taskdef_binding ApiTaskDefinition ApiExecutionRole ApiTaskRole \
-      "api.DATABASE_URL=$RUNTIME_SECRET_ARN:database-url::" \
-      "api.TLS_CERT_B64=$TLS_SECRET_ARN:tls-cert-b64::" \
-      "api.TLS_KEY_B64=$TLS_SECRET_ARN:tls-key-b64::" \
-      "api.GOOGLE_CLIENT_ID=$GOOGLE_SECRET_ARN:google-client-id::" \
-      "api.GOOGLE_CLIENT_SECRET=$GOOGLE_SECRET_ARN:google-client-secret::"
+  API_BIND_META="$(params_file_value MetaSecretArn 2>/dev/null || true)"
+  API_BIND_META="$(printf '%s' "$API_BIND_META" | tr -d '[:space:]')"
+  if [ -n "$API_BIND_META" ]; then
+    [ -n "$META_SECRET_ARN" ] || { echo "refused: MetaSecretArn is set, exact --meta-secret-arn is required for API binding proof" >&2; phase_failed "$API_BIND_LABEL"; }
+    [ "$API_BIND_META" = "$META_SECRET_ARN" ] || { echo "refused: API binding MetaSecretArn does not equal the validated CLI value, no change made" >&2; phase_failed "$API_BIND_LABEL"; }
   else
-    check_taskdef_binding ApiTaskDefinition ApiExecutionRole ApiTaskRole \
-      "api.DATABASE_URL=$RUNTIME_SECRET_ARN:database-url::" \
-      "api.TLS_CERT_B64=$TLS_SECRET_ARN:tls-cert-b64::" \
-      "api.TLS_KEY_B64=$TLS_SECRET_ARN:tls-key-b64::"
+    if [ -n "$META_SECRET_ARN" ]; then
+      echo "refused: --meta-secret-arn requires MetaSecretArn in the parameters file for API binding proof, no change made" >&2
+      phase_failed "$API_BIND_LABEL"
+    fi
+  fi
+  API_BIND_EXTRA=""
+  if [ -n "$API_BIND_META" ]; then
+    API_BIND_EXTRA="api.META_API_KEY=$META_SECRET_ARN:meta-api-key::"
+  fi
+  if [ "$API_BIND_ENABLE" = "true" ]; then
+    [ -n "$GOOGLE_SECRET_ARN" ] || { echo "refused: EnableGoogleAuth true requires exact --google-secret-arn for API binding proof" >&2; phase_failed "$API_BIND_LABEL"; }
+    if [ -n "$API_BIND_EXTRA" ]; then
+      check_taskdef_binding ApiTaskDefinition ApiExecutionRole ApiTaskRole \
+        "api.DATABASE_URL=$RUNTIME_SECRET_ARN:database-url::" \
+        "api.TLS_CERT_B64=$TLS_SECRET_ARN:tls-cert-b64::" \
+        "api.TLS_KEY_B64=$TLS_SECRET_ARN:tls-key-b64::" \
+        "api.GOOGLE_CLIENT_ID=$GOOGLE_SECRET_ARN:google-client-id::" \
+        "api.GOOGLE_CLIENT_SECRET=$GOOGLE_SECRET_ARN:google-client-secret::" \
+        "$API_BIND_EXTRA"
+    else
+      check_taskdef_binding ApiTaskDefinition ApiExecutionRole ApiTaskRole \
+        "api.DATABASE_URL=$RUNTIME_SECRET_ARN:database-url::" \
+        "api.TLS_CERT_B64=$TLS_SECRET_ARN:tls-cert-b64::" \
+        "api.TLS_KEY_B64=$TLS_SECRET_ARN:tls-key-b64::" \
+        "api.GOOGLE_CLIENT_ID=$GOOGLE_SECRET_ARN:google-client-id::" \
+        "api.GOOGLE_CLIENT_SECRET=$GOOGLE_SECRET_ARN:google-client-secret::"
+    fi
+  else
+    if [ -n "$API_BIND_EXTRA" ]; then
+      check_taskdef_binding ApiTaskDefinition ApiExecutionRole ApiTaskRole \
+        "api.DATABASE_URL=$RUNTIME_SECRET_ARN:database-url::" \
+        "api.TLS_CERT_B64=$TLS_SECRET_ARN:tls-cert-b64::" \
+        "api.TLS_KEY_B64=$TLS_SECRET_ARN:tls-key-b64::" \
+        "$API_BIND_EXTRA"
+    else
+      check_taskdef_binding ApiTaskDefinition ApiExecutionRole ApiTaskRole \
+        "api.DATABASE_URL=$RUNTIME_SECRET_ARN:database-url::" \
+        "api.TLS_CERT_B64=$TLS_SECRET_ARN:tls-cert-b64::" \
+        "api.TLS_KEY_B64=$TLS_SECRET_ARN:tls-key-b64::"
+    fi
   fi
 }
 
@@ -12502,7 +12758,27 @@ PYEOF
     fi
     ENABLE_OLD_POLICY=""
   fi
-  echo "Enable identity pinned: ApiTaskDefinition and WebTaskDefinition plus three images plus Google policy must be unchanged by this deploy"
+  ENABLE_META_ARN="$(params_file_value MetaSecretArn 2>/dev/null || true)"
+  ENABLE_META_ARN="$(printf '%s' "$ENABLE_META_ARN" | tr -d '[:space:]')"
+  ENABLE_OLD_META_POLICY=""
+  if [ -n "$ENABLE_META_ARN" ]; then
+    if ! ENABLE_OLD_META_POLICY="$(stack_resource ApiMetaSecretPolicy 2>"$TMP_ERR")"; then
+      rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON"
+      echo "refused: enable old ApiMetaSecretPolicy unreadable, no change made" >&2; phase_failed enable
+    fi
+    ENABLE_OLD_META_POLICY="$(printf '%s' "$ENABLE_OLD_META_POLICY" | tr -d '[:space:]')"
+    [ -n "$ENABLE_OLD_META_POLICY" ] && [ "$ENABLE_OLD_META_POLICY" != "None" ] || { rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON"; echo "refused: enable old ApiMetaSecretPolicy missing, no change made" >&2; phase_failed enable; }
+  else
+    if ENABLE_OLD_META_POLICY="$(stack_resource ApiMetaSecretPolicy 2>/dev/null)"; then
+      ENABLE_OLD_META_POLICY="$(printf '%s' "$ENABLE_OLD_META_POLICY" | tr -d '[:space:]')"
+      if [ -n "$ENABLE_OLD_META_POLICY" ] && [ "$ENABLE_OLD_META_POLICY" != "None" ]; then
+        rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON"
+        echo "refused: enable old ApiMetaSecretPolicy present while MetaSecretArn empty, no change made" >&2; phase_failed enable
+      fi
+    fi
+    ENABLE_OLD_META_POLICY=""
+  fi
+  echo "Enable identity pinned: ApiTaskDefinition and WebTaskDefinition plus three images plus Google and Meta policies must be unchanged by this deploy"
   if ! cloudformation_deploy "true" enable; then
     rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON"
     echo "enable deploy failed, services unchanged." >&2
@@ -12554,6 +12830,26 @@ PYEOF
       fi
     fi
   fi
+  ENABLE_NEW_META_POLICY=""
+  if [ -n "$ENABLE_META_ARN" ]; then
+    if ! ENABLE_NEW_META_POLICY="$(stack_resource ApiMetaSecretPolicy 2>"$TMP_ERR")"; then
+      rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON"
+      echo "refused: enable new ApiMetaSecretPolicy unreadable after deploy" >&2; phase_failed enable
+    fi
+    ENABLE_NEW_META_POLICY="$(printf '%s' "$ENABLE_NEW_META_POLICY" | tr -d '[:space:]')"
+    if [ "$ENABLE_NEW_META_POLICY" != "$ENABLE_OLD_META_POLICY" ]; then
+      rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON"
+      echo "refused: ApiMetaSecretPolicy changed during enable, task definition and policy updates under services are blocked. Run explicit quiesce plus infra first." >&2; phase_failed enable
+    fi
+  else
+    if ENABLE_NEW_META_POLICY="$(stack_resource ApiMetaSecretPolicy 2>/dev/null)"; then
+      ENABLE_NEW_META_POLICY="$(printf '%s' "$ENABLE_NEW_META_POLICY" | tr -d '[:space:]')"
+      if [ -n "$ENABLE_NEW_META_POLICY" ] && [ "$ENABLE_NEW_META_POLICY" != "None" ]; then
+        rm -f "$ENABLE_OLD_API_JSON" "$ENABLE_OLD_WEB_JSON"
+        echo "refused: ApiMetaSecretPolicy appeared during enable while MetaSecretArn empty, task definition and policy updates under services are blocked. Run explicit quiesce plus infra first." >&2; phase_failed enable
+      fi
+    fi
+  fi
   ENABLE_NEW_API_JSON="$(mktemp /tmp/launchcrew-enable-new-api-XXXXXX)"
   ENABLE_NEW_WEB_JSON="$(mktemp /tmp/launchcrew-enable-new-web-XXXXXX)"
   if ! fetch_taskdef_json ApiTaskDefinition "$ENABLE_NEW_API_JSON"; then
@@ -12589,7 +12885,7 @@ PYEOF
   [ "$ENABLE_NEW_API_IMAGE" = "$ENABLE_OLD_API_IMAGE" ] || { echo "refused: api image changed during enable, task definition and image updates under services are blocked. Run explicit quiesce plus infra first." >&2; phase_failed enable; }
   [ "$ENABLE_NEW_WEB_IMAGE" = "$ENABLE_OLD_WEB_IMAGE" ] || { echo "refused: web image changed during enable, task definition and image updates under services are blocked. Run explicit quiesce plus infra first." >&2; phase_failed enable; }
   [ "$ENABLE_NEW_PROXY_IMAGE" = "$ENABLE_OLD_PROXY_IMAGE" ] || { echo "refused: proxy image changed during enable, task definition and image updates under services are blocked. Run explicit quiesce plus infra first." >&2; phase_failed enable; }
-  echo "Verified enable identity: task definitions, images, and Google policy unchanged by this deploy"
+  echo "Verified enable identity: task definitions, images, and Google plus Meta policies unchanged by this deploy"
   mark_done enable
   echo "Phase enable complete: both services fixed count 1 each, no autoscaling"
 fi

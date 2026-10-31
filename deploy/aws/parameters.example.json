@@ -54,5 +54,9 @@
   {
     "ParameterKey": "GoogleOAuthSecretArn",
     "ParameterValue": "REPLACE_WITH_GOOGLE_OAUTH_SECRET_ARN"
+  },
+  {
+    "ParameterKey": "MetaSecretArn",
+    "ParameterValue": "REPLACE_WITH_META_KEY_SECRET_ARN"
   }
 ]

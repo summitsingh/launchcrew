@@ -1,9 +1,10 @@
-"""Google-only CloudFormation wiring: conditional injection and least privilege.
+"""Google plus Meta CloudFormation wiring: conditional injection and least privilege.
 
 Static checks only, no AWS calls. Verifies template defaults stay keyless,
 Google secret injection is conditional on explicit enable plus exact ARN,
-IAM grants scope to that exact secret with no wildcard, PUBLIC_BASE_URL is
-exact HTTPS, and no Meta or Facebook wiring is present. No secret values.
+Meta key injection is conditional on an exact Meta secret ARN, IAM grants
+scope to each exact secret with no wildcard, PUBLIC_BASE_URL is exact HTTPS,
+and no Facebook wiring is present. No secret values.
 """
 import json
 import unittest
@@ -58,8 +59,17 @@ class GoogleTemplateTests(unittest.TestCase):
         self.assertIn("GOOGLE_CLIENT_SECRET, ValueFrom: !Sub '${GoogleOAuthSecretArn}:google-client-secret::'", api_block)
         self.assertNotIn("FACEBOOK_CLIENT", api_block)
         self.assertNotIn("Facebook", api_block)
-        self.assertNotIn("META_API_KEY", api_block)
-        self.assertNotIn("MetaSecret", api_block)
+
+    def test_meta_key_conditional_exact_arn(self):
+        self.assertIn("MetaSecretArn:", self.text)
+        self.assertIn("Default: ''", self.text)
+        self.assertIn("MetaKeyEnabled: !Not [!Equals ['', !Ref MetaSecretArn]]", self.text)
+        api_start = self.text.index("ApiTaskDefinition:")
+        api_block = self.text[api_start:self.text.index("WebTaskDefinition:")]
+        self.assertIn("MetaKeyEnabled", api_block)
+        self.assertIn("META_API_KEY, ValueFrom: !Sub '${MetaSecretArn}:meta-api-key::'", api_block)
+        self.assertIn("META_MODEL, Value: muse-spark-1.3", api_block)
+        self.assertIn("META_API_BASE_URL, Value: https://api.meta.ai/v1", api_block)
 
     def test_google_policy_least_privilege_exact(self):
         self.assertIn("ApiGoogleAuthPolicy:", self.text)
@@ -83,6 +93,22 @@ class GoogleTemplateTests(unittest.TestCase):
         self.assertIn("!Ref RuntimeDbUrlSecretArn", block)
         self.assertIn("!Ref TlsSecretArn", block)
         self.assertNotIn("GoogleOAuthSecretArn", block)
+        self.assertNotIn("MetaSecretArn", block)
+
+    def test_meta_policy_least_privilege_exact(self):
+        self.assertIn("ApiMetaSecretPolicy:", self.text)
+        start = self.text.index("ApiMetaSecretPolicy:")
+        block = self.text[start:self.text.index("ApiTaskDefinition:")]
+        self.assertIn("Condition: MetaKeyEnabled", block)
+        self.assertIn("api-meta-secret-only", block)
+        self.assertIn("secretsmanager:GetSecretValue", block)
+        self.assertIn("Resource: [!Ref MetaSecretArn]", block)
+        self.assertIn("Roles: [!Ref ApiExecutionRole]", block)
+        self.assertNotIn("Resource: '*'", block)
+        lowered = block.lower()
+        self.assertNotIn("putsecretvalue", lowered)
+        self.assertNotIn("kms:", lowered)
+        self.assertNotIn("*", block.split("Resource:")[1].split("\n")[0])
 
     def test_no_secret_values_or_wildcards(self):
         self.assertNotIn("apps.googleusercontent.com", self.text)
@@ -107,6 +133,19 @@ class GoogleParamsTests(unittest.TestCase):
         text = BOOTSTRAP.read_text(encoding="utf-8")
         self.assertIn('"GoogleOAuthSecretArn"', text)
         self.assertIn("KNOWN_SECRET_KEYS", text)
+
+    def test_example_carries_meta_key_placeholder_only(self):
+        doc = json.loads(PARAMS.read_text(encoding="utf-8"))
+        by_key = {entry["ParameterKey"]: entry["ParameterValue"] for entry in doc}
+        self.assertIn("REPLACE_WITH_META_KEY_SECRET_ARN", by_key["MetaSecretArn"])
+        self.assertNotIn("arn:aws:secretsmanager", PARAMS.read_text(encoding="utf-8"))
+
+    def test_bootstrap_allows_meta_secret_key(self):
+        text = BOOTSTRAP.read_text(encoding="utf-8")
+        self.assertIn('"MetaSecretArn"', text)
+        self.assertIn("--meta-secret-arn", text)
+        self.assertIn("check_meta_key_gate", text)
+        self.assertIn("verify_meta_policy_least_privilege", text)
 
 
 if __name__ == "__main__":
