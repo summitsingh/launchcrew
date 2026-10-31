@@ -3,7 +3,7 @@ import './globals.css';
 export const metadata: Metadata = {
   title: 'LaunchCrew | Review desk',
   description: 'Launch drafts with individual approval and receipts. Product facts stay explicit, nothing publishes.',
-  icons: { icon: '/favicon.svg' },
+  icons: { icon: [{ url: '/favicon.ico', sizes: 'any' }, { url: '/favicon.svg', type: 'image/svg+xml' }] },
   openGraph: {
     title: 'LaunchCrew review desk',
     description: 'Launch drafts with individual approval and receipts. Product facts stay explicit, nothing publishes.',
