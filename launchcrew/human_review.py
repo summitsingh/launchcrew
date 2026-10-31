@@ -664,8 +664,19 @@ def current_draft(receipt):
             return {'post': human['post'], 'email': human['email'],
                     'claims': list(human.get('claims') or [])}
     maker = receipt.get('maker_draft_v2') or {}
-    return {'post': maker.get('post'), 'email': maker.get('email'),
-            'claims': list(maker.get('claims') or [])}
+    # The exported pack must keep Maker model evidence: post and email
+    # alone cannot show whether model copy was used. Human revisions stay
+    # human-labeled by the branch above.
+    draft = {'post': maker.get('post'), 'email': maker.get('email'),
+             'claims': list(maker.get('claims') or []),
+             'draft_origin': maker.get('draft_origin'),
+             'model_written': maker.get('model_written'),
+             'maker_schema': maker.get('maker_schema'),
+             'model_used': maker.get('model_used')}
+    if isinstance(maker.get('line_evidence'), list):
+        draft['line_evidence'] = [dict(item) for item in maker['line_evidence']
+                                  if isinstance(item, dict)]
+    return draft
 
 
 def current_check(receipt):

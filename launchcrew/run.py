@@ -4,6 +4,7 @@ import copy
 import json
 import os
 from pathlib import Path
+from time import perf_counter
 
 from . import agents
 from .checker_policies import effective_policies, parse_checker_agent, policy_blocks, policy_reason, specificity_hits, specificity_reason
@@ -492,6 +493,23 @@ def _attempt_variant(kind, result):
     return variant_for_attempt(kind, name)
 
 
+def _timed_model_call(make_call):
+    """Run one model call and stamp measured wall-clock latency on a copy.
+
+    Returns the result dict with a numeric latency_ms field. Failures still
+    report their elapsed time; the caller records the attempt as usual.
+    Never raises for timing or copy problems.
+    """
+    start = perf_counter()
+    result = make_call()
+    elapsed_ms = round((perf_counter() - start) * 1000.0, 3)
+    if not isinstance(result, dict):
+        return result
+    stamped = dict(result)
+    stamped['latency_ms'] = elapsed_ms
+    return stamped
+
+
 def _attempt_pair(kind, result):
     variant = _attempt_variant(kind, result)
     if variant is None:
@@ -522,6 +540,12 @@ def model_usage(attempts):
     sanitized_successful = [_sanitized_model_name(r.get('model_used')) for r in successful]
     first_model = successful[0].get('model_used') if successful else 'none'
     first_model = first_model if first_model == 'none' or _sanitized_model_name(first_model) != 'unknown' else 'unknown'
+    attempt_latency = 0.0
+    for _, entry in attempts:
+        value = entry.get('latency_ms', 0)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            continue
+        attempt_latency += float(value)
     return {'spark_calls': sum(int(r.get('attempted', False)) for kind, r in attempts if kind == 'spark'),
             'spark_mode': 'spark' if successful else 'deterministic_fallback',
             'mode': 'spark' if successful else (errors[0] if errors else 'deterministic_fallback'),
@@ -531,6 +555,7 @@ def model_usage(attempts):
             'wonder_attempts': sum(int(r.get('attempted', False)) for kind, r in attempts if kind == 'wonder'),
             'token_counts': {name: sum(r.get('usage', {}).get(name, 0) for _, r in attempts)
                              for name in ('prompt_tokens', 'completion_tokens', 'total_tokens')},
+            'latency_ms': round(attempt_latency, 3),
             'tokens_known': bool(attempted) and all('total_tokens' in r.get('usage', {}) for r in attempted),
             'data_mode': data_mode,
             'data_mode_note': data_mode_note,
@@ -713,24 +738,29 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
         step = 'scout'
         gate('scout')
         note('scout', 'started', profiles['Scout']['name'])
-        wonder = wonder_synthesize_for_scout(
+        wonder = _timed_model_call(lambda: wonder_synthesize_for_scout(
             task, None, profiles['Scout'],
-            admission=_admission_for('Scout:Wonder')) if model_enabled else None
+            admission=_admission_for('Scout:Wonder'))) if model_enabled else None
         if wonder is not None:
             attempts.append(('wonder', wonder))
         wonder_used = wonder is not None and wonder['mode'] == 'spark'
-        model = wonder if wonder_used else (spark_for_agent(
-            profiles['Scout'], task, stage='Scout',
-            admission=_admission_for('Scout:Spark')) if model_enabled else {
-            'mode': 'deterministic_fallback', 'model_used': 'none', 'attempted': False})
+        if wonder_used:
+            model = wonder
+        elif model_enabled:
+            model = _timed_model_call(lambda: spark_for_agent(
+                profiles['Scout'], task, stage='Scout',
+                admission=_admission_for('Scout:Spark')))
+        else:
+            model = {'mode': 'deterministic_fallback', 'model_used': 'none', 'attempted': False}
         if not wonder_used:
             attempts.append(('spark', model))
 
         def model_candidate(name, text):
             if not model_enabled:
                 return None
-            result = spark_for_agent(profiles[name], text, stage=name,
-                                     admission=_admission_for(name))
+            result = _timed_model_call(lambda: spark_for_agent(
+                profiles[name], text, stage=name,
+                admission=_admission_for(name)))
             attempts.append(('spark', result))
             return result if result['mode'] == 'spark' else None
 

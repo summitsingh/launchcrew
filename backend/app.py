@@ -253,6 +253,7 @@ class ModelUsage(BaseModel):
     wonder_used: bool = False
     wonder_attempts: int = 0
     token_counts: dict[str, int] = {}
+    latency_ms: float = 0.0
     tokens_known: bool = False
     data_mode: str = 'unknown'
     data_mode_note: str = ''

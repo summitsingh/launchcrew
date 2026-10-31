@@ -2038,6 +2038,11 @@
             "title": "Error Types",
             "type": "array"
           },
+          "latency_ms": {
+            "default": 0.0,
+            "title": "Latency Ms",
+            "type": "number"
+          },
           "mode": {
             "default": "deterministic_fallback",
             "title": "Mode",

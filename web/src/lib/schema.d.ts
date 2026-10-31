@@ -1951,6 +1951,11 @@ export interface components {
              */
             error_types: string[];
             /**
+             * Latency Ms
+             * @default 0
+             */
+            latency_ms: number;
+            /**
              * Mode
              * @default deterministic_fallback
              */
