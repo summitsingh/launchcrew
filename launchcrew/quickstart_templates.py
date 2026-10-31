@@ -37,18 +37,21 @@ from launchcrew.facts import (
 )
 
 TEMPLATE_IDS = (
+    "quickstart_wallet",
     "quickstart_food",
     "quickstart_mobile_app",
     "quickstart_local_service",
 )
 
 TEMPLATE_FILES = {
+    "quickstart_wallet": "facts/quickstart_wallet.json",
     "quickstart_food": "facts/quickstart_food.json",
     "quickstart_mobile_app": "facts/quickstart_mobile_app.json",
     "quickstart_local_service": "facts/quickstart_local_service.json",
 }
 
 TEMPLATE_KINDS = {
+    "quickstart_wallet": "wallet",
     "quickstart_food": "food",
     "quickstart_mobile_app": "mobile_app",
     "quickstart_local_service": "local_service",

@@ -23,14 +23,14 @@ def _raw_text(body):
 
 
 class TemplateFileTests(unittest.TestCase):
-    def test_three_templates_listed_with_kinds(self):
+    def test_four_templates_listed_with_kinds(self):
         listed = qt.list_quickstart_templates()
         self.assertEqual(
             [t["template_id"] for t in listed],
-            ["quickstart_food", "quickstart_mobile_app", "quickstart_local_service"],
+            ["quickstart_wallet", "quickstart_food", "quickstart_mobile_app", "quickstart_local_service"],
         )
         self.assertEqual(
-            [t["kind"] for t in listed], ["food", "mobile_app", "local_service"]
+            [t["kind"] for t in listed], ["wallet", "food", "mobile_app", "local_service"]
         )
         for entry in listed:
             self.assertTrue(entry["fictional"])

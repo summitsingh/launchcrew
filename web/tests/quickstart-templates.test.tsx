@@ -15,13 +15,14 @@ import {
 import { buildProductFactsInput, validateOwnerFacts } from '../src/lib/product-facts';
 
 describe('quick-start template catalog', () => {
-  it('offers food, mobile app, and local service starters', () => {
+  it('offers wallet, food, mobile app, and local service starters', () => {
     expect(QUICKSTART_TEMPLATES.map(t => t.id)).toEqual([
+      'quickstart_wallet',
       'quickstart_food',
       'quickstart_mobile_app',
       'quickstart_local_service',
     ]);
-    expect(QUICKSTART_TEMPLATES.map(t => t.kind)).toEqual(['food', 'mobile_app', 'local_service']);
+    expect(QUICKSTART_TEMPLATES.map(t => t.kind)).toEqual(['wallet', 'food', 'mobile_app', 'local_service']);
   });
 
   it('uses invented names with no contact details', () => {
@@ -75,6 +76,17 @@ describe('quick-start non-confirmation', () => {
     expect(confirmedCount).toBe(0);
     const confirmed = { ...state, price: { ...state.price, confirmed: true } };
     expect(buildProductFactsInput(confirmed).price?.confirmed).toBe(true);
+  });
+
+  it('populates wallet facts as complete unconfirmed demo_template values', () => {
+    const state = quickstartToOwnerFacts(getQuickstartTemplate('quickstart_wallet'));
+    expect(state.material.value).toBe('Full-grain leather minimalist bifold wallet');
+    expect(state.price.value).toBe('$49 for the standard bifold');
+    expect(state.founder_note.value).toBe('I designed Cinderfold wallets for my own front pocket carry.');
+    const out = buildProductFactsInput(state);
+    expect(out.material).toEqual({ value: 'Full-grain leather minimalist bifold wallet', confirmed: false, source: 'demo_template' });
+    expect(out.price?.confirmed).toBe(false);
+    expect(validateOwnerFacts(state)).toEqual([]);
   });
 
   it('exposes allowed-claim conversion without confirming', () => {
@@ -202,7 +214,7 @@ describe('quick-start templates UI', () => {
       expect(html).toContain(template.title);
       expect(html).toContain(`Use ${template.title}`);
     }
-    expect(html.match(/Fictional, unconfirmed/g)?.length).toBe(3);
+    expect(html.match(/Fictional, unconfirmed/g)?.length).toBe(4);
     expect(html).toContain('Confirmed: no');
     expect(html).not.toContain('Verified');
     expect(html).not.toContain('Approved for export');

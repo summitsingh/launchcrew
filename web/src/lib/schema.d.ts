@@ -614,6 +614,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/quickstart-templates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Quickstart Templates */
+        get: operations["list_quickstart_templates_api_quickstart_templates_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/quickstart-templates/{template_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Quickstart Template */
+        get: operations["get_quickstart_template_api_quickstart_templates__template_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs": {
         parameters: {
             query?: never;
@@ -2708,6 +2742,48 @@ export interface components {
             /** Veto Scope */
             veto_scope: string[];
         };
+        /** QuickstartTemplateBody */
+        QuickstartTemplateBody: {
+            /** Approved Claims */
+            approved_claims: string[];
+            /** Confirmation Required */
+            confirmation_required: boolean;
+            /** Description */
+            description: string;
+            /** Fictional */
+            fictional: boolean;
+            /** Fictional Note */
+            fictional_note: string;
+            /** Kind */
+            kind: string;
+            /** Sources */
+            sources: string[];
+            /** Suggested Facts */
+            suggested_facts: {
+                [key: string]: unknown;
+            };
+            /** Template Id */
+            template_id: string;
+            /** Title */
+            title: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** QuickstartTemplateMeta */
+        QuickstartTemplateMeta: {
+            /** Confirmation Required */
+            confirmation_required: boolean;
+            /** Fictional */
+            fictional: boolean;
+            /** Kind */
+            kind: string;
+            /** Template Id */
+            template_id: string;
+            /** Title */
+            title: string;
+        } & {
+            [key: string]: unknown;
+        };
         /** Receipt */
         Receipt: {
             approval_binding?: components["schemas"]["ApprovalBinding"] | null;
@@ -4606,6 +4682,57 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Receipt"][];
+                };
+            };
+        };
+    };
+    list_quickstart_templates_api_quickstart_templates_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuickstartTemplateMeta"][];
+                };
+            };
+        };
+    };
+    get_quickstart_template_api_quickstart_templates__template_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                template_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["QuickstartTemplateBody"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

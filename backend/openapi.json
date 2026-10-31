@@ -3368,6 +3368,106 @@
         "title": "Profile",
         "type": "object"
       },
+      "QuickstartTemplateBody": {
+        "additionalProperties": true,
+        "properties": {
+          "approved_claims": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Approved Claims",
+            "type": "array"
+          },
+          "confirmation_required": {
+            "title": "Confirmation Required",
+            "type": "boolean"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "fictional": {
+            "title": "Fictional",
+            "type": "boolean"
+          },
+          "fictional_note": {
+            "title": "Fictional Note",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "suggested_facts": {
+            "additionalProperties": true,
+            "title": "Suggested Facts",
+            "type": "object"
+          },
+          "template_id": {
+            "title": "Template Id",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "template_id",
+          "title",
+          "kind",
+          "fictional",
+          "confirmation_required",
+          "fictional_note",
+          "description",
+          "approved_claims",
+          "sources",
+          "suggested_facts"
+        ],
+        "title": "QuickstartTemplateBody",
+        "type": "object"
+      },
+      "QuickstartTemplateMeta": {
+        "additionalProperties": true,
+        "properties": {
+          "confirmation_required": {
+            "title": "Confirmation Required",
+            "type": "boolean"
+          },
+          "fictional": {
+            "title": "Fictional",
+            "type": "boolean"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "template_id": {
+            "title": "Template Id",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "template_id",
+          "title",
+          "kind",
+          "fictional",
+          "confirmation_required"
+        ],
+        "title": "QuickstartTemplateMeta",
+        "type": "object"
+      },
       "Receipt": {
         "additionalProperties": true,
         "properties": {
@@ -6637,6 +6737,67 @@
           }
         },
         "summary": "Queue"
+      }
+    },
+    "/api/quickstart-templates": {
+      "get": {
+        "operationId": "list_quickstart_templates_api_quickstart_templates_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/QuickstartTemplateMeta"
+                  },
+                  "title": "Response List Quickstart Templates Api Quickstart Templates Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Quickstart Templates"
+      }
+    },
+    "/api/quickstart-templates/{template_id}": {
+      "get": {
+        "operationId": "get_quickstart_template_api_quickstart_templates__template_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "template_id",
+            "required": true,
+            "schema": {
+              "title": "Template Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QuickstartTemplateBody"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Quickstart Template"
       }
     },
     "/api/runs": {

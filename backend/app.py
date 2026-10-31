@@ -508,6 +508,46 @@ def checker_policies(actor: str = Depends(auth.actor)):
     return {'supported': describe_supported(), 'floor_note': FLOOR_NOTE, 'matching': MATCHING_NOTE}
 
 
+class QuickstartTemplateMeta(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    template_id: str
+    title: str
+    kind: str
+    fictional: bool
+    confirmation_required: bool
+
+
+class QuickstartTemplateBody(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    template_id: str
+    title: str
+    kind: str
+    fictional: bool
+    confirmation_required: bool
+    fictional_note: str
+    description: str
+    approved_claims: list[str]
+    sources: list[str]
+    suggested_facts: dict[str, Any]
+
+
+@app.get('/api/quickstart-templates', response_model=list[QuickstartTemplateMeta])
+def list_quickstart_templates(actor: str = Depends(auth.actor)):
+    from launchcrew import quickstart_templates as templates
+    return templates.list_quickstart_templates()
+
+
+@app.get('/api/quickstart-templates/{template_id}', response_model=QuickstartTemplateBody)
+def get_quickstart_template(template_id: str, actor: str = Depends(auth.actor)):
+    from launchcrew import quickstart_templates as templates
+    try:
+        return templates.load_quickstart_template(template_id)
+    except KeyError:
+        raise HTTPException(404, 'Quick-start template not found')
+    except ValueError as exc:
+        raise HTTPException(422, 'Quick-start template is invalid: ' + str(exc))
+
+
 def _capability_snapshot():
     import os
     key = bool(os.environ.get('META_API_KEY', '').strip())

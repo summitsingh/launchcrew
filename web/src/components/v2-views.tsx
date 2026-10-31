@@ -12,6 +12,7 @@ import { Separator } from '@/components/ui/separator';
 import { api, unwrap } from '@/lib/api';
 import { canApproveDay, canExportDay, memoryEditPayload } from '@/lib/v2';
 import { dataModeCopy, dataModeLabel, dataModeNote } from '@/components/model-status';
+import { loadReplaySelection, saveReplaySelection } from '@/lib/replay-state';
 import { buildProductFactsInput, emptyOwnerFacts, hasAnyOwnerValue, missingCoreFacts, sourceLabel, validateOwnerFacts } from '@/lib/product-facts';
 import { FactLibrarySection, MissingFactsPrompt, type LibrarySelection } from '@/components/fact-library';
 import { ProductFactsForm } from '@/components/product-facts-form';
@@ -349,8 +350,13 @@ export function ScoutFactsSection({ receipt }: { receipt: Receipt }) {
 }
 
 export function ReplayView({ queue }: { queue: Receipt[] }) {
-  const [a, setA] = useState('');
-  const [b, setB] = useState('');
+  // Session-backed comparison: navigating away and back (or reloading)
+  // restores the same A/B pair instead of resetting the comparison.
+  const [a, setA] = useState(() => loadReplaySelection().a);
+  const [b, setB] = useState(() => loadReplaySelection().b);
+  useEffect(() => {
+    saveReplaySelection({ a, b });
+  }, [a, b]);
   const compare = useMutation({ mutationFn: () => unwrap(api.GET('/api/runs/{run_a}/diff/{run_b}', { params: { path: { run_a: a, run_b: b } } })) });
   return <section aria-label="Replay"><section className="panel"><h2>Replay</h2><form onSubmit={e => { e.preventDefault(); compare.mutate(); }}><label htmlFor="replay-a">Run A id</label><input id="replay-a" value={a} onChange={e => setA(e.target.value)} required /><label htmlFor="replay-b">Run B id</label><input id="replay-b" value={b} onChange={e => setB(e.target.value)} required /><Button type="submit" disabled={!a || !b || compare.isPending}>Compare</Button></form><h3>Pick from queue</h3><p className="hint">Queue refreshes every 3 seconds.</p>{queue.map(run => <div key={run.run_id} className="queue-card"><p><RunRef id={run.run_id} /></p><p>{run.idea}</p><div className="queue-actions"><Button variant="outline" onClick={() => setA(run.run_id)}>Use as A</Button><Button variant="outline" onClick={() => setB(run.run_id)}>Use as B</Button></div></div>)}</section>{compare.error && <p role="alert">{compare.error.message}</p>}{compare.data && <DiffResult diff={compare.data} />}{a && <RunOutcomesSection runId={a} label="Run A owner outcomes" />}{b && <RunOutcomesSection runId={b} label="Run B owner outcomes" />}</section>;
 }

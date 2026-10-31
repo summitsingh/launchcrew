@@ -26,14 +26,14 @@ import { emptyOwnerFacts, type OwnerFactsState, type OwnerFactState } from '@/li
 //    duplicates those values for offline rendering; the parity test in
 //    tests/test_quickstart_templates.py fails when they drift.
 
-export type QuickstartTemplateId = 'quickstart_food' | 'quickstart_mobile_app' | 'quickstart_local_service';
+export type QuickstartTemplateId = 'quickstart_wallet' | 'quickstart_food' | 'quickstart_mobile_app' | 'quickstart_local_service';
 
 type QuickstartFact = { value: string };
 
 export type QuickstartTemplate = {
   id: QuickstartTemplateId;
   title: string;
-  kind: 'food' | 'mobile_app' | 'local_service';
+  kind: 'wallet' | 'food' | 'mobile_app' | 'local_service';
   description: string;
   material: QuickstartFact;
   contents: QuickstartFact;
@@ -48,6 +48,21 @@ function fact(value: string): OwnerFactState {
 }
 
 export const QUICKSTART_TEMPLATES: readonly QuickstartTemplate[] = [
+  {
+    id: 'quickstart_wallet',
+    title: 'Fictional minimalist wallet starter',
+    kind: 'wallet',
+    description: 'Example starter for an invented minimalist leather wallet. No real brand is named.',
+    material: { value: 'Full-grain leather minimalist bifold wallet' },
+    contents: { value: 'Six card slots and a folded cash pocket' },
+    size: { value: 'Slim bifold that fits a front pocket' },
+    price: { value: '$49 for the standard bifold' },
+    allowed_claims: [
+      { value: 'Holds six cards plus folded cash' },
+      { value: 'Stitching tested for daily pocket carry' },
+    ],
+    founder_note: { value: 'I designed Cinderfold wallets for my own front pocket carry.' },
+  },
   {
     id: 'quickstart_food',
     title: 'Fictional food product starter',

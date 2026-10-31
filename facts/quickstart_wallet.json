@@ -1,0 +1,53 @@
+{
+  "template_id": "quickstart_wallet",
+  "title": "Fictional minimalist wallet starter",
+  "kind": "wallet",
+  "fictional": true,
+  "confirmation_required": true,
+  "fictional_note": "Fictional example only. Every value below is an unconfirmed suggestion, including the first-person founder note. Review each example, replace it with the owner fact, and confirm each checkbox yourself. Never confirm an unchanged example value as a real fact unless you explicitly attest it is your own fact with genuine provenance. Nothing here is verified or approved.",
+  "description": "Example starter for an invented minimalist leather wallet. No real brand is named.",
+  "approved_claims": [],
+  "sources": [
+    "quickstart_wallet.json (fictional quick-start template)",
+    "unconfirmed suggestions only; not evidence"
+  ],
+  "suggested_facts": {
+    "material": {
+      "value": "Full-grain leather minimalist bifold wallet",
+      "confirmed": false,
+      "source": "demo_template"
+    },
+    "contents": {
+      "value": "Six card slots and a folded cash pocket",
+      "confirmed": false,
+      "source": "demo_template"
+    },
+    "size": {
+      "value": "Slim bifold that fits a front pocket",
+      "confirmed": false,
+      "source": "demo_template"
+    },
+    "price": {
+      "value": "$49 for the standard bifold",
+      "confirmed": false,
+      "source": "demo_template"
+    },
+    "allowed_claims": [
+      {
+        "value": "Holds six cards plus folded cash",
+        "confirmed": false,
+        "source": "demo_template"
+      },
+      {
+        "value": "Stitching tested for daily pocket carry",
+        "confirmed": false,
+        "source": "demo_template"
+      }
+    ],
+    "founder_note": {
+      "value": "I designed Cinderfold wallets for my own front pocket carry.",
+      "confirmed": false,
+      "source": "demo_template"
+    }
+  }
+}
