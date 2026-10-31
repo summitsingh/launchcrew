@@ -279,6 +279,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/drive-import/photo-suggestions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Drive Photo Suggestions */
+        post: operations["drive_photo_suggestions_api_drive_import_photo_suggestions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/drive-import/picker-token": {
         parameters: {
             query?: never;
@@ -576,6 +593,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        get?: never;
         put?: never;
         /** Approve Channel Variant */
         post: operations["approve_channel_variant_api_runs__run_id__channel_variants__channel__approve_post"];
@@ -592,6 +610,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        get?: never;
         put?: never;
         /** Copy Channel Variant */
         post: operations["copy_channel_variant_api_runs__run_id__channel_variants__channel__copy_post"];
@@ -612,6 +631,23 @@ export interface paths {
         put?: never;
         /** Export */
         post: operations["export_api_runs__run_id__export_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/launch-matrix": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Launch Matrix */
+        get: operations["launch_matrix_api_runs__run_id__launch_matrix_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -740,6 +776,23 @@ export interface paths {
         get: operations["get_run_steps_api_runs__run_id__steps_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/runs/{run_id}/verify-landing-page": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Verify Landing Page */
+        post: operations["verify_landing_page_api_runs__run_id__verify_landing_page_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1226,6 +1279,55 @@ export interface components {
             /** Truncated */
             truncated: boolean;
         };
+        /** DrivePhotoProposalOut */
+        DrivePhotoProposalOut: {
+            /** Byte Size */
+            byte_size: number;
+            /**
+             * Confirmed
+             * @default false
+             * @constant
+             */
+            confirmed: false;
+            /** File Title */
+            file_title: string;
+            /** Height */
+            height: number;
+            /** Mime Type */
+            mime_type: string;
+            /** Parser Version */
+            parser_version: string;
+            /**
+             * Product Fact Source
+             * @default drive_file
+             * @constant
+             */
+            product_fact_source: "drive_file";
+            /**
+             * Requires Approval
+             * @default true
+             * @constant
+             */
+            requires_approval: true;
+            /** Selection Context */
+            selection_context: string;
+            /** Sha256 */
+            sha256: string;
+            /**
+             * Source
+             * @default drive_file
+             * @constant
+             */
+            source: "drive_file";
+            /**
+             * Status
+             * @default unconfirmed
+             * @constant
+             */
+            status: "unconfirmed";
+            /** Width */
+            width: number;
+        };
         /** DrivePickerTokenOut */
         DrivePickerTokenOut: {
             /** Access Token */
@@ -1247,10 +1349,28 @@ export interface components {
             app_id: string;
             /** Max Bytes */
             max_bytes: number;
+            /**
+             * Max Photo Bytes
+             * @default 1048576
+             */
+            max_photo_bytes: number;
+            /**
+             * Max Photo Pixels
+             * @default 8000000
+             */
+            max_photo_pixels: number;
             /** Scope */
             scope: string;
             /** Supported Mime Types */
             supported_mime_types: string[];
+            /**
+             * Supported Photo Mime Types
+             * @default [
+             *       "image/jpeg",
+             *       "image/png"
+             *     ]
+             */
+            supported_photo_mime_types: string[];
         };
         /** DriveStatusOut */
         DriveStatusOut: {
@@ -1265,6 +1385,16 @@ export interface components {
             live_verified: boolean;
             /** Max Bytes */
             max_bytes: number;
+            /**
+             * Max Photo Bytes
+             * @default 1048576
+             */
+            max_photo_bytes: number;
+            /**
+             * Max Photo Pixels
+             * @default 8000000
+             */
+            max_photo_pixels: number;
             /** Max Requests */
             max_requests: number;
             /** Reason */
@@ -1273,6 +1403,14 @@ export interface components {
             scope: string;
             /** Supported Mime Types */
             supported_mime_types: string[];
+            /**
+             * Supported Photo Mime Types
+             * @default [
+             *       "image/jpeg",
+             *       "image/png"
+             *     ]
+             */
+            supported_photo_mime_types: string[];
         };
         /** DriveSuggestionItem */
         DriveSuggestionItem: {
@@ -1509,6 +1647,137 @@ export interface components {
             suggestions: components["schemas"]["ImportSuggestionItem"][];
             /** Truncated */
             truncated: boolean;
+        };
+        /** LandingParityOut */
+        LandingParityOut: {
+            /** Ad Prices */
+            ad_prices?: string[];
+            /** Detected Policies */
+            detected_policies?: string[];
+            /** Landing Prices */
+            landing_prices?: string[];
+            /**
+             * Legal Compliance Passed
+             * @default false
+             */
+            legal_compliance_passed: boolean;
+            /** Missing Policies */
+            missing_policies?: string[];
+            /**
+             * Overall Passed
+             * @default false
+             */
+            overall_passed: boolean;
+            /**
+             * Parity Passed
+             * @default false
+             */
+            parity_passed: boolean;
+            /** Unmatched Ad Prices */
+            unmatched_ad_prices?: string[];
+            /**
+             * Version
+             * @default landing-parity/v1
+             */
+            version: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** LaunchMatrixOut */
+        LaunchMatrixOut: {
+            /**
+             * All Content Valid
+             * @default false
+             */
+            all_content_valid: boolean;
+            /**
+             * Approval State
+             * @default
+             */
+            approval_state: string;
+            /**
+             * Binding Digest
+             * @default
+             */
+            binding_digest: string;
+            /**
+             * Binding Version
+             * @default
+             */
+            binding_version: string;
+            /**
+             * Bundle Version
+             * @default checked-launch-matrix/v1
+             */
+            bundle_version: string;
+            /**
+             * Channel Approvals
+             * @default {}
+             */
+            channel_approvals: {
+                [key: string]: unknown;
+            };
+            /**
+             * Confirmed Claims Count
+             * @default 0
+             */
+            confirmed_claims_count: number;
+            /**
+             * Draft Source
+             * @default current post draft
+             */
+            draft_source: string;
+            email: components["schemas"]["ChannelVariantOut"];
+            facebook: components["schemas"]["ChannelVariantOut"];
+            /**
+             * Facts Label
+             * @default
+             */
+            facts_label: string;
+            /**
+             * Facts Mode
+             * @default
+             */
+            facts_mode: string;
+            instagram: components["schemas"]["ChannelVariantOut"];
+            linkedin: components["schemas"]["ChannelVariantOut"];
+            /**
+             * No Auto Publish
+             * @default true
+             */
+            no_auto_publish: boolean;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /**
+             * Provenance
+             * @default {}
+             */
+            provenance: {
+                [key: string]: unknown;
+            };
+            /**
+             * Receipt Id
+             * @default
+             */
+            receipt_id: string;
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+            shopify: components["schemas"]["ChannelVariantOut"];
+            /**
+             * Template Used
+             * @default false
+             */
+            template_used: boolean;
+            tiktok: components["schemas"]["ChannelVariantOut"];
+            x: components["schemas"]["ChannelVariantOut"];
+        } & {
+            [key: string]: unknown;
         };
         /** LearnMemory */
         LearnMemory: {
@@ -2493,6 +2762,13 @@ export interface components {
             /** Error Type */
             type: string;
         };
+        /** VerifyLandingPageIn */
+        VerifyLandingPageIn: {
+            /** Landing Html */
+            landing_html: string;
+            /** Landing Url */
+            landing_url?: string | null;
+        };
         /** VoiceProfileSection */
         VoiceProfileSection: {
             /** Banned Term Count */
@@ -3050,6 +3326,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DrivePublicConfigOut"];
+                };
+            };
+        };
+    };
+    drive_photo_suggestions_api_drive_import_photo_suggestions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DriveImportIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DrivePhotoProposalOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -3707,6 +4016,37 @@ export interface operations {
             };
         };
     };
+    launch_matrix_api_runs__run_id__launch_matrix_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LaunchMatrixOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_outcomes_api_runs__run_id__outcomes_get: {
         parameters: {
             query?: never;
@@ -3927,6 +4267,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunStepsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    verify_landing_page_api_runs__run_id__verify_landing_page_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VerifyLandingPageIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LandingParityOut"];
                 };
             };
             /** @description Validation Error */
