@@ -157,9 +157,6 @@ def test_health_honest_until_both_providers_verified(client, monkeypatch):
     assert client.get('/api/health').json()['auth'] == 'enabled_unverified'
     assert client.get('/api/auth/status').json()['live_verified'] is False
     auth.record_live_verification('google', 'owner-confirmed live sign-in')
-    assert client.get('/api/health').json()['auth'] == 'enabled_unverified'
-    assert client.get('/api/auth/status').json()['live_verified'] is False
-    auth.record_live_verification('facebook', 'owner-confirmed live sign-in')
     assert client.get('/api/health').json()['auth'] == 'enabled_verified'
     assert client.get('/api/auth/status').json()['live_verified'] is True
 

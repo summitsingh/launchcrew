@@ -1,10 +1,10 @@
-"""Record owner-confirmed live sign-in proof for Google and Facebook.
+"""Record owner-confirmed live sign-in proof for Google.
 
-Operator-only. Run after a real end-to-end browser sign-in for each
-provider against the verified HTTPS deployment. Requires explicit
-confirmation flags; refuses mocked or partial proof. Writes one row per
-provider into auth_live_verifications, which lets /api/health report
-enabled_verified. Until both rows exist, health stays enabled_unverified
+Operator-only. Run after a real end-to-end browser sign-in
+against the verified HTTPS deployment. Requires explicit
+confirmation flags; refuses mocked or partial proof. Writes one row
+into auth_live_verifications, which lets /api/health report
+enabled_verified. Until that row exists, health stays enabled_unverified
 (or disabled_demo when auth is off). No credentials, tokens, subjects,
 names, or emails are accepted or stored here.
 """
@@ -21,7 +21,7 @@ from backend import auth  # noqa: E402
 
 def main():
     parser = argparse.ArgumentParser(description='Record live auth proof')
-    parser.add_argument('--provider', required=True, choices=('google', 'facebook'))
+    parser.add_argument('--provider', required=True, choices=('google',))
     parser.add_argument('--owner-confirmed-live-signin', action='store_true')
     parser.add_argument('--note', default='owner-confirmed live sign-in')
     args = parser.parse_args()

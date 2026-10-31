@@ -55,7 +55,7 @@ built and verified; they are not claimed.
 | Image crop variant, Voice input, Glimmer triage | ROADMAP, not demonstrated | No live calls claimed; crop preview volatile, never persisted |
 | Stdlib-only core | CORE STDLIB, full web stack separate as proposed | `launchcrew/` pipeline modules import stdlib only (`argparse`, `copy`, `json`, `os`, `re`, `pathlib`, `urllib`, `http.server`, `datetime`; no third-party imports), covered by `tests/test_claim_check.py` and related core suites. The shipped product path is FastAPI plus Next.js plus Postgres, which the proposal itself describes as the Oct 30 to 31 milestone, so the core reads stdlib while the full web stack is a separate explicitly proposed layer |
 | Support Crew, Designer, Analyst, Research, Drop, Finance, templates, seats | ROADMAP, not built | Not claimed in v1 scope |
-| Drive, Instagram, Dropbox, Facebook connectors | PLANNED only, not live | Publish gated on business portfolio plus App Review plus Live mode; read-only first pattern only in docs |
+| Drive, Instagram, Dropbox connectors; Facebook connector and Facebook Login skipped | Facebook REMOVED from proposal scope per owner direction; remaining connectors PLANNED only, not live | Facebook Page photos and Facebook Login are out of proposal scope per owner direction. Publish gated on business portfolio plus App Review plus Live mode; read-only first pattern only in docs |
 
 ## Required gaps (source untouched, next task)
 

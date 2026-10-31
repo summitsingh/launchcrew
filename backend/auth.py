@@ -26,7 +26,7 @@ from backend import store
 router = APIRouter(prefix='/api/auth')
 COOKIE = 'launchcrew_session'
 SESSION_HOURS = 8
-LIVE_VERIFIED_PROVIDERS = ('google', 'facebook')
+LIVE_VERIFIED_PROVIDERS = ('google',)
 
 
 def enabled():
