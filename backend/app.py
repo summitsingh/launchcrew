@@ -182,8 +182,26 @@ class FormatDefinitionOut(BaseModel):
     rule: str = ''
 
 
+class TrendFormatOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    label: str = ''
+    source_label: str = ''
+    sanitized_guidance: str = ''
+    screened_out_claims: list[str] = []
+    role: str = 'maker_angle_guidance_only'
+    guidance_only: bool = True
+    fact_source: bool = False
+
+
+class TrendScreenIn(Strict):
+    label: str = Field(default='', max_length=2000)
+    source_label: str = Field(default='', max_length=200)
+
+
 class RunInput(Idea):
     agent_name: str = Field(description='Legacy Maker selector. Preserved for compatibility. Maker stage uses maker_name when provided, else agent_name.')
+    trend_label: str | None = Field(default=None, max_length=280, description='Optional trend format description: Maker angle guidance only, never a fact source.')
+    trend_source: str | None = Field(default=None, max_length=200, description='Required source label when trend_label is provided, naming where the trend was seen.')
     scout_name: str | None = Field(default=None, description='Scout stage agent name. Defaults to built-in Scout.')
     maker_name: str | None = Field(default=None, description='Maker stage agent name. Defaults to agent_name for compatibility.')
     checker_name: str | None = Field(default=None, description='Checker stage agent name. Defaults to built-in Checker.')
@@ -468,6 +486,7 @@ class Receipt(BaseModel):
     brand_kit: BrandKitOut | None = Field(default=None, description='S2 brand kit version and digest recorded from the voice profile brand fields. Changing a brand color, font, logo reference, or banned rule changes the recorded version.')
     format_spec: dict[str, Any] | None = Field(default=None, description='S2 format spec supplied with the run, when any.')
     format_check: FormatCheckOut | None = Field(default=None, description='S2 Checker-enforced format check result. A failed check blocks approval with a plain rule reason.')
+    trend_format: TrendFormatOut | None = Field(default=None, description='S3 optional trend format attachment: Maker angle guidance only, never a fact source. Absent when no trend was attached.')
 
 
 class Preview(BaseModel):
@@ -559,6 +578,54 @@ def health() -> dict[str, str]:
 @app.get('/api/checker-policies', response_model=CheckerPoliciesOut)
 def checker_policies(actor: str = Depends(auth.actor)):
     return {'supported': describe_supported(), 'floor_note': FLOOR_NOTE, 'matching': MATCHING_NOTE}
+
+
+def _resolve_trend(body):
+    """Build the trend attachment for a run or campaign body, or None.
+
+    No trend fields means no change. A trend label without a non-empty
+    source label is refused with 422 naming source_label. The returned
+    attachment is Maker angle guidance only, never a fact source.
+    """
+    from launchcrew import trend_picker
+    label = getattr(body, 'trend_label', None)
+    source = getattr(body, 'trend_source', None)
+    blank_label = not (isinstance(label, str) and label.strip())
+    blank_source = not (isinstance(source, str) and source.strip())
+    if blank_label and blank_source:
+        return None
+    try:
+        return trend_picker.build_trend_attachment(label, source)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+
+
+@app.get('/api/trends/presets')
+def trend_presets(actor: str = Depends(auth.actor)):
+    """Return the trend source label presets for the picker UI."""
+    from launchcrew import trend_picker
+    return {'presets': list(trend_picker.TREND_SOURCE_PRESETS),
+            'note': 'Trends are Maker angle guidance only, never a fact source.'}
+
+
+@app.post('/api/trends/screen')
+def screen_trend(body: TrendScreenIn, actor: str = Depends(auth.actor)):
+    """Screen a candidate trend label without creating a run.
+
+    Stateless preview: returns the sanitized guidance and the list of
+    screened terms. A label without a source label is refused with 422
+    naming source_label.
+    """
+    from launchcrew import trend_picker
+    try:
+        attachment = trend_picker.build_trend_attachment(body.label, body.source_label)
+    except ValueError as error:
+        raise HTTPException(422, str(error)) from error
+    if attachment is None:
+        return {'attachment': None,
+                'note': 'No trend provided; the run behaves exactly as today.'}
+    return {'attachment': attachment,
+            'note': 'Trends are Maker angle guidance only, never a fact source.'}
 
 
 @app.get('/api/formats', response_model=list[FormatDefinitionOut])
@@ -990,13 +1057,15 @@ def create_run(body: RunInput, actor: str = Depends(auth.actor)):
     run_id = 'run_' + uuid4().hex
     factory = model_admission.admission_factory_for_run(store.engine(), run_id)
     format_raw = body.format_spec.model_dump(exclude_none=False) if body.format_spec is not None else None
+    trend = _resolve_trend(body)
     receipt = adapter.execute(run_id, body.idea, legacy, body.seed_unverified_claim,
                               memory_items=items, checker_profile=body.checker_profile,
                               scout_profile=scout, maker_profile=maker, checker_agent=checker,
                               product_facts=product_facts_raw,
                               model_admission_factory=factory,
                               waive_missing_core_facts=body.waive_missing_core_facts,
-                              fact_library=library_ref, format_spec=format_raw)
+                              fact_library=library_ref, format_spec=format_raw,
+                              trend_format=trend)
     with store.connect() as db:
         workspace_id = store.ensure_workspace_seeded(db, actor)
         _mark_sync_voice_stale_if_changed(db, receipt, workspace_id, actor, lock=True, selection=voice_selection)
@@ -1052,12 +1121,14 @@ def create_run_async(body: RunInput, actor: str = Depends(auth.actor)):
         # context manager above already rolled the transaction back.
         raise HTTPException(503, 'Run acceptance unconfirmed; retry with a new request') from None
     format_raw = body.format_spec.model_dump(exclude_none=False) if body.format_spec is not None else None
+    trend = _resolve_trend(body)
     started = run_jobs.start_async_run(run_id, body.idea, legacy, body.seed_unverified_claim, items,
                                        body.checker_profile, scout, maker, checker, maker_name, actor,
                                        workspace_id=store.workspace_for_actor(actor),
                                        product_facts=product_facts_raw,
                                        waive_missing_core_facts=body.waive_missing_core_facts,
-                                       fact_library=library_ref, format_spec=format_raw)
+                                       fact_library=library_ref, format_spec=format_raw,
+                                       trend_format=trend)
     if not started:
         raise HTTPException(409, 'Run worker already active for this run')
     return {'run_id': run_id, 'status': 'running', 'receipt': pending}
@@ -2656,6 +2727,9 @@ class CampaignDay(Strict):
     draft_v2_post: str | None = None
     revision: int = 0
     approved_revision: int | None = None
+    trend_label: str = ''
+    trend_source: str = ''
+    trend_guidance: str = ''
 
 
 class CampaignOut(Strict):
@@ -2696,11 +2770,20 @@ def campaign_detail(db, campaign_id, workspace_id):
     for day, receipt in db.execute(text('SELECT d.day,r.receipt FROM campaign_days d JOIN runs r ON r.id=d.run_id WHERE d.campaign_id=:id AND d.workspace_id=:ws AND r.workspace_id=:ws ORDER BY d.day'), {'id': campaign_id, 'ws': workspace_id}):
         from launchcrew import human_review
         angle, brief, _claim = CAMPAIGN_BRIEF_BY_DAY.get(day, ('', '', ''))
+        trend_label, trend_source, trend_guidance = '', '', ''
         if isinstance(receipt, dict):
             if isinstance(receipt.get('campaign_angle'), str) and receipt['campaign_angle'].strip():
                 angle = receipt['campaign_angle']
             if isinstance(receipt.get('campaign_brief'), str) and receipt['campaign_brief'].strip():
                 brief = receipt['campaign_brief']
+            stored_trend = receipt.get('trend_format')
+            if isinstance(stored_trend, dict):
+                if isinstance(stored_trend.get('label'), str):
+                    trend_label = stored_trend['label']
+                if isinstance(stored_trend.get('source_label'), str):
+                    trend_source = stored_trend['source_label']
+                if isinstance(stored_trend.get('sanitized_guidance'), str):
+                    trend_guidance = stored_trend['sanitized_guidance']
         current = human_review.current_draft(receipt)
         check = human_review.current_check(receipt)
         result['days'].append({'day': day, 'run_id': receipt['run_id'], 'approval_state': receipt['approval_state'],
@@ -2708,7 +2791,9 @@ def campaign_detail(db, campaign_id, workspace_id):
                                'idea': receipt.get('idea', ''), 'angle': angle, 'brief': brief,
                                'draft_v2_post': (current or {}).get('post'),
                                'revision': human_review.current_revision(receipt),
-                               'approved_revision': receipt.get('approved_revision')})
+                               'approved_revision': receipt.get('approved_revision'),
+                               'trend_label': trend_label, 'trend_source': trend_source,
+                               'trend_guidance': trend_guidance})
     return result
 
 
@@ -2780,6 +2865,7 @@ def create_campaign(body: CampaignInput, actor: str = Depends(auth.actor)):
             run_ids.append(candidate)
     staged = []
     format_raw = body.format_spec.model_dump(exclude_none=False) if body.format_spec is not None else None
+    campaign_trend = _resolve_trend(body)
     for day, angle, brief, brief_claim in week_plan:
         run_id = run_ids[day - 1]
         try:
@@ -2791,7 +2877,8 @@ def create_campaign(body: CampaignInput, actor: str = Depends(auth.actor)):
                                       product_facts=product_facts_raw,
                                       model_admission_factory=factory,
                                       waive_missing_core_facts=body.waive_missing_core_facts,
-                                      fact_library=library_ref, format_spec=format_raw)
+                                      fact_library=library_ref, format_spec=format_raw,
+                                      trend_format=campaign_trend)
             if isinstance(receipt, dict):
                 receipt['campaign_angle'] = angle
         except Exception as error:
@@ -2804,7 +2891,7 @@ def create_campaign(body: CampaignInput, actor: str = Depends(auth.actor)):
                       'summary': {'submit_attempted': False, 'submit_completed': False},
                       'audit': {'event_log': [], 'stopped_reason': 'campaign_day_%d' % day},
                       'voice_profile': voice_binding, 'campaign_day': day, 'campaign_brief': brief,
-                      'campaign_angle': angle}
+                      'campaign_angle': angle, 'trend_format': copy.deepcopy(campaign_trend)}
             staged.append((day, run_id, failed))
             continue
         staged.append((day, run_id, receipt))

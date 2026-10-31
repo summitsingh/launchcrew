@@ -415,6 +415,21 @@
           "status": {
             "title": "Status",
             "type": "string"
+          },
+          "trend_guidance": {
+            "default": "",
+            "title": "Trend Guidance",
+            "type": "string"
+          },
+          "trend_label": {
+            "default": "",
+            "title": "Trend Label",
+            "type": "string"
+          },
+          "trend_source": {
+            "default": "",
+            "title": "Trend Source",
+            "type": "string"
           }
         },
         "required": [
@@ -550,6 +565,32 @@
             "default": false,
             "title": "Seed Unverified Claim",
             "type": "boolean"
+          },
+          "trend_label": {
+            "anyOf": [
+              {
+                "maxLength": 280,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional trend format description: Maker angle guidance only, never a fact source.",
+            "title": "Trend Label"
+          },
+          "trend_source": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Required source label when trend_label is provided, naming where the trend was seen.",
+            "title": "Trend Source"
           },
           "waive_missing_core_facts": {
             "default": false,
@@ -4430,6 +4471,17 @@
             "title": "Summary",
             "type": "object"
           },
+          "trend_format": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TrendFormatOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "S3 optional trend format attachment: Maker angle guidance only, never a fact source. Absent when no trend was attached."
+          },
           "voice_profile": {
             "anyOf": [
               {
@@ -5201,6 +5253,32 @@
             "title": "Seed Unverified Claim",
             "type": "boolean"
           },
+          "trend_label": {
+            "anyOf": [
+              {
+                "maxLength": 280,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional trend format description: Maker angle guidance only, never a fact source.",
+            "title": "Trend Label"
+          },
+          "trend_source": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Required source label when trend_label is provided, naming where the trend was seen.",
+            "title": "Trend Source"
+          },
           "waive_missing_core_facts": {
             "default": false,
             "description": "Explicit owner waiver for missing core facts (material, contents, size, price). When owner input lacks a confirmed core fact and this is false, the run is refused with 422. When true, the waiver is recorded on the receipt.",
@@ -5598,6 +5676,70 @@
           }
         },
         "title": "SuggestedFact",
+        "type": "object"
+      },
+      "TrendFormatOut": {
+        "additionalProperties": true,
+        "properties": {
+          "fact_source": {
+            "default": false,
+            "title": "Fact Source",
+            "type": "boolean"
+          },
+          "guidance_only": {
+            "default": true,
+            "title": "Guidance Only",
+            "type": "boolean"
+          },
+          "label": {
+            "default": "",
+            "title": "Label",
+            "type": "string"
+          },
+          "role": {
+            "default": "maker_angle_guidance_only",
+            "title": "Role",
+            "type": "string"
+          },
+          "sanitized_guidance": {
+            "default": "",
+            "title": "Sanitized Guidance",
+            "type": "string"
+          },
+          "screened_out_claims": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Screened Out Claims",
+            "type": "array"
+          },
+          "source_label": {
+            "default": "",
+            "title": "Source Label",
+            "type": "string"
+          }
+        },
+        "title": "TrendFormatOut",
+        "type": "object"
+      },
+      "TrendScreenIn": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Label",
+            "type": "string"
+          },
+          "source_label": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Source Label",
+            "type": "string"
+          }
+        },
+        "title": "TrendScreenIn",
         "type": "object"
       },
       "ValidationError": {
@@ -8727,6 +8869,60 @@
           }
         },
         "summary": "Verify Landing Page"
+      }
+    },
+    "/api/trends/presets": {
+      "get": {
+        "description": "Return the trend source label presets for the picker UI.",
+        "operationId": "trend_presets_api_trends_presets_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Trend Presets"
+      }
+    },
+    "/api/trends/screen": {
+      "post": {
+        "description": "Screen a candidate trend label without creating a run.\n\nStateless preview: returns the sanitized guidance and the list of\nscreened terms. A label without a source label is refused with 422\nnaming source_label.",
+        "operationId": "screen_trend_api_trends_screen_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrendScreenIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Screen Trend"
       }
     },
     "/api/waitlist": {

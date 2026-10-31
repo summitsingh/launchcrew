@@ -230,7 +230,8 @@ def _leave_unconfirmed(run_id, error, workspace_id=None):
 
 def _work(run_id, idea, legacy, seed, items, checker_profile, scout, maker, checker,
           maker_name, actor, stage_gate, product_facts=None, workspace_id=None,
-          waive_missing_core_facts=False, fact_library=None, format_spec=None):
+          waive_missing_core_facts=False, fact_library=None, format_spec=None,
+          trend_format=None):
     from backend import adapter, model_admission
     last_started = {'stage': 'pipeline'}
     resolved = workspace_id if workspace_id is not None else store.workspace_for_actor(actor)
@@ -252,7 +253,8 @@ def _work(run_id, idea, legacy, seed, items, checker_profile, scout, maker, chec
                                    product_facts=product_facts,
                                    model_admission_factory=factory,
                                    waive_missing_core_facts=waive_missing_core_facts,
-                                   fact_library=fact_library, format_spec=format_spec)
+                                   fact_library=fact_library, format_spec=format_spec,
+                                   trend_format=trend_format)
     except Exception as error:
         pipeline_error = error
     try:
@@ -302,7 +304,8 @@ def _work(run_id, idea, legacy, seed, items, checker_profile, scout, maker, chec
 
 def start_async_run(run_id, idea, legacy, seed, items, checker_profile, scout, maker,
                     checker, maker_name, actor, stage_gate=None, product_facts=None, workspace_id=None,
-                    waive_missing_core_facts=False, fact_library=None, format_spec=None):
+                    waive_missing_core_facts=False, fact_library=None, format_spec=None,
+                    trend_format=None):
     """Claim and start the single live worker for run_id.
 
     Returns False when a worker for run_id is already live, so at most
@@ -324,7 +327,8 @@ def start_async_run(run_id, idea, legacy, seed, items, checker_profile, scout, m
             'maker': maker, 'checker': checker, 'maker_name': maker_name,
             'actor': actor, 'stage_gate': stage_gate, 'product_facts': product_facts,
             'workspace_id': resolved, 'waive_missing_core_facts': waive_missing_core_facts,
-            'fact_library': fact_library, 'format_spec': format_spec})
+            'fact_library': fact_library, 'format_spec': format_spec,
+            'trend_format': trend_format})
         _workers[run_id] = thread
         thread.start()
         return True

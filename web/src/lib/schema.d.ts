@@ -1137,6 +1137,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/trends/presets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Trend Presets
+         * @description Return the trend source label presets for the picker UI.
+         */
+        get: operations["trend_presets_api_trends_presets_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/trends/screen": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Screen Trend
+         * @description Screen a candidate trend label without creating a run.
+         *
+         *     Stateless preview: returns the sanitized guidance and the list of
+         *     screened terms. A label without a source label is refused with 422
+         *     naming source_label.
+         */
+        post: operations["screen_trend_api_trends_screen_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/waitlist": {
         parameters: {
             query?: never;
@@ -1336,6 +1380,21 @@ export interface components {
             run_id: string;
             /** Status */
             status: string;
+            /**
+             * Trend Guidance
+             * @default
+             */
+            trend_guidance: string;
+            /**
+             * Trend Label
+             * @default
+             */
+            trend_label: string;
+            /**
+             * Trend Source
+             * @default
+             */
+            trend_source: string;
         };
         /** CampaignInput */
         CampaignInput: {
@@ -1392,6 +1451,16 @@ export interface components {
              * @default false
              */
             seed_unverified_claim: boolean;
+            /**
+             * Trend Label
+             * @description Optional trend format description: Maker angle guidance only, never a fact source.
+             */
+            trend_label?: string | null;
+            /**
+             * Trend Source
+             * @description Required source label when trend_label is provided, naming where the trend was seen.
+             */
+            trend_source?: string | null;
             /**
              * Waive Missing Core Facts
              * @description Explicit owner waiver for missing core facts (material, contents, size, price). When owner input lacks a confirmed core fact and this is false, the run is refused with 422. When true, the waiver is recorded on the receipt.
@@ -3324,6 +3393,8 @@ export interface components {
             summary: {
                 [key: string]: unknown;
             };
+            /** @description S3 optional trend format attachment: Maker angle guidance only, never a fact source. Absent when no trend was attached. */
+            trend_format?: components["schemas"]["TrendFormatOut"] | null;
             /** @description Slice 3 selected voice source/version with banned terms. Style samples stay in Memory and never become facts. */
             voice_profile?: components["schemas"]["VoiceProfileSection"] | null;
             /**
@@ -3551,6 +3622,16 @@ export interface components {
              */
             seed_unverified_claim: boolean;
             /**
+             * Trend Label
+             * @description Optional trend format description: Maker angle guidance only, never a fact source.
+             */
+            trend_label?: string | null;
+            /**
+             * Trend Source
+             * @description Required source label when trend_label is provided, naming where the trend was seen.
+             */
+            trend_source?: string | null;
+            /**
              * Waive Missing Core Facts
              * @description Explicit owner waiver for missing core facts (material, contents, size, price). When owner input lacks a confirmed core fact and this is false, the run is refused with 422. When true, the waiver is recorded on the receipt.
              * @default false
@@ -3755,6 +3836,59 @@ export interface components {
             value: string;
         } & {
             [key: string]: unknown;
+        };
+        /** TrendFormatOut */
+        TrendFormatOut: {
+            /**
+             * Fact Source
+             * @default false
+             */
+            fact_source: boolean;
+            /**
+             * Guidance Only
+             * @default true
+             */
+            guidance_only: boolean;
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+            /**
+             * Role
+             * @default maker_angle_guidance_only
+             */
+            role: string;
+            /**
+             * Sanitized Guidance
+             * @default
+             */
+            sanitized_guidance: string;
+            /**
+             * Screened Out Claims
+             * @default []
+             */
+            screened_out_claims: string[];
+            /**
+             * Source Label
+             * @default
+             */
+            source_label: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** TrendScreenIn */
+        TrendScreenIn: {
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+            /**
+             * Source Label
+             * @default
+             */
+            source_label: string;
         };
         /** ValidationError */
         ValidationError: {
@@ -6102,6 +6236,59 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LandingParityOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    trend_presets_api_trends_presets_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    screen_trend_api_trends_screen_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TrendScreenIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

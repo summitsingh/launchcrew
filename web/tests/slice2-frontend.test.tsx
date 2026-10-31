@@ -20,7 +20,7 @@ import type { components } from '../src/lib/schema';
 type Receipt = components['schemas']['Receipt'];
 type Day = components['schemas']['CampaignDay'];
 
-const day: Day = { day: 1, run_id: 'run_demo', approval_state: 'pending_approval', status: 'completed', checker_v2_blocked_count: 0, idea: 'Demo wallet', angle: 'Origin story', brief: 'Designed in Texas for Austin commuters', draft_v2_post: 'Vegan leather wallet, designed in Texas.', revision: 0 };
+const day: Day = { day: 1, run_id: 'run_demo', approval_state: 'pending_approval', status: 'completed', checker_v2_blocked_count: 0, idea: 'Demo wallet', angle: 'Origin story', brief: 'Designed in Texas for Austin commuters', draft_v2_post: 'Vegan leather wallet, designed in Texas.', revision: 0, trend_label: '', trend_source: '', trend_guidance: '' };
 const noop = () => {};
 
 function packReceipt(overrides: Record<string, unknown> = {}): Receipt {

@@ -127,7 +127,7 @@ def _memory_effects(memory_items):
     return claims, blocked, blocked_rules, expertise, approval_examples, used
 
 
-def execute(run_id, idea, profile, seed, memory_items=None, checker_profile='standard', brief=None, campaign_day=None, extra_claims=None, profile_expertise=None, scout_profile=None, maker_profile=None, checker_agent=None, progress_sink=None, stage_gate=None, product_facts=None, model_admission_factory=None, voice_snapshot=None, voice_ref=None, waive_missing_core_facts=False, fact_library=None, format_spec=None):
+def execute(run_id, idea, profile, seed, memory_items=None, checker_profile='standard', brief=None, campaign_day=None, extra_claims=None, profile_expertise=None, scout_profile=None, maker_profile=None, checker_agent=None, progress_sink=None, stage_gate=None, product_facts=None, model_admission_factory=None, voice_snapshot=None, voice_ref=None, waive_missing_core_facts=False, fact_library=None, format_spec=None, trend_format=None):
     # Invalid product-fact input fails before any pipeline work, so the
     # API reports 422 instead of storing a run.
     parsed_product = parse_product_facts(product_facts)
@@ -208,6 +208,10 @@ def execute(run_id, idea, profile, seed, memory_items=None, checker_profile='sta
     receipt = captured[0]
     receipt['memory_used'] = used
     receipt['checker_profile'] = checker_profile
+    # Trend attachment is Maker angle guidance only. It is recorded on
+    # the receipt and never enters claims, extra claims, or draft text,
+    # so Maker drafts still derive claims only from confirmed facts.
+    receipt['trend_format'] = copy.deepcopy(trend_format) if trend_format is not None else None
     try:
         from launchcrew.brand_kit import brand_kit_receipt as _adapter_brand_kit
         if receipt.get('brand_kit') is None and voice_snapshot is not None:
