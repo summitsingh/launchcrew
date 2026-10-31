@@ -648,6 +648,7 @@ Resources:
             - { Name: AUTH_ENABLED, Value: !If [GoogleAuthEnabled, 'true', 'false'] }
             - { Name: META_MODEL, Value: muse-spark-1.3 }
             - { Name: META_API_BASE_URL, Value: https://api.meta.ai/v1 }
+            - { Name: LAUNCHCREW_PHOTO_SAM_ENABLED, Value: 'true' }
           Secrets: !If
             - GoogleAuthEnabled
             - !If
