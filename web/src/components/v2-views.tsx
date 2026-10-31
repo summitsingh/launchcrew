@@ -2,6 +2,13 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
+import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { Label } from '@/components/ui/label';
+import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
+import { Separator } from '@/components/ui/separator';
 import { api, unwrap } from '@/lib/api';
 import { canApproveDay, canExportDay, memoryEditPayload } from '@/lib/v2';
 import { dataModeCopy, dataModeLabel, dataModeNote } from '@/components/model-status';
@@ -29,6 +36,14 @@ export const SUPPORTED_CHECKER_POLICIES = [
   { label: 'Price claims', veto: 'price_claims', rule: 'Block price claims', description: 'Block claims containing price values such as $49.' },
   { label: 'Marketing cliches', veto: 'cliches', rule: 'Block marketing cliches', description: 'Block claims containing generic AI filler buzzwords and marketing cliches.' },
 ];
+
+/** Checker policy list composed from shadcn/ui badges. Every exact veto and
+ *  rule stays inspectable in the DOM. */
+export function CheckerPoliciesList({ policies = SUPPORTED_CHECKER_POLICIES }: { policies?: typeof SUPPORTED_CHECKER_POLICIES }) {
+  return <ul aria-label="Checker policies">
+    {policies.map(policy => <li key={policy.veto}><Badge variant="outline">{policy.label}</Badge> <code title={policy.veto}>veto_scope {policy.veto}</code> <code title={policy.rule}>rule {policy.rule}</code><p className="hint">{policy.description}</p></li>)}
+  </ul>;
+}
 
 /** Readable policy summary that keeps every exact ID inspectable. */
 export function SupportedPoliciesHint({ legacy }: { legacy?: boolean }) {
@@ -540,8 +555,31 @@ export function HumanRevisionEditor({ receipt }: { receipt: Receipt }) {
   });
   const needsRevision = save.error ? String((save.error as Error).message) : '';
   const saved = !dirty && !save.isPending && savedAtRevision === base.revision && base.revision > 0;
-  return <section className="panel" aria-label="Edit drafts"><p className="eyebrow">HUMAN REVIEW</p><h2>Edit post and email</h2><p className="hint">Rechecking compares your edited text against the same verified facts, blocked rules, and Checker policies saved on this run. Unsupported text is rejected and not saved. Saved text clears the prior export approval until you approve the latest revision.</p><p className="hint">Current revision: {base.revision}{base.human ? ' (human revision)' : ' (Maker draft)'} · Status: {revisionStatusOf(receipt)}</p><form onSubmit={e => { e.preventDefault(); save.reset(); save.mutate(); }}><label htmlFor={`human-post-${receipt.run_id}`}>Post text</label><textarea id={`human-post-${receipt.run_id}`} rows={4} required maxLength={2000} value={post} onChange={e => { setPost(e.target.value); }} disabled={failed || save.isPending} /><label htmlFor={`human-email-${receipt.run_id}`}>Email text</label><textarea id={`human-email-${receipt.run_id}`} rows={4} required maxLength={2000} value={email} onChange={e => { setEmail(e.target.value); }} disabled={failed || save.isPending} /><div className="queue-actions"><Button type="submit" disabled={failed || save.isPending || !dirty || !post.trim() || !email.trim()}>{save.isPending ? 'Rechecking...' : 'Save human revision'}</Button></div></form>{dirty && <p role="status">Unsaved changes. Save runs the deterministic recheck.</p>}{saved && <p role="status">Saved revision {base.revision}. This pack needs fresh approval before export.</p>}{save.error && <p role="alert">Needs revision: {needsRevision}. The invalid text was not saved.</p>}</section>;
+  return <Card aria-label="Edit drafts">
+    <CardHeader>
+      <p className="eyebrow">HUMAN REVIEW</p>
+      <CardTitle>Edit post and email</CardTitle>
+      <CardDescription>Rechecking compares your edited text against the same verified facts, blocked rules, and Checker policies saved on this run. Unsupported text is rejected and not saved. Saved text clears the prior export approval until you approve the latest revision.</CardDescription>
+      <CardDescription>Current revision: {base.revision}{base.human ? ' (human revision)' : ' (Maker draft)'} · Status: {revisionStatusOf(receipt)}</CardDescription>
+    </CardHeader>
+    <CardContent>
+      <form onSubmit={e => { e.preventDefault(); save.reset(); save.mutate(); }}>
+        <Label htmlFor={`human-post-${receipt.run_id}`}>Post text</Label>
+        <Textarea id={`human-post-${receipt.run_id}`} rows={4} required maxLength={2000} value={post} onChange={e => { setPost(e.target.value); }} disabled={failed || save.isPending} />
+        <Label htmlFor={`human-email-${receipt.run_id}`}>Email text</Label>
+        <Textarea id={`human-email-${receipt.run_id}`} rows={4} required maxLength={2000} value={email} onChange={e => { setEmail(e.target.value); }} disabled={failed || save.isPending} />
+        <div className="queue-actions"><Button type="submit" disabled={failed || save.isPending || !dirty || !post.trim() || !email.trim()}>{save.isPending ? 'Rechecking...' : 'Save human revision'}</Button></div>
+      </form>
+      <Separator />
+      {dirty && <p role="status">Unsaved changes. Save runs the deterministic recheck.</p>}
+      {saved && <p role="status">Saved revision {base.revision}. This pack needs fresh approval before export.</p>}
+      {save.error && <Alert variant="destructive"><AlertTitle>Needs revision</AlertTitle><AlertDescription>Needs revision: {needsRevision}. The invalid text was not saved.</AlertDescription></Alert>}
+    </CardContent>
+  </Card>;
 }
+
+/** Alias kept for the shadcn/ui drafts editor naming. */
+export const HumanDraftsEditor = HumanRevisionEditor;
 
 type ChannelVariantsBundle = components['schemas']['ChannelVariantsOut'];
 type ChannelVariant = components['schemas']['ChannelVariantOut'];
@@ -624,16 +662,21 @@ export function ChannelVariantsSection({ runId, revision }: { runId: string; rev
   const busy = approve.isPending || copy.isPending;
   const bundleRevision = variants.data?.revision;
   const stale = bundleRevision !== undefined && bundleRevision !== revision;
-  return <section className="panel" aria-label="Checked channel variants">
-    <p className="eyebrow">CHECKED CHANNEL VARIANTS</p>
-    <h2>Channel export candidates.</h2>
-    <p className="hint">Derived verbatim from the current approved post draft and the confirmed claims bound to that approval. X keeps whole sentences within 280 characters with any trim recorded below. Each channel needs its own human approval of the exact text; copy rechecks that approval, the exact text, and the binding server-side at click time. Only authorized text is copied. Offline copy only: no auto-publish, no auto-post, no auto-send, and no campaign angles are claimed.</p>
-    {stale && <p role="alert">This pack changed while you were viewing it. Approval and copy are locked until the fresh bundle loads; both actions recheck the current revision server-side.</p>}
-    {variants.isPending && <p>Loading checked variants...</p>}
-    {variants.error && <p role="alert">{variants.error.message} Checked variants are unavailable for this revision right now. They unlock after the run completes and you approve the latest revision with a clean final check.</p>}
-    {actionError && <p role="alert">{actionError}</p>}
-    {variants.data && <ChannelVariantsBundleView bundle={variants.data} copied={copied} busyChannel={busy ? (approve.variables ?? copy.variables) : undefined} locked={stale} onApprove={channel => { setActionError(''); setCopied(null); approve.mutate(channel); }} onCopy={channel => { setActionError(''); setCopied(null); copy.mutate(channel); }} />}
-  </section>;
+  return <Card aria-label="Checked channel variants">
+    <CardHeader>
+      <p className="eyebrow">CHECKED CHANNEL VARIANTS</p>
+      <CardTitle>Channel export candidates.</CardTitle>
+      <CardDescription>Derived verbatim from the current approved post draft and the confirmed claims bound to that approval. X keeps whole sentences within 280 characters with any trim recorded below. Each channel needs its own human approval of the exact text; copy rechecks that approval, the exact text, and the binding server-side at click time. Only authorized text is copied. Offline copy only: no auto-publish, no auto-post, no auto-send, and no campaign angles are claimed.</CardDescription>
+    </CardHeader>
+    <CardContent>
+      <Separator />
+      {stale && <Alert variant="destructive"><AlertTitle>Pack changed</AlertTitle><AlertDescription>This pack changed while you were viewing it. Approval and copy are locked until the fresh bundle loads; both actions recheck the current revision server-side.</AlertDescription></Alert>}
+      {variants.isPending && <p>Loading checked variants...</p>}
+      {variants.error && <Alert variant="destructive"><AlertTitle>Variants unavailable</AlertTitle><AlertDescription>{variants.error.message} Checked variants are unavailable for this revision right now. They unlock after the run completes and you approve the latest revision with a clean final check.</AlertDescription></Alert>}
+      {actionError && <Alert variant="destructive"><AlertTitle>Action failed</AlertTitle><AlertDescription>{actionError}</AlertDescription></Alert>}
+      {variants.data && <ChannelVariantsBundleView bundle={variants.data} copied={copied} busyChannel={busy ? (approve.variables ?? copy.variables) : undefined} locked={stale} onApprove={channel => { setActionError(''); setCopied(null); approve.mutate(channel); }} onCopy={channel => { setActionError(''); setCopied(null); copy.mutate(channel); }} />}
+    </CardContent>
+  </Card>;
 }
 
 export function ChannelVariantsBundleView({ bundle, copied, busyChannel, locked, onApprove, onCopy }: { bundle: ChannelVariantsBundle; copied: string | null; busyChannel?: string; locked: boolean; onApprove: (channel: string) => void; onCopy: (channel: string) => void }) {
@@ -682,22 +725,29 @@ function ChannelVariantCard({ label, variant, approval, copied, busy, locked, on
   const busyOrLocked = busy || locked;
   const adPolicy = adPolicyOf(variant);
   const adFlagged = adPolicy.passed === false || adPolicy.hits.length > 0;
-  return <article className="panel queue-card" aria-label={`${label} variant`}>
-    <h3>{label}</h3>
-    <p>{valid ? (locked ? 'Locked while the pack changed' : approvedCurrent ? 'Human-approved exact text' : 'Verified, awaiting your approval') : 'Needs revision'} · {variant.status || 'unknown status'} · {variant.char_count} chars{label === 'X' ? ' / 280' : ''}</p>
-    {adFlagged
-      ? <div role="alert" aria-label={`Ad policy warning for ${label}`}><p><span className="badge pending">Ad Policy: {adPolicy.hits.length} violation{adPolicy.hits.length === 1 ? '' : 's'}</span></p><ul className="scout-list">{adPolicy.hits.map((hit, i) => <li key={i} className="scout-fact"><div className="scout-row"><strong>{hit.category}</strong><span className="tag">{hit.match}</span></div><p className="hint">{hit.reason}</p></li>)}</ul></div>
-      : adPolicy.passed === true
-        ? <p><span className="badge approved">Ad Shield: Compliant</span></p>
-        : null}
-    {label === 'Email' && variant.subject && <p className="hint">Subject: {variant.subject}</p>}
-    {valid ? <p className="draft">{variant.text}</p> : <p className="hint">{variant.reason || 'No text for this channel.'}</p>}
-    {variant.trim_note && <p className="hint">{variant.trim_note}</p>}
-    {approvedBy && <p className="hint">Channel approved by {approvedBy}{typeof approval?.revision === 'number' ? ` at revision ${approval.revision}` : ''}{approvedCurrent ? '' : ' (stale; re-approve the current exact text)'}</p>}
-    {variant.approval_note && <p className="hint">{variant.approval_note}</p>}
-    <div className="queue-actions"><Button variant="outline" disabled={!valid || busyOrLocked || approvedCurrent === true} onClick={onApprove}>Approve {label} text</Button><Button variant="outline" disabled={!approvedCurrent || busyOrLocked} onClick={onCopy}>Copy {label} text</Button></div>
-    {copied && <p role="status">Copied {label} text for offline use.</p>}
-  </article>;
+  return <Card aria-label={`${label} variant`}>
+    <CardHeader>
+      <CardTitle>{label}</CardTitle>
+      <CardDescription>{valid ? (locked ? 'Locked while the pack changed' : approvedCurrent ? 'Human-approved exact text' : 'Verified, awaiting your approval') : 'Needs revision'} · {variant.status || 'unknown status'} · {variant.char_count} chars{label === 'X' ? ' / 280' : ''}</CardDescription>
+    </CardHeader>
+    <CardContent>
+      <p><Badge variant="outline">{variant.status || 'unknown status'}</Badge></p>
+      {adFlagged
+        ? <Alert variant="destructive" aria-label={`Ad policy warning for ${label}`}><AlertTitle><Badge variant="destructive">Ad Policy: {adPolicy.hits.length} violation{adPolicy.hits.length === 1 ? '' : 's'}</Badge></AlertTitle><AlertDescription><ul className="scout-list">{adPolicy.hits.map((hit, i) => <li key={i} className="scout-fact"><div className="scout-row"><strong>{hit.category}</strong><span className="tag">{hit.match}</span></div><p className="hint">{hit.reason}</p></li>)}</ul></AlertDescription></Alert>
+        : adPolicy.passed === true
+          ? <p><Badge variant="success">Ad Shield: Compliant</Badge></p>
+          : null}
+      {label === 'Email' && variant.subject && <p className="hint">Subject: {variant.subject}</p>}
+      {valid ? <p className="draft">{variant.text}</p> : <p className="hint">{variant.reason || 'No text for this channel.'}</p>}
+      {variant.trim_note && <p className="hint">{variant.trim_note}</p>}
+      {approvedBy && <p className="hint">Channel approved by {approvedBy}{typeof approval?.revision === 'number' ? ` at revision ${approval.revision}` : ''}{approvedCurrent ? '' : ' (stale; re-approve the current exact text)'}</p>}
+      {variant.approval_note && <p className="hint">{variant.approval_note}</p>}
+    </CardContent>
+    <CardFooter>
+      <div className="queue-actions"><Button variant="outline" disabled={!valid || busyOrLocked || approvedCurrent === true} onClick={onApprove}>Approve {label} text</Button><Button variant="outline" disabled={!approvedCurrent || busyOrLocked} onClick={onCopy}>Copy {label} text</Button></div>
+      {copied && <p role="status">Copied {label} text for offline use.</p>}
+    </CardFooter>
+  </Card>;
 }
 
 type LandingParity = components['schemas']['LandingParityOut'];
@@ -733,35 +783,40 @@ export function LandingPageParitySection({ runId }: { runId: string }) {
   const unmatchedAdPrices = result?.unmatched_ad_prices ?? [];
   const detectedPolicies = result?.detected_policies ?? [];
   const missingPolicies = result?.missing_policies ?? [];
-  return <section className="panel" aria-label="Landing page offer parity">
-    <p className="eyebrow">LANDING PAGE OFFER PARITY</p>
-    <h2>Landing page audit.</h2>
-    <p className="hint">Paste the landing page HTML below. The audit compares it against the current post draft on the server: every price in the draft must appear on the page, and the footer must link the Privacy Policy, Terms of Service, and Refund Policy. Read-only: nothing is published and the URL is never fetched.</p>
-    <form onSubmit={e => { e.preventDefault(); verify.reset(); verify.mutate(); }}>
-      <label htmlFor={`landing-url-${runId}`}>Landing page URL (optional context, never fetched)</label>
-      <input id={`landing-url-${runId}`} maxLength={2000} value={landingUrl} onChange={e => setLandingUrl(e.target.value)} placeholder="https://example.com/offer" />
-      <label htmlFor={`landing-html-${runId}`}>Landing page HTML</label>
-      <textarea id={`landing-html-${runId}`} rows={6} required maxLength={200000} value={landingHtml} onChange={e => setLandingHtml(e.target.value)} placeholder="Paste the rendered landing page HTML here" />
-      <div className="queue-actions"><Button type="submit" disabled={verify.isPending || !landingHtml.trim()}>Audit landing page</Button></div>
-    </form>
-    {verify.isPending && <p>Auditing landing page...</p>}
-    {verify.error && <p role="alert">{verify.error.message}</p>}
-    {result && <>
-      <p role="status">{result.overall_passed
-        ? <span className="badge approved">Parity passed</span>
-        : <span className="badge pending">Parity issues found</span>}</p>
-      <h3>Price parity {result.parity_passed ? 'passed' : 'failed'}</h3>
-      <p className="hint">Prices in the post draft ({adPrices.length}): {adPrices.join(', ') || 'none detected'} · Prices on the landing page ({landingPrices.length}): {landingPrices.join(', ') || 'none detected'}</p>
-      {unmatchedAdPrices.length > 0
-        ? <p role="alert">Missing from the landing page: {unmatchedAdPrices.join(', ')}</p>
-        : <p className="hint">Every draft price appears on the landing page.</p>}
-      <h3>Legal footer links {result.legal_compliance_passed ? 'passed' : 'failed'}</h3>
-      <p className="hint">Detected ({detectedPolicies.length}): {detectedPolicies.map(landingPolicyLabel).join(', ') || 'none'} · Missing ({missingPolicies.length}): {missingPolicies.map(landingPolicyLabel).join(', ') || 'none'}</p>
-      {missingPolicies.length > 0
-        ? <p role="alert">Add footer links for: {missingPolicies.map(landingPolicyLabel).join(', ')}</p>
-        : <p className="hint">All mandatory legal footer links are present.</p>}
-    </>}
-  </section>;
+  return <Card aria-label="Landing page offer parity">
+    <CardHeader>
+      <p className="eyebrow">LANDING PAGE OFFER PARITY</p>
+      <CardTitle>Landing page audit.</CardTitle>
+      <CardDescription>Paste the landing page HTML below. The audit compares it against the current post draft on the server: every price in the draft must appear on the page, and the footer must link the Privacy Policy, Terms of Service, and Refund Policy. Read-only: nothing is published and the URL is never fetched.</CardDescription>
+    </CardHeader>
+    <CardContent>
+      <form onSubmit={e => { e.preventDefault(); verify.reset(); verify.mutate(); }}>
+        <Label htmlFor={`landing-url-${runId}`}>Landing page URL (optional context, never fetched)</Label>
+        <Input id={`landing-url-${runId}`} maxLength={2000} value={landingUrl} onChange={e => setLandingUrl(e.target.value)} placeholder="https://example.com/offer" />
+        <Label htmlFor={`landing-html-${runId}`}>Landing page HTML</Label>
+        <Textarea id={`landing-html-${runId}`} rows={6} required maxLength={200000} value={landingHtml} onChange={e => setLandingHtml(e.target.value)} placeholder="Paste the rendered landing page HTML here" />
+        <div className="queue-actions"><Button type="submit" disabled={verify.isPending || !landingHtml.trim()}>Audit landing page</Button></div>
+      </form>
+      <Separator />
+      {verify.isPending && <p>Auditing landing page...</p>}
+      {verify.error && <Alert variant="destructive"><AlertTitle>Audit failed</AlertTitle><AlertDescription>{verify.error.message}</AlertDescription></Alert>}
+      {result && <>
+        <p role="status">{result.overall_passed
+          ? <Badge variant="success">Parity passed</Badge>
+          : <Badge variant="destructive">Parity issues found</Badge>}</p>
+        <h3>Price parity {result.parity_passed ? 'passed' : 'failed'}</h3>
+        <p className="hint">Prices in the post draft ({adPrices.length}): {adPrices.join(', ') || 'none detected'} · Prices on the landing page ({landingPrices.length}): {landingPrices.join(', ') || 'none detected'}</p>
+        {unmatchedAdPrices.length > 0
+          ? <Alert variant="warning"><AlertTitle>Price mismatch</AlertTitle><AlertDescription>Missing from the landing page: {unmatchedAdPrices.join(', ')}</AlertDescription></Alert>
+          : <p className="hint">Every draft price appears on the landing page.</p>}
+        <h3>Legal footer links {result.legal_compliance_passed ? 'passed' : 'failed'}</h3>
+        <p className="hint">Detected ({detectedPolicies.length}): {detectedPolicies.map(landingPolicyLabel).join(', ') || 'none'} · Missing ({missingPolicies.length}): {missingPolicies.map(landingPolicyLabel).join(', ') || 'none'}</p>
+        {missingPolicies.length > 0
+          ? <Alert variant="warning"><AlertTitle>Missing legal links</AlertTitle><AlertDescription>Add footer links for: {missingPolicies.map(landingPolicyLabel).join(', ')}</AlertDescription></Alert>
+          : <p className="hint">All mandatory legal footer links are present.</p>}
+      </>}
+    </CardContent>
+  </Card>;
 }
 
 export const RUN_STAGE_ORDER = ['accepted', 'deterministic_checks', 'scout', 'maker_draft_v1', 'checker_v1', 'maker_draft_v2', 'checker_v2', 'receipt'];
