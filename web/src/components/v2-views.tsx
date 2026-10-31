@@ -104,9 +104,41 @@ export function MemoryView() {
   </section>;
 }
 
+/** Runs the memory DELETE request. DELETE returns 204 with no data, so it
+ *  cannot use unwrap's data requirement. The caller supplies the API client
+ *  so tests can pass a fake. Throws on any non-OK response. */
+export async function executeMemoryDelete(client: { DELETE: (path: '/api/memory/{item_id}', options: { params: { path: { item_id: string } } }) => Promise<{ response: { ok: boolean; status: number } }> }, itemId: string): Promise<void> {
+  const result = await client.DELETE('/api/memory/{item_id}', { params: { path: { item_id: itemId } } });
+  if (!result.response.ok) throw new Error(`Request failed (${result.response.status}). Could not delete memory.`);
+}
+
+/** Success notice shown after a memory item is deleted. */
+export function memoryDeletedNotice(title: string): string {
+  return `Memory item "${title}" deleted.`;
+}
+
+/** Confirmation dialogue for memory deletion. Rendered only after the
+ *  reviewer presses Delete, and deletion runs only after Confirm. */
+export function MemoryDeleteDialog({ itemTitle, itemKind, pending, error, onConfirm, onCancel }: {
+  itemTitle: string; itemKind: MemoryItem['kind']; pending: boolean; error: string | null; onConfirm: () => void; onCancel: () => void;
+}) {
+  return <div role="dialog" aria-modal="true" aria-label={`Delete memory "${itemTitle}"?`} className="panel queue-card">
+    <h3>Delete memory &quot;{itemTitle}&quot;?</h3>
+    <p>This permanently removes the memory item. Runs that selected it will no longer resolve it.</p>
+    {itemKind === 'voice_profile' && <p className="hint">Deleting a selected voice marks dependent approvals stale until a new human revision check passes.</p>}
+    {error && <p role="alert">{error}</p>}
+    <div className="queue-actions">
+      <Button type="button" variant="outline" disabled={pending} onClick={onCancel}>Cancel</Button>
+      <Button type="button" disabled={pending} onClick={onConfirm}>{pending ? 'Deleting...' : 'Confirm delete'}</Button>
+    </div>
+  </div>;
+}
+
 export function MemoryItemCard({ item }: { item: MemoryItem }) {
   const client = useQueryClient();
   const [editing, setEditing] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [deletedNotice, setDeletedNotice] = useState('');
   const [title, setTitle] = useState(item.title);
   const [content, setContent] = useState(JSON.stringify(item.content, null, 2));
   const refresh = () => client.invalidateQueries({ queryKey: ['memory'] });
@@ -115,12 +147,8 @@ export function MemoryItemCard({ item }: { item: MemoryItem }) {
     onSuccess: () => { setEditing(false); refresh(); }
   });
   const remove = useMutation({
-    mutationFn: async () => {
-      // DELETE returns 204 with no data, so it cannot use unwrap's data requirement.
-      const result = await api.DELETE('/api/memory/{item_id}', { params: { path: { item_id: item.id } } });
-      if (!result.response.ok) throw new Error(`Request failed (${result.response.status}). Could not delete memory.`);
-    },
-    onSuccess: refresh
+    mutationFn: () => executeMemoryDelete(api, item.id),
+    onSuccess: () => { setConfirming(false); setDeletedNotice(memoryDeletedNotice(item.title)); refresh(); }
   });
   const busy = save.isPending || remove.isPending;
   return <article className="panel queue-card" aria-label={`Memory item: ${item.title}`}>
@@ -131,11 +159,11 @@ export function MemoryItemCard({ item }: { item: MemoryItem }) {
       <label htmlFor={`memory-content-${item.id}`}>Edit content JSON object</label><textarea id={`memory-content-${item.id}`} required rows={5} value={content} onChange={e => setContent(e.target.value)} />
       <div className="queue-actions"><Button type="submit" disabled={busy}>Save memory</Button><Button type="button" variant="outline" disabled={busy} onClick={() => setEditing(false)}>Cancel</Button></div>
     </form> : <><pre>{JSON.stringify(item.content, null, 2)}</pre><Button variant="outline" disabled={busy} onClick={() => { setTitle(item.title); setContent(JSON.stringify(item.content, null, 2)); save.reset(); setEditing(true); }}>Edit memory</Button></>}
-    {(save.error || remove.error) && <p role="alert">{save.error?.message || remove.error?.message}</p>}
-    <Button variant="outline" disabled={busy} onClick={() => {
-      // A native confirmation dialog requires explicit confirmation before deletion.
-      if (window.confirm(`Delete memory "${item.title}"?`)) remove.mutate();
-    }}>Delete memory</Button>
+    {save.error && <p role="alert">{save.error.message}</p>}
+    {deletedNotice && <p role="status">{deletedNotice}</p>}
+    {confirming
+      ? <MemoryDeleteDialog itemTitle={item.title} itemKind={item.kind} pending={remove.isPending} error={remove.error?.message ?? null} onConfirm={() => remove.mutate()} onCancel={() => { remove.reset(); setConfirming(false); }} />
+      : <Button variant="outline" disabled={busy} onClick={() => { remove.reset(); setDeletedNotice(''); setConfirming(true); }}>Delete memory</Button>}
   </article>;
 }
 

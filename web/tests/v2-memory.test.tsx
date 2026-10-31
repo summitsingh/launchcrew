@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { MemoryView } from '../src/components/v2-views';
+import { MemoryDeleteDialog, MemoryView, executeMemoryDelete, memoryDeletedNotice } from '../src/components/v2-views';
 import { memoryEditPayload } from '../src/lib/v2';
 import { unwrap } from '../src/lib/api';
 import type { components } from '../src/lib/schema';
@@ -27,6 +27,50 @@ describe('Memory review controls', () => {
   it('accepts a 201 create response through unwrap', async () => {
     const data = { id: 'memory_demo' };
     await expect(unwrap(Promise.resolve({ data, response: new Response(JSON.stringify(data), { status: 201 }) }))).resolves.toEqual(data);
+  });
+
+  it('deletes through the memory endpoint and reports failures', async () => {
+    const okClient = { DELETE: vi.fn().mockResolvedValue({ response: { ok: true, status: 204 } }) };
+    await expect(executeMemoryDelete(okClient, 'memory_demo')).resolves.toBeUndefined();
+    expect(okClient.DELETE).toHaveBeenCalledWith('/api/memory/{item_id}', { params: { path: { item_id: 'memory_demo' } } });
+    const badClient = { DELETE: vi.fn().mockResolvedValue({ response: { ok: false, status: 404 } }) };
+    await expect(executeMemoryDelete(badClient, 'memory_missing')).rejects.toThrow('Request failed (404). Could not delete memory.');
+  });
+
+  it('names the deleted item in the success notice', () => {
+    expect(memoryDeletedNotice('Wallet facts')).toBe('Memory item "Wallet facts" deleted.');
+  });
+
+  it('asks for confirmation in a dialogue before deletion runs', () => {
+    const dialog = renderToStaticMarkup(
+      <MemoryDeleteDialog itemTitle="Wallet facts" itemKind="brand_fact" pending={false} error={null} onConfirm={() => {}} onCancel={() => {}} />,
+    );
+    expect(dialog).toContain('role="dialog"');
+    expect(dialog).toContain('aria-modal="true"');
+    expect(dialog).toContain('Wallet facts');
+    expect(dialog).toContain('Confirm delete');
+    expect(dialog).toContain('Cancel');
+    expect(dialog).not.toContain('role="alert"');
+  });
+
+  it('shows pending, error, and voice states inside the dialogue', () => {
+    const pending = renderToStaticMarkup(
+      <MemoryDeleteDialog itemTitle="Wallet facts" itemKind="brand_fact" pending={true} error={null} onConfirm={() => {}} onCancel={() => {}} />,
+    );
+    expect(pending).toContain('Deleting...');
+    const failed = renderToStaticMarkup(
+      <MemoryDeleteDialog itemTitle="Wallet facts" itemKind="brand_fact" pending={false} error="Request failed (404). Could not delete memory." onConfirm={() => {}} onCancel={() => {}} />,
+    );
+    expect(failed).toContain('role="alert"');
+    expect(failed).toContain('Request failed (404). Could not delete memory.');
+    const voice = renderToStaticMarkup(
+      <MemoryDeleteDialog itemTitle="Synthetic voice" itemKind="voice_profile" pending={false} error={null} onConfirm={() => {}} onCancel={() => {}} />,
+    );
+    expect(voice).toContain('marks dependent approvals stale');
+    const plain = renderToStaticMarkup(
+      <MemoryDeleteDialog itemTitle="Wallet facts" itemKind="brand_fact" pending={false} error={null} onConfirm={() => {}} onCancel={() => {}} />,
+    );
+    expect(plain).not.toContain('marks dependent approvals stale');
   });
 
   it('renders the forms and cached items without contacting a backend', () => {

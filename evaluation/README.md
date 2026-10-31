@@ -51,3 +51,20 @@ If the Checker entrypoint is missing or a result is not a dict, the runner exits
 - Sentence-level fictional cases only. Not full run, policy, or voice quality.
 - No baseline comparison until a separately bounded real model run is approved and logged.
 - Paraphrased supported controls may be blocked by exact match logic. That outcome is recorded as false block and category mismatch, not relabeled.
+
+## Voice edits
+
+- File: `voice_edits.py`, stdlib plus the production pipeline entrypoint, no model calls, no network, no database.
+- For each distinct product in `dataset_v1.json`, runs the deterministic keyless pipeline twice on the union of that product's confirmed facts: Arm A without a voice profile, Arm B with one synthetic voice profile carrying a single banned term picked from that product's own claims.
+- Reports numbers only per product (blocked counts, v2 draft character counts, Arm A vs Arm B character distances, sentences changed, voice-blocked claim counts) plus summary medians and totals. No claim text, no draft text, no quality or preference inferences.
+- Output: `voice_edits_report.json`, committed alongside the script output from the measured run.
+
+Usage:
+
+```bash
+python evaluation/voice_edits.py --dataset evaluation/dataset_v1.json --out evaluation/voice_edits_report.json --source-sha <sha>
+```
+
+## Tests
+
+- `test_voice_edits.py` checks the metric helpers and the banned-term picker with synthetic inputs only. No pipeline runs, no database.
