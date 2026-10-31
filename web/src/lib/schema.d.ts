@@ -497,6 +497,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/import-suggestions/structured": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import Suggestions Structured
+         * @description Parse pasted listing or social text into per-field unconfirmed suggestions.
+         *
+         *     Stateless owner intake: deterministic stdlib parse only, no database
+         *     writes, no memory writes, no model calls, no network. Every field
+         *     suggestion returns confirmed false with provenance; explicit per-field
+         *     product-facts confirmation is still required before any evidence use.
+         *     A new paste never silently replaces a pending proposal: callers pass
+         *     the pending proposal digest as active_digest, and a different new
+         *     proposal without confirm_replace is refused with 409 carrying the held
+         *     proposal, so the owner can keep both or confirm replacement.
+         */
+        post: operations["import_suggestions_structured_api_import_suggestions_structured_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/memory": {
         parameters: {
             query?: never;
@@ -1435,8 +1464,51 @@ export interface components {
             /** Post */
             post: string;
         };
+        /** DriveFieldSuggestionItem */
+        DriveFieldSuggestionItem: {
+            /**
+             * Confirmed
+             * @default false
+             * @constant
+             */
+            confirmed: false;
+            /**
+             * Field
+             * @enum {string}
+             */
+            field: "material" | "contents" | "size" | "price" | "allowed_claim" | "founder_note";
+            /** Index */
+            index: number;
+            /**
+             * Product Fact Source
+             * @default drive_file
+             * @constant
+             */
+            product_fact_source: "drive_file";
+            /**
+             * Source
+             * @default drive_file
+             * @constant
+             */
+            source: "drive_file";
+            /**
+             * Status
+             * @default unconfirmed
+             * @constant
+             */
+            status: "unconfirmed";
+            /** Text */
+            text: string;
+        };
         /** DriveImportIn */
         DriveImportIn: {
+            /** Active Digest */
+            active_digest?: string | null;
+            /**
+             * Confirm Replace
+             * @default false
+             */
+            confirm_replace: boolean;
             /** Drive Token */
             drive_token: string;
             /** File Id */
@@ -1452,6 +1524,8 @@ export interface components {
             dropped_empty: number;
             /** Dropped Overlong */
             dropped_overlong: number;
+            /** Field Suggestions */
+            field_suggestions: components["schemas"]["DriveFieldSuggestionItem"][];
             /** File Title */
             file_title: string;
             /** Mime Type */
@@ -1464,6 +1538,13 @@ export interface components {
              * @constant
              */
             product_fact_source: "drive_file";
+            /** Proposal Digest */
+            proposal_digest: string;
+            /**
+             * Replaced
+             * @default false
+             */
+            replaced: boolean;
             /** Selection Context */
             selection_context: string;
             /**
@@ -3036,6 +3117,95 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** StructuredImportIn */
+        StructuredImportIn: {
+            /** Active Digest */
+            active_digest?: string | null;
+            /**
+             * Confirm Replace
+             * @default false
+             */
+            confirm_replace: boolean;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "listing" | "instagram_bio" | "instagram_caption";
+            /** Text */
+            text: string;
+        };
+        /** StructuredImportOut */
+        StructuredImportOut: {
+            /** Dropped Duplicates */
+            dropped_duplicates: number;
+            /** Dropped Empty */
+            dropped_empty: number;
+            /** Dropped Overlong */
+            dropped_overlong: number;
+            /** Field Suggestions */
+            field_suggestions: components["schemas"]["StructuredSuggestionItem"][];
+            /** Parser Version */
+            parser_version: string;
+            /**
+             * Product Fact Source
+             * @enum {string}
+             */
+            product_fact_source: "owner" | "pasted_text" | "memory" | "listing" | "campaign_brief" | "demo_template" | "drive_file";
+            /** Proposal Digest */
+            proposal_digest: string;
+            /**
+             * Replaced
+             * @default false
+             */
+            replaced: boolean;
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "listing" | "instagram_bio" | "instagram_caption";
+            /**
+             * Status
+             * @default unconfirmed
+             * @constant
+             */
+            status: "unconfirmed";
+            /** Truncated */
+            truncated: boolean;
+        };
+        /** StructuredSuggestionItem */
+        StructuredSuggestionItem: {
+            /**
+             * Confirmed
+             * @default false
+             * @constant
+             */
+            confirmed: false;
+            /**
+             * Field
+             * @enum {string}
+             */
+            field: "material" | "contents" | "size" | "price" | "allowed_claim" | "founder_note";
+            /** Index */
+            index: number;
+            /**
+             * Product Fact Source
+             * @enum {string}
+             */
+            product_fact_source: "owner" | "pasted_text" | "memory" | "listing" | "campaign_brief" | "demo_template" | "drive_file";
+            /**
+             * Source
+             * @enum {string}
+             */
+            source: "listing" | "instagram_bio" | "instagram_caption";
+            /**
+             * Status
+             * @default unconfirmed
+             * @constant
+             */
+            status: "unconfirmed";
+            /** Text */
+            text: string;
+        };
         /** SuggestedFact */
         SuggestedFact: {
             /**
@@ -4171,6 +4341,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ImportSuggestionsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    import_suggestions_structured_api_import_suggestions_structured_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StructuredImportIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StructuredImportOut"];
                 };
             };
             /** @description Validation Error */

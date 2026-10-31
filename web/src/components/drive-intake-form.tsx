@@ -3,6 +3,13 @@ import { useEffect, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { api, unwrap } from '@/lib/api';
+import { PendingReplaceBanner, StructuredProposalFields } from '@/components/import-suggestions-form';
+import {
+  PENDING_REPLACE_WARNING,
+  StructuredReplaceConflict,
+  applyStructuredSuggestionToState,
+  isStructuredConflictError,
+} from '@/lib/import-suggestions';
 import {
   DRIVE_AUTHORIZE_URL,
   DRIVE_PICKER_SCRIPT,
@@ -16,8 +23,6 @@ import {
   driveStatusMessage,
   isSupportedDriveMime,
   isSupportedDrivePhotoMime,
-  toOwnerFactFromDriveSuggestion,
-  toOwnerFactsFromDriveSuggestions,
   toUnconfirmedDrivePhotoClaim,
   validateDriveFileId,
   validateDrivePhotoApproval,
@@ -29,7 +34,7 @@ import {
   type DriveStatusOut,
   type DriveSuggestionItem,
 } from '@/lib/drive-intake';
-import { sourceLabel, type OwnerFactState } from '@/lib/product-facts';
+import { sourceLabel, type OwnerFactsState } from '@/lib/product-facts';
 
 declare global {
   interface Window {
@@ -154,10 +159,10 @@ export function DriveSuggestionsList({
 }
 
 export function DriveIntakeForm({
-  onAdd,
+  onApplyState,
   disabled,
 }: {
-  onAdd: (facts: OwnerFactState[]) => void;
+  onApplyState: (updater: (state: OwnerFactsState) => OwnerFactsState) => void;
   disabled?: boolean;
 }) {
   const [pickerReady, setPickerReady] = useState(false);
@@ -166,7 +171,8 @@ export function DriveIntakeForm({
   const [selectionTitle, setSelectionTitle] = useState('');
   const [selectionMime, setSelectionMime] = useState('');
   const [result, setResult] = useState<DriveImportOut | null>(null);
-  const [edited, setEdited] = useState<Record<number, string>>({});
+  const [held, setHeld] = useState<DriveImportOut | null>(null);
+  const [replaceWarning, setReplaceWarning] = useState('');
   const [localError, setLocalError] = useState('');
 
   const statusQuery = useQuery({
@@ -211,24 +217,44 @@ export function DriveIntakeForm({
   const busy = statusQuery.isPending || configQuery.isPending || disabled === true;
 
   const suggest = useMutation({
-    mutationFn: (input: { file_id: string; resource_key: string | null; drive_token: string }) =>
-      unwrap(
-        api.POST('/api/drive-import/suggestions', {
-          body: {
-            file_id: input.file_id,
-            resource_key: input.resource_key,
-            drive_token: input.drive_token,
-          },
-        }),
-      ),
+    mutationFn: async (input: { file_id: string; resource_key: string | null; drive_token: string; confirm_replace: boolean }) => {
+      const { data, error, response } = await api.POST('/api/drive-import/suggestions', {
+        body: {
+          file_id: input.file_id,
+          resource_key: input.resource_key,
+          drive_token: input.drive_token,
+          active_digest: result?.proposal_digest ?? null,
+          confirm_replace: input.confirm_replace,
+        },
+      });
+      if (!response.ok || !data) {
+        const conflict = error as unknown;
+        if (response.status === 409 && isStructuredConflictError(conflict)) {
+          throw new StructuredReplaceConflict(
+            conflict.message || PENDING_REPLACE_WARNING,
+            conflict.active_digest,
+            conflict.proposal_digest,
+            conflict.proposal,
+          );
+        }
+        throw new Error(`Request failed (${response.status}). Check the API and try again.`);
+      }
+      return data;
+    },
     onSuccess: data => {
       setResult(data);
-      setEdited({});
+      setHeld(null);
+      setReplaceWarning('');
       setLocalError('');
       setPickerToken('');
     },
     onError: (error: unknown) => {
       setPickerToken('');
+      if (error instanceof StructuredReplaceConflict) {
+        setHeld(error.proposal as unknown as DriveImportOut);
+        setReplaceWarning(error.message);
+        return;
+      }
       const message = error instanceof Error ? error.message : '';
       const match = message.match(/\((\d+)\)/);
       const code = match ? Number(match[1]) : 0;
@@ -265,18 +291,15 @@ export function DriveIntakeForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleEdit = (index: number, value: string) => {
-    setEdited(prev => ({ ...prev, [index]: value }));
-  };
-  const handleAddOne = (index: number) => {
-    if (!result) return;
-    const item = result.suggestions.find(s => s.index === index) as DriveSuggestionItem | undefined;
+  const applyOne = (proposal: DriveImportOut) => (index: number, value: string) => {
+    const item = proposal.field_suggestions.find(s => s.index === index);
     if (!item) return;
-    onAdd([toOwnerFactFromDriveSuggestion(item, edited[index] ?? item.text)]);
+    onApplyState(prev => applyStructuredSuggestionToState(prev, item, value));
   };
-  const handleAddAll = () => {
-    if (!result) return;
-    onAdd(toOwnerFactsFromDriveSuggestions(result.suggestions, edited));
+  const applyAll = (proposal: DriveImportOut) => (selected: { index: number; value: string }[]) => {
+    for (const { index, value } of selected) {
+      applyOne(proposal)(index, value);
+    }
   };
 
   const launchPickerWithToken = (token: string) => {
@@ -353,7 +376,7 @@ export function DriveIntakeForm({
           }
           setSelectionTitle(title);
           setSelectionMime(mime);
-          suggest.mutate({ file_id: fileId, resource_key: resourceKey, drive_token: token });
+          suggest.mutate({ file_id: fileId, resource_key: resourceKey, drive_token: token, confirm_replace: false });
         })
         .build();
       if (!picker || typeof picker.setVisible !== 'function') {
@@ -368,7 +391,6 @@ export function DriveIntakeForm({
 
   const handleChoose = () => {
     setLocalError('');
-    setResult(null);
     if (!config) {
       setLocalError(driveErrorMessage(503));
       return;
@@ -434,14 +456,45 @@ export function DriveIntakeForm({
       {!ready && available && !scriptError && (
         <p className="hint">Loading Drive Picker libraries. Pasted-text import still works.</p>
       )}
+      {replaceWarning && held && (
+        <div>
+          <PendingReplaceBanner
+            warning={replaceWarning}
+            activeDigest={result?.proposal_digest}
+            heldDigest={held.proposal_digest}
+            heldLabel="Held"
+            onReplace={() => {
+              setResult({ ...held, replaced: true });
+              setHeld(null);
+              setReplaceWarning('');
+            }}
+            onKeep={() => { setHeld(null); setReplaceWarning(''); }}
+          />
+          <p className="hint">The held import is shown below for review. Replacement needs no new file read.</p>
+        </div>
+      )}
       {result && (
-        <DriveSuggestionsList
-          result={result}
-          edited={edited}
-          onEdit={handleEdit}
-          onAddOne={handleAddOne}
-          onAddAll={handleAddAll}
-        />
+        <div>
+          <h4>Pending per-field proposal (Drive file)</h4>
+          {result.replaced && <p className="hint">Pending proposal was replaced by your confirmed replacement.</p>}
+          <StructuredProposalFields
+            result={result}
+            idPrefix="drive-pending"
+            onApplyOne={applyOne(result)}
+            onApplyAll={applyAll(result)}
+          />
+        </div>
+      )}
+      {held && (
+        <div>
+          <h4>Held new import (did not replace pending)</h4>
+          <StructuredProposalFields
+            result={held}
+            idPrefix="drive-held"
+            onApplyOne={applyOne(held)}
+            onApplyAll={applyAll(held)}
+          />
+        </div>
       )}
       {pickerToken && <p className="hint">Drive session is active for this selection only.</p>}
     </div>
@@ -568,6 +621,7 @@ export function DrivePhotoIntakeForm({
             file_id: input.file_id,
             resource_key: input.resource_key,
             drive_token: input.drive_token,
+            confirm_replace: false,
           },
         }),
       ) as unknown as Promise<DrivePhotoProposalOut>,

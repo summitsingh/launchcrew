@@ -99,6 +99,40 @@ class ImportSuggestionsOut(Strict):
     parser_version: str
 
 
+StructuredFieldName = Literal['material', 'contents', 'size', 'price', 'allowed_claim', 'founder_note']
+
+
+class StructuredImportIn(Strict):
+    text: str = Field(max_length=10000)
+    source: ImportSource
+    active_digest: str | None = Field(default=None, max_length=128)
+    confirm_replace: bool = False
+
+
+class StructuredSuggestionItem(Strict):
+    field: StructuredFieldName
+    text: str
+    source: ImportSource
+    product_fact_source: ProductFactSource
+    status: Literal['unconfirmed'] = 'unconfirmed'
+    confirmed: Literal[False] = False
+    index: int
+
+
+class StructuredImportOut(Strict):
+    status: Literal['unconfirmed'] = 'unconfirmed'
+    source: ImportSource
+    product_fact_source: ProductFactSource
+    field_suggestions: list[StructuredSuggestionItem]
+    proposal_digest: str
+    replaced: bool = False
+    truncated: bool
+    dropped_duplicates: int
+    dropped_overlong: int
+    dropped_empty: int
+    parser_version: str
+
+
 class RunInput(Idea):
     agent_name: str = Field(description='Legacy Maker selector. Preserved for compatibility. Maker stage uses maker_name when provided, else agent_name.')
     scout_name: str | None = Field(default=None, description='Scout stage agent name. Defaults to built-in Scout.')
@@ -526,6 +560,61 @@ def import_suggestions(body: ImportSuggestionsIn, actor: str = Depends(auth.acto
             'dropped_overlong': result['dropped_overlong'],
             'dropped_empty': result['dropped_empty'],
             'parser_version': result['parser_version']}
+
+
+def _structured_out(result, product_source, replaced=False):
+    field_suggestions = [{'field': item['field'], 'text': item['text'],
+                          'source': item['source'],
+                          'product_fact_source': product_source,
+                          'status': 'unconfirmed', 'confirmed': False,
+                          'index': item['index']} for item in result['field_suggestions']]
+    return {'status': 'unconfirmed', 'source': result['source'],
+            'product_fact_source': product_source,
+            'field_suggestions': field_suggestions,
+            'proposal_digest': result['proposal_digest'],
+            'replaced': replaced,
+            'truncated': result['truncated'],
+            'dropped_duplicates': result['dropped_duplicates'],
+            'dropped_overlong': result['dropped_overlong'],
+            'dropped_empty': result['dropped_empty'],
+            'parser_version': result['parser_version']}
+
+
+@app.post('/api/import-suggestions/structured', response_model=StructuredImportOut)
+def import_suggestions_structured(body: StructuredImportIn, actor: str = Depends(auth.actor)):
+    """Parse pasted listing or social text into per-field unconfirmed suggestions.
+
+    Stateless owner intake: deterministic stdlib parse only, no database
+    writes, no memory writes, no model calls, no network. Every field
+    suggestion returns confirmed false with provenance; explicit per-field
+    product-facts confirmation is still required before any evidence use.
+    A new paste never silently replaces a pending proposal: callers pass
+    the pending proposal digest as active_digest, and a different new
+    proposal without confirm_replace is refused with 409 carrying the held
+    proposal, so the owner can keep both or confirm replacement.
+    """
+    from launchcrew.import_suggestions import (
+        REPLACE_WARNING,
+        is_replace_conflict,
+        parse_structured_import,
+    )
+    result = parse_structured_import(body.text, body.source)
+    mapping = {'listing': 'listing', 'instagram_bio': 'pasted_text',
+               'instagram_caption': 'pasted_text'}
+    product_source = mapping[body.source]
+    if is_replace_conflict(body.active_digest, result['proposal_digest'], body.confirm_replace):
+        held = _structured_out(result, product_source)
+        raise HTTPException(409, detail={
+            'message': REPLACE_WARNING,
+            'active_digest': (body.active_digest or '').strip().lower(),
+            'proposal_digest': result['proposal_digest'],
+            'proposal': held,
+        })
+    replaced = bool(
+        body.confirm_replace and body.active_digest
+        and (body.active_digest or '').strip().lower() != result['proposal_digest']
+    )
+    return _structured_out(result, product_source, replaced=replaced)
 
 
 @app.get('/api/agents', response_model=list[Profile])

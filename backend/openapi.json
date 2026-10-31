@@ -931,9 +931,82 @@
         "title": "Draft",
         "type": "object"
       },
+      "DriveFieldSuggestionItem": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed": {
+            "const": false,
+            "default": false,
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "field": {
+            "enum": [
+              "material",
+              "contents",
+              "size",
+              "price",
+              "allowed_claim",
+              "founder_note"
+            ],
+            "title": "Field",
+            "type": "string"
+          },
+          "index": {
+            "title": "Index",
+            "type": "integer"
+          },
+          "product_fact_source": {
+            "const": "drive_file",
+            "default": "drive_file",
+            "title": "Product Fact Source",
+            "type": "string"
+          },
+          "source": {
+            "const": "drive_file",
+            "default": "drive_file",
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "const": "unconfirmed",
+            "default": "unconfirmed",
+            "title": "Status",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "field",
+          "text",
+          "index"
+        ],
+        "title": "DriveFieldSuggestionItem",
+        "type": "object"
+      },
       "DriveImportIn": {
         "additionalProperties": false,
         "properties": {
+          "active_digest": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Digest"
+          },
+          "confirm_replace": {
+            "default": false,
+            "title": "Confirm Replace",
+            "type": "boolean"
+          },
           "drive_token": {
             "maxLength": 4096,
             "minLength": 1,
@@ -980,6 +1053,13 @@
             "title": "Dropped Overlong",
             "type": "integer"
           },
+          "field_suggestions": {
+            "items": {
+              "$ref": "#/components/schemas/DriveFieldSuggestionItem"
+            },
+            "title": "Field Suggestions",
+            "type": "array"
+          },
           "file_title": {
             "title": "File Title",
             "type": "string"
@@ -997,6 +1077,15 @@
             "default": "drive_file",
             "title": "Product Fact Source",
             "type": "string"
+          },
+          "proposal_digest": {
+            "title": "Proposal Digest",
+            "type": "string"
+          },
+          "replaced": {
+            "default": false,
+            "title": "Replaced",
+            "type": "boolean"
           },
           "selection_context": {
             "title": "Selection Context",
@@ -1030,9 +1119,11 @@
           "dropped_duplicates",
           "dropped_empty",
           "dropped_overlong",
+          "field_suggestions",
           "file_title",
           "mime_type",
           "parser_version",
+          "proposal_digest",
           "selection_context",
           "suggestions",
           "truncated"
@@ -4544,6 +4635,198 @@
         "title": "ScoutSection",
         "type": "object"
       },
+      "StructuredImportIn": {
+        "additionalProperties": false,
+        "properties": {
+          "active_digest": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Digest"
+          },
+          "confirm_replace": {
+            "default": false,
+            "title": "Confirm Replace",
+            "type": "boolean"
+          },
+          "source": {
+            "enum": [
+              "listing",
+              "instagram_bio",
+              "instagram_caption"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 10000,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "source"
+        ],
+        "title": "StructuredImportIn",
+        "type": "object"
+      },
+      "StructuredImportOut": {
+        "additionalProperties": false,
+        "properties": {
+          "dropped_duplicates": {
+            "title": "Dropped Duplicates",
+            "type": "integer"
+          },
+          "dropped_empty": {
+            "title": "Dropped Empty",
+            "type": "integer"
+          },
+          "dropped_overlong": {
+            "title": "Dropped Overlong",
+            "type": "integer"
+          },
+          "field_suggestions": {
+            "items": {
+              "$ref": "#/components/schemas/StructuredSuggestionItem"
+            },
+            "title": "Field Suggestions",
+            "type": "array"
+          },
+          "parser_version": {
+            "title": "Parser Version",
+            "type": "string"
+          },
+          "product_fact_source": {
+            "enum": [
+              "owner",
+              "pasted_text",
+              "memory",
+              "listing",
+              "campaign_brief",
+              "demo_template",
+              "drive_file"
+            ],
+            "title": "Product Fact Source",
+            "type": "string"
+          },
+          "proposal_digest": {
+            "title": "Proposal Digest",
+            "type": "string"
+          },
+          "replaced": {
+            "default": false,
+            "title": "Replaced",
+            "type": "boolean"
+          },
+          "source": {
+            "enum": [
+              "listing",
+              "instagram_bio",
+              "instagram_caption"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "const": "unconfirmed",
+            "default": "unconfirmed",
+            "title": "Status",
+            "type": "string"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "source",
+          "product_fact_source",
+          "field_suggestions",
+          "proposal_digest",
+          "truncated",
+          "dropped_duplicates",
+          "dropped_overlong",
+          "dropped_empty",
+          "parser_version"
+        ],
+        "title": "StructuredImportOut",
+        "type": "object"
+      },
+      "StructuredSuggestionItem": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed": {
+            "const": false,
+            "default": false,
+            "title": "Confirmed",
+            "type": "boolean"
+          },
+          "field": {
+            "enum": [
+              "material",
+              "contents",
+              "size",
+              "price",
+              "allowed_claim",
+              "founder_note"
+            ],
+            "title": "Field",
+            "type": "string"
+          },
+          "index": {
+            "title": "Index",
+            "type": "integer"
+          },
+          "product_fact_source": {
+            "enum": [
+              "owner",
+              "pasted_text",
+              "memory",
+              "listing",
+              "campaign_brief",
+              "demo_template",
+              "drive_file"
+            ],
+            "title": "Product Fact Source",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "listing",
+              "instagram_bio",
+              "instagram_caption"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "const": "unconfirmed",
+            "default": "unconfirmed",
+            "title": "Status",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "field",
+          "text",
+          "source",
+          "product_fact_source",
+          "index"
+        ],
+        "title": "StructuredSuggestionItem",
+        "type": "object"
+      },
       "SuggestedFact": {
         "additionalProperties": true,
         "properties": {
@@ -6052,6 +6335,45 @@
           }
         },
         "summary": "Import Suggestions"
+      }
+    },
+    "/api/import-suggestions/structured": {
+      "post": {
+        "description": "Parse pasted listing or social text into per-field unconfirmed suggestions.\n\nStateless owner intake: deterministic stdlib parse only, no database\nwrites, no memory writes, no model calls, no network. Every field\nsuggestion returns confirmed false with provenance; explicit per-field\nproduct-facts confirmation is still required before any evidence use.\nA new paste never silently replaces a pending proposal: callers pass\nthe pending proposal digest as active_digest, and a different new\nproposal without confirm_replace is refused with 409 carrying the held\nproposal, so the owner can keep both or confirm replacement.",
+        "operationId": "import_suggestions_structured_api_import_suggestions_structured_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StructuredImportIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StructuredImportOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Import Suggestions Structured"
       }
     },
     "/api/memory": {

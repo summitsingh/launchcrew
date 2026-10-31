@@ -184,6 +184,8 @@ class DriveImportIn(Strict):
     drive_token: str = Field(min_length=1, max_length=4096)
     file_id: str = Field(min_length=1, max_length=256)
     resource_key: str | None = None
+    active_digest: str | None = Field(default=None, max_length=128)
+    confirm_replace: bool = False
 
 
 class DrivePickerTokenOut(Strict):
@@ -193,6 +195,16 @@ class DrivePickerTokenOut(Strict):
 
 
 class DriveSuggestionItem(Strict):
+    text: str
+    source: Literal['drive_file'] = 'drive_file'
+    product_fact_source: Literal['drive_file'] = 'drive_file'
+    status: Literal['unconfirmed'] = 'unconfirmed'
+    confirmed: Literal[False] = False
+    index: int
+
+
+class DriveFieldSuggestionItem(Strict):
+    field: Literal['material', 'contents', 'size', 'price', 'allowed_claim', 'founder_note']
     text: str
     source: Literal['drive_file'] = 'drive_file'
     product_fact_source: Literal['drive_file'] = 'drive_file'
@@ -221,10 +233,13 @@ class DriveImportOut(Strict):
     dropped_duplicates: int
     dropped_empty: int
     dropped_overlong: int
+    field_suggestions: list[DriveFieldSuggestionItem]
     file_title: str
     mime_type: str
     parser_version: str
     product_fact_source: Literal['drive_file'] = 'drive_file'
+    proposal_digest: str
+    replaced: bool = False
     selection_context: str
     source: Literal['drive_file'] = 'drive_file'
     status: Literal['unconfirmed'] = 'unconfirmed'
@@ -904,10 +919,14 @@ def import_drive_selection(
         raise HTTPException(422, 'Unsupported Drive file type')
     text = decode_text(bytes(data))
 
-    from launchcrew.import_suggestions import parse_import_text
+    from launchcrew.import_suggestions import parse_import_text, parse_structured_import
 
     try:
         parsed = parse_import_text(text, 'drive_file')
+    except (TypeError, ValueError):
+        raise HTTPException(422, 'Unsupported Drive file type') from None
+    try:
+        structured = parse_structured_import(text, 'drive_file')
     except (TypeError, ValueError):
         raise HTTPException(422, 'Unsupported Drive file type') from None
     suggestions = [
@@ -921,6 +940,18 @@ def import_drive_selection(
         }
         for item in parsed['suggestions']
     ]
+    field_suggestions = [
+        {
+            'field': item['field'],
+            'text': item['text'],
+            'source': 'drive_file',
+            'product_fact_source': 'drive_file',
+            'status': 'unconfirmed',
+            'confirmed': False,
+            'index': item['index'],
+        }
+        for item in structured['field_suggestions']
+    ]
     return {
         'status': 'unconfirmed',
         'source': 'drive_file',
@@ -929,6 +960,9 @@ def import_drive_selection(
         'mime_type': mime,
         'selection_context': SELECTION_CONTEXT,
         'suggestions': suggestions,
+        'field_suggestions': field_suggestions,
+        'proposal_digest': structured['proposal_digest'],
+        'replaced': False,
         'truncated': parsed['truncated'],
         'dropped_duplicates': parsed['dropped_duplicates'],
         'dropped_overlong': parsed['dropped_overlong'],
@@ -1180,6 +1214,7 @@ def drive_picker_token(request: Request, actor: str = Depends(auth.actor)):
 
 @router.post('/suggestions', response_model=DriveImportOut)
 def drive_suggestions(body: DriveImportIn, request: Request, actor: str = Depends(auth.actor), provider: DriveProvider = Depends(get_provider)):
+    from launchcrew.import_suggestions import REPLACE_WARNING, is_replace_conflict
     store.workspace_for_actor(actor)
     if not drive_configured():
         raise HTTPException(503, 'Drive intake unavailable')
@@ -1187,7 +1222,19 @@ def drive_suggestions(body: DriveImportIn, request: Request, actor: str = Depend
     _, session_hash = _session_parts(request)
     if not session_hash:
         raise HTTPException(401, 'Sign in required')
-    return import_drive_selection(body.file_id, body.resource_key, provider=provider, token=body.drive_token, actor=actor, session_hash=session_hash)
+    result = import_drive_selection(body.file_id, body.resource_key, provider=provider, token=body.drive_token, actor=actor, session_hash=session_hash)
+    if is_replace_conflict(body.active_digest, result['proposal_digest'], body.confirm_replace):
+        held = dict(result)
+        raise HTTPException(409, detail={
+            'message': REPLACE_WARNING,
+            'active_digest': (body.active_digest or '').strip().lower(),
+            'proposal_digest': result['proposal_digest'],
+            'proposal': held,
+        })
+    if body.confirm_replace and body.active_digest and (body.active_digest or '').strip().lower() != result['proposal_digest']:
+        result = dict(result)
+        result['replaced'] = True
+    return result
 
 
 @router.post('/photo-suggestions', response_model=DrivePhotoProposalOut)

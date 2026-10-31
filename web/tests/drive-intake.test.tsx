@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { DriveIntakeForm, DrivePhotoIntakeForm, DrivePhotoProposalView, DriveSuggestionsList } from '../src/components/drive-intake-form';
+import { PendingReplaceBanner, StructuredProposalFields } from '../src/components/import-suggestions-form';
+import { PENDING_REPLACE_WARNING, applyStructuredSuggestionToState } from '../src/lib/import-suggestions';
 import {
   DRIVE_AUTHORIZE_URL,
   DRIVE_MAX_BYTES,
@@ -51,6 +53,13 @@ function driveResult(): DriveImportOut {
       { text: 'Canvas tote', source: 'drive_file', product_fact_source: 'drive_file', status: 'unconfirmed', confirmed: false, index: 0 },
       { text: 'Large', source: 'drive_file', product_fact_source: 'drive_file', status: 'unconfirmed', confirmed: false, index: 1 },
     ],
+    field_suggestions: [
+      { field: 'material', text: 'Canvas tote', source: 'drive_file', product_fact_source: 'drive_file', status: 'unconfirmed', confirmed: false, index: 0 },
+      { field: 'size', text: 'Large', source: 'drive_file', product_fact_source: 'drive_file', status: 'unconfirmed', confirmed: false, index: 1 },
+      { field: 'price', text: '$49', source: 'drive_file', product_fact_source: 'drive_file', status: 'unconfirmed', confirmed: false, index: 2 },
+    ],
+    proposal_digest: 'c'.repeat(64),
+    replaced: false,
     truncated: false,
     dropped_duplicates: 0,
     dropped_overlong: 0,
@@ -171,7 +180,7 @@ describe('drive intake UI flow', () => {
   it('renders server-consent Picker intake without verified claims or live proof', () => {
     const html = renderToStaticMarkup(
       <QueryClientProvider client={new QueryClient()}>
-        <DriveIntakeForm onAdd={() => {}} />
+        <DriveIntakeForm onApplyState={() => {}} />
       </QueryClientProvider>,
     );
     for (const text of [
@@ -367,5 +376,70 @@ describe('drive photo intake foundation', () => {
     };
     const confirmedOut = buildProductFactsInput(confirmedState);
     expect(confirmedOut.allowed_claims?.every(fact => fact.confirmed)).toBe(true);
+  });
+});
+
+describe('drive structured per-field intake', () => {
+  it('lands shared-file suggestions in per-field slots with drive_file provenance', () => {
+    const result = driveResult();
+    const state = emptyOwnerFacts();
+    const material = applyStructuredSuggestionToState(state, result.field_suggestions[0], 'Canvas tote');
+    expect(material.material).toEqual({ value: 'Canvas tote', confirmed: false, source: 'drive_file' });
+    const size = applyStructuredSuggestionToState(state, result.field_suggestions[1], 'Large');
+    expect(size.size).toEqual({ value: 'Large', confirmed: false, source: 'drive_file' });
+    const price = applyStructuredSuggestionToState(state, result.field_suggestions[2], '$49');
+    expect(price.price).toEqual({ value: '$49', confirmed: false, source: 'drive_file' });
+    expect(validateOwnerFacts(material)).toEqual([]);
+    const out = buildProductFactsInput(material);
+    expect(out.material?.source).toBe('drive_file');
+  });
+
+  it('renders one confirmable row per drive field with unconfirmed status', () => {
+    const html = renderToStaticMarkup(
+      <StructuredProposalFields result={driveResult()} idPrefix="test-drive" onApplyOne={() => {}} onApplyAll={() => {}} />,
+    );
+    for (const text of [
+      '3 per-field suggestions',
+      'Status: unconfirmed',
+      'Parser: drive-import/v1',
+      'Suggested Material 1',
+      'Suggested Size 2',
+      'Suggested Price 3',
+      'Canvas tote',
+      'Large',
+      '$49',
+      'Select material suggestion 1 for the fact form',
+      'Apply material to fact form',
+      'Confirmed: no',
+      'Applied values land unconfirmed',
+    ]) {
+      expect(html).toContain(text);
+    }
+    expect(html).not.toContain('Verified');
+    expect(html).toContain('Unconfirmed');
+  });
+
+  it('shows the drive overwrite warning with keep and replace actions', () => {
+    const html = renderToStaticMarkup(
+      <PendingReplaceBanner
+        warning={PENDING_REPLACE_WARNING}
+        activeDigest={'c'.repeat(64)}
+        heldDigest={'d'.repeat(64)}
+        heldLabel="Held"
+        onReplace={() => {}}
+        onKeep={() => {}}
+      />,
+    );
+    for (const text of [
+      'did not replace it',
+      'Keep the pending proposal',
+      `Pending proposal digest: ${'c'.repeat(64)}`,
+      `Held proposal digest: ${'d'.repeat(64)}`,
+      'Replace pending with held import',
+      'Keep pending proposal',
+    ]) {
+      expect(html).toContain(text);
+    }
+    expect(html).not.toContain('Verified');
   });
 });
