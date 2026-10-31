@@ -12,3 +12,4 @@ web/test-results/
 web/playwright-report/
 web/*.tsbuildinfo
 facts/demo_photos/
+goal.md
