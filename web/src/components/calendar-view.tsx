@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { api, unwrap } from '@/lib/api';
 import { FormatLibraryPanel } from '@/components/format-library';
+import { PublishExecutorPanel } from '@/components/publish-executor-panel';
 import { VerificationBoard } from '@/components/verification-board';
 import type { components } from '@/lib/schema';
 
@@ -298,6 +299,7 @@ export function CalendarView() {
     {days.map(slotDate => <DayCell key={slotDate} slotDate={slotDate} slots={grouped.get(slotDate) ?? []} />)}
     <ScheduleDefaultsPanel />
     <ScheduleExportPanel />
+    <PublishExecutorPanel />
     <VerificationBoard />
     <AddSlotFromRun />
     <FormatLibraryPanel

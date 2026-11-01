@@ -2101,6 +2101,76 @@
         "title": "DriveSuggestionItem",
         "type": "object"
       },
+      "ExecuteDueIn": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "As Of"
+          },
+          "simulate_failure": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Simulate Failure"
+          }
+        },
+        "title": "ExecuteDueIn",
+        "type": "object"
+      },
+      "ExecuteDueOut": {
+        "additionalProperties": true,
+        "properties": {
+          "as_of": {
+            "default": "",
+            "title": "As Of",
+            "type": "string"
+          },
+          "executed_slots": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Executed Slots",
+            "type": "array"
+          },
+          "paused": {
+            "default": false,
+            "title": "Paused",
+            "type": "boolean"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/SlotExecuteResultOut"
+            },
+            "title": "Results",
+            "type": "array"
+          },
+          "skipped_slots": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Skipped Slots",
+            "type": "array"
+          }
+        },
+        "title": "ExecuteDueOut",
+        "type": "object"
+      },
       "ExportEvent": {
         "additionalProperties": true,
         "properties": {
@@ -2968,6 +3038,73 @@
           "parser_version"
         ],
         "title": "ImportSuggestionsOut",
+        "type": "object"
+      },
+      "KillSwitchIn": {
+        "additionalProperties": false,
+        "properties": {
+          "paused": {
+            "default": false,
+            "title": "Paused",
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "title": "KillSwitchIn",
+        "type": "object"
+      },
+      "KillSwitchOut": {
+        "additionalProperties": true,
+        "properties": {
+          "paused": {
+            "default": false,
+            "title": "Paused",
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "updated_at": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "updated_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated By"
+          }
+        },
+        "title": "KillSwitchOut",
         "type": "object"
       },
       "LandingParityOut": {
@@ -4285,6 +4422,149 @@
           "examples"
         ],
         "title": "Profile",
+        "type": "object"
+      },
+      "PublishDueSlotOut": {
+        "additionalProperties": true,
+        "properties": {
+          "channels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Channels",
+            "type": "array"
+          },
+          "planned_time": {
+            "default": "",
+            "title": "Planned Time",
+            "type": "string"
+          },
+          "slot_date": {
+            "default": "",
+            "title": "Slot Date",
+            "type": "string"
+          },
+          "slot_id": {
+            "default": "",
+            "title": "Slot Id",
+            "type": "string"
+          }
+        },
+        "title": "PublishDueSlotOut",
+        "type": "object"
+      },
+      "PublishExecutionOut": {
+        "additionalProperties": true,
+        "properties": {
+          "attempt_count": {
+            "default": 0,
+            "title": "Attempt Count",
+            "type": "integer"
+          },
+          "attempts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Attempts",
+            "type": "array"
+          },
+          "channel": {
+            "default": "",
+            "title": "Channel",
+            "type": "string"
+          },
+          "id": {
+            "default": "",
+            "title": "Id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "default": "",
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "live_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Live Url"
+          },
+          "max_auto_retries": {
+            "default": 2,
+            "title": "Max Auto Retries",
+            "type": "integer"
+          },
+          "platform_post_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Platform Post Id"
+          },
+          "slot_id": {
+            "default": "",
+            "title": "Slot Id",
+            "type": "string"
+          },
+          "status": {
+            "default": "pending",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "title": "PublishExecutionOut",
+        "type": "object"
+      },
+      "PublishStatusOut": {
+        "additionalProperties": true,
+        "properties": {
+          "due_slots": {
+            "items": {
+              "$ref": "#/components/schemas/PublishDueSlotOut"
+            },
+            "title": "Due Slots",
+            "type": "array"
+          },
+          "executions": {
+            "items": {
+              "$ref": "#/components/schemas/PublishExecutionOut"
+            },
+            "title": "Executions",
+            "type": "array"
+          },
+          "kill_switch": {
+            "$ref": "#/components/schemas/KillSwitchOut"
+          },
+          "ready_slots": {
+            "items": {
+              "$ref": "#/components/schemas/PublishDueSlotOut"
+            },
+            "title": "Ready Slots",
+            "type": "array"
+          }
+        },
+        "title": "PublishStatusOut",
         "type": "object"
       },
       "QuickstartTemplateBody": {
@@ -5797,6 +6077,81 @@
           "channels"
         ],
         "title": "SlotChannelsApproveIn",
+        "type": "object"
+      },
+      "SlotExecuteIn": {
+        "additionalProperties": false,
+        "properties": {
+          "simulate_failure": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Simulate Failure"
+          }
+        },
+        "title": "SlotExecuteIn",
+        "type": "object"
+      },
+      "SlotExecuteResultOut": {
+        "additionalProperties": true,
+        "properties": {
+          "executed": {
+            "default": false,
+            "title": "Executed",
+            "type": "boolean"
+          },
+          "executions": {
+            "items": {
+              "$ref": "#/components/schemas/PublishExecutionOut"
+            },
+            "title": "Executions",
+            "type": "array"
+          },
+          "failing_condition": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failing Condition"
+          },
+          "paused": {
+            "default": false,
+            "title": "Paused",
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "skipped": {
+            "default": false,
+            "title": "Skipped",
+            "type": "boolean"
+          },
+          "slot_id": {
+            "default": "",
+            "title": "Slot Id",
+            "type": "string"
+          }
+        },
+        "title": "SlotExecuteResultOut",
         "type": "object"
       },
       "SlotScheduleIn": {
@@ -9184,6 +9539,252 @@
           }
         },
         "summary": "Model Capabilities"
+      }
+    },
+    "/api/publish/execute-due": {
+      "post": {
+        "description": "Autonomous scheduler tick: publish every due Ready slot, no per-post tap.",
+        "operationId": "execute_due_slots_api_publish_execute_due_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ExecuteDueIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecuteDueOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Execute Due Slots"
+      }
+    },
+    "/api/publish/kill-switch": {
+      "post": {
+        "description": "Pause or resume all autonomous execution without touching slots or packs.",
+        "operationId": "set_publish_kill_switch_api_publish_kill_switch_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KillSwitchIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KillSwitchOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Publish Kill Switch"
+      }
+    },
+    "/api/publish/slots/{slot_id}/execute": {
+      "post": {
+        "description": "Execute one Ready slot under the exact Ready gate and retry rules.",
+        "operationId": "execute_publish_slot_api_publish_slots__slot_id__execute_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slot_id",
+            "required": true,
+            "schema": {
+              "title": "Slot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/SlotExecuteIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SlotExecuteResultOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Execute Publish Slot"
+      }
+    },
+    "/api/publish/slots/{slot_id}/retry": {
+      "post": {
+        "description": "Owner-triggered manual retry after automatic retries are exhausted.",
+        "operationId": "retry_publish_slot_api_publish_slots__slot_id__retry_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slot_id",
+            "required": true,
+            "schema": {
+              "title": "Slot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/SlotExecuteIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SlotExecuteResultOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retry Publish Slot"
+      }
+    },
+    "/api/publish/status": {
+      "get": {
+        "description": "Executor status: kill switch, due and ready slots, recent executions.",
+        "operationId": "publish_status_api_publish_status_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "as_of",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "As Of"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublishStatusOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Publish Status"
       }
     },
     "/api/queue": {

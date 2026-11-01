@@ -9,7 +9,7 @@ from datetime import date as date_cls
 
 SLOT_TYPES = ('feed_post', 'story', 'reel')
 SLOT_STATUSES = ('drafted', 'checked', 'approved', 'exported', 'verified')
-SCHEDULE_STATES = ('draft', 'ready')
+SCHEDULE_STATES = ('draft', 'ready', 'needs_approval')
 
 DEFAULT_SCHEDULE_TIMES = {'feed_post': '09:00', 'story': '13:00', 'reel': '18:00'}
 
@@ -75,7 +75,7 @@ def normalize_channel_list(value, field_name='selected_channels'):
 
 def normalize_schedule_state(value):
     if value not in SCHEDULE_STATES:
-        raise ValueError("schedule_state must be one of draft, ready")
+        raise ValueError("schedule_state must be one of draft, ready, needs_approval")
     return value
 
 

@@ -997,6 +997,106 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/publish/execute-due": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Execute Due Slots
+         * @description Autonomous scheduler tick: publish every due Ready slot, no per-post tap.
+         */
+        post: operations["execute_due_slots_api_publish_execute_due_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/publish/kill-switch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Set Publish Kill Switch
+         * @description Pause or resume all autonomous execution without touching slots or packs.
+         */
+        post: operations["set_publish_kill_switch_api_publish_kill_switch_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/publish/slots/{slot_id}/execute": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Execute Publish Slot
+         * @description Execute one Ready slot under the exact Ready gate and retry rules.
+         */
+        post: operations["execute_publish_slot_api_publish_slots__slot_id__execute_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/publish/slots/{slot_id}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retry Publish Slot
+         * @description Owner-triggered manual retry after automatic retries are exhausted.
+         */
+        post: operations["retry_publish_slot_api_publish_slots__slot_id__retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/publish/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Publish Status
+         * @description Executor status: kill switch, due and ready slots, recent executions.
+         */
+        get: operations["publish_status_api_publish_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/queue": {
         parameters: {
             query?: never;
@@ -2688,6 +2788,36 @@ export interface components {
             /** Text */
             text: string;
         };
+        /** ExecuteDueIn */
+        ExecuteDueIn: {
+            /** As Of */
+            as_of?: string | null;
+            /** Simulate Failure */
+            simulate_failure?: string | null;
+        };
+        /** ExecuteDueOut */
+        ExecuteDueOut: {
+            /**
+             * As Of
+             * @default
+             */
+            as_of: string;
+            /** Executed Slots */
+            executed_slots?: string[];
+            /**
+             * Paused
+             * @default false
+             */
+            paused: boolean;
+            /** Results */
+            results?: components["schemas"]["SlotExecuteResultOut"][];
+            /** Skipped Slots */
+            skipped_slots?: {
+                [key: string]: unknown;
+            }[];
+        } & {
+            [key: string]: unknown;
+        };
         /** ExportEvent */
         ExportEvent: {
             /** Exported By */
@@ -3050,6 +3180,32 @@ export interface components {
             suggestions: components["schemas"]["ImportSuggestionItem"][];
             /** Truncated */
             truncated: boolean;
+        };
+        /** KillSwitchIn */
+        KillSwitchIn: {
+            /**
+             * Paused
+             * @default false
+             */
+            paused: boolean;
+            /** Reason */
+            reason?: string | null;
+        };
+        /** KillSwitchOut */
+        KillSwitchOut: {
+            /**
+             * Paused
+             * @default false
+             */
+            paused: boolean;
+            /** Reason */
+            reason?: string | null;
+            /** Updated At */
+            updated_at?: unknown | null;
+            /** Updated By */
+            updated_by?: string | null;
+        } & {
+            [key: string]: unknown;
         };
         /** LandingParityOut */
         LandingParityOut: {
@@ -3746,6 +3902,90 @@ export interface components {
             /** Veto Scope */
             veto_scope: string[];
         };
+        /** PublishDueSlotOut */
+        PublishDueSlotOut: {
+            /** Channels */
+            channels?: string[];
+            /**
+             * Planned Time
+             * @default
+             */
+            planned_time: string;
+            /**
+             * Slot Date
+             * @default
+             */
+            slot_date: string;
+            /**
+             * Slot Id
+             * @default
+             */
+            slot_id: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** PublishExecutionOut */
+        PublishExecutionOut: {
+            /**
+             * Attempt Count
+             * @default 0
+             */
+            attempt_count: number;
+            /** Attempts */
+            attempts?: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Channel
+             * @default
+             */
+            channel: string;
+            /**
+             * Id
+             * @default
+             */
+            id: string;
+            /**
+             * Idempotency Key
+             * @default
+             */
+            idempotency_key: string;
+            /** Last Error */
+            last_error?: string | null;
+            /** Live Url */
+            live_url?: string | null;
+            /**
+             * Max Auto Retries
+             * @default 2
+             */
+            max_auto_retries: number;
+            /** Platform Post Id */
+            platform_post_id?: string | null;
+            /**
+             * Slot Id
+             * @default
+             */
+            slot_id: string;
+            /**
+             * Status
+             * @default pending
+             */
+            status: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** PublishStatusOut */
+        PublishStatusOut: {
+            /** Due Slots */
+            due_slots?: components["schemas"]["PublishDueSlotOut"][];
+            /** Executions */
+            executions?: components["schemas"]["PublishExecutionOut"][];
+            kill_switch?: components["schemas"]["KillSwitchOut"];
+            /** Ready Slots */
+            ready_slots?: components["schemas"]["PublishDueSlotOut"][];
+        } & {
+            [key: string]: unknown;
+        };
         /** QuickstartTemplateBody */
         QuickstartTemplateBody: {
             /** Approved Claims */
@@ -4247,6 +4487,42 @@ export interface components {
             channels: string[];
             /** Expected Revision */
             expected_revision?: number | null;
+        };
+        /** SlotExecuteIn */
+        SlotExecuteIn: {
+            /** Simulate Failure */
+            simulate_failure?: string | null;
+        };
+        /** SlotExecuteResultOut */
+        SlotExecuteResultOut: {
+            /**
+             * Executed
+             * @default false
+             */
+            executed: boolean;
+            /** Executions */
+            executions?: components["schemas"]["PublishExecutionOut"][];
+            /** Failing Condition */
+            failing_condition?: string | null;
+            /**
+             * Paused
+             * @default false
+             */
+            paused: boolean;
+            /** Reason */
+            reason?: string | null;
+            /**
+             * Skipped
+             * @default false
+             */
+            skipped: boolean;
+            /**
+             * Slot Id
+             * @default
+             */
+            slot_id: string;
+        } & {
+            [key: string]: unknown;
         };
         /** SlotScheduleIn */
         SlotScheduleIn: {
@@ -6610,6 +6886,173 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ModelCapabilities"];
+                };
+            };
+        };
+    };
+    execute_due_slots_api_publish_execute_due_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ExecuteDueIn"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecuteDueOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_publish_kill_switch_api_publish_kill_switch_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["KillSwitchIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KillSwitchOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    execute_publish_slot_api_publish_slots__slot_id__execute_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slot_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["SlotExecuteIn"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SlotExecuteResultOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_publish_slot_api_publish_slots__slot_id__retry_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slot_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["SlotExecuteIn"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SlotExecuteResultOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    publish_status_api_publish_status_get: {
+        parameters: {
+            query?: {
+                as_of?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublishStatusOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

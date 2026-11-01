@@ -1346,6 +1346,7 @@ def revise(run_id: str, body: ReviseIn, actor: str = Depends(auth.actor)):
         # revision_history, the receipt audit event_log, and the audit table.
         db.execute(text('DELETE FROM approvals WHERE run_id=:id'), {'id': run_id})
         store.audit(db, run_id, 'human_revised', actor, workspace_id)
+        _drop_ready_slots_for_run(db, run_id, workspace_id)
     return revised
 
 
@@ -2119,6 +2120,7 @@ def _invalidate_voice_runs(db, workspace_id, voice_id, actor, action):
                    {'receipt': json.dumps(revised), 'state': 'pending_approval', 'id': run_id, 'ws': workspace_id})
         db.execute(text('DELETE FROM approvals WHERE run_id=:id'), {'id': run_id})
         store.audit(db, run_id, 'voice_invalidated', actor, workspace_id)
+        _drop_ready_slots_for_run(db, run_id, workspace_id)
 
 
 def insert_memory(db, body, actor, action, workspace_id, source_run_id=None):
@@ -3333,7 +3335,7 @@ def _public_calendar_slot(row):
             'planned_time': planned or '09:00',
             'selected_channels': list(selected) if isinstance(selected, list) else [],
             'approved_channels': list(approved) if isinstance(approved, list) else [],
-            'schedule_state': state if state in ('draft', 'ready') else 'draft'}
+            'schedule_state': state if state in ('draft', 'ready', 'needs_approval') else 'draft'}
 
 
 def _schedule_defaults(db, workspace_id):
@@ -4485,3 +4487,578 @@ def disconnect_social_connection(platform: str, actor: str = Depends(auth.actor)
         if updated is None:
             raise HTTPException(404, 'Connection not found')
         return _social_row_to_public(dict(updated))
+
+
+# SC2 autonomous Ready-slot publish executor: execution runs only on
+# calendar slots in Ready state at the slot scheduled time, with no
+# per-post tap. The executor re-checks the approval binding at
+# execution time; any mismatch or later edit drops the slot out of
+# Ready and skips it as needs-approval without calling any platform
+# transport. Each attempt is recorded under a deterministic idempotency
+# key with bounded automatic retries (at most 2). Platform success
+# records posted and hands off to the S5 verification board; it never
+# marks a slot verified. The owner kill switch pauses all execution
+# without touching calendar slots or packs.
+
+class KillSwitchIn(Strict):
+    paused: bool = False
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class KillSwitchOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    paused: bool = False
+    updated_at: Any | None = None
+    updated_by: str | None = None
+    reason: str | None = None
+
+
+class PublishExecutionAttemptOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    attempt_number: int = 0
+    timestamp: str | None = None
+    channel: str = ''
+    idempotency_key: str = ''
+    backoff_seconds: int = 0
+    outcome: str = ''
+    platform_post_id: str | None = None
+    live_url: str | None = None
+    failure_reason: str | None = None
+
+
+class PublishExecutionOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    id: str = ''
+    slot_id: str = ''
+    channel: str = ''
+    idempotency_key: str = ''
+    status: str = 'pending'
+    platform_post_id: str | None = None
+    live_url: str | None = None
+    attempt_count: int = 0
+    max_auto_retries: int = 2
+    attempts: list[dict[str, Any]] = Field(default_factory=list)
+    last_error: str | None = None
+
+
+class ExecuteDueIn(Strict):
+    as_of: str | None = Field(default=None, max_length=64)
+    simulate_failure: str | None = Field(default=None, max_length=64)
+
+
+class SlotExecuteIn(Strict):
+    simulate_failure: str | None = Field(default=None, max_length=64)
+
+
+class PublishDueSlotOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    slot_id: str = ''
+    slot_date: str = ''
+    planned_time: str = ''
+    channels: list[str] = Field(default_factory=list)
+
+
+class SlotExecuteResultOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    slot_id: str = ''
+    executed: bool = False
+    skipped: bool = False
+    paused: bool = False
+    failing_condition: str | None = None
+    reason: str | None = None
+    executions: list[PublishExecutionOut] = Field(default_factory=list)
+
+
+class ExecuteDueOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    as_of: str = ''
+    paused: bool = False
+    executed_slots: list[str] = Field(default_factory=list)
+    skipped_slots: list[dict[str, Any]] = Field(default_factory=list)
+    results: list[SlotExecuteResultOut] = Field(default_factory=list)
+
+
+class PublishStatusOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    kill_switch: KillSwitchOut = Field(default_factory=KillSwitchOut)
+    due_slots: list[PublishDueSlotOut] = Field(default_factory=list)
+    ready_slots: list[PublishDueSlotOut] = Field(default_factory=list)
+    executions: list[PublishExecutionOut] = Field(default_factory=list)
+
+
+def _drop_ready_slots_for_run(db, run_id, workspace_id):
+    """Drop linked Ready slots to needs-approval after a post-approval edit.
+
+    Any revision or invalidation of the run pack means the slot is no
+    longer Ready, so the executor will skip it at execution time.
+    """
+    db.execute(text("UPDATE calendar_slots SET schedule_state='needs_approval', updated_at=now()"
+                    " WHERE run_id=:run AND workspace_id=:ws AND schedule_state='ready'"),
+               {'run': run_id, 'ws': workspace_id})
+
+
+def _publish_kill_switch(db, workspace_id):
+    row = db.execute(text('SELECT workspace_id, kill_switch_paused, updated_at, updated_by, reason'
+                          ' FROM publish_executor_settings WHERE workspace_id=:ws'),
+                     {'ws': workspace_id}).mappings().first()
+    if row is None:
+        return {'paused': False, 'updated_at': None, 'updated_by': None, 'reason': None}
+    updated = row['updated_at']
+    if isinstance(updated, datetime):
+        updated = updated.isoformat()
+    return {'paused': bool(row['kill_switch_paused']), 'updated_at': updated,
+            'updated_by': row['updated_by'], 'reason': row['reason']}
+
+
+def _parse_execute_as_of(value):
+    if value is None:
+        return datetime.now(timezone.utc)
+    cleaned = value.strip()
+    if not cleaned:
+        raise HTTPException(422, 'as_of must be a nonempty ISO timestamp')
+    try:
+        parsed = datetime.fromisoformat(cleaned.replace('Z', '+00:00'))
+    except ValueError:
+        raise HTTPException(422, 'as_of must be an ISO timestamp')
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _slot_scheduled_at(slot):
+    """UTC datetime for a slot date plus planned time, or None."""
+    from launchcrew import calendar as calendar_mod
+    raw_date = slot.get('slot_date') or ''
+    if hasattr(raw_date, 'isoformat'):
+        raw_date = raw_date.isoformat()
+    try:
+        day = calendar_mod.parse_slot_date(raw_date)
+        planned = calendar_mod.normalize_planned_time(slot.get('planned_time') or '09:00')
+    except ValueError:
+        return None
+    hours, minutes = int(planned[0:2]), int(planned[3:5])
+    return datetime(day.year, day.month, day.day, hours, minutes, tzinfo=timezone.utc)
+
+
+def _slot_is_due(slot, as_of):
+    scheduled = _slot_scheduled_at(slot)
+    return scheduled is not None and scheduled <= as_of
+
+
+def _public_execution(row):
+    if not isinstance(row, dict):
+        try:
+            row = dict(row)
+        except Exception:
+            row = {}
+    attempts = row.get('attempts')
+    return {'id': row.get('id'), 'slot_id': row.get('slot_id'),
+            'channel': row.get('channel'), 'idempotency_key': row.get('idempotency_key'),
+            'status': row.get('status', 'pending'),
+            'platform_post_id': row.get('platform_post_id'),
+            'live_url': row.get('live_url'),
+            'attempt_count': int(row.get('attempt_count') or 0),
+            'max_auto_retries': int(row.get('max_auto_retries') or 2),
+            'attempts': list(attempts) if isinstance(attempts, list) else [],
+            'last_error': row.get('last_error')}
+
+
+_EXECUTION_PUBLIC_SELECT = ('id, slot_id, channel, idempotency_key, status, platform_post_id,'
+                            ' live_url, attempt_count, max_auto_retries, attempts, last_error')
+
+
+def _load_execution_by_key(db, workspace_id, key):
+    row = db.execute(text('SELECT ' + _EXECUTION_PUBLIC_SELECT + ' FROM publish_executions'
+                          ' WHERE idempotency_key=:key AND workspace_id=:ws'),
+                     {'key': key, 'ws': workspace_id}).mappings().first()
+    return dict(row) if row is not None else None
+
+
+def _save_execution(db, workspace_id, slot_id, channel, key, status,
+                    platform_post_id=None, live_url=None, attempt_count=0,
+                    max_auto_retries=2, attempts=None, last_error=None):
+    from launchcrew import publish_executor as executor_mod
+    attempts = list(attempts) if isinstance(attempts, list) else []
+    existing = _load_execution_by_key(db, workspace_id, key)
+    if existing is None:
+        execution_id = 'exe_' + uuid4().hex
+        db.execute(text('INSERT INTO publish_executions(id, workspace_id, slot_id, channel,'
+                        ' idempotency_key, status, platform_post_id, live_url, attempt_count,'
+                        ' max_auto_retries, attempts, last_error)'
+                        ' VALUES (:id,:ws,:slot,:channel,:key,:status,:post,:url,:count,:retries,'
+                        'CAST(:attempts AS jsonb),:error)'),
+                   {'id': execution_id, 'ws': workspace_id, 'slot': slot_id,
+                    'channel': channel, 'key': key, 'status': status,
+                    'post': platform_post_id, 'url': live_url, 'count': attempt_count,
+                    'retries': max_auto_retries, 'attempts': json.dumps(attempts),
+                    'error': last_error})
+    else:
+        db.execute(text('UPDATE publish_executions SET status=:status, platform_post_id=:post,'
+                        ' live_url=:url, attempt_count=:count, max_auto_retries=:retries,'
+                        ' attempts=CAST(:attempts AS jsonb), last_error=:error, updated_at=now()'
+                        ' WHERE idempotency_key=:key AND workspace_id=:ws'),
+                   {'status': status, 'post': platform_post_id, 'url': live_url,
+                    'count': attempt_count, 'retries': max_auto_retries,
+                    'attempts': json.dumps(attempts), 'error': last_error,
+                    'key': key, 'ws': workspace_id})
+    stored = _load_execution_by_key(db, workspace_id, key)
+    if stored is None:
+        raise HTTPException(500, 'Publish execution was not stored')
+    return stored
+
+
+def _verify_execution_binding(receipt, slot, channel):
+    """Integrity re-check at execution time: every condition must pass.
+
+    Returns (ok, failing_condition, detail). Any failure means the slot
+    is no longer Ready and the executor must never call the transport.
+    """
+    from launchcrew import calendar as calendar_mod
+    from launchcrew import channel_variants as channel_mod
+    from launchcrew import human_review
+    if not isinstance(receipt, dict) or receipt.get('approval_state') != 'approved_for_export':
+        return False, calendar_mod.PACK_NOT_APPROVED, 'Pack is not approved'
+    try:
+        current = human_review.current_revision(receipt)
+    except Exception:
+        return False, calendar_mod.PACK_NOT_APPROVED, 'Pack revision is unavailable'
+    approved_revision = receipt.get('approved_revision')
+    if not isinstance(approved_revision, int) or approved_revision != current:
+        return False, 'revision_changed_since_approval', (
+            'Pack changed since approval; the slot needs re-approval')
+    bound, binding_reason = human_review.binding_status(receipt)
+    if not bound:
+        return False, 'approval_binding_mismatch', binding_reason or (
+            'Approval binding mismatch; facts, copy, policy, voice, photo,'
+            ' or check changed since approval')
+    format_reason = human_review.format_block_reason(receipt)
+    if format_reason is not None:
+        return False, calendar_mod.FORMAT_CHECK_FAILED, format_reason
+    _, current_ok, status_reason = channel_mod.channel_approval_status(receipt, channel)
+    if not current_ok:
+        return False, calendar_mod.UNAPPROVED_CHANNEL_VARIANTS, status_reason or (
+            'Unapproved channel variants: ' + channel)
+    return True, None, ''
+
+
+def _execute_slot_channel(db, slot, channel, workspace_id, actor, simulate_failure=None,
+                          manual_retry=False):
+    """Execute one slot channel under the full Ready gate.
+
+    Returns a dict with status (posted, failed, skipped_needs_approval,
+    paused_by_kill_switch, already_posted), the stored execution row,
+    and a plain-language reason. Never calls the platform transport
+    unless the slot is marked Ready and every binding check passes.
+    Automatic execution allows 1 initial attempt plus the bounded auto
+    retries; an explicit owner retry allows exactly one extra attempt
+    beyond the exhausted trail, appended with its own attempt number.
+    """
+    from launchcrew import channel_variants as channel_mod
+    from launchcrew import human_review
+    from launchcrew import publish_executor as executor_mod
+    key = executor_mod.normalize_channel(channel)
+    receipt = _receipt_for_slot(db, slot, workspace_id)
+    try:
+        binding = human_review.approval_binding(receipt) if isinstance(receipt, dict) else None
+        digest = binding.get('digest') if isinstance(binding, dict) else None
+    except Exception:
+        digest = None
+    idem_key = executor_mod.idempotency_key(slot['id'], key, digest)
+    kill = _publish_kill_switch(db, workspace_id)
+    if kill['paused']:
+        stored = _save_execution(db, workspace_id, slot['id'], key, idem_key,
+                                 'paused_by_kill_switch',
+                                 last_error='Execution is paused by the owner kill switch.')
+        store.audit(db, slot.get('run_id'), 'publish_paused_by_kill_switch', actor, workspace_id)
+        return {'status': 'paused_by_kill_switch', 'execution': _public_execution(stored),
+                'reason': 'Execution is paused by the owner kill switch.'}
+    if slot.get('schedule_state') != 'ready':
+        stored = _save_execution(db, workspace_id, slot['id'], key, idem_key,
+                                 'skipped_needs_approval',
+                                 last_error='Slot is not Ready; it needs approval before publishing.')
+        return {'status': 'skipped_needs_approval', 'execution': _public_execution(stored),
+                'reason': 'Slot is not Ready; it needs approval before publishing.'}
+    ok, condition, detail = _verify_execution_binding(receipt, slot, key)
+    if not ok:
+        db.execute(text("UPDATE calendar_slots SET schedule_state='needs_approval', updated_at=now()"
+                        " WHERE id=:id AND workspace_id=:ws AND schedule_state='ready'"),
+                   {'id': slot['id'], 'ws': workspace_id})
+        stored = _save_execution(db, workspace_id, slot['id'], key, idem_key,
+                                 'skipped_needs_approval', last_error=detail)
+        store.audit(db, slot.get('run_id'), 'publish_skipped_needs_approval', actor, workspace_id)
+        return {'status': 'skipped_needs_approval', 'execution': _public_execution(stored),
+                'reason': detail, 'failing_condition': condition}
+    existing = _load_execution_by_key(db, workspace_id, idem_key)
+    if (existing is not None and existing.get('status') == 'posted'
+            and existing.get('platform_post_id')):
+        return {'status': 'already_posted', 'execution': _public_execution(existing),
+                'reason': 'Already posted; the existing result is returned with no re-post.'}
+    try:
+        bundle = channel_mod.checked_channel_variants(receipt)
+    except ValueError as error:
+        detail = str(error) or 'Approved variant text is unavailable'
+        db.execute(text("UPDATE calendar_slots SET schedule_state='needs_approval', updated_at=now()"
+                        " WHERE id=:id AND workspace_id=:ws AND schedule_state='ready'"),
+                   {'id': slot['id'], 'ws': workspace_id})
+        stored = _save_execution(db, workspace_id, slot['id'], key, idem_key,
+                                 'skipped_needs_approval', last_error=detail)
+        return {'status': 'skipped_needs_approval', 'execution': _public_execution(stored),
+                'reason': detail, 'failing_condition': 'unapproved_channel_variants'}
+    entry = bundle.get(key) if isinstance(bundle, dict) else None
+    variant_text = entry.get('text') if isinstance(entry, dict) else ''
+    subject = entry.get('subject') if isinstance(entry, dict) else None
+    connection = db.execute(text('SELECT status, encrypted_token FROM social_connections'
+                                 ' WHERE workspace_id=:ws AND platform=:platform'),
+                            {'ws': workspace_id, 'platform': key}).mappings().first()
+    connection = dict(connection) if connection is not None else None
+    attempts: list[dict[str, Any]] = []
+    stored_existing = _load_execution_by_key(db, workspace_id, idem_key)
+    if stored_existing is not None and isinstance(stored_existing.get('attempts'), list):
+        attempts = list(stored_existing['attempts'])
+    last_error = None
+    total_allowed = 1 + executor_mod.MAX_AUTO_RETRIES
+    manual_added = False
+    while len(attempts) < total_allowed or (manual_retry and not manual_added):
+        if len(attempts) >= total_allowed:
+            manual_added = True
+        attempt = executor_mod.build_attempt(len(attempts) + 1, key, idem_key, 'attempted')
+        try:
+            result = executor_mod.default_transport(key, variant_text, subject, connection,
+                                                    idem_key, simulate_failure=simulate_failure)
+        except executor_mod.PublishTransportError as error:
+            last_error = error.reason
+            attempt = dict(attempt)
+            attempt['outcome'] = 'failed'
+            attempt['failure_reason'] = error.reason
+            attempts = executor_mod.append_attempt(attempts, attempt)
+            stored = _save_execution(db, workspace_id, slot['id'], key, idem_key, 'failed',
+                                     attempt_count=len(attempts),
+                                     max_auto_retries=executor_mod.MAX_AUTO_RETRIES,
+                                     attempts=attempts, last_error=last_error)
+            delivery = _load_or_init_delivery(db, slot, workspace_id, key)
+            _save_delivery_attempt(db, delivery, workspace_id, 'failed',
+                                   live_url=delivery.get('live_url'), reason=last_error,
+                                   live_text_excerpt='')
+            if executor_mod.attempts_exhausted(len(attempts)):
+                break
+            continue
+        platform_post_id = result.get('platform_post_id')
+        live_url = result.get('live_url')
+        attempt = dict(attempt)
+        attempt['outcome'] = 'posted'
+        attempt['platform_post_id'] = platform_post_id
+        attempt['live_url'] = live_url
+        attempts = executor_mod.append_attempt(attempts, attempt)
+        stored = _save_execution(db, workspace_id, slot['id'], key, idem_key, 'posted',
+                                 platform_post_id=platform_post_id, live_url=live_url,
+                                 attempt_count=len(attempts),
+                                 max_auto_retries=executor_mod.MAX_AUTO_RETRIES,
+                                 attempts=attempts, last_error=None)
+        delivery = _load_or_init_delivery(db, slot, workspace_id, key)
+        _save_delivery_attempt(db, delivery, workspace_id, 'posted', live_url=live_url,
+                               live_text_excerpt='')
+        if slot.get('run_id'):
+            _advance_calendar_slots(db, slot['run_id'], workspace_id, 'exported')
+        store.audit(db, slot.get('run_id'), 'publish_posted', actor, workspace_id)
+        return {'status': 'posted', 'execution': _public_execution(stored),
+                'reason': 'Posted at ' + (live_url or '') + '; handed off to verification.'}
+    store.audit(db, slot.get('run_id'), 'publish_failed', actor, workspace_id)
+    final = _load_execution_by_key(db, workspace_id, idem_key)
+    return {'status': 'failed',
+            'execution': _public_execution(final) if final is not None else None,
+            'reason': last_error or 'Publish failed after bounded retries.'}
+
+
+def _execute_ready_slot(db, slot_id, workspace_id, actor, simulate_failure=None):
+    """Execute every selected channel of one Ready slot; refuse others."""
+    slot = _load_slot(db, slot_id, workspace_id)
+    if slot.get('schedule_state') != 'ready':
+        raise HTTPException(409, 'Slot is not Ready; it needs approval before publishing.')
+    channels = list(slot.get('selected_channels') or [])
+    if not channels:
+        raise HTTPException(422, 'Slot names no channels; select channels before execution.')
+    executions: list[dict[str, Any]] = []
+    failing: str | None = None
+    reason: str | None = None
+    paused = False
+    posted_any = False
+    for channel in channels:
+        outcome = _execute_slot_channel(db, dict(slot), channel, workspace_id, actor,
+                                        simulate_failure=simulate_failure)
+        if outcome.get('execution') is not None:
+            executions.append(outcome['execution'])
+        status = outcome.get('status')
+        if status == 'posted' or status == 'already_posted':
+            posted_any = True
+        elif status == 'paused_by_kill_switch':
+            paused = True
+            reason = outcome.get('reason')
+        elif status in ('skipped_needs_approval', 'failed'):
+            failing = outcome.get('failing_condition') or status
+            reason = outcome.get('reason')
+    refreshed = _load_slot(db, slot_id, workspace_id)
+    if any(entry.get('status') == 'skipped_needs_approval' for entry in executions):
+        skipped = True
+    else:
+        skipped = refreshed.get('schedule_state') != 'ready' and not posted_any and not paused
+    return {'slot_id': slot_id, 'executed': posted_any, 'skipped': skipped,
+            'paused': paused and not posted_any, 'failing_condition': failing,
+            'reason': reason, 'executions': executions}
+
+
+@app.get('/api/publish/status', response_model=PublishStatusOut)
+def publish_status(as_of: str | None = None, actor: str = Depends(auth.actor)):
+    """Executor status: kill switch, due and ready slots, recent executions."""
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        moment = _parse_execute_as_of(as_of)
+        rows = db.execute(text('SELECT ' + _CALENDAR_PUBLIC_SELECT + ' FROM calendar_slots'
+                               ' WHERE workspace_id=:ws ORDER BY slot_date, slot_type, id'),
+                          {'ws': workspace_id}).mappings().all()
+        due: list[dict[str, Any]] = []
+        ready: list[dict[str, Any]] = []
+        for raw in rows:
+            slot = _public_calendar_slot(dict(raw))
+            if slot.get('schedule_state') != 'ready':
+                continue
+            entry = {'slot_id': slot['id'], 'slot_date': slot['slot_date'],
+                     'planned_time': slot.get('planned_time') or '09:00',
+                     'channels': list(slot.get('selected_channels') or [])}
+            ready.append(entry)
+            if _slot_is_due(dict(raw), moment):
+                due.append(entry)
+        recent = db.execute(text('SELECT ' + _EXECUTION_PUBLIC_SELECT + ' FROM publish_executions'
+                                  ' WHERE workspace_id=:ws ORDER BY updated_at DESC, id DESC LIMIT 50'),
+                             {'ws': workspace_id}).mappings().all()
+        return {'kill_switch': _publish_kill_switch(db, workspace_id),
+                'due_slots': due, 'ready_slots': ready,
+                'executions': [_public_execution(dict(entry)) for entry in recent]}
+
+
+@app.post('/api/publish/kill-switch', response_model=KillSwitchOut)
+def set_publish_kill_switch(body: KillSwitchIn, actor: str = Depends(auth.actor)):
+    """Pause or resume all autonomous execution without touching slots or packs."""
+    reason = (body.reason or '').strip() or None
+    if reason is not None:
+        for char in reason:
+            code = ord(char)
+            if code < 32 or code == 127:
+                raise HTTPException(422, 'reason contains unsafe control characters')
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        db.execute(text('INSERT INTO publish_executor_settings(workspace_id, kill_switch_paused,'
+                        ' updated_at, updated_by, reason)'
+                        ' VALUES (:ws, :paused, now(), :actor, :reason)'
+                        ' ON CONFLICT (workspace_id) DO UPDATE SET'
+                        ' kill_switch_paused=EXCLUDED.kill_switch_paused,'
+                        ' updated_at=now(), updated_by=EXCLUDED.updated_by,'
+                        ' reason=EXCLUDED.reason'),
+                   {'ws': workspace_id, 'paused': bool(body.paused),
+                    'actor': actor, 'reason': reason})
+        store.audit(db, None, 'publish_kill_switch_paused' if body.paused else 'publish_kill_switch_resumed',
+                    actor, workspace_id)
+        return _publish_kill_switch(db, workspace_id)
+
+
+@app.post('/api/publish/execute-due', response_model=ExecuteDueOut)
+def execute_due_slots(body: ExecuteDueIn | None = None, actor: str = Depends(auth.actor)):
+    """Autonomous scheduler tick: publish every due Ready slot, no per-post tap."""
+    payload = body or ExecuteDueIn()
+    simulate = payload.simulate_failure
+    if simulate is not None and not isinstance(simulate, str):
+        raise HTTPException(422, 'simulate_failure must be a string')
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        moment = _parse_execute_as_of(payload.as_of)
+        kill = _publish_kill_switch(db, workspace_id)
+        rows = db.execute(text('SELECT ' + _CALENDAR_PUBLIC_SELECT + ' FROM calendar_slots'
+                               ' WHERE workspace_id=:ws AND schedule_state=:state'
+                               ' ORDER BY slot_date, slot_type, id'),
+                          {'ws': workspace_id, 'state': 'ready'}).mappings().all()
+        results: list[dict[str, Any]] = []
+        executed: list[str] = []
+        skipped: list[dict[str, Any]] = []
+        for raw in rows:
+            slot = dict(raw)
+            if not _slot_is_due(slot, moment):
+                continue
+            outcome = _execute_ready_slot(db, slot['id'], workspace_id, actor,
+                                          simulate_failure=simulate)
+            results.append(outcome)
+            if outcome['executed']:
+                executed.append(slot['id'])
+            else:
+                skipped.append({'slot_id': slot['id'],
+                                'failing_condition': outcome.get('failing_condition'),
+                                'reason': outcome.get('reason')})
+        return {'as_of': moment.isoformat(), 'paused': bool(kill['paused']),
+                'executed_slots': executed, 'skipped_slots': skipped, 'results': results}
+
+
+@app.post('/api/publish/slots/{slot_id}/execute', response_model=SlotExecuteResultOut)
+def execute_publish_slot(slot_id: str, body: SlotExecuteIn | None = None,
+                         actor: str = Depends(auth.actor)):
+    """Execute one Ready slot under the exact Ready gate and retry rules."""
+    payload = body or SlotExecuteIn()
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        try:
+            outcome = _execute_ready_slot(db, slot_id, workspace_id, actor,
+                                          simulate_failure=payload.simulate_failure)
+        except HTTPException:
+            raise
+        return outcome
+
+
+@app.post('/api/publish/slots/{slot_id}/retry', response_model=SlotExecuteResultOut)
+def retry_publish_slot(slot_id: str, body: SlotExecuteIn | None = None,
+                       actor: str = Depends(auth.actor)):
+    """Owner-triggered manual retry after automatic retries are exhausted."""
+    from launchcrew import publish_executor as executor_mod
+    payload = body or SlotExecuteIn()
+    from launchcrew import human_review
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        kill = _publish_kill_switch(db, workspace_id)
+        if kill['paused']:
+            raise HTTPException(409, 'Execution is paused by the owner kill switch.')
+        slot = _load_slot(db, slot_id, workspace_id)
+        channels = list(slot.get('selected_channels') or [])
+        if not channels:
+            raise HTTPException(422, 'Slot names no channels; select channels before retry.')
+        retryable: list[str] = []
+        for channel in channels:
+            receipt = _receipt_for_slot(db, slot, workspace_id)
+            try:
+                binding = human_review.approval_binding(receipt) if isinstance(receipt, dict) else None
+                digest = binding.get('digest') if isinstance(binding, dict) else None
+            except Exception:
+                digest = None
+            key = executor_mod.idempotency_key(slot['id'], channel, digest)
+            existing = _load_execution_by_key(db, workspace_id, key)
+            if existing is not None and existing.get('status') == 'posted':
+                continue
+            retryable.append(channel)
+        if not retryable:
+            raise HTTPException(409, 'Nothing to retry; every channel already posted.')
+        if slot.get('schedule_state') != 'ready':
+            raise HTTPException(409, 'Slot is not Ready; it needs approval before retry.')
+        executions: list[dict[str, Any]] = []
+        failing: str | None = None
+        reason: str | None = None
+        posted_any = False
+        for channel in retryable:
+            outcome = _execute_slot_channel(db, dict(slot), channel, workspace_id, actor,
+                                            simulate_failure=payload.simulate_failure,
+                                            manual_retry=True)
+            if outcome.get('execution') is not None:
+                executions.append(outcome['execution'])
+            if outcome.get('status') in ('posted', 'already_posted'):
+                posted_any = True
+            else:
+                failing = outcome.get('failing_condition') or outcome.get('status')
+                reason = outcome.get('reason')
+        return {'slot_id': slot_id, 'executed': posted_any,
+                'skipped': not posted_any, 'paused': False,
+                'failing_condition': failing, 'reason': reason,
+                'executions': executions}
