@@ -3552,10 +3552,34 @@ def _load_slot(db, slot_id, workspace_id):
     return dict(row)
 
 
-def _evaluate_slot_ready(slot, receipt):
+def _media_gate_reasons(db, slot_id, workspace_id):
+    """Collect failing Checker media reasons attached to one slot.
+
+    Missing tables (before the SC4 migration) or slots with no media
+    attachments read as no media reasons, never as a gate failure.
+    """
+    try:
+        rows = db.execute(text('SELECT format_validation FROM media_attachments'
+                               ' WHERE slot_id=:slot AND workspace_id=:ws'),
+                          {'slot': slot_id, 'ws': workspace_id}).mappings().all()
+    except Exception:
+        return []
+    reasons: list[str] = []
+    for row in rows:
+        validation = row.get('format_validation')
+        if isinstance(validation, dict) and validation.get('passed') is False:
+            for reason in validation.get('reasons') or []:
+                if isinstance(reason, str) and reason.strip() and reason not in reasons:
+                    reasons.append(reason)
+    return reasons
+
+
+def _evaluate_slot_ready(slot, receipt, media_reasons=None):
     """Validate gate: pack approval, format check, channel variant approval.
 
-    Zero overrides: every condition must pass. Returns a dict with
+    Zero overrides: every condition must pass. A failing Checker media
+    validation attached to the slot also fails the format condition
+    with the aspect ratio mismatch named. Returns a dict with
     ready_eligible, failing_conditions (codes), checks, human details,
     the unapproved channel list, and the exact format reason.
     """
@@ -3578,6 +3602,16 @@ def _evaluate_slot_ready(slot, receipt):
     if not format_passed:
         failing.append(calendar_mod.FORMAT_CHECK_FAILED)
         details.append(format_reason or 'Format check failed')
+    for reason in media_reasons or []:
+        if not isinstance(reason, str) or not reason.strip():
+            continue
+        if calendar_mod.FORMAT_CHECK_FAILED not in failing:
+            failing.append(calendar_mod.FORMAT_CHECK_FAILED)
+        if reason not in details:
+            details.append(reason)
+        format_passed = False
+        if format_reason is None:
+            format_reason = reason
     selected = slot.get('selected_channels') if isinstance(slot, dict) else None
     selected = list(selected) if isinstance(selected, list) else []
     unapproved: list[str] = []
@@ -3771,7 +3805,8 @@ def validate_slot_ready(slot_id: str, actor: str = Depends(auth.actor)):
         workspace_id = store.ensure_workspace_seeded(db, actor)
         slot = _load_slot(db, slot_id, workspace_id)
         receipt = _receipt_for_slot(db, slot, workspace_id)
-        return _evaluate_slot_ready(slot, receipt)
+        return _evaluate_slot_ready(slot, receipt,
+                                    _media_gate_reasons(db, slot['id'], workspace_id))
 
 
 @app.post('/api/calendar/slots/{slot_id}/mark-ready', response_model=CalendarSlotOut)
@@ -3785,7 +3820,8 @@ def mark_slot_ready(slot_id: str, actor: str = Depends(auth.actor)):
         workspace_id = store.ensure_workspace_seeded(db, actor)
         slot = _load_slot(db, slot_id, workspace_id)
         receipt = _receipt_for_slot(db, slot, workspace_id)
-        evaluation = _evaluate_slot_ready(slot, receipt)
+        evaluation = _evaluate_slot_ready(slot, receipt,
+                                          _media_gate_reasons(db, slot['id'], workspace_id))
         if not evaluation['ready_eligible']:
             raise HTTPException(409, detail={'message': 'Slot is not ready; resolve every failing condition',
                                             'failing_conditions': evaluation['failing_conditions'],
@@ -3821,7 +3857,8 @@ def export_validated_schedule(actor: str = Depends(auth.actor)):
         for raw in rows:
             slot = _public_calendar_slot(dict(raw))
             receipt = _receipt_for_slot(db, dict(raw), workspace_id)
-            evaluation = _evaluate_slot_ready(dict(raw), receipt)
+            evaluation = _evaluate_slot_ready(dict(raw), receipt,
+                                              _media_gate_reasons(db, slot['id'], workspace_id))
             if slot['schedule_state'] == 'ready' and evaluation['ready_eligible']:
                 variants = []
                 for channel in slot['selected_channels']:
@@ -5062,3 +5099,275 @@ def retry_publish_slot(slot_id: str, body: SlotExecuteIn | None = None,
                 'skipped': not posted_any, 'paused': False,
                 'failing_condition': failing, 'reason': reason,
                 'executions': executions}
+
+
+# SC4 media library: upload once, format facts, Checker validation, and
+# non-destructive channel-ready derivatives. One uploaded asset is reused
+# across channels without re-upload; crops are stored alongside the
+# original and the original is never overwritten.
+
+class MediaAssetIn(Strict):
+    filename: str = Field(max_length=200)
+    mime_type: str | None = Field(default=None, max_length=200)
+    width: int | None = Field(default=None, ge=1, le=16384)
+    height: int | None = Field(default=None, ge=1, le=16384)
+    duration_seconds: float | None = Field(default=None, ge=0)
+    data_b64: str | None = Field(default=None, max_length=20000000)
+
+
+class MediaAssetOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    id: str = ''
+    filename: str = ''
+    media_type: str = 'image'
+    mime_type: str | None = None
+    width: int = 0
+    height: int = 0
+    aspect_ratio: str = ''
+    duration_seconds: float | None = None
+    sha256_digest: str = ''
+    derivatives: dict[str, Any] = Field(default_factory=dict)
+    format_facts: dict[str, Any] = Field(default_factory=dict)
+    created_at: Any | None = None
+
+
+class MediaDerivativeIn(Strict):
+    derivative_key: str = Field(min_length=1, max_length=16)
+
+
+class SlotMediaAttachIn(Strict):
+    asset_id: str = Field(min_length=1, max_length=128)
+    channels: list[str] | None = None
+    use_original_without_derivative: bool = False
+
+
+class SlotMediaAttachmentOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    id: str = ''
+    slot_id: str | None = None
+    asset_id: str = ''
+    channels: list[str] = Field(default_factory=list)
+    channel_derivatives: dict[str, Any] = Field(default_factory=dict)
+    use_original_without_derivative: bool = False
+    format_validation: dict[str, Any] = Field(default_factory=dict)
+    asset: dict[str, Any] = Field(default_factory=dict)
+
+
+class SlotMediaOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    slot_id: str = ''
+    attached: list[SlotMediaAttachmentOut] = Field(default_factory=list)
+    format_validation: dict[str, Any] = Field(default_factory=dict)
+
+
+_MEDIA_PUBLIC_SELECT = ('id, workspace_id, filename, media_type, mime_type, width, height, '
+                        'aspect_ratio, duration_seconds, sha256_digest, derivatives, created_at')
+
+_ATTACHMENT_PUBLIC_SELECT = ('id, workspace_id, asset_id, slot_id, run_id, channels, '
+                             'channel_derivatives, use_original_without_derivative, '
+                             'format_validation, created_at')
+
+
+def _load_media_asset(db, asset_id, workspace_id):
+    row = db.execute(text('SELECT ' + _MEDIA_PUBLIC_SELECT + ' FROM media_assets'
+                          ' WHERE id=:id AND workspace_id=:ws'),
+                     {'id': asset_id, 'ws': workspace_id}).mappings().first()
+    if row is None:
+        raise HTTPException(404, 'Media asset not found')
+    return dict(row)
+
+
+def _public_media_asset(row):
+    from launchcrew import media_library as media_mod
+    data = dict(row)
+    created = data.get('created_at')
+    if hasattr(created, 'isoformat'):
+        data['created_at'] = created.isoformat()
+    return media_mod.media_public_asset(data)
+
+
+def _public_attachment(row, asset):
+    data = dict(row)
+    return {'id': data.get('id'), 'slot_id': data.get('slot_id'),
+            'asset_id': data.get('asset_id'),
+            'channels': list(data.get('channels') or []),
+            'channel_derivatives': dict(data.get('channel_derivatives') or {}),
+            'use_original_without_derivative': bool(data.get('use_original_without_derivative')),
+            'format_validation': dict(data.get('format_validation') or {}),
+            'asset': asset}
+
+
+def _combined_slot_media_validation(attachments, slot_type):
+    from launchcrew import media_library as media_mod
+    reasons: list[str] = []
+    checked: str | None = None
+    for attachment in attachments:
+        validation = attachment.get('format_validation')
+        if not isinstance(validation, dict):
+            continue
+        if checked is None and isinstance(validation.get('checked_aspect_ratio'), str):
+            checked = validation['checked_aspect_ratio']
+        for reason in validation.get('reasons') or []:
+            if isinstance(reason, str) and reason.strip() and reason not in reasons:
+                reasons.append(reason)
+    return {'passed': not reasons, 'reasons': reasons,
+            'checked_aspect_ratio': checked,
+            'required_aspect_ratio': media_mod.required_aspect_for_slot(slot_type)}
+
+
+@app.post('/api/media/assets', response_model=MediaAssetOut, status_code=201)
+def upload_media_asset(body: MediaAssetIn, actor: str = Depends(auth.actor)):
+    """Upload one image or video once for reuse across channels.
+
+    Parses dimensions and aspect from the payload header bytes (or the
+    explicit width and height), records the format facts and the
+    original digest, and generates the channel-ready crop derivatives
+    alongside the original without touching it.
+    """
+    from launchcrew import media_library as media_mod
+    try:
+        validated = media_mod.validate_upload(body.filename, body.mime_type,
+                                              body.width, body.height,
+                                              body.duration_seconds, body.data_b64)
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    data_b64 = body.data_b64.strip() if isinstance(body.data_b64, str) and body.data_b64.strip() else None
+    asset_id = 'media_' + uuid4().hex
+    stored = media_mod.build_asset(asset_id, validated, data_b64)
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        db.execute(text('INSERT INTO media_assets(id, workspace_id, filename, media_type, mime_type,'
+                        ' width, height, aspect_ratio, duration_seconds, sha256_digest,'
+                        ' original_data_b64, derivatives)'
+                        ' VALUES (:id,:ws,:filename,:media_type,:mime,:width,:height,'
+                        ':aspect,:duration,:digest,:data,CAST(:derivatives AS jsonb))'),
+                   {'id': asset_id, 'ws': workspace_id, 'filename': stored['filename'],
+                    'media_type': stored['media_type'], 'mime': stored['mime_type'],
+                    'width': stored['width'], 'height': stored['height'],
+                    'aspect': stored['aspect_ratio'], 'duration': stored['duration_seconds'],
+                    'digest': stored['sha256_digest'], 'data': stored['original_data_b64'],
+                    'derivatives': json.dumps(stored['derivatives'])})
+        store.audit(db, None, 'media_asset_uploaded', actor, workspace_id)
+        return _public_media_asset(_load_media_asset(db, asset_id, workspace_id))
+
+
+@app.get('/api/media/assets', response_model=list[MediaAssetOut])
+def list_media_assets(actor: str = Depends(auth.actor)):
+    """List workspace media assets with format facts and derivatives."""
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        rows = db.execute(text('SELECT ' + _MEDIA_PUBLIC_SELECT + ' FROM media_assets'
+                               ' WHERE workspace_id=:ws ORDER BY created_at, id'),
+                          {'ws': workspace_id}).mappings().all()
+        return [_public_media_asset(dict(row)) for row in rows]
+
+
+@app.get('/api/media/assets/{asset_id}', response_model=MediaAssetOut)
+def get_media_asset(asset_id: str, actor: str = Depends(auth.actor)):
+    """Return one asset, proving the original facts sit intact beside derivatives."""
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        return _public_media_asset(_load_media_asset(db, asset_id, workspace_id))
+
+
+@app.post('/api/media/assets/{asset_id}/derivatives')
+def generate_media_derivative(asset_id: str, body: MediaDerivativeIn,
+                              actor: str = Depends(auth.actor)):
+    """Generate or retrieve one crop derivative without overwriting the original."""
+    from launchcrew import media_library as media_mod
+    key = (body.derivative_key or '').strip()
+    if media_mod._parse_aspect_key(key) is None or key not in media_mod.DERIVATIVE_KEYS:
+        raise HTTPException(422, 'derivative_key must be one of 4:5, 1:1, 9:16, 16:9')
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        stored = _load_media_asset(db, asset_id, workspace_id)
+        before = (stored.get('width'), stored.get('height'),
+                  stored.get('aspect_ratio'), stored.get('sha256_digest'))
+        derivatives = stored.get('derivatives')
+        record = derivatives.get(key) if isinstance(derivatives, dict) else None
+        if not isinstance(record, dict):
+            fresh = media_mod.build_derivatives(stored['id'], stored['width'],
+                                                stored['height'], stored['sha256_digest'])
+            record = fresh.get(key)
+            if not isinstance(record, dict):
+                raise HTTPException(422, 'derivative_key must be one of 4:5, 1:1, 9:16, 16:9')
+            merged = dict(derivatives) if isinstance(derivatives, dict) else {}
+            merged[key] = record
+            db.execute(text('UPDATE media_assets SET derivatives=CAST(:derivatives AS jsonb)'
+                            ' WHERE id=:id AND workspace_id=:ws'),
+                       {'derivatives': json.dumps(merged), 'id': stored['id'], 'ws': workspace_id})
+            stored = _load_media_asset(db, asset_id, workspace_id)
+        after = (stored.get('width'), stored.get('height'),
+                 stored.get('aspect_ratio'), stored.get('sha256_digest'))
+        if before != after:
+            raise HTTPException(500, 'Media original must never change when generating derivatives')
+        return dict(record) if isinstance(record, dict) else record
+
+
+@app.post('/api/calendar/slots/{slot_id}/media', response_model=SlotMediaAttachmentOut,
+          status_code=201)
+def attach_slot_media(slot_id: str, body: SlotMediaAttachIn,
+                      actor: str = Depends(auth.actor)):
+    """Attach one uploaded asset to a slot and channels without re-upload.
+
+    Resolves each channel to its channel-ready derivative, runs the
+    Checker media format and capability validation, records the
+    attachment on the slot, and returns the per-channel mapping with
+    the validation result.
+    """
+    from launchcrew import calendar as calendar_mod
+    from launchcrew import media_library as media_mod
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        slot = _load_slot(db, slot_id, workspace_id)
+        asset = _load_media_asset(db, body.asset_id.strip(), workspace_id)
+        if body.channels is None:
+            channels = list(slot.get('selected_channels') or [])
+        else:
+            try:
+                channels = calendar_mod.normalize_channel_list(body.channels, 'channels')
+            except ValueError as error:
+                raise HTTPException(422, str(error))
+        if not channels:
+            raise HTTPException(422, 'channels must name at least one channel')
+        use_original = bool(body.use_original_without_derivative)
+        mapping = media_mod.resolve_channel_derivatives(asset, channels, use_original)
+        validation = media_mod.validate_slot_media(asset, slot.get('slot_type'), channels,
+                                                   mapping, use_original)
+        attachment_id = 'matt_' + uuid4().hex
+        db.execute(text('DELETE FROM media_attachments WHERE slot_id=:slot AND asset_id=:asset'
+                        ' AND workspace_id=:ws'),
+                   {'slot': slot['id'], 'asset': asset['id'], 'ws': workspace_id})
+        db.execute(text('INSERT INTO media_attachments(id, workspace_id, asset_id, slot_id, run_id,'
+                        ' channels, channel_derivatives, use_original_without_derivative,'
+                        ' format_validation)'
+                        ' VALUES (:id,:ws,:asset,:slot,:run,CAST(:channels AS jsonb),'
+                        'CAST(:derivatives AS jsonb),:use_original,CAST(:validation AS jsonb))'),
+                   {'id': attachment_id, 'ws': workspace_id, 'asset': asset['id'],
+                    'slot': slot['id'], 'run': slot.get('run_id'),
+                    'channels': json.dumps(channels), 'derivatives': json.dumps(mapping),
+                    'use_original': use_original, 'validation': json.dumps(validation)})
+        store.audit(db, slot.get('run_id'), 'slot_media_attached', actor, workspace_id)
+        row = db.execute(text('SELECT ' + _ATTACHMENT_PUBLIC_SELECT + ' FROM media_attachments'
+                              ' WHERE id=:id AND workspace_id=:ws'),
+                         {'id': attachment_id, 'ws': workspace_id}).mappings().first()
+        if row is None:
+            raise HTTPException(500, 'Slot media was not stored')
+        return _public_attachment(dict(row), _public_media_asset(asset))
+
+
+@app.get('/api/calendar/slots/{slot_id}/media', response_model=SlotMediaOut)
+def get_slot_media(slot_id: str, actor: str = Depends(auth.actor)):
+    """Return attached media assets, per-channel derivatives, and format validation."""
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        slot = _load_slot(db, slot_id, workspace_id)
+        rows = db.execute(text('SELECT ' + _ATTACHMENT_PUBLIC_SELECT + ' FROM media_attachments'
+                               ' WHERE slot_id=:slot AND workspace_id=:ws ORDER BY created_at, id'),
+                          {'slot': slot['id'], 'ws': workspace_id}).mappings().all()
+        attached = []
+        for row in rows:
+            asset = _load_media_asset(db, dict(row)['asset_id'], workspace_id)
+            attached.append(_public_attachment(dict(row), _public_media_asset(asset)))
+        return {'slot_id': slot['id'], 'attached': attached,
+                'format_validation': _combined_slot_media_validation(attached, slot.get('slot_type'))}

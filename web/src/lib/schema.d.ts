@@ -407,6 +407,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/calendar/slots/{slot_id}/media": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Slot Media
+         * @description Return attached media assets, per-channel derivatives, and format validation.
+         */
+        get: operations["get_slot_media_api_calendar_slots__slot_id__media_get"];
+        put?: never;
+        /**
+         * Attach Slot Media
+         * @description Attach one uploaded asset to a slot and channels without re-upload.
+         *
+         *     Resolves each channel to its channel-ready derivative, runs the
+         *     Checker media format and capability validation, records the
+         *     attachment on the slot, and returns the per-channel mapping with
+         *     the validation result.
+         */
+        post: operations["attach_slot_media_api_calendar_slots__slot_id__media_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/calendar/slots/{slot_id}/schedule": {
         parameters: {
             query?: never;
@@ -920,6 +949,75 @@ export interface paths {
          *     proposal, so the owner can keep both or confirm replacement.
          */
         post: operations["import_suggestions_structured_api_import_suggestions_structured_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/media/assets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Media Assets
+         * @description List workspace media assets with format facts and derivatives.
+         */
+        get: operations["list_media_assets_api_media_assets_get"];
+        put?: never;
+        /**
+         * Upload Media Asset
+         * @description Upload one image or video once for reuse across channels.
+         *
+         *     Parses dimensions and aspect from the payload header bytes (or the
+         *     explicit width and height), records the format facts and the
+         *     original digest, and generates the channel-ready crop derivatives
+         *     alongside the original without touching it.
+         */
+        post: operations["upload_media_asset_api_media_assets_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/media/assets/{asset_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Media Asset
+         * @description Return one asset, proving the original facts sit intact beside derivatives.
+         */
+        get: operations["get_media_asset_api_media_assets__asset_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/media/assets/{asset_id}/derivatives": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Generate Media Derivative
+         * @description Generate or retrieve one crop derivative without overwriting the original.
+         */
+        post: operations["generate_media_derivative_api_media_assets__asset_id__derivatives_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3370,6 +3468,80 @@ export interface components {
             /** Reasons */
             reasons?: string[];
         };
+        /** MediaAssetIn */
+        MediaAssetIn: {
+            /** Data B64 */
+            data_b64?: string | null;
+            /** Duration Seconds */
+            duration_seconds?: number | null;
+            /** Filename */
+            filename: string;
+            /** Height */
+            height?: number | null;
+            /** Mime Type */
+            mime_type?: string | null;
+            /** Width */
+            width?: number | null;
+        };
+        /** MediaAssetOut */
+        MediaAssetOut: {
+            /**
+             * Aspect Ratio
+             * @default
+             */
+            aspect_ratio: string;
+            /** Created At */
+            created_at?: unknown | null;
+            /** Derivatives */
+            derivatives?: {
+                [key: string]: unknown;
+            };
+            /** Duration Seconds */
+            duration_seconds?: number | null;
+            /**
+             * Filename
+             * @default
+             */
+            filename: string;
+            /** Format Facts */
+            format_facts?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Height
+             * @default 0
+             */
+            height: number;
+            /**
+             * Id
+             * @default
+             */
+            id: string;
+            /**
+             * Media Type
+             * @default image
+             */
+            media_type: string;
+            /** Mime Type */
+            mime_type?: string | null;
+            /**
+             * Sha256 Digest
+             * @default
+             */
+            sha256_digest: string;
+            /**
+             * Width
+             * @default 0
+             */
+            width: number;
+        } & {
+            [key: string]: unknown;
+        };
+        /** MediaDerivativeIn */
+        MediaDerivativeIn: {
+            /** Derivative Key */
+            derivative_key: string;
+        };
         /** MemoryItemEdit */
         MemoryItemEdit: {
             /** Content */
@@ -4516,6 +4688,70 @@ export interface components {
              * @default false
              */
             skipped: boolean;
+            /**
+             * Slot Id
+             * @default
+             */
+            slot_id: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** SlotMediaAttachIn */
+        SlotMediaAttachIn: {
+            /** Asset Id */
+            asset_id: string;
+            /** Channels */
+            channels?: string[] | null;
+            /**
+             * Use Original Without Derivative
+             * @default false
+             */
+            use_original_without_derivative: boolean;
+        };
+        /** SlotMediaAttachmentOut */
+        SlotMediaAttachmentOut: {
+            /** Asset */
+            asset?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Asset Id
+             * @default
+             */
+            asset_id: string;
+            /** Channel Derivatives */
+            channel_derivatives?: {
+                [key: string]: unknown;
+            };
+            /** Channels */
+            channels?: string[];
+            /** Format Validation */
+            format_validation?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Id
+             * @default
+             */
+            id: string;
+            /** Slot Id */
+            slot_id?: string | null;
+            /**
+             * Use Original Without Derivative
+             * @default false
+             */
+            use_original_without_derivative: boolean;
+        } & {
+            [key: string]: unknown;
+        };
+        /** SlotMediaOut */
+        SlotMediaOut: {
+            /** Attached */
+            attached?: components["schemas"]["SlotMediaAttachmentOut"][];
+            /** Format Validation */
+            format_validation?: {
+                [key: string]: unknown;
+            };
             /**
              * Slot Id
              * @default
@@ -5711,6 +5947,72 @@ export interface operations {
             };
         };
     };
+    get_slot_media_api_calendar_slots__slot_id__media_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slot_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SlotMediaOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    attach_slot_media_api_calendar_slots__slot_id__media_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slot_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SlotMediaAttachIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SlotMediaAttachmentOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     update_slot_schedule_api_calendar_slots__slot_id__schedule_patch: {
         parameters: {
             query?: never;
@@ -6674,6 +6976,125 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["StructuredImportOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_media_assets_api_media_assets_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MediaAssetOut"][];
+                };
+            };
+        };
+    };
+    upload_media_asset_api_media_assets_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MediaAssetIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MediaAssetOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_media_asset_api_media_assets__asset_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MediaAssetOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    generate_media_derivative_api_media_assets__asset_id__derivatives_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MediaDerivativeIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

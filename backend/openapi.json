@@ -3345,6 +3345,182 @@
         "title": "LineEvidence",
         "type": "object"
       },
+      "MediaAssetIn": {
+        "additionalProperties": false,
+        "properties": {
+          "data_b64": {
+            "anyOf": [
+              {
+                "maxLength": 20000000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Data B64"
+          },
+          "duration_seconds": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Seconds"
+          },
+          "filename": {
+            "maxLength": 200,
+            "title": "Filename",
+            "type": "string"
+          },
+          "height": {
+            "anyOf": [
+              {
+                "maximum": 16384.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height"
+          },
+          "mime_type": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mime Type"
+          },
+          "width": {
+            "anyOf": [
+              {
+                "maximum": 16384.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width"
+          }
+        },
+        "required": [
+          "filename"
+        ],
+        "title": "MediaAssetIn",
+        "type": "object"
+      },
+      "MediaAssetOut": {
+        "additionalProperties": true,
+        "properties": {
+          "aspect_ratio": {
+            "default": "",
+            "title": "Aspect Ratio",
+            "type": "string"
+          },
+          "created_at": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "derivatives": {
+            "additionalProperties": true,
+            "title": "Derivatives",
+            "type": "object"
+          },
+          "duration_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Seconds"
+          },
+          "filename": {
+            "default": "",
+            "title": "Filename",
+            "type": "string"
+          },
+          "format_facts": {
+            "additionalProperties": true,
+            "title": "Format Facts",
+            "type": "object"
+          },
+          "height": {
+            "default": 0,
+            "title": "Height",
+            "type": "integer"
+          },
+          "id": {
+            "default": "",
+            "title": "Id",
+            "type": "string"
+          },
+          "media_type": {
+            "default": "image",
+            "title": "Media Type",
+            "type": "string"
+          },
+          "mime_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mime Type"
+          },
+          "sha256_digest": {
+            "default": "",
+            "title": "Sha256 Digest",
+            "type": "string"
+          },
+          "width": {
+            "default": 0,
+            "title": "Width",
+            "type": "integer"
+          }
+        },
+        "title": "MediaAssetOut",
+        "type": "object"
+      },
+      "MediaDerivativeIn": {
+        "additionalProperties": false,
+        "properties": {
+          "derivative_key": {
+            "maxLength": 16,
+            "minLength": 1,
+            "title": "Derivative Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "derivative_key"
+        ],
+        "title": "MediaDerivativeIn",
+        "type": "object"
+      },
       "MemoryItemEdit": {
         "additionalProperties": false,
         "properties": {
@@ -6154,6 +6330,120 @@
         "title": "SlotExecuteResultOut",
         "type": "object"
       },
+      "SlotMediaAttachIn": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "channels": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Channels"
+          },
+          "use_original_without_derivative": {
+            "default": false,
+            "title": "Use Original Without Derivative",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "asset_id"
+        ],
+        "title": "SlotMediaAttachIn",
+        "type": "object"
+      },
+      "SlotMediaAttachmentOut": {
+        "additionalProperties": true,
+        "properties": {
+          "asset": {
+            "additionalProperties": true,
+            "title": "Asset",
+            "type": "object"
+          },
+          "asset_id": {
+            "default": "",
+            "title": "Asset Id",
+            "type": "string"
+          },
+          "channel_derivatives": {
+            "additionalProperties": true,
+            "title": "Channel Derivatives",
+            "type": "object"
+          },
+          "channels": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Channels",
+            "type": "array"
+          },
+          "format_validation": {
+            "additionalProperties": true,
+            "title": "Format Validation",
+            "type": "object"
+          },
+          "id": {
+            "default": "",
+            "title": "Id",
+            "type": "string"
+          },
+          "slot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slot Id"
+          },
+          "use_original_without_derivative": {
+            "default": false,
+            "title": "Use Original Without Derivative",
+            "type": "boolean"
+          }
+        },
+        "title": "SlotMediaAttachmentOut",
+        "type": "object"
+      },
+      "SlotMediaOut": {
+        "additionalProperties": true,
+        "properties": {
+          "attached": {
+            "items": {
+              "$ref": "#/components/schemas/SlotMediaAttachmentOut"
+            },
+            "title": "Attached",
+            "type": "array"
+          },
+          "format_validation": {
+            "additionalProperties": true,
+            "title": "Format Validation",
+            "type": "object"
+          },
+          "slot_id": {
+            "default": "",
+            "title": "Slot Id",
+            "type": "string"
+          }
+        },
+        "title": "SlotMediaOut",
+        "type": "object"
+      },
       "SlotScheduleIn": {
         "additionalProperties": false,
         "properties": {
@@ -8104,6 +8394,94 @@
         "summary": "Mark Slot Ready"
       }
     },
+    "/api/calendar/slots/{slot_id}/media": {
+      "get": {
+        "description": "Return attached media assets, per-channel derivatives, and format validation.",
+        "operationId": "get_slot_media_api_calendar_slots__slot_id__media_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slot_id",
+            "required": true,
+            "schema": {
+              "title": "Slot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SlotMediaOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Slot Media"
+      },
+      "post": {
+        "description": "Attach one uploaded asset to a slot and channels without re-upload.\n\nResolves each channel to its channel-ready derivative, runs the\nChecker media format and capability validation, records the\nattachment on the slot, and returns the per-channel mapping with\nthe validation result.",
+        "operationId": "attach_slot_media_api_calendar_slots__slot_id__media_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "slot_id",
+            "required": true,
+            "schema": {
+              "title": "Slot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SlotMediaAttachIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SlotMediaAttachmentOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Attach Slot Media"
+      }
+    },
     "/api/calendar/slots/{slot_id}/schedule": {
       "patch": {
         "description": "Edit planning fields on one slot: date, time, channel selection.\n\nPlanning only; it never publishes. Changing the date, time, or\nchannel selection resets a Ready slot to draft for revalidation.",
@@ -9298,6 +9676,154 @@
           }
         },
         "summary": "Import Suggestions Structured"
+      }
+    },
+    "/api/media/assets": {
+      "get": {
+        "description": "List workspace media assets with format facts and derivatives.",
+        "operationId": "list_media_assets_api_media_assets_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/MediaAssetOut"
+                  },
+                  "title": "Response List Media Assets Api Media Assets Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Media Assets"
+      },
+      "post": {
+        "description": "Upload one image or video once for reuse across channels.\n\nParses dimensions and aspect from the payload header bytes (or the\nexplicit width and height), records the format facts and the\noriginal digest, and generates the channel-ready crop derivatives\nalongside the original without touching it.",
+        "operationId": "upload_media_asset_api_media_assets_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MediaAssetIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaAssetOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Media Asset"
+      }
+    },
+    "/api/media/assets/{asset_id}": {
+      "get": {
+        "description": "Return one asset, proving the original facts sit intact beside derivatives.",
+        "operationId": "get_media_asset_api_media_assets__asset_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "asset_id",
+            "required": true,
+            "schema": {
+              "title": "Asset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaAssetOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Media Asset"
+      }
+    },
+    "/api/media/assets/{asset_id}/derivatives": {
+      "post": {
+        "description": "Generate or retrieve one crop derivative without overwriting the original.",
+        "operationId": "generate_media_derivative_api_media_assets__asset_id__derivatives_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "asset_id",
+            "required": true,
+            "schema": {
+              "title": "Asset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MediaDerivativeIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Generate Media Derivative"
       }
     },
     "/api/memory": {
