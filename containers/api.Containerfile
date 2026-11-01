@@ -30,6 +30,7 @@ COPY backend ./backend
 COPY agents ./agents
 COPY agent_presets ./agent_presets
 COPY facts ./facts
+COPY skills ./skills
 COPY alembic.ini ./
 COPY containers/api-entrypoint.sh /usr/local/bin/api-entrypoint.sh
 RUN chmod 755 /usr/local/bin/api-entrypoint.sh

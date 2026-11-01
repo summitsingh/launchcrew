@@ -5976,6 +5976,501 @@ def generate_viral_pack(body: ViralGenerateIn, actor: str = Depends(auth.actor))
         return public
 
 
+# SC6 agent surfaces: workspace keys, agent REST API, hosted MCP server, skill.
+# One backend backs four surfaces. The Web UI, REST API, hosted MCP
+# server, and CLI resolve the same workspace_id (from the workspace key
+# or the owner session) so they read and write the exact same state.
+
+
+class AgentKeyCreateIn(Strict):
+    label: str = Field(default='', max_length=120)
+    scopes: list[str] | None = None
+
+
+class AgentValidateIn(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    slot_id: str | None = None
+    slot_ids: list[str] | None = None
+    schedule: dict[str, Any] | None = None
+
+
+class AgentApplyIn(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    schema_version: str | None = None
+    ready_slots: list[Any] | None = None
+    excluded_slots: list[Any] | None = None
+
+
+class McpCallIn(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    name: str = ''
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+def _raw_workspace_key(request: Request) -> str | None:
+    header = request.headers.get('authorization', '')
+    if header.lower().startswith('bearer '):
+        token = header[7:].strip()
+        if token:
+            return token
+    fallback = (request.headers.get('x-workspace-key') or '').strip()
+    return fallback or None
+
+
+def _agent_session_actor(request: Request) -> str | None:
+    if not auth.enabled():
+        return 'demo_placeholder'
+    try:
+        data = auth.load_session(request)
+    except Exception:
+        return None
+    if not data or not data.get('actor'):
+        return None
+    return str(data['actor'])
+
+
+def _agent_workspace(request: Request, db, scope: str) -> str:
+    from launchcrew import agent_surfaces as surfaces_mod
+    raw = _raw_workspace_key(request)
+    if raw:
+        row = db.execute(text('SELECT workspace_id, scopes, revoked FROM workspace_api_keys'
+                              ' WHERE key_hash=:digest'),
+                         {'digest': surfaces_mod.hash_key(raw)}).fetchone()
+        granted = list(row[1]) if row is not None and isinstance(row[1], list) else []
+        if row is None or bool(row[2]) or scope not in granted:
+            raise HTTPException(401, 'invalid_or_revoked_workspace_key')
+        return str(row[0])
+    actor = _agent_session_actor(request)
+    if actor is None:
+        raise HTTPException(401, 'invalid_or_revoked_workspace_key')
+    return store.ensure_workspace_seeded(db, actor)
+
+
+def _public_agent_key(row) -> dict[str, Any]:
+    data = dict(row)
+    created = data.get('created_at')
+    if hasattr(created, 'isoformat'):
+        data['created_at'] = created.isoformat()
+    return {'id': data.get('id'), 'label': data.get('label', ''),
+            'key_prefix': data.get('key_prefix', ''),
+            'scopes': list(data.get('scopes') or []),
+            'revoked': bool(data.get('revoked', False)),
+            'created_at': data.get('created_at')}
+
+
+@app.post('/api/agent-surfaces/keys', status_code=201)
+def create_workspace_key(body: AgentKeyCreateIn, actor: str = Depends(auth.actor)):
+    """Create a workspace key for the caller workspace. The raw key is returned once."""
+    from launchcrew import agent_surfaces as surfaces_mod
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        label = (body.label or '').strip()[:120]
+        scopes = list(body.scopes) if body.scopes else list(surfaces_mod.DEFAULT_SCOPES)
+        unknown = [scope for scope in scopes if scope not in surfaces_mod.DEFAULT_SCOPES]
+        if unknown:
+            raise HTTPException(422, 'Unknown workspace key scope: ' + ', '.join(unknown))
+        raw = surfaces_mod.generate_raw_key()
+        key_id = surfaces_mod.new_key_id()
+        db.execute(text('INSERT INTO workspace_api_keys(id, workspace_id, label, key_prefix,'
+                        ' key_hash, scopes, revoked)'
+                        ' VALUES (:id,:ws,:label,:prefix,:digest,CAST(:scopes AS jsonb),false)'),
+                   {'id': key_id, 'ws': workspace_id, 'label': label,
+                    'prefix': surfaces_mod.key_prefix(raw),
+                    'digest': surfaces_mod.hash_key(raw), 'scopes': json.dumps(scopes)})
+        store.audit(db, None, 'workspace_key_created', actor, workspace_id)
+        row = db.execute(text('SELECT id, workspace_id, label, key_prefix, scopes, revoked, created_at'
+                              ' FROM workspace_api_keys WHERE id=:id AND workspace_id=:ws'),
+                         {'id': key_id, 'ws': workspace_id}).mappings().first()
+        public = _public_agent_key(dict(row))
+        public['workspace_id'] = workspace_id
+        public['raw_key'] = raw
+        return public
+
+
+@app.get('/api/agent-surfaces/keys')
+def list_workspace_keys(actor: str = Depends(auth.actor)):
+    """List workspace keys without ever exposing raw key material."""
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        rows = db.execute(text('SELECT id, workspace_id, label, key_prefix, scopes, revoked, created_at'
+                               ' FROM workspace_api_keys WHERE workspace_id=:ws'
+                               ' ORDER BY created_at, id'),
+                          {'ws': workspace_id}).mappings().all()
+        return [_public_agent_key(dict(row)) for row in rows]
+
+
+@app.post('/api/agent-surfaces/keys/{key_id}/revoke')
+def revoke_workspace_key(key_id: str, actor: str = Depends(auth.actor)):
+    """Revoke a workspace key. Revoked keys fail closed on every surface."""
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        result = db.execute(text('UPDATE workspace_api_keys SET revoked=true'
+                                 ' WHERE id=:id AND workspace_id=:ws'),
+                            {'id': key_id, 'ws': workspace_id})
+        if result.rowcount == 0:
+            raise HTTPException(404, 'Workspace key not found')
+        store.audit(db, None, 'workspace_key_revoked', actor, workspace_id)
+        row = db.execute(text('SELECT id, workspace_id, label, key_prefix, scopes, revoked, created_at'
+                              ' FROM workspace_api_keys WHERE id=:id AND workspace_id=:ws'),
+                         {'id': key_id, 'ws': workspace_id}).mappings().first()
+        return _public_agent_key(dict(row))
+
+
+_FALLBACK_SKILL_MARKDOWN = """# LaunchCrew SocialClaw
+
+Validate then apply. Validate every slot with POST /api/agent/validate
+(`launchcrew_validate`) before applying the export with POST /api/agent/apply.
+
+Export the schedule with GET /api/calendar/schedule-export. It returns a
+`schedule-export/v1` document. Apply it unchanged with
+`launchcrew apply schedule-export.json`.
+
+Every refusal names its reason. Resolve each failing condition, then
+validate again. There is no override.
+
+- `pack_not_approved`: the linked pack is not approved. Approve the run first.
+- `format_check_failed`: the format check failed. Fix the named format reason first.
+- `unapproved_channel_variants`: one or more selected channels are not approved.
+- `invalid_or_revoked_workspace_key`: the key is missing, unknown, or revoked.
+- `not_marked_ready`: the slot is not marked Ready. Mark it Ready after the gate passes.
+"""
+
+
+def _skill_markdown() -> str:
+    path = adapter.ROOT / 'skills' / 'launchcrew-socialclaw' / 'SKILL.md'
+    try:
+        return path.read_text(encoding='utf-8')
+    except OSError:
+        return _FALLBACK_SKILL_MARKDOWN
+
+
+@app.get('/api/agent-surfaces/skill')
+def get_agent_skill(actor: str = Depends(auth.actor)):
+    """Serve the installable agent skill document with tools and refusal rules."""
+    from launchcrew import agent_surfaces as surfaces_mod
+    with store.connect() as db:
+        store.ensure_workspace_seeded(db, actor)
+        return {'name': surfaces_mod.SKILL_NAME,
+                'version': surfaces_mod.SKILL_VERSION,
+                'content_markdown': _skill_markdown(),
+                'tools': surfaces_mod.skill_tools(),
+                'refusal_rules': surfaces_mod.refusal_rules()}
+
+
+def _agent_accounts(db, workspace_id) -> list[dict[str, Any]]:
+    try:
+        rows = db.execute(text('SELECT id, workspace_id, platform, account_handle, account_name,'
+                               ' external_account_id, account_type, encrypted_token, scopes, scopes_plain,'
+                               ' capabilities, status, connected_at, disconnected_at'
+                               ' FROM social_connections WHERE workspace_id=:ws ORDER BY platform'),
+                          {'ws': workspace_id}).mappings().all()
+    except Exception:
+        return []
+    return [_social_row_to_public(dict(row)) for row in rows]
+
+
+def _agent_capabilities(db, workspace_id) -> list[dict[str, Any]]:
+    from launchcrew.format_library import list_channel_capabilities as _list_capabilities
+    baseline = _list_capabilities()
+    try:
+        return _overlay_live_capabilities(db, workspace_id, baseline)
+    except Exception:
+        return baseline
+
+
+def _validate_slot_ids(db, workspace_id, slot_ids: list[str]) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for slot_id in slot_ids:
+        row = db.execute(text('SELECT ' + _CALENDAR_PUBLIC_SELECT
+                              + ' FROM calendar_slots WHERE id=:id AND workspace_id=:ws'),
+                         {'id': slot_id, 'ws': workspace_id}).mappings().first()
+        if row is None:
+            results.append({'slot_id': slot_id, 'ready_eligible': False,
+                            'failing_conditions': ['slot_not_found'],
+                            'details': ['Slot not found in this workspace'],
+                            'checks': {'pack_approved': False, 'format_passed': False,
+                                       'variants_approved': False},
+                            'unapproved_channels': [], 'format_reason': None})
+            continue
+        slot = dict(row)
+        receipt = _receipt_for_slot(db, slot, workspace_id)
+        evaluation = _evaluate_slot_ready(slot, receipt,
+                                          _media_gate_reasons(db, slot['id'], workspace_id))
+        results.append({'slot_id': slot_id, **evaluation})
+    return results
+
+
+def _apply_schedule_payload(db, workspace_id, payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict) or payload.get('schema_version') != 'schedule-export/v1':
+        raise HTTPException(422, 'schedule must use schema_version schedule-export/v1')
+    ready = payload.get('ready_slots')
+    if not isinstance(ready, list):
+        raise HTTPException(422, 'schedule ready_slots must be a list')
+    applied: list[str] = []
+    refused: list[dict[str, Any]] = []
+    for entry in ready:
+        slot_id = entry.get('slot_id') if isinstance(entry, dict) else None
+        if not slot_id or not isinstance(slot_id, str):
+            refused.append({'slot_id': slot_id, 'failing_conditions': ['slot_not_found'],
+                            'reasons': ['Schedule entry has no slot_id']})
+            continue
+        row = db.execute(text('SELECT ' + _CALENDAR_PUBLIC_SELECT
+                              + ' FROM calendar_slots WHERE id=:id AND workspace_id=:ws'),
+                         {'id': slot_id, 'ws': workspace_id}).mappings().first()
+        if row is None:
+            refused.append({'slot_id': slot_id, 'failing_conditions': ['slot_not_found'],
+                            'reasons': ['Slot not found in this workspace']})
+            continue
+        slot = dict(row)
+        receipt = _receipt_for_slot(db, slot, workspace_id)
+        evaluation = _evaluate_slot_ready(slot, receipt,
+                                          _media_gate_reasons(db, slot['id'], workspace_id))
+        if not evaluation['ready_eligible']:
+            refused.append({'slot_id': slot_id,
+                            'failing_conditions': evaluation['failing_conditions'],
+                            'reasons': evaluation['details']})
+            continue
+        db.execute(text("UPDATE calendar_slots SET schedule_state='ready', updated_at=now()"
+                        ' WHERE id=:id AND workspace_id=:ws'),
+                   {'id': slot_id, 'ws': workspace_id})
+        store.audit(db, slot.get('run_id'), 'agent_schedule_applied', 'agent_apply', workspace_id)
+        applied.append(slot_id)
+    return {'schema_version': 'schedule-export/v1', 'applied_via': 'agent_apply',
+            'applied_slot_ids': applied, 'refused_slots': refused,
+            'ready_count': len(applied)}
+
+
+@app.get('/api/agent/accounts')
+def agent_accounts(request: Request):
+    """Workspace social connections and platform status (same state as SC1)."""
+    with store.connect() as db:
+        workspace_id = _agent_workspace(request, db, 'accounts')
+        return _agent_accounts(db, workspace_id)
+
+
+@app.get('/api/agent/capabilities')
+def agent_capabilities(request: Request):
+    """Live plus baseline channel capabilities (same state as S2 and SC1)."""
+    with store.connect() as db:
+        workspace_id = _agent_workspace(request, db, 'capabilities')
+        return _agent_capabilities(db, workspace_id)
+
+
+@app.post('/api/agent/upload', status_code=201)
+def agent_upload(body: MediaAssetIn, request: Request):
+    """Upload a media asset into the workspace Media Library (same state as SC4)."""
+    from launchcrew import media_library as media_mod
+    try:
+        validated = media_mod.validate_upload(body.filename, body.mime_type,
+                                              body.width, body.height,
+                                              body.duration_seconds, body.data_b64)
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    data_b64 = body.data_b64.strip() if isinstance(body.data_b64, str) and body.data_b64.strip() else None
+    asset_id = 'media_' + uuid4().hex
+    stored = media_mod.build_asset(asset_id, validated, data_b64)
+    with store.connect() as db:
+        workspace_id = _agent_workspace(request, db, 'upload')
+        db.execute(text('INSERT INTO media_assets(id, workspace_id, filename, media_type, mime_type,'
+                        ' width, height, aspect_ratio, duration_seconds, sha256_digest,'
+                        ' original_data_b64, derivatives)'
+                        ' VALUES (:id,:ws,:filename,:media_type,:mime,:width,:height,'
+                        ':aspect,:duration,:digest,:data,CAST(:derivatives AS jsonb))'),
+                   {'id': asset_id, 'ws': workspace_id, 'filename': stored['filename'],
+                    'media_type': stored['media_type'], 'mime': stored['mime_type'],
+                    'width': stored['width'], 'height': stored['height'],
+                    'aspect': stored['aspect_ratio'], 'duration': stored['duration_seconds'],
+                    'digest': stored['sha256_digest'], 'data': stored['original_data_b64'],
+                    'derivatives': json.dumps(stored['derivatives'])})
+        store.audit(db, None, 'media_asset_uploaded', 'agent_apply', workspace_id)
+        return _public_media_asset(_load_media_asset(db, asset_id, workspace_id))
+
+
+@app.post('/api/agent/validate')
+def agent_validate(body: AgentValidateIn, request: Request):
+    """Validate slots with the exact S4 validate gate. Failures return 409 with Web UI reasons."""
+    with store.connect() as db:
+        workspace_id = _agent_workspace(request, db, 'validate')
+        slot_ids: list[str] = []
+        if isinstance(body.slot_id, str) and body.slot_id:
+            slot_ids.append(body.slot_id)
+        for entry in body.slot_ids or []:
+            if isinstance(entry, str) and entry and entry not in slot_ids:
+                slot_ids.append(entry)
+        schedule = body.schedule if isinstance(body.schedule, dict) else None
+        if schedule is not None:
+            ready = schedule.get('ready_slots')
+            if not isinstance(ready, list):
+                raise HTTPException(422, 'schedule ready_slots must be a list')
+            for entry in ready:
+                slot_id = entry.get('slot_id') if isinstance(entry, dict) else None
+                if isinstance(slot_id, str) and slot_id and slot_id not in slot_ids:
+                    slot_ids.append(slot_id)
+        if not slot_ids:
+            raise HTTPException(422, 'slot_id is required')
+        results = _validate_slot_ids(db, workspace_id, slot_ids)
+        if len(results) == 1 and not results[0]['ready_eligible']:
+            only = results[0]
+            raise HTTPException(409, detail={'message': 'Slot is not ready; resolve every failing condition',
+                                            'slot_id': only['slot_id'],
+                                            'failing_conditions': only['failing_conditions'],
+                                            'details': only['details'],
+                                            'checks': only['checks'],
+                                            'unapproved_channels': only['unapproved_channels'],
+                                            'format_reason': only['format_reason']})
+        return {'results': results,
+                'refused': [item for item in results if not item['ready_eligible']]}
+
+
+@app.post('/api/agent/apply')
+def agent_apply(body: AgentApplyIn, request: Request):
+    """Apply an exported schedule file unchanged. Every ready slot is revalidated first."""
+    with store.connect() as db:
+        workspace_id = _agent_workspace(request, db, 'apply')
+        return _apply_schedule_payload(db, workspace_id, body.model_dump())
+
+
+@app.get('/api/agent/runs/{run_id}/status')
+def agent_run_status(run_id: str, request: Request):
+    """Run status, approval state, and workspace schedule and publish status."""
+    with store.connect() as db:
+        workspace_id = _agent_workspace(request, db, 'run_status')
+        row = db.execute(text('SELECT receipt FROM runs WHERE id=:id AND workspace_id=:ws'),
+                         {'id': run_id, 'ws': workspace_id}).fetchone()
+        if row is None:
+            raise HTTPException(404, 'Run not found')
+        receipt = row[0] if isinstance(row[0], dict) else {}
+        counts = db.execute(text('SELECT schedule_state, COUNT(*) FROM calendar_slots'
+                                 ' WHERE workspace_id=:ws GROUP BY schedule_state'),
+                            {'ws': workspace_id}).all()
+        schedule = {str(state): int(total) for state, total in counts}
+        return {'run_id': run_id,
+                'approval_state': receipt.get('approval_state'),
+                'revision': receipt.get('revision'),
+                'status': receipt.get('status'),
+                'schedule': schedule,
+                'publish': _publish_kill_switch(db, workspace_id)}
+
+
+@app.get('/api/agent/status')
+def agent_status(request: Request):
+    """Workspace schedule and publish status across the shared calendar state."""
+    with store.connect() as db:
+        workspace_id = _agent_workspace(request, db, 'run_status')
+        counts = db.execute(text('SELECT schedule_state, COUNT(*) FROM calendar_slots'
+                                 ' WHERE workspace_id=:ws GROUP BY schedule_state'),
+                            {'ws': workspace_id}).all()
+        recent = db.execute(text('SELECT id, state FROM runs WHERE workspace_id=:ws'
+                                 ' ORDER BY created_at DESC, id DESC LIMIT 20'),
+                            {'ws': workspace_id}).mappings().all()
+        return {'workspace_id': workspace_id,
+                'schedule': {str(state): int(total) for state, total in counts},
+                'recent_runs': [{'run_id': entry['id'],
+                                 'approval_state': entry['state']} for entry in recent],
+                'publish': _publish_kill_switch(db, workspace_id)}
+
+
+@app.get('/api/mcp/tools')
+def mcp_list_tools(request: Request):
+    """List the six hosted MCP tools available to external agents."""
+    from launchcrew import agent_surfaces as surfaces_mod
+    with store.connect() as db:
+        _agent_workspace(request, db, 'mcp')
+        return {'tools': surfaces_mod.mcp_tools()}
+
+
+@app.post('/api/mcp/call')
+def mcp_call_tool(body: McpCallIn, request: Request):
+    """Call one hosted MCP tool. Validate refusals return is_error with Web UI reasons."""
+    from launchcrew import agent_surfaces as surfaces_mod
+    name = (body.name or '').strip()
+    arguments = body.arguments if isinstance(body.arguments, dict) else {}
+    if name not in surfaces_mod.MCP_TOOL_NAMES:
+        raise HTTPException(404, 'Unknown MCP tool: ' + name)
+    with store.connect() as db:
+        workspace_id = _agent_workspace(request, db, 'mcp')
+        if name == 'launchcrew_accounts':
+            return {'is_error': False, 'tool': name,
+                    'connections': _agent_accounts(db, workspace_id)}
+        if name == 'launchcrew_capabilities':
+            return {'is_error': False, 'tool': name,
+                    'capabilities': _agent_capabilities(db, workspace_id)}
+        if name == 'launchcrew_upload':
+            try:
+                validated_input = MediaAssetIn(**{key: arguments.get(key) for key in
+                                                  ('filename', 'mime_type', 'width', 'height',
+                                                   'duration_seconds', 'data_b64')})
+            except Exception as error:
+                raise HTTPException(422, str(error))
+            from launchcrew import media_library as media_mod
+            try:
+                validated = media_mod.validate_upload(validated_input.filename,
+                                                      validated_input.mime_type,
+                                                      validated_input.width,
+                                                      validated_input.height,
+                                                      validated_input.duration_seconds,
+                                                      validated_input.data_b64)
+            except ValueError as error:
+                raise HTTPException(422, str(error))
+            asset_id = 'media_' + uuid4().hex
+            data_b64 = validated_input.data_b64
+            if isinstance(data_b64, str) and not data_b64.strip():
+                data_b64 = None
+            stored = media_mod.build_asset(asset_id, validated, data_b64)
+            db.execute(text('INSERT INTO media_assets(id, workspace_id, filename, media_type, mime_type,'
+                            ' width, height, aspect_ratio, duration_seconds, sha256_digest,'
+                            ' original_data_b64, derivatives)'
+                            ' VALUES (:id,:ws,:filename,:media_type,:mime,:width,:height,'
+                            ':aspect,:duration,:digest,:data,CAST(:derivatives AS jsonb))'),
+                       {'id': asset_id, 'ws': workspace_id, 'filename': stored['filename'],
+                        'media_type': stored['media_type'], 'mime': stored['mime_type'],
+                        'width': stored['width'], 'height': stored['height'],
+                        'aspect': stored['aspect_ratio'], 'duration': stored['duration_seconds'],
+                        'digest': stored['sha256_digest'], 'data': stored['original_data_b64'],
+                        'derivatives': json.dumps(stored['derivatives'])})
+            store.audit(db, None, 'media_asset_uploaded', 'agent_apply', workspace_id)
+            return {'is_error': False, 'tool': name,
+                    'asset': _public_media_asset(_load_media_asset(db, asset_id, workspace_id))}
+        if name == 'launchcrew_validate':
+            slot_id = arguments.get('slot_id')
+            if not isinstance(slot_id, str) or not slot_id:
+                raise HTTPException(422, 'slot_id is required')
+            results = _validate_slot_ids(db, workspace_id, [slot_id])
+            only = results[0]
+            if not only['ready_eligible']:
+                return {'is_error': True, 'tool': name, 'slot_id': slot_id,
+                        'failing_conditions': only['failing_conditions'],
+                        'details': only['details'],
+                        'reason': '; '.join(only['details']) if only['details'] else 'Slot is not ready',
+                        'checks': only['checks'],
+                        'unapproved_channels': only['unapproved_channels'],
+                        'format_reason': only['format_reason']}
+            return {'is_error': False, 'tool': name, **only}
+        if name == 'launchcrew_apply':
+            schedule = arguments.get('schedule')
+            if not isinstance(schedule, dict):
+                raise HTTPException(422, 'schedule must be a schedule-export/v1 document')
+            result = _apply_schedule_payload(db, workspace_id, schedule)
+            return {'is_error': False, 'tool': name, **result}
+        run_id = arguments.get('run_id')
+        if isinstance(run_id, str) and run_id:
+            row = db.execute(text('SELECT receipt FROM runs WHERE id=:id AND workspace_id=:ws'),
+                             {'id': run_id, 'ws': workspace_id}).fetchone()
+            if row is None:
+                return {'is_error': True, 'tool': name, 'run_id': run_id,
+                        'reason': 'Run not found in this workspace'}
+            receipt = row[0] if isinstance(row[0], dict) else {}
+            return {'is_error': False, 'tool': name, 'run_id': run_id,
+                    'approval_state': receipt.get('approval_state'),
+                    'revision': receipt.get('revision'), 'status': receipt.get('status')}
+        counts = db.execute(text('SELECT schedule_state, COUNT(*) FROM calendar_slots'
+                                 ' WHERE workspace_id=:ws GROUP BY schedule_state'),
+                            {'ws': workspace_id}).all()
+        return {'is_error': False, 'tool': name, 'workspace_id': workspace_id,
+                'schedule': {str(state): int(total) for state, total in counts},
+                'publish': _publish_kill_switch(db, workspace_id)}
+
+
 @app.get('/api/viral-generator/generations', response_model=list[ViralGenerationOut])
 def list_viral_generations(actor: str = Depends(auth.actor)):
     """List workspace viral generations, newest first."""

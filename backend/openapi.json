@@ -1,6 +1,119 @@
 {
   "components": {
     "schemas": {
+      "AgentApplyIn": {
+        "additionalProperties": true,
+        "properties": {
+          "excluded_slots": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Excluded Slots"
+          },
+          "ready_slots": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ready Slots"
+          },
+          "schema_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schema Version"
+          }
+        },
+        "title": "AgentApplyIn",
+        "type": "object"
+      },
+      "AgentKeyCreateIn": {
+        "additionalProperties": false,
+        "properties": {
+          "label": {
+            "default": "",
+            "maxLength": 120,
+            "title": "Label",
+            "type": "string"
+          },
+          "scopes": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scopes"
+          }
+        },
+        "title": "AgentKeyCreateIn",
+        "type": "object"
+      },
+      "AgentValidateIn": {
+        "additionalProperties": true,
+        "properties": {
+          "schedule": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Schedule"
+          },
+          "slot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slot Id"
+          },
+          "slot_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slot Ids"
+          }
+        },
+        "title": "AgentValidateIn",
+        "type": "object"
+      },
       "AnalyticsPullOut": {
         "additionalProperties": false,
         "properties": {
@@ -3493,6 +3606,23 @@
           }
         },
         "title": "LineEvidence",
+        "type": "object"
+      },
+      "McpCallIn": {
+        "additionalProperties": true,
+        "properties": {
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "name": {
+            "default": "",
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "title": "McpCallIn",
         "type": "object"
       },
       "MediaAssetIn": {
@@ -7824,6 +7954,313 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/agent-surfaces/keys": {
+      "get": {
+        "description": "List workspace keys without ever exposing raw key material.",
+        "operationId": "list_workspace_keys_api_agent_surfaces_keys_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Workspace Keys"
+      },
+      "post": {
+        "description": "Create a workspace key for the caller workspace. The raw key is returned once.",
+        "operationId": "create_workspace_key_api_agent_surfaces_keys_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentKeyCreateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Workspace Key"
+      }
+    },
+    "/api/agent-surfaces/keys/{key_id}/revoke": {
+      "post": {
+        "description": "Revoke a workspace key. Revoked keys fail closed on every surface.",
+        "operationId": "revoke_workspace_key_api_agent_surfaces_keys__key_id__revoke_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key_id",
+            "required": true,
+            "schema": {
+              "title": "Key Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Workspace Key"
+      }
+    },
+    "/api/agent-surfaces/skill": {
+      "get": {
+        "description": "Serve the installable agent skill document with tools and refusal rules.",
+        "operationId": "get_agent_skill_api_agent_surfaces_skill_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Agent Skill"
+      }
+    },
+    "/api/agent/accounts": {
+      "get": {
+        "description": "Workspace social connections and platform status (same state as SC1).",
+        "operationId": "agent_accounts_api_agent_accounts_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Agent Accounts"
+      }
+    },
+    "/api/agent/apply": {
+      "post": {
+        "description": "Apply an exported schedule file unchanged. Every ready slot is revalidated first.",
+        "operationId": "agent_apply_api_agent_apply_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentApplyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Agent Apply"
+      }
+    },
+    "/api/agent/capabilities": {
+      "get": {
+        "description": "Live plus baseline channel capabilities (same state as S2 and SC1).",
+        "operationId": "agent_capabilities_api_agent_capabilities_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Agent Capabilities"
+      }
+    },
+    "/api/agent/runs/{run_id}/status": {
+      "get": {
+        "description": "Run status, approval state, and workspace schedule and publish status.",
+        "operationId": "agent_run_status_api_agent_runs__run_id__status_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Agent Run Status"
+      }
+    },
+    "/api/agent/status": {
+      "get": {
+        "description": "Workspace schedule and publish status across the shared calendar state.",
+        "operationId": "agent_status_api_agent_status_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Agent Status"
+      }
+    },
+    "/api/agent/upload": {
+      "post": {
+        "description": "Upload a media asset into the workspace Media Library (same state as SC4).",
+        "operationId": "agent_upload_api_agent_upload_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MediaAssetIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Agent Upload"
+      }
+    },
+    "/api/agent/validate": {
+      "post": {
+        "description": "Validate slots with the exact S4 validate gate. Failures return 409 with Web UI reasons.",
+        "operationId": "agent_validate_api_agent_validate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentValidateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Agent Validate"
+      }
+    },
     "/api/agents": {
       "get": {
         "operationId": "list_agents_api_agents_get",
@@ -10314,6 +10751,60 @@
           }
         },
         "summary": "Import Suggestions Structured"
+      }
+    },
+    "/api/mcp/call": {
+      "post": {
+        "description": "Call one hosted MCP tool. Validate refusals return is_error with Web UI reasons.",
+        "operationId": "mcp_call_tool_api_mcp_call_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/McpCallIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Mcp Call Tool"
+      }
+    },
+    "/api/mcp/tools": {
+      "get": {
+        "description": "List the six hosted MCP tools available to external agents.",
+        "operationId": "mcp_list_tools_api_mcp_tools_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Mcp List Tools"
       }
     },
     "/api/media/assets": {
