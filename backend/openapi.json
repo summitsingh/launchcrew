@@ -5860,6 +5860,305 @@
         "title": "SlotScheduleIn",
         "type": "object"
       },
+      "SocialCallbackIn": {
+        "additionalProperties": false,
+        "properties": {
+          "account_handle": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Handle"
+          },
+          "account_name": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Name"
+          },
+          "account_type": {
+            "default": "brand",
+            "title": "Account Type",
+            "type": "string"
+          },
+          "code": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
+          "external_account_id": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Account Id"
+          },
+          "handle": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Handle"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 50,
+            "title": "Scopes",
+            "type": "array"
+          },
+          "token": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token"
+          }
+        },
+        "title": "SocialCallbackIn",
+        "type": "object"
+      },
+      "SocialConnectIn": {
+        "additionalProperties": false,
+        "properties": {
+          "account_type": {
+            "default": "brand",
+            "title": "Account Type",
+            "type": "string"
+          }
+        },
+        "title": "SocialConnectIn",
+        "type": "object"
+      },
+      "SocialConnectionOut": {
+        "additionalProperties": true,
+        "properties": {
+          "account_handle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Handle"
+          },
+          "account_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Name"
+          },
+          "account_type": {
+            "default": "brand",
+            "title": "Account Type",
+            "type": "string"
+          },
+          "capabilities": {
+            "additionalProperties": true,
+            "default": {},
+            "title": "Capabilities",
+            "type": "object"
+          },
+          "capabilities_source": {
+            "default": "",
+            "title": "Capabilities Source",
+            "type": "string"
+          },
+          "connected_at": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connected At"
+          },
+          "disconnected_at": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disconnected At"
+          },
+          "external_account_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Account Id"
+          },
+          "has_token": {
+            "default": false,
+            "title": "Has Token",
+            "type": "boolean"
+          },
+          "id": {
+            "default": "",
+            "title": "Id",
+            "type": "string"
+          },
+          "platform": {
+            "default": "",
+            "title": "Platform",
+            "type": "string"
+          },
+          "scopes": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Scopes",
+            "type": "array"
+          },
+          "scopes_plain": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Scopes Plain",
+            "type": "array"
+          },
+          "status": {
+            "default": "",
+            "title": "Status",
+            "type": "string"
+          },
+          "token_present": {
+            "default": false,
+            "title": "Token Present",
+            "type": "boolean"
+          },
+          "token_security": {
+            "default": "",
+            "title": "Token Security",
+            "type": "string"
+          },
+          "workspace_id": {
+            "default": "",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "title": "SocialConnectionOut",
+        "type": "object"
+      },
+      "SocialPlatformOut": {
+        "additionalProperties": true,
+        "properties": {
+          "client_env": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Env"
+          },
+          "enabled": {
+            "default": false,
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "flag_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Flag Name"
+          },
+          "limitation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limitation"
+          },
+          "oauth_configured": {
+            "default": false,
+            "title": "Oauth Configured",
+            "type": "boolean"
+          },
+          "platform": {
+            "default": "",
+            "title": "Platform",
+            "type": "string"
+          },
+          "priority": {
+            "default": false,
+            "title": "Priority",
+            "type": "boolean"
+          },
+          "status": {
+            "default": "",
+            "title": "Status",
+            "type": "string"
+          },
+          "tier": {
+            "default": "",
+            "title": "Tier",
+            "type": "string"
+          }
+        },
+        "title": "SocialPlatformOut",
+        "type": "object"
+      },
       "StructuredImportIn": {
         "additionalProperties": false,
         "properties": {
@@ -7806,7 +8105,7 @@
     },
     "/api/channel-capabilities": {
       "get": {
-        "description": "Return the per-channel capabilities table (account_capabilities pattern, as data).",
+        "description": "Return the per-channel capabilities table (account_capabilities pattern, as data).\n\nWhen the workspace has a connected brand account for a channel, the\nfetched live account row overrides the baseline S2 row with source\nlive_account_capabilities and the connected handle. Otherwise the\nbaseline S2 row is returned with source baseline.",
         "operationId": "list_channel_capabilities_api_channel_capabilities_get",
         "responses": {
           "200": {
@@ -9914,6 +10213,247 @@
           }
         },
         "summary": "Verify Landing Page"
+      }
+    },
+    "/api/social/connections": {
+      "get": {
+        "description": "List workspace brand account connections without ever exposing tokens.",
+        "operationId": "list_social_connections_api_social_connections_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SocialConnectionOut"
+                  },
+                  "title": "Response List Social Connections Api Social Connections Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Social Connections"
+      }
+    },
+    "/api/social/connections/{platform}/callback": {
+      "post": {
+        "description": "Complete a brand account OAuth connection: encrypt token and fetch live capabilities.\n\nAccepts the provider code or token plus the brand handle, refuses\npersonal accounts, refuses flag-gated platforms when the flag is\ndisabled, and never echoes the token in the response.",
+        "operationId": "complete_social_connect_api_social_connections__platform__callback_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "platform",
+            "required": true,
+            "schema": {
+              "title": "Platform",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SocialCallbackIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SocialConnectionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Complete Social Connect"
+      }
+    },
+    "/api/social/connections/{platform}/complete": {
+      "post": {
+        "description": "Complete a brand account OAuth connection: encrypt token and fetch live capabilities.\n\nAccepts the provider code or token plus the brand handle, refuses\npersonal accounts, refuses flag-gated platforms when the flag is\ndisabled, and never echoes the token in the response.",
+        "operationId": "complete_social_connect_api_social_connections__platform__complete_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "platform",
+            "required": true,
+            "schema": {
+              "title": "Platform",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SocialCallbackIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SocialConnectionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Complete Social Connect"
+      }
+    },
+    "/api/social/connections/{platform}/connect": {
+      "post": {
+        "description": "Initiate the OAuth authorize URL for one platform.\n\nRefuses flag-gated platforms when the capability flag is disabled,\nnaming the flag with 409. Never creates a connection row: only an\nexplicit owner callback completes a brand account connection.",
+        "operationId": "initiate_social_connect_api_social_connections__platform__connect_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "platform",
+            "required": true,
+            "schema": {
+              "title": "Platform",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/SocialConnectIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Initiate Social Connect"
+      }
+    },
+    "/api/social/connections/{platform}/disconnect": {
+      "post": {
+        "description": "One-tap disconnect: revokes where the platform allows and deletes the stored token.\n\nSets encrypted_token NULL and status disconnected while leaving all\nrun receipts, verification history, and exports intact and exportable.",
+        "operationId": "disconnect_social_connection_api_social_connections__platform__disconnect_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "platform",
+            "required": true,
+            "schema": {
+              "title": "Platform",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SocialConnectionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Disconnect Social Connection"
+      }
+    },
+    "/api/social/platforms": {
+      "get": {
+        "description": "List all 12 social platforms with priority vs flag-gated status.",
+        "operationId": "list_social_platforms_api_social_platforms_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/SocialPlatformOut"
+                  },
+                  "title": "Response List Social Platforms Api Social Platforms Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Social Platforms"
       }
     },
     "/api/trends/presets": {

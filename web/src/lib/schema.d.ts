@@ -552,6 +552,11 @@ export interface paths {
         /**
          * List Channel Capabilities
          * @description Return the per-channel capabilities table (account_capabilities pattern, as data).
+         *
+         *     When the workspace has a connected brand account for a channel, the
+         *     fetched live account row overrides the baseline S2 row with source
+         *     live_account_capabilities and the connected handle. Otherwise the
+         *     baseline S2 row is returned with source baseline.
          */
         get: operations["list_channel_capabilities_api_channel_capabilities_get"];
         put?: never;
@@ -1410,6 +1415,141 @@ export interface paths {
         put?: never;
         /** Verify Landing Page */
         post: operations["verify_landing_page_api_runs__run_id__verify_landing_page_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/social/connections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Social Connections
+         * @description List workspace brand account connections without ever exposing tokens.
+         */
+        get: operations["list_social_connections_api_social_connections_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/social/connections/{platform}/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Complete Social Connect
+         * @description Complete a brand account OAuth connection: encrypt token and fetch live capabilities.
+         *
+         *     Accepts the provider code or token plus the brand handle, refuses
+         *     personal accounts, refuses flag-gated platforms when the flag is
+         *     disabled, and never echoes the token in the response.
+         */
+        post: operations["complete_social_connect_api_social_connections__platform__callback_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/social/connections/{platform}/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Complete Social Connect
+         * @description Complete a brand account OAuth connection: encrypt token and fetch live capabilities.
+         *
+         *     Accepts the provider code or token plus the brand handle, refuses
+         *     personal accounts, refuses flag-gated platforms when the flag is
+         *     disabled, and never echoes the token in the response.
+         */
+        post: operations["complete_social_connect_api_social_connections__platform__complete_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/social/connections/{platform}/connect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Initiate Social Connect
+         * @description Initiate the OAuth authorize URL for one platform.
+         *
+         *     Refuses flag-gated platforms when the capability flag is disabled,
+         *     naming the flag with 409. Never creates a connection row: only an
+         *     explicit owner callback completes a brand account connection.
+         */
+        post: operations["initiate_social_connect_api_social_connections__platform__connect_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/social/connections/{platform}/disconnect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Disconnect Social Connection
+         * @description One-tap disconnect: revokes where the platform allows and deletes the stored token.
+         *
+         *     Sets encrypted_token NULL and status disconnected while leaving all
+         *     run receipts, verification history, and exports intact and exportable.
+         */
+        post: operations["disconnect_social_connection_api_social_connections__platform__disconnect_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/social/platforms": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Social Platforms
+         * @description List all 12 social platforms with priority vs flag-gated status.
+         */
+        get: operations["list_social_platforms_api_social_platforms_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -4118,6 +4258,154 @@ export interface components {
             planned_time?: string | null;
             /** Selected Channels */
             selected_channels?: string[] | null;
+        };
+        /** SocialCallbackIn */
+        SocialCallbackIn: {
+            /** Account Handle */
+            account_handle?: string | null;
+            /** Account Name */
+            account_name?: string | null;
+            /**
+             * Account Type
+             * @default brand
+             */
+            account_type: string;
+            /** Code */
+            code?: string | null;
+            /** External Account Id */
+            external_account_id?: string | null;
+            /** Handle */
+            handle?: string | null;
+            /** Scopes */
+            scopes?: string[];
+            /** Token */
+            token?: string | null;
+        };
+        /** SocialConnectIn */
+        SocialConnectIn: {
+            /**
+             * Account Type
+             * @default brand
+             */
+            account_type: string;
+        };
+        /** SocialConnectionOut */
+        SocialConnectionOut: {
+            /** Account Handle */
+            account_handle?: string | null;
+            /** Account Name */
+            account_name?: string | null;
+            /**
+             * Account Type
+             * @default brand
+             */
+            account_type: string;
+            /**
+             * Capabilities
+             * @default {}
+             */
+            capabilities: {
+                [key: string]: unknown;
+            };
+            /**
+             * Capabilities Source
+             * @default
+             */
+            capabilities_source: string;
+            /** Connected At */
+            connected_at?: unknown | null;
+            /** Disconnected At */
+            disconnected_at?: unknown | null;
+            /** External Account Id */
+            external_account_id?: string | null;
+            /**
+             * Has Token
+             * @default false
+             */
+            has_token: boolean;
+            /**
+             * Id
+             * @default
+             */
+            id: string;
+            /**
+             * Platform
+             * @default
+             */
+            platform: string;
+            /**
+             * Scopes
+             * @default []
+             */
+            scopes: string[];
+            /**
+             * Scopes Plain
+             * @default []
+             */
+            scopes_plain: string[];
+            /**
+             * Status
+             * @default
+             */
+            status: string;
+            /**
+             * Token Present
+             * @default false
+             */
+            token_present: boolean;
+            /**
+             * Token Security
+             * @default
+             */
+            token_security: string;
+            /**
+             * Workspace Id
+             * @default
+             */
+            workspace_id: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** SocialPlatformOut */
+        SocialPlatformOut: {
+            /** Client Env */
+            client_env?: string | null;
+            /**
+             * Enabled
+             * @default false
+             */
+            enabled: boolean;
+            /** Flag Name */
+            flag_name?: string | null;
+            /** Limitation */
+            limitation?: string | null;
+            /**
+             * Oauth Configured
+             * @default false
+             */
+            oauth_configured: boolean;
+            /**
+             * Platform
+             * @default
+             */
+            platform: string;
+            /**
+             * Priority
+             * @default false
+             */
+            priority: boolean;
+            /**
+             * Status
+             * @default
+             */
+            status: string;
+            /**
+             * Tier
+             * @default
+             */
+            tier: string;
+        } & {
+            [key: string]: unknown;
         };
         /** StructuredImportIn */
         StructuredImportIn: {
@@ -7091,6 +7379,182 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_social_connections_api_social_connections_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SocialConnectionOut"][];
+                };
+            };
+        };
+    };
+    complete_social_connect_api_social_connections__platform__callback_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                platform: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SocialCallbackIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SocialConnectionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    complete_social_connect_api_social_connections__platform__complete_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                platform: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SocialCallbackIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SocialConnectionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    initiate_social_connect_api_social_connections__platform__connect_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                platform: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["SocialConnectIn"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    disconnect_social_connection_api_social_connections__platform__disconnect_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                platform: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SocialConnectionOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_social_platforms_api_social_platforms_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SocialPlatformOut"][];
                 };
             };
         };

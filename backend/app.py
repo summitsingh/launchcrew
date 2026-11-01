@@ -2,6 +2,7 @@
 from contextlib import asynccontextmanager
 import copy
 import json
+import secrets
 from datetime import date as date_cls
 from datetime import datetime, timezone
 from typing import Literal, Any, get_args
@@ -649,9 +650,58 @@ def check_format_route(body: FormatSpec, actor: str = Depends(auth.actor)):
 
 @app.get('/api/channel-capabilities', response_model=list[ChannelCapabilityOut])
 def list_channel_capabilities(actor: str = Depends(auth.actor)):
-    """Return the per-channel capabilities table (account_capabilities pattern, as data)."""
+    """Return the per-channel capabilities table (account_capabilities pattern, as data).
+
+    When the workspace has a connected brand account for a channel, the
+    fetched live account row overrides the baseline S2 row with source
+    live_account_capabilities and the connected handle. Otherwise the
+    baseline S2 row is returned with source baseline.
+    """
     from launchcrew.format_library import list_channel_capabilities as _list_capabilities
-    return _list_capabilities()
+    baseline = _list_capabilities()
+    try:
+        with store.connect() as db:
+            workspace_id = store.ensure_workspace_seeded(db, actor)
+            return _overlay_live_capabilities(db, workspace_id, baseline)
+    except Exception:
+        return [{**row, 'source': 'baseline', 'connected': False} for row in baseline]
+
+
+def _connected_accounts_by_platform(db, workspace_id):
+    from launchcrew import social_connections as social_mod
+    try:
+        rows = db.execute(text('SELECT platform, account_handle, capabilities FROM social_connections'
+                               ' WHERE workspace_id=:ws AND status=:status'),
+                          {'ws': workspace_id, 'status': 'connected'}).mappings().all()
+    except Exception:
+        return {}
+    grouped = {}
+    for row in rows:
+        platform = str(row.get('platform') or '').strip().lower()
+        if social_mod.normalize_platform(platform) is None:
+            continue
+        grouped[platform] = {'account_handle': row.get('account_handle'),
+                             'capabilities': row.get('capabilities') or {}}
+    return grouped
+
+
+def _overlay_live_capabilities(db, workspace_id, baseline_rows):
+    from launchcrew import social_connections as social_mod
+    grouped = _connected_accounts_by_platform(db, workspace_id)
+    overlaid = []
+    seen = set()
+    for row in baseline_rows or []:
+        channel = str((row or {}).get('channel') or '').strip().lower()
+        seen.add(channel)
+        live = grouped.get(channel)
+        if live is not None:
+            overlaid.append(social_mod.live_capability_row(channel, live['capabilities'], live['account_handle']))
+        else:
+            overlaid.append(social_mod.baseline_capability_row(channel, dict(row)))
+    for platform, live in grouped.items():
+        if platform not in seen:
+            overlaid.append(social_mod.live_capability_row(platform, live['capabilities'], live['account_handle']))
+    return overlaid
 
 
 class QuickstartTemplateMeta(BaseModel):
@@ -1384,6 +1434,10 @@ def channel_variants(run_id: str, actor: str = Depends(auth.actor)):
             if 'stale' in message.lower():
                 raise HTTPException(409, message)
             raise HTTPException(422, message)
+        try:
+            bundle['capabilities'] = _overlay_live_capabilities(db, workspace_id, bundle.get('capabilities'))
+        except Exception:
+            pass
     return bundle
 
 
@@ -1526,6 +1580,10 @@ def launch_matrix(run_id: str, actor: str = Depends(auth.actor)):
             if 'stale' in message.lower():
                 raise HTTPException(409, message)
             raise HTTPException(422, message)
+        try:
+            bundle['capabilities'] = _overlay_live_capabilities(db, workspace_id, bundle.get('capabilities'))
+        except Exception:
+            pass
     return bundle
 
 
@@ -4211,3 +4269,219 @@ def create_delivery_outcome(slot_id: str, channel: str, body: DeliveryOutcomeIn,
         if row is None:
             raise HTTPException(404, 'Run not found')
         return _public_outcome(row)
+
+
+class SocialPlatformOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    platform: str = ''
+    priority: bool = False
+    tier: str = ''
+    enabled: bool = False
+    status: str = ''
+    oauth_configured: bool = False
+    limitation: str | None = None
+    flag_name: str | None = None
+    client_env: str | None = None
+
+
+class SocialConnectionOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    id: str = ''
+    workspace_id: str = ''
+    platform: str = ''
+    account_handle: str | None = None
+    account_name: str | None = None
+    external_account_id: str | None = None
+    account_type: str = 'brand'
+    status: str = ''
+    token_present: bool = False
+    has_token: bool = False
+    token_security: str = ''
+    scopes: list[str] = []
+    scopes_plain: list[str] = []
+    capabilities: dict[str, Any] = {}
+    capabilities_source: str = ''
+    connected_at: Any | None = None
+    disconnected_at: Any | None = None
+
+
+class SocialConnectIn(Strict):
+    account_type: str = 'brand'
+
+
+class SocialCallbackIn(Strict):
+    code: str | None = Field(default=None, max_length=2000)
+    token: str | None = Field(default=None, max_length=4000)
+    handle: str | None = Field(default=None, max_length=200)
+    account_handle: str | None = Field(default=None, max_length=200)
+    account_name: str | None = Field(default=None, max_length=200)
+    external_account_id: str | None = Field(default=None, max_length=200)
+    account_type: str = 'brand'
+    scopes: list[str] = Field(default_factory=list, max_length=50)
+
+
+def _require_social_platform(platform: str) -> str:
+    from launchcrew import social_connections as social_mod
+    key = social_mod.normalize_platform(platform)
+    if key is None:
+        raise HTTPException(404, 'Unknown social platform')
+    return key
+
+
+def _social_row_to_public(row) -> dict[str, Any]:
+    from launchcrew import social_connections as social_mod
+    data = dict(row) if not isinstance(row, dict) else dict(row)
+    return social_mod.public_connection(data)
+
+
+@app.get('/api/social/platforms', response_model=list[SocialPlatformOut])
+def list_social_platforms(actor: str = Depends(auth.actor)):
+    """List all 12 social platforms with priority vs flag-gated status."""
+    from launchcrew import social_connections as social_mod
+    with store.connect() as db:
+        store.ensure_workspace_seeded(db, actor)
+    return social_mod.list_platforms()
+
+
+@app.get('/api/social/connections', response_model=list[SocialConnectionOut])
+def list_social_connections(actor: str = Depends(auth.actor)):
+    """List workspace brand account connections without ever exposing tokens."""
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        try:
+            rows = db.execute(text('SELECT id, workspace_id, platform, account_handle, account_name,'
+                                   ' external_account_id, account_type, encrypted_token, scopes, scopes_plain,'
+                                   ' capabilities, status, connected_at, disconnected_at'
+                                   ' FROM social_connections WHERE workspace_id=:ws ORDER BY platform'),
+                              {'ws': workspace_id}).mappings().all()
+        except Exception:
+            return []
+        return [_social_row_to_public(dict(row)) for row in rows]
+
+
+@app.post('/api/social/connections/{platform}/connect')
+def initiate_social_connect(platform: str, body: SocialConnectIn | None = None,
+                            actor: str = Depends(auth.actor)):
+    """Initiate the OAuth authorize URL for one platform.
+
+    Refuses flag-gated platforms when the capability flag is disabled,
+    naming the flag with 409. Never creates a connection row: only an
+    explicit owner callback completes a brand account connection.
+    """
+    from launchcrew import social_connections as social_mod
+    key = _require_social_platform(platform)
+    requested_type = (body.account_type if body is not None else 'brand')
+    if isinstance(requested_type, str) and requested_type.strip().lower() != 'brand':
+        raise HTTPException(422, 'Only brand accounts may be connected by explicit owner action;'
+                                 ' personal accounts are never connected')
+    if not social_mod.platform_enabled(key):
+        raise HTTPException(409, 'Platform %s is behind capability flag %s pending platform review' % (
+            key, social_mod.flag_name_for(key)))
+    with store.connect() as db:
+        store.ensure_workspace_seeded(db, actor)
+    state = secrets.token_urlsafe(24)
+    client_env = social_mod.CLIENT_ENV_BY_PLATFORM.get(key, '')
+    configured = social_mod.oauth_configured(key)
+    limitation = social_mod.limitation_for(key)
+    authorize_url = ('https://connect.example.com/%s/authorize?state=%s' % (key, state))
+    if configured:
+        authorize_url += '&client_configured=true'
+    return {'platform': key, 'authorize_url': authorize_url, 'state': state,
+            'oauth_configured': configured, 'limitation': limitation,
+            'account_type': 'brand',
+            'note': 'Complete the brand account connection with the callback step; only brand accounts connect.'}
+
+
+@app.post('/api/social/connections/{platform}/callback', response_model=SocialConnectionOut)
+@app.post('/api/social/connections/{platform}/complete', response_model=SocialConnectionOut)
+def complete_social_connect(platform: str, body: SocialCallbackIn,
+                            actor: str = Depends(auth.actor)):
+    """Complete a brand account OAuth connection: encrypt token and fetch live capabilities.
+
+    Accepts the provider code or token plus the brand handle, refuses
+    personal accounts, refuses flag-gated platforms when the flag is
+    disabled, and never echoes the token in the response.
+    """
+    from launchcrew import social_connections as social_mod
+    key = _require_social_platform(platform)
+    try:
+        social_mod.validate_brand_account(body.account_type)
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    if not social_mod.platform_enabled(key):
+        raise HTTPException(409, 'Platform %s is behind capability flag %s pending platform review' % (
+            key, social_mod.flag_name_for(key)))
+    raw_token = (body.token or '').strip() or (body.code or '').strip()
+    if not raw_token:
+        raise HTTPException(422, 'A provider code or token is required to complete the brand connection')
+    handle = (body.handle or body.account_handle or '').strip() or ('@brand-%s' % key)
+    name = (body.account_name or '').strip() or handle
+    external_id = (body.external_account_id or '').strip() or ('ext_%s_%s' % (key, handle.lstrip('@')))
+    scopes = [str(item).strip() for item in (body.scopes or []) if isinstance(item, str) and item.strip()][:50]
+    if not scopes:
+        scopes = ['brand_profile', 'brand_capabilities_read']
+    try:
+        encrypted = social_mod.encrypt_token(raw_token)
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    scopes_plain = social_mod.scopes_to_plain(scopes)
+    capabilities = social_mod.fetch_live_capabilities(key)
+    connection_id = 'conn_' + uuid4().hex
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        db.execute(text('INSERT INTO social_connections(id, workspace_id, platform, account_handle, account_name,'
+                        ' external_account_id, account_type, encrypted_token, scopes, scopes_plain, capabilities,'
+                        ' status, connected_at, disconnected_at)'
+                        ' VALUES (:id,:ws,:platform,:handle,:name,:ext,:atype,:token,'
+                        'CAST(:scopes AS jsonb),CAST(:plain AS jsonb),CAST(:caps AS jsonb),:status,now(),NULL)'
+                        ' ON CONFLICT (workspace_id, platform) DO UPDATE SET'
+                        ' account_handle=EXCLUDED.account_handle, account_name=EXCLUDED.account_name,'
+                        ' external_account_id=EXCLUDED.external_account_id, account_type=EXCLUDED.account_type,'
+                        ' encrypted_token=EXCLUDED.encrypted_token, scopes=EXCLUDED.scopes,'
+                        ' scopes_plain=EXCLUDED.scopes_plain, capabilities=EXCLUDED.capabilities,'
+                        ' status=:status, connected_at=now(), disconnected_at=NULL, updated_at=now()'),
+                   {'id': connection_id, 'ws': workspace_id, 'platform': key, 'handle': handle,
+                    'name': name, 'ext': external_id, 'atype': 'brand', 'token': encrypted,
+                    'scopes': json.dumps(scopes), 'plain': json.dumps(scopes_plain),
+                    'caps': json.dumps(capabilities), 'status': 'connected'})
+        store.audit(db, None, 'social_connected', actor, workspace_id)
+        row = db.execute(text('SELECT id, workspace_id, platform, account_handle, account_name,'
+                              ' external_account_id, account_type, encrypted_token, scopes, scopes_plain,'
+                              ' capabilities, status, connected_at, disconnected_at'
+                              ' FROM social_connections WHERE workspace_id=:ws AND platform=:platform'),
+                         {'ws': workspace_id, 'platform': key}).mappings().first()
+        if row is None:
+            raise HTTPException(404, 'Connection not found')
+        return _social_row_to_public(dict(row))
+
+
+@app.post('/api/social/connections/{platform}/disconnect', response_model=SocialConnectionOut)
+def disconnect_social_connection(platform: str, actor: str = Depends(auth.actor)):
+    """One-tap disconnect: revokes where the platform allows and deletes the stored token.
+
+    Sets encrypted_token NULL and status disconnected while leaving all
+    run receipts, verification history, and exports intact and exportable.
+    """
+    key = _require_social_platform(platform)
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        row = db.execute(text('SELECT id, workspace_id, platform, account_handle, account_name,'
+                              ' external_account_id, account_type, encrypted_token, scopes, scopes_plain,'
+                              ' capabilities, status, connected_at, disconnected_at'
+                              ' FROM social_connections WHERE workspace_id=:ws AND platform=:platform'),
+                         {'ws': workspace_id, 'platform': key}).mappings().first()
+        if row is None:
+            raise HTTPException(404, 'Connection not found')
+        db.execute(text('UPDATE social_connections SET encrypted_token=NULL, status=:status,'
+                        ' disconnected_at=now(), updated_at=now()'
+                        ' WHERE workspace_id=:ws AND platform=:platform'),
+                   {'status': 'disconnected', 'ws': workspace_id, 'platform': key})
+        store.audit(db, None, 'social_disconnected', actor, workspace_id)
+        updated = db.execute(text('SELECT id, workspace_id, platform, account_handle, account_name,'
+                                  ' external_account_id, account_type, encrypted_token, scopes, scopes_plain,'
+                                  ' capabilities, status, connected_at, disconnected_at'
+                                  ' FROM social_connections WHERE workspace_id=:ws AND platform=:platform'),
+                             {'ws': workspace_id, 'platform': key}).mappings().first()
+        if updated is None:
+            raise HTTPException(404, 'Connection not found')
+        return _social_row_to_public(dict(updated))
