@@ -6,6 +6,7 @@ import { api, unwrap } from '@/lib/api';
 import { FormatLibraryPanel } from '@/components/format-library';
 import { AnalyticsPullPanel, SlotOutcomeBadge } from '@/components/analytics-pull-panel';
 import { MediaLibraryPanel } from '@/components/media-library';
+import { ViralGeneratorPanel } from '@/components/viral-generator-panel';
 import { PublishExecutorPanel } from '@/components/publish-executor-panel';
 import { VerificationBoard } from '@/components/verification-board';
 import type { components } from '@/lib/schema';
@@ -304,6 +305,7 @@ export function CalendarView() {
     <ScheduleExportPanel />
     <AnalyticsPullPanel />
     <MediaLibraryPanel />
+    <ViralGeneratorPanel />
     <PublishExecutorPanel />
     <VerificationBoard />
     <AddSlotFromRun />

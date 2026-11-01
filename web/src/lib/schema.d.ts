@@ -1888,6 +1888,80 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/viral-generator/credits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Viral Credits
+         * @description Return the visible viral generation credit balance for the workspace.
+         */
+        get: operations["get_viral_credits_api_viral_generator_credits_get"];
+        /**
+         * Set Viral Credits
+         * @description Set the workspace viral generation credit balance for owner and tests.
+         */
+        put: operations["set_viral_credits_api_viral_generator_credits_put"];
+        /**
+         * Set Viral Credits
+         * @description Set the workspace viral generation credit balance for owner and tests.
+         */
+        post: operations["set_viral_credits_api_viral_generator_credits_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/viral-generator/generate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Generate Viral Pack
+         * @description Build one metered viral pack from owner media and confirmed facts.
+         *
+         *     The credit gate runs before any pipeline or provider call: a zero
+         *     balance refuses with 402 and never invokes the pipeline. Owner media
+         *     only: foreign or library assets refuse with 422, as do wrong media
+         *     counts and empty confirmed facts. One credit is charged only after
+         *     the Checker pipeline produces the approval-bound pack.
+         */
+        post: operations["generate_viral_pack_api_viral_generator_generate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/viral-generator/generations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Viral Generations
+         * @description List workspace viral generations, newest first.
+         */
+        get: operations["list_viral_generations_api_viral_generator_generations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/waitlist": {
         parameters: {
             query?: never;
@@ -5311,6 +5385,126 @@ export interface components {
             landing_html: string;
             /** Landing Url */
             landing_url?: string | null;
+        };
+        /** ViralCreditsOut */
+        ViralCreditsOut: {
+            /**
+             * Remaining Credits
+             * @default 0
+             */
+            remaining_credits: number;
+            /**
+             * Total Used Credits
+             * @default 0
+             */
+            total_used_credits: number;
+            /**
+             * Workspace Id
+             * @default
+             */
+            workspace_id: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /** ViralCreditsSetIn */
+        ViralCreditsSetIn: {
+            /** Remaining Credits */
+            remaining_credits: number;
+        };
+        /** ViralGenerateIn */
+        ViralGenerateIn: {
+            /** Asset Ids */
+            asset_ids?: string[] | null;
+            /**
+             * Confirmed Facts
+             * @default
+             */
+            confirmed_facts: string;
+            /** Media Mode */
+            media_mode?: string | null;
+            /** Media Source */
+            media_source?: string | null;
+            /** Screen Recording */
+            screen_recording?: unknown | null;
+            /** Screenshots */
+            screenshots?: unknown[] | null;
+            /** Slot Id */
+            slot_id?: string | null;
+        };
+        /** ViralGenerationOut */
+        ViralGenerationOut: {
+            /**
+             * Approval State
+             * @default
+             */
+            approval_state: string;
+            /** Asset Ids */
+            asset_ids?: unknown[];
+            /**
+             * Checker Decision
+             * @default
+             */
+            checker_decision: string;
+            /**
+             * Checker Passed
+             * @default false
+             */
+            checker_passed: boolean;
+            /**
+             * Confirmed Facts
+             * @default
+             */
+            confirmed_facts: string;
+            /** Created At */
+            created_at?: unknown | null;
+            /**
+             * Credits Charged
+             * @default 1
+             */
+            credits_charged: number;
+            /** Frames Or Scenes */
+            frames_or_scenes?: unknown[];
+            /**
+             * Id
+             * @default
+             */
+            id: string;
+            /**
+             * Media Mode
+             * @default
+             */
+            media_mode: string;
+            /**
+             * Media Provenance
+             * @default owner_upload_only
+             */
+            media_provenance: string;
+            /**
+             * Output Format
+             * @default
+             */
+            output_format: string;
+            /**
+             * Remaining Credits After
+             * @default 0
+             */
+            remaining_credits_after: number;
+            /** Run Id */
+            run_id?: string | null;
+            /**
+             * Run Status
+             * @default
+             */
+            run_status: string;
+            /** Slot Id */
+            slot_id?: string | null;
+            /**
+             * Workspace Id
+             * @default
+             */
+            workspace_id: string;
+        } & {
+            [key: string]: unknown;
         };
         /** VoiceProfileSection */
         VoiceProfileSection: {
@@ -8771,6 +8965,145 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_viral_credits_api_viral_generator_credits_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViralCreditsOut"];
+                };
+            };
+        };
+    };
+    set_viral_credits_api_viral_generator_credits_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ViralCreditsSetIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViralCreditsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_viral_credits_api_viral_generator_credits_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ViralCreditsSetIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViralCreditsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    generate_viral_pack_api_viral_generator_generate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ViralGenerateIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViralGenerationOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_viral_generations_api_viral_generator_generations_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ViralGenerationOut"][];
                 };
             };
         };

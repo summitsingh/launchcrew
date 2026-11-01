@@ -5703,3 +5703,305 @@ def get_slot_media(slot_id: str, actor: str = Depends(auth.actor)):
             attached.append(_public_attachment(dict(row), _public_media_asset(asset)))
         return {'slot_id': slot['id'], 'attached': attached,
                 'format_validation': _combined_slot_media_validation(attached, slot.get('slot_type'))}
+
+
+# SC5 viral format generator: metered credits failing closed at zero and
+# owner media only. The owner uploads 3 to 10 screenshots or one screen
+# recording plus the confirmed facts; each generation spends one visible
+# credit and builds a carousel or short video pack that passes the
+# Checker as a normal approval-bound pack. Every asset comes from the
+# owner upload, never from a creator clip library.
+
+class ViralCreditsOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    workspace_id: str = ''
+    remaining_credits: int = 0
+    total_used_credits: int = 0
+
+
+class ViralCreditsSetIn(Strict):
+    remaining_credits: StrictInt = Field(ge=0, le=1000000)
+
+
+class ViralGenerateIn(Strict):
+    media_mode: str | None = Field(default=None, max_length=32)
+    screenshots: list[Any] | None = None
+    screen_recording: Any | None = None
+    asset_ids: list[str] | None = None
+    confirmed_facts: str = Field(default='', max_length=10000)
+    slot_id: str | None = Field(default=None, max_length=128)
+    media_source: str | None = Field(default=None, max_length=64)
+
+
+class ViralGenerationOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    id: str = ''
+    workspace_id: str = ''
+    output_format: str = ''
+    media_mode: str = ''
+    asset_ids: list[Any] = Field(default_factory=list)
+    confirmed_facts: str = ''
+    run_id: str | None = None
+    slot_id: str | None = None
+    credits_charged: int = 1
+    remaining_credits_after: int = 0
+    media_provenance: str = 'owner_upload_only'
+    frames_or_scenes: list[Any] = Field(default_factory=list)
+    checker_passed: bool = False
+    approval_state: str = ''
+    run_status: str = ''
+    checker_decision: str = ''
+    created_at: Any | None = None
+
+
+_VIRAL_GENERATION_PUBLIC_SELECT = ('id, workspace_id, output_format, media_mode, asset_ids,'
+                                   ' confirmed_facts, run_id, slot_id, credits_charged,'
+                                   ' remaining_credits_after, media_provenance, frames_or_scenes,'
+                                   ' checker_passed, approval_state, created_at')
+
+
+def _ensure_viral_credits(db, workspace_id):
+    from launchcrew import viral_generator as viral_mod
+    db.execute(text('INSERT INTO viral_generation_credits(workspace_id, remaining_credits,'
+                    ' total_used_credits) VALUES (:ws, :remaining, 0) ON CONFLICT DO NOTHING'),
+               {'ws': workspace_id, 'remaining': viral_mod.DEFAULT_CREDITS})
+    row = db.execute(text('SELECT workspace_id, remaining_credits, total_used_credits'
+                          ' FROM viral_generation_credits WHERE workspace_id=:ws'),
+                     {'ws': workspace_id}).mappings().first()
+    if row is None:
+        raise HTTPException(500, 'Viral generation credits were not stored')
+    return dict(row)
+
+
+def _public_viral_credits(row, workspace_id):
+    return {'workspace_id': workspace_id,
+            'remaining_credits': row.get('remaining_credits', 0),
+            'total_used_credits': row.get('total_used_credits', 0)}
+
+
+def _public_viral_generation(row):
+    from launchcrew import viral_generator as viral_mod
+    data = viral_mod.public_generation(dict(row))
+    created = data.get('created_at')
+    if hasattr(created, 'isoformat'):
+        data['created_at'] = created.isoformat()
+    return data
+
+
+def _viral_inline_label(item, position, kind):
+    if isinstance(item, dict):
+        for key in ('filename', 'id', 'asset_id', 'label'):
+            raw = item.get(key)
+            if isinstance(raw, str) and raw.strip():
+                return raw.strip()
+    if isinstance(item, str) and item.strip():
+        return item.strip()
+    return 'owner_%s_%d' % (kind, position)
+
+
+@app.get('/api/viral-generator/credits', response_model=ViralCreditsOut)
+def get_viral_credits(actor: str = Depends(auth.actor)):
+    """Return the visible viral generation credit balance for the workspace."""
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        return _public_viral_credits(_ensure_viral_credits(db, workspace_id), workspace_id)
+
+
+@app.post('/api/viral-generator/credits', response_model=ViralCreditsOut)
+@app.put('/api/viral-generator/credits', response_model=ViralCreditsOut)
+def set_viral_credits(body: ViralCreditsSetIn, actor: str = Depends(auth.actor)):
+    """Set the workspace viral generation credit balance for owner and tests."""
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        _ensure_viral_credits(db, workspace_id)
+        db.execute(text('UPDATE viral_generation_credits SET remaining_credits=:remaining,'
+                        ' updated_at=now() WHERE workspace_id=:ws'),
+                   {'remaining': body.remaining_credits, 'ws': workspace_id})
+        store.audit(db, None, 'viral_credits_set', actor, workspace_id)
+        row = db.execute(text('SELECT workspace_id, remaining_credits, total_used_credits'
+                              ' FROM viral_generation_credits WHERE workspace_id=:ws'),
+                         {'ws': workspace_id}).mappings().first()
+        return _public_viral_credits(dict(row), workspace_id)
+
+
+@app.post('/api/viral-generator/generate', response_model=ViralGenerationOut,
+          status_code=201)
+def generate_viral_pack(body: ViralGenerateIn, actor: str = Depends(auth.actor)):
+    """Build one metered viral pack from owner media and confirmed facts.
+
+    The credit gate runs before any pipeline or provider call: a zero
+    balance refuses with 402 and never invokes the pipeline. Owner media
+    only: foreign or library assets refuse with 422, as do wrong media
+    counts and empty confirmed facts. One credit is charged only after
+    the Checker pipeline produces the approval-bound pack.
+    """
+    from types import SimpleNamespace
+    from launchcrew import viral_generator as viral_mod
+    from backend import model_admission
+    try:
+        facts_text = viral_mod.normalize_confirmed_facts(body.confirmed_facts)
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    screenshots = list(body.screenshots or [])
+    recording = body.screen_recording
+    has_recording = not (recording is None or (isinstance(recording, str)
+                                               and not recording.strip()))
+    try:
+        mode = viral_mod.normalize_media_mode(
+            body.media_mode, bool(screenshots or body.asset_ids), has_recording)
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    try:
+        viral_mod.validate_owner_media_source(body.media_source)
+        for item in screenshots:
+            viral_mod.validate_owner_item(item)
+        if has_recording:
+            viral_mod.validate_owner_item(recording)
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        assets = []
+        for asset_id in (body.asset_ids or []):
+            if not isinstance(asset_id, str) or not asset_id.strip():
+                raise HTTPException(422, viral_mod.OWNER_MEDIA_ONLY_MESSAGE)
+            try:
+                viral_mod.validate_owner_item(asset_id.strip())
+            except ValueError as error:
+                raise HTTPException(422, str(error))
+            stored = db.execute(text('SELECT ' + _MEDIA_PUBLIC_SELECT + ' FROM media_assets'
+                                     ' WHERE id=:id AND workspace_id=:ws'),
+                                {'id': asset_id.strip(), 'ws': workspace_id}).mappings().first()
+            if stored is None:
+                raise HTTPException(422, viral_mod.OWNER_MEDIA_ONLY_MESSAGE)
+            assets.append(dict(stored))
+        images = [entry for entry in assets if entry.get('media_type') == 'image']
+        videos = [entry for entry in assets if entry.get('media_type') == 'video']
+        slot_id = None
+        if body.slot_id is not None and str(body.slot_id).strip():
+            slot = _load_slot(db, str(body.slot_id).strip(), workspace_id)
+            slot_id = slot['id']
+        credits = _ensure_viral_credits(db, workspace_id)
+        if viral_mod.credits_exhausted(credits.get('remaining_credits')):
+            raise HTTPException(402, viral_mod.CREDITS_EXHAUSTED_MESSAGE)
+        legacy, scout, maker, checker = load_stage_profiles(
+            db, SimpleNamespace(agent_name='Maker', maker_name=None,
+                                scout_name=None, checker_name=None), workspace_id)
+    screenshot_count = len(screenshots) + len(images)
+    recording_count = (1 if has_recording else 0) + len(videos)
+    try:
+        viral_mod.validate_counts(mode, screenshot_count, recording_count)
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    output_format = viral_mod.output_format_for(mode)
+    if mode == 'screenshots':
+        labels = ([_viral_inline_label(item, index + 1, 'screenshot')
+                   for index, item in enumerate(screenshots)]
+                  + [entry['id'] for entry in images])
+        frames_or_scenes = viral_mod.build_carousel_frames(labels, facts_text)
+    else:
+        if has_recording:
+            label = _viral_inline_label(recording, 1, 'recording')
+        else:
+            label = videos[0]['id']
+        frames_or_scenes = viral_mod.build_short_video_scenes(label, facts_text)
+    format_raw = viral_mod.format_spec_for(mode, frames_or_scenes)
+    product_facts = viral_mod.product_facts_for(facts_text)
+    idea = viral_mod.idea_for(mode, facts_text)
+    run_id = 'run_' + uuid4().hex
+    generation_id = viral_mod.generation_id()
+    factory = model_admission.admission_factory_for_run(store.engine(), run_id)
+    try:
+        receipt = adapter.execute(
+            run_id, idea, legacy, False, memory_items=[], checker_profile='standard',
+            scout_profile=scout, maker_profile=maker, checker_agent=checker,
+            product_facts=product_facts, model_admission_factory=factory,
+            waive_missing_core_facts=True, fact_library=None, format_spec=format_raw)
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    check_v2 = receipt.get('checker_v2') if isinstance(receipt.get('checker_v2'), dict) else {}
+    format_check = receipt.get('format_check') if isinstance(receipt.get('format_check'), dict) else {}
+    blocked = check_v2.get('blocked_count', 1)
+    checker_passed = bool(receipt.get('status') == 'completed' and blocked == 0
+                          and format_check.get('passed', True) is True)
+    stored_assets: list[Any] = [entry['id'] for entry in assets]
+    stored_assets.extend(screenshots)
+    if has_recording:
+        stored_assets.append(recording)
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        locked = db.execute(text('SELECT remaining_credits, total_used_credits'
+                                 ' FROM viral_generation_credits WHERE workspace_id=:ws'
+                                 ' FOR UPDATE'),
+                            {'ws': workspace_id}).mappings().first()
+        if locked is None:
+            locked = _ensure_viral_credits(db, workspace_id)
+        else:
+            locked = dict(locked)
+        if viral_mod.credits_exhausted(locked.get('remaining_credits')):
+            raise HTTPException(402, viral_mod.CREDITS_EXHAUSTED_MESSAGE)
+        remaining_after = int(locked.get('remaining_credits', 0)) - viral_mod.CREDITS_PER_GENERATION
+        if remaining_after < 0:
+            raise HTTPException(402, viral_mod.CREDITS_EXHAUSTED_MESSAGE)
+        save_run(db, receipt, 'Maker', actor, workspace_id)
+        db.execute(text('UPDATE viral_generation_credits SET remaining_credits=:remaining,'
+                        ' total_used_credits=total_used_credits+:charged, updated_at=now()'
+                        ' WHERE workspace_id=:ws'),
+                   {'remaining': remaining_after,
+                    'charged': viral_mod.CREDITS_PER_GENERATION, 'ws': workspace_id})
+        db.execute(text('INSERT INTO viral_generations(id, workspace_id, output_format, media_mode,'
+                        ' asset_ids, confirmed_facts, run_id, slot_id, credits_charged,'
+                        ' remaining_credits_after, media_provenance, frames_or_scenes,'
+                        ' checker_passed, approval_state)'
+                        ' VALUES (:id,:ws,:output_format,:media_mode,CAST(:asset_ids AS jsonb),'
+                        ':facts,:run,:slot,:charged,:remaining,:provenance,'
+                        'CAST(:frames AS jsonb),:passed,:approval)'),
+                   {'id': generation_id, 'ws': workspace_id, 'output_format': output_format,
+                    'media_mode': mode, 'asset_ids': json.dumps(stored_assets),
+                    'facts': facts_text, 'run': run_id, 'slot': slot_id,
+                    'charged': viral_mod.CREDITS_PER_GENERATION, 'remaining': remaining_after,
+                    'provenance': viral_mod.MEDIA_PROVENANCE,
+                    'frames': json.dumps(frames_or_scenes),
+                    'passed': checker_passed,
+                    'approval': receipt.get('approval_state', 'awaiting_human_approval')})
+        store.audit(db, run_id, 'viral_generation_created', actor, workspace_id)
+        row = db.execute(text('SELECT ' + _VIRAL_GENERATION_PUBLIC_SELECT
+                              + ' FROM viral_generations WHERE id=:id AND workspace_id=:ws'),
+                         {'id': generation_id, 'ws': workspace_id}).mappings().first()
+        if row is None:
+            raise HTTPException(500, 'Viral generation was not stored')
+        public = _public_viral_generation(dict(row))
+        public['run_status'] = receipt.get('status', '')
+        public['checker_decision'] = 'pass' if blocked == 0 else 'fail'
+        return public
+
+
+@app.get('/api/viral-generator/generations', response_model=list[ViralGenerationOut])
+def list_viral_generations(actor: str = Depends(auth.actor)):
+    """List workspace viral generations, newest first."""
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        rows = db.execute(text('SELECT ' + _VIRAL_GENERATION_PUBLIC_SELECT
+                               + ' FROM viral_generations WHERE workspace_id=:ws'
+                               ' ORDER BY created_at DESC, id DESC'),
+                          {'ws': workspace_id}).mappings().all()
+        generations = []
+        for row in rows:
+            public = _public_viral_generation(dict(row))
+            run_id = public.get('run_id')
+            status = ''
+            decision = ''
+            if run_id:
+                receipt_row = db.execute(text('SELECT receipt FROM runs WHERE id=:id'
+                                              ' AND workspace_id=:ws'),
+                                         {'id': run_id, 'ws': workspace_id}).fetchone()
+                if receipt_row is not None and isinstance(receipt_row[0], dict):
+                    receipt = receipt_row[0]
+                    status = receipt.get('status', '')
+                    check = receipt.get('checker_v2')
+                    blocked = check.get('blocked_count') if isinstance(check, dict) else None
+                    decision = 'pass' if blocked == 0 else ('fail' if blocked else '')
+            public['run_status'] = status
+            public['checker_decision'] = decision
+            generations.append(public)
+        return generations

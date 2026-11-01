@@ -7418,6 +7418,236 @@
         "title": "VerifyLandingPageIn",
         "type": "object"
       },
+      "ViralCreditsOut": {
+        "additionalProperties": true,
+        "properties": {
+          "remaining_credits": {
+            "default": 0,
+            "title": "Remaining Credits",
+            "type": "integer"
+          },
+          "total_used_credits": {
+            "default": 0,
+            "title": "Total Used Credits",
+            "type": "integer"
+          },
+          "workspace_id": {
+            "default": "",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "title": "ViralCreditsOut",
+        "type": "object"
+      },
+      "ViralCreditsSetIn": {
+        "additionalProperties": false,
+        "properties": {
+          "remaining_credits": {
+            "maximum": 1000000.0,
+            "minimum": 0.0,
+            "title": "Remaining Credits",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "remaining_credits"
+        ],
+        "title": "ViralCreditsSetIn",
+        "type": "object"
+      },
+      "ViralGenerateIn": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Ids"
+          },
+          "confirmed_facts": {
+            "default": "",
+            "maxLength": 10000,
+            "title": "Confirmed Facts",
+            "type": "string"
+          },
+          "media_mode": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Media Mode"
+          },
+          "media_source": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Media Source"
+          },
+          "screen_recording": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Screen Recording"
+          },
+          "screenshots": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Screenshots"
+          },
+          "slot_id": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slot Id"
+          }
+        },
+        "title": "ViralGenerateIn",
+        "type": "object"
+      },
+      "ViralGenerationOut": {
+        "additionalProperties": true,
+        "properties": {
+          "approval_state": {
+            "default": "",
+            "title": "Approval State",
+            "type": "string"
+          },
+          "asset_ids": {
+            "items": {},
+            "title": "Asset Ids",
+            "type": "array"
+          },
+          "checker_decision": {
+            "default": "",
+            "title": "Checker Decision",
+            "type": "string"
+          },
+          "checker_passed": {
+            "default": false,
+            "title": "Checker Passed",
+            "type": "boolean"
+          },
+          "confirmed_facts": {
+            "default": "",
+            "title": "Confirmed Facts",
+            "type": "string"
+          },
+          "created_at": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "credits_charged": {
+            "default": 1,
+            "title": "Credits Charged",
+            "type": "integer"
+          },
+          "frames_or_scenes": {
+            "items": {},
+            "title": "Frames Or Scenes",
+            "type": "array"
+          },
+          "id": {
+            "default": "",
+            "title": "Id",
+            "type": "string"
+          },
+          "media_mode": {
+            "default": "",
+            "title": "Media Mode",
+            "type": "string"
+          },
+          "media_provenance": {
+            "default": "owner_upload_only",
+            "title": "Media Provenance",
+            "type": "string"
+          },
+          "output_format": {
+            "default": "",
+            "title": "Output Format",
+            "type": "string"
+          },
+          "remaining_credits_after": {
+            "default": 0,
+            "title": "Remaining Credits After",
+            "type": "integer"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "run_status": {
+            "default": "",
+            "title": "Run Status",
+            "type": "string"
+          },
+          "slot_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Slot Id"
+          },
+          "workspace_id": {
+            "default": "",
+            "title": "Workspace Id",
+            "type": "string"
+          }
+        },
+        "title": "ViralGenerationOut",
+        "type": "object"
+      },
       "VoiceProfileSection": {
         "additionalProperties": true,
         "properties": {
@@ -12043,6 +12273,161 @@
           }
         },
         "summary": "Screen Trend"
+      }
+    },
+    "/api/viral-generator/credits": {
+      "get": {
+        "description": "Return the visible viral generation credit balance for the workspace.",
+        "operationId": "get_viral_credits_api_viral_generator_credits_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViralCreditsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Viral Credits"
+      },
+      "post": {
+        "description": "Set the workspace viral generation credit balance for owner and tests.",
+        "operationId": "set_viral_credits_api_viral_generator_credits_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ViralCreditsSetIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViralCreditsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Viral Credits"
+      },
+      "put": {
+        "description": "Set the workspace viral generation credit balance for owner and tests.",
+        "operationId": "set_viral_credits_api_viral_generator_credits_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ViralCreditsSetIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViralCreditsOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Viral Credits"
+      }
+    },
+    "/api/viral-generator/generate": {
+      "post": {
+        "description": "Build one metered viral pack from owner media and confirmed facts.\n\nThe credit gate runs before any pipeline or provider call: a zero\nbalance refuses with 402 and never invokes the pipeline. Owner media\nonly: foreign or library assets refuse with 422, as do wrong media\ncounts and empty confirmed facts. One credit is charged only after\nthe Checker pipeline produces the approval-bound pack.",
+        "operationId": "generate_viral_pack_api_viral_generator_generate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ViralGenerateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ViralGenerationOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Generate Viral Pack"
+      }
+    },
+    "/api/viral-generator/generations": {
+      "get": {
+        "description": "List workspace viral generations, newest first.",
+        "operationId": "list_viral_generations_api_viral_generator_generations_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ViralGenerationOut"
+                  },
+                  "title": "Response List Viral Generations Api Viral Generator Generations Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Viral Generations"
       }
     },
     "/api/waitlist": {
