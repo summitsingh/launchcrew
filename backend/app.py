@@ -3282,6 +3282,7 @@ class CalendarSlotOut(Strict):
     selected_channels: list[str] = Field(default_factory=list)
     approved_channels: list[str] = Field(default_factory=list)
     schedule_state: str = 'draft'
+    outcome_badge: dict[str, Any] | None = None
 
 
 class CalendarSlotIn(Strict):
@@ -3335,7 +3336,8 @@ def _public_calendar_slot(row):
             'planned_time': planned or '09:00',
             'selected_channels': list(selected) if isinstance(selected, list) else [],
             'approved_channels': list(approved) if isinstance(approved, list) else [],
-            'schedule_state': state if state in ('draft', 'ready', 'needs_approval') else 'draft'}
+            'schedule_state': state if state in ('draft', 'ready', 'needs_approval') else 'draft',
+            'outcome_badge': row.get('outcome_badge')}
 
 
 def _schedule_defaults(db, workspace_id):
@@ -3408,7 +3410,13 @@ def list_calendar_slots(start_date: str | None = None, end_date: str | None = No
                                + ' AND '.join(clauses) + ' ORDER BY slot_date, slot_type, id'),
                           params).mappings().all()
         synced = [_sync_calendar_row(db, dict(row), workspace_id) for row in rows]
-        return [_public_calendar_slot(slot) for slot in synced]
+        badges = _slot_outcome_badges(db, workspace_id, [slot['id'] for slot in synced])
+        decorated = []
+        for slot in synced:
+            slot = dict(slot)
+            slot['outcome_badge'] = badges.get(slot['id'])
+            decorated.append(_public_calendar_slot(slot))
+        return decorated
 
 
 @app.post('/api/calendar/slots', response_model=CalendarSlotOut, status_code=201)
@@ -4308,6 +4316,330 @@ def create_delivery_outcome(slot_id: str, channel: str, body: DeliveryOutcomeIn,
         if row is None:
             raise HTTPException(404, 'Run not found')
         return _public_outcome(row)
+
+
+# SC3 analytics pull: provider metrics for verified deliveries only.
+# Every canonical metric (reach, likes, comments, clicks, shares) is
+# either an integer or the exact string "not reported". Unsupported
+# or omitted metrics are never coerced to a fake 0. Pulls sync into
+# the run outcome log labeled with source and fetch time, and feed
+# the calendar outcome badges.
+
+class AnalyticsPullOut(Strict):
+    id: str
+    slot_id: str
+    channel: str
+    run_id: str | None = None
+    outcome_id: str | None = None
+    source_label: str
+    refresh_mode: Literal['manual', 'scheduled']
+    fetched_at: datetime
+    metrics: dict[str, Any]
+    reported_metrics: list[str] = Field(default_factory=list)
+    unreported_metrics: list[str] = Field(default_factory=list)
+
+
+class AnalyticsRefreshIn(Strict):
+    provider_metrics: dict[str, Any] | None = None
+    source_label: str | None = Field(default=None, max_length=120)
+
+
+class AnalyticsScheduledIn(Strict):
+    slot_ids: list[str] | None = None
+
+
+class SlotAnalyticsOut(Strict):
+    slot_id: str
+    has_outcomes: bool = False
+    channel_badges: list[dict[str, Any]] = Field(default_factory=list)
+    summary_text: str = ''
+
+
+class ScheduledRefreshOut(Strict):
+    refreshed: list[AnalyticsPullOut] = Field(default_factory=list)
+    skipped_unverified: list[str] = Field(default_factory=list)
+
+
+_ANALYTICS_PUBLIC_SELECT = ('id, slot_id, channel, run_id, outcome_id, '
+                            'source_label, refresh_mode, fetched_at, metrics, '
+                            'reported_metrics, unreported_metrics, '
+                            'raw_provider_payload, created_at')
+
+
+def _public_analytics_pull(row):
+    if not isinstance(row, dict):
+        try:
+            row = dict(row)
+        except Exception:
+            row = {}
+    fetched = row.get('fetched_at')
+    if hasattr(fetched, 'isoformat'):
+        fetched = fetched.isoformat()
+    reported = row.get('reported_metrics')
+    unreported = row.get('unreported_metrics')
+    return {'id': row.get('id'), 'slot_id': row.get('slot_id'),
+            'channel': row.get('channel'), 'run_id': row.get('run_id'),
+            'outcome_id': row.get('outcome_id'),
+            'source_label': row.get('source_label'),
+            'refresh_mode': row.get('refresh_mode'), 'fetched_at': fetched,
+            'metrics': dict(row.get('metrics') or {}),
+            'reported_metrics': list(reported) if isinstance(reported, list) else [],
+            'unreported_metrics': list(unreported) if isinstance(unreported, list) else []}
+
+
+def _verified_delivery_or_409(db, slot, workspace_id, channel):
+    row = db.execute(text('SELECT ' + _DELIVERY_PUBLIC_SELECT + ' FROM calendar_slot_deliveries'
+                          ' WHERE slot_id=:slot AND channel=:channel AND workspace_id=:ws'),
+                     {'slot': slot['id'], 'channel': channel, 'ws': workspace_id}).mappings().first()
+    if row is None or dict(row).get('delivery_state') != 'verified':
+        raise HTTPException(409, 'delivery_not_verified: post is not verified for channel ' + channel)
+    return dict(row)
+
+
+def _sync_provider_outcome(db, slot, workspace_id, channel, source_label,
+                           fetched_at, metrics, outcome_id, actor):
+    """Create or update the linked run_outcomes row for a provider pull.
+
+    The row is labeled with the provider source and fetch time in its
+    note, which preserves the exact metrics rendering including
+    "not reported" markers. Integer columns carry reported counts;
+    unreported metrics read as not reported in the note, never as
+    measured zeros.
+    """
+    from launchcrew import analytics_pull as analytics_mod
+    run_id = slot.get('run_id')
+    if not run_id:
+        return None
+    exists = db.execute(text('SELECT 1 FROM runs WHERE id=:id AND workspace_id=:ws'),
+                        {'id': run_id, 'ws': workspace_id}).fetchone()
+    if exists is None:
+        return None
+    outcome_channel = channel if channel in OUTCOME_KNOWN_CHANNELS else 'other'
+    note = analytics_mod.outcome_note(source_label, fetched_at, channel, metrics)
+    if len(note) > 500:
+        note = note[:500]
+    likes = metrics.get('likes')
+    comments = metrics.get('comments')
+    clicks = metrics.get('clicks')
+    posted = slot.get('slot_date')
+    if hasattr(posted, 'isoformat'):
+        posted = posted.isoformat()
+    if not isinstance(posted, str) or not posted:
+        posted = fetched_at[:10]
+    try:
+        receipt_row = db.execute(text('SELECT receipt FROM runs WHERE id=:id AND workspace_id=:ws'),
+                                 {'id': run_id, 'ws': workspace_id}).fetchone()
+        receipt = receipt_row[0] if receipt_row else None
+        revision = receipt.get('revision', 0) if isinstance(receipt, dict) else 0
+    except Exception:
+        revision = 0
+    sync_actor = actor if actor and actor != 'demo_placeholder' else 'provider_sync'
+    values = {'likes': likes if type(likes) is int else 0,
+              'comments': comments if type(comments) is int else 0,
+              'clicks': clicks if type(clicks) is int else 0,
+              'note': note, 'channel': outcome_channel, 'posted': posted,
+              'rev': revision if isinstance(revision, int) and revision >= 0 else 0,
+              'prov': OUTCOME_PROVENANCE, 'actor': sync_actor,
+              'run': run_id, 'ws': workspace_id}
+    if outcome_id:
+        kept = db.execute(text('SELECT id FROM run_outcomes WHERE id=:id AND workspace_id=:ws'),
+                          {'id': outcome_id, 'ws': workspace_id}).fetchone()
+        if kept is not None:
+            db.execute(text('UPDATE run_outcomes SET channel=:channel, posted_date=CAST(:posted AS date),'
+                            ' likes=:likes, comments=:comments, clicks=:clicks,'
+                            ' note=:note, provenance=:prov, actor=:actor'
+                            ' WHERE id=:id AND workspace_id=:ws'),
+                       dict(values, id=outcome_id))
+            return outcome_id
+    fresh_id = 'out_' + uuid4().hex
+    db.execute(text('INSERT INTO run_outcomes(id, run_id, workspace_id, export_revision, channel, posted_date, likes, comments, clicks, sales, note, provenance, actor)'
+                    ' VALUES (:id, :run, :ws, :rev, :channel, CAST(:posted AS date), :likes, :comments, :clicks, 0, :note, :prov, :actor)'),
+               dict(values, id=fresh_id))
+    return fresh_id
+
+
+def _refresh_delivery_analytics(db, slot, workspace_id, channel, refresh_mode,
+                                provider_metrics, source_label, actor):
+    """Refresh provider metrics for one verified delivery (upsert per slot+channel)."""
+    from launchcrew import analytics_pull as analytics_mod
+    key = _normalize_delivery_channel(channel)
+    _verified_delivery_or_409(db, slot, workspace_id, key)
+    try:
+        mode = analytics_mod.normalize_refresh_mode(refresh_mode)
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    try:
+        source = analytics_mod.normalize_source_label(source_label, key)
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    try:
+        built = analytics_mod.build_metrics(key, provider_metrics)
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    fetched_at = analytics_mod.utc_now_iso()
+    raw = dict(provider_metrics) if isinstance(provider_metrics, dict) else analytics_mod.adapter_metrics(key)
+    existing = db.execute(text('SELECT ' + _ANALYTICS_PUBLIC_SELECT + ' FROM analytics_pulls'
+                               ' WHERE slot_id=:slot AND channel=:channel AND workspace_id=:ws'),
+                          {'slot': slot['id'], 'channel': key, 'ws': workspace_id}).mappings().first()
+    prior_outcome = dict(existing).get('outcome_id') if existing is not None else None
+    params = {'ws': workspace_id, 'slot': slot['id'], 'channel': key,
+              'run': slot.get('run_id'), 'source': source,
+              'mode': mode, 'fetched': fetched_at,
+              'metrics': json.dumps(built['metrics']),
+              'reported': json.dumps(built['reported_metrics']),
+              'unreported': json.dumps(built['unreported_metrics']),
+              'raw': json.dumps(raw)}
+    if existing is not None:
+        pull_id = dict(existing)['id']
+        db.execute(text('UPDATE analytics_pulls SET run_id=:run,'
+                        ' source_label=:source, refresh_mode=:mode, fetched_at=CAST(:fetched AS timestamptz),'
+                        ' metrics=CAST(:metrics AS jsonb), reported_metrics=CAST(:reported AS jsonb),'
+                        ' unreported_metrics=CAST(:unreported AS jsonb),'
+                        ' raw_provider_payload=CAST(:raw AS jsonb)'
+                        ' WHERE id=:id AND workspace_id=:ws'),
+                   dict(params, id=pull_id))
+    else:
+        pull_id = 'apull_' + uuid4().hex
+        db.execute(text('INSERT INTO analytics_pulls(id, workspace_id, slot_id, channel, run_id, source_label, refresh_mode, fetched_at, metrics, reported_metrics, unreported_metrics, raw_provider_payload)'
+                        ' VALUES (:id, :ws, :slot, :channel, :run, :source, :mode, CAST(:fetched AS timestamptz), CAST(:metrics AS jsonb), CAST(:reported AS jsonb), CAST(:unreported AS jsonb), CAST(:raw AS jsonb))'),
+                   dict(params, id=pull_id))
+    stored = db.execute(text('SELECT ' + _ANALYTICS_PUBLIC_SELECT + ' FROM analytics_pulls'
+                             ' WHERE id=:id AND workspace_id=:ws'),
+                        {'id': pull_id, 'ws': workspace_id}).mappings().first()
+    if stored is None:
+        raise HTTPException(500, 'Analytics pull was not stored')
+    stored_fetched = _public_analytics_pull(dict(stored))['fetched_at']
+    outcome_id = _sync_provider_outcome(db, slot, workspace_id, key, source,
+                                        stored_fetched, built['metrics'], prior_outcome, actor)
+    db.execute(text('UPDATE analytics_pulls SET outcome_id=:outcome WHERE id=:id AND workspace_id=:ws'),
+               {'outcome': outcome_id, 'id': pull_id, 'ws': workspace_id})
+    store.audit(db, slot.get('run_id'), 'analytics_pull_refreshed', actor, workspace_id)
+    fresh = db.execute(text('SELECT ' + _ANALYTICS_PUBLIC_SELECT + ' FROM analytics_pulls'
+                            ' WHERE id=:id AND workspace_id=:ws'),
+                       {'id': pull_id, 'ws': workspace_id}).mappings().first()
+    if fresh is None:
+        raise HTTPException(500, 'Analytics pull was not stored')
+    return _public_analytics_pull(dict(fresh))
+
+
+def _slot_badge_from_pulls(pull_rows):
+    from launchcrew import analytics_pull as analytics_mod
+    badges = [analytics_mod.build_channel_badge(entry['channel'], entry['source_label'],
+                                                entry['fetched_at'], entry['refresh_mode'],
+                                                entry['metrics'])
+              for entry in pull_rows]
+    return analytics_mod.build_outcome_badge(badges)
+
+
+def _slot_outcome_badges(db, workspace_id, slot_ids):
+    """Map slot ids to calendar outcome badges from the latest pulls."""
+    if not slot_ids:
+        return {}
+    rows = db.execute(text('SELECT ' + _ANALYTICS_PUBLIC_SELECT + ' FROM analytics_pulls'
+                           ' WHERE workspace_id=:ws AND slot_id = ANY(:slots)'
+                           ' ORDER BY fetched_at DESC, id'),
+                      {'ws': workspace_id, 'slots': list(slot_ids)}).mappings().all()
+    by_slot: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        public = _public_analytics_pull(dict(row))
+        by_slot.setdefault(public['slot_id'], []).append(public)
+    return {slot_id: _slot_badge_from_pulls(pulls) for slot_id, pulls in by_slot.items()}
+
+
+@app.post('/api/calendar/slots/{slot_id}/deliveries/{channel}/analytics/refresh',
+          response_model=AnalyticsPullOut)
+def refresh_delivery_analytics(slot_id: str, channel: str, body: AnalyticsRefreshIn,
+                               actor: str = Depends(auth.actor)):
+    """Manually refresh provider metrics for one verified delivery.
+
+    Refuses with 409 unless the delivery row is verified. Accepts an
+    optional explicit provider payload; otherwise a deterministic
+    platform adapter supplies the supported metrics. Unsupported or
+    omitted metrics store as "not reported", never as 0. The pull
+    syncs into the run outcome log with source and fetch time.
+    """
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        slot = _load_slot(db, slot_id, workspace_id)
+        return _refresh_delivery_analytics(db, slot, workspace_id, channel, 'manual',
+                                           body.provider_metrics, body.source_label, actor)
+
+
+@app.post('/api/analytics/refresh-scheduled', response_model=ScheduledRefreshOut)
+def refresh_scheduled_analytics(body: AnalyticsScheduledIn,
+                                actor: str = Depends(auth.actor)):
+    """Batch-refresh provider metrics for verified deliveries on a schedule.
+
+    Refreshes every verified slot delivery in the workspace (or only
+    the given slot ids) with refresh_mode "scheduled". Unverified
+    deliveries are skipped and named, never pulled.
+    """
+    from launchcrew import verification_board as board_mod
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        if body.slot_ids is None:
+            rows = db.execute(text('SELECT id FROM calendar_slots WHERE workspace_id=:ws'),
+                              {'ws': workspace_id}).mappings().all()
+            slot_ids = [str(entry['id']) for entry in rows]
+        else:
+            slot_ids = []
+            for entry in body.slot_ids:
+                if not isinstance(entry, str) or not entry.strip():
+                    raise HTTPException(422, 'slot_ids must list nonempty slot ids')
+                slot_ids.append(entry.strip())
+            for slot_id in slot_ids:
+                _load_slot(db, slot_id, workspace_id)
+        refreshed: list[dict[str, Any]] = []
+        skipped: list[str] = []
+        for slot_id in slot_ids:
+            slot = _load_slot(db, slot_id, workspace_id)
+            deliveries = db.execute(text('SELECT ' + _DELIVERY_PUBLIC_SELECT
+                                        + ' FROM calendar_slot_deliveries'
+                                          ' WHERE slot_id=:slot AND workspace_id=:ws'),
+                                    {'slot': slot['id'], 'ws': workspace_id}).mappings().all()
+            for entry in deliveries:
+                delivery = dict(entry)
+                channel = board_mod.normalize_channel(str(delivery.get('channel') or ''))
+                if delivery.get('delivery_state') != 'verified':
+                    skipped.append(slot['id'] + ':' + channel)
+                    continue
+                refreshed.append(_refresh_delivery_analytics(db, slot, workspace_id, channel,
+                                                             'scheduled', None, None, actor))
+        return {'refreshed': refreshed, 'skipped_unverified': skipped}
+
+
+@app.get('/api/analytics/pulls', response_model=list[AnalyticsPullOut])
+def list_analytics_pulls(slot_id: str | None = None, channel: str | None = None,
+                         actor: str = Depends(auth.actor)):
+    """List analytics pulls, newest first, with optional slot and channel filters."""
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        clauses = ['workspace_id=:ws']
+        params: dict[str, Any] = {'ws': workspace_id}
+        if slot_id is not None:
+            clauses.append('slot_id=:slot')
+            params['slot'] = slot_id
+        if channel is not None:
+            clauses.append('channel=:channel')
+            params['channel'] = _normalize_delivery_channel(channel)
+        rows = db.execute(text('SELECT ' + _ANALYTICS_PUBLIC_SELECT + ' FROM analytics_pulls WHERE '
+                               + ' AND '.join(clauses) + ' ORDER BY fetched_at DESC, id'),
+                          params).mappings().all()
+        return [_public_analytics_pull(dict(entry)) for entry in rows]
+
+
+@app.get('/api/calendar/slots/{slot_id}/analytics', response_model=SlotAnalyticsOut)
+def get_slot_analytics(slot_id: str, actor: str = Depends(auth.actor)):
+    """Return the calendar outcome badge for one slot."""
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        slot = _load_slot(db, slot_id, workspace_id)
+        badges = _slot_outcome_badges(db, workspace_id, [slot['id']])
+        badge = badges.get(slot['id'], {'has_outcomes': False,
+                                        'channel_badges': [], 'summary_text': ''})
+        return {'slot_id': slot['id'], 'has_outcomes': badge['has_outcomes'],
+                'channel_badges': badge['channel_badges'],
+                'summary_text': badge['summary_text']}
 
 
 class SocialPlatformOut(BaseModel):

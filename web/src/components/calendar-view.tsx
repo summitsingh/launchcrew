@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { api, unwrap } from '@/lib/api';
 import { FormatLibraryPanel } from '@/components/format-library';
+import { AnalyticsPullPanel, SlotOutcomeBadge } from '@/components/analytics-pull-panel';
 import { MediaLibraryPanel } from '@/components/media-library';
 import { PublishExecutorPanel } from '@/components/publish-executor-panel';
 import { VerificationBoard } from '@/components/verification-board';
@@ -96,6 +97,7 @@ function SlotCard({ slot }: { slot: Slot }) {
     <p><strong>{slot.slot_type}</strong> <StatusBadge status={slot.status} /></p>
     <p className="hint">Pillar: {slot.pillar} · Format: {slot.format}</p>
     <p className="hint">{slot.run_id ? `Run ${slot.run_id}` : 'Unlinked slot'}{slot.campaign_id ? ` · Campaign ${slot.campaign_id} day ${slot.campaign_day ?? ''}`.trimEnd() : ''}</p>
+    <SlotOutcomeBadge badge={slot.outcome_badge ?? null} slotId={slot.id} />
     <SlotScheduleCard slot={slot} />
   </article>;
 }
@@ -300,6 +302,7 @@ export function CalendarView() {
     {days.map(slotDate => <DayCell key={slotDate} slotDate={slotDate} slots={grouped.get(slotDate) ?? []} />)}
     <ScheduleDefaultsPanel />
     <ScheduleExportPanel />
+    <AnalyticsPullPanel />
     <MediaLibraryPanel />
     <PublishExecutorPanel />
     <VerificationBoard />

@@ -74,6 +74,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/analytics/pulls": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Analytics Pulls
+         * @description List analytics pulls, newest first, with optional slot and channel filters.
+         */
+        get: operations["list_analytics_pulls_api_analytics_pulls_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/analytics/refresh-scheduled": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Refresh Scheduled Analytics
+         * @description Batch-refresh provider metrics for verified deliveries on a schedule.
+         *
+         *     Refreshes every verified slot delivery in the workspace (or only
+         *     the given slot ids) with refresh_mode "scheduled". Unverified
+         *     deliveries are skipped and named, never pulled.
+         */
+        post: operations["refresh_scheduled_analytics_api_analytics_refresh_scheduled_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auth/logout": {
         parameters: {
             query?: never;
@@ -243,6 +287,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/calendar/slots/{slot_id}/analytics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Slot Analytics
+         * @description Return the calendar outcome badge for one slot.
+         */
+        get: operations["get_slot_analytics_api_calendar_slots__slot_id__analytics_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/calendar/slots/{slot_id}/approve-channels": {
         parameters: {
             query?: never;
@@ -282,6 +346,32 @@ export interface paths {
         get: operations["list_slot_deliveries_api_calendar_slots__slot_id__deliveries_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/calendar/slots/{slot_id}/deliveries/{channel}/analytics/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Refresh Delivery Analytics
+         * @description Manually refresh provider metrics for one verified delivery.
+         *
+         *     Refuses with 409 unless the delivery row is verified. Accepts an
+         *     optional explicit provider payload; otherwise a deterministic
+         *     platform adapter supplies the supported metrics. Unsupported or
+         *     omitted metrics store as "not reported", never as 0. The pull
+         *     syncs into the run outcome log with source and fetch time.
+         */
+        post: operations["refresh_delivery_analytics_api_calendar_slots__slot_id__deliveries__channel__analytics_refresh_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1832,6 +1922,53 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AnalyticsPullOut */
+        AnalyticsPullOut: {
+            /** Channel */
+            channel: string;
+            /**
+             * Fetched At
+             * Format: date-time
+             */
+            fetched_at: string;
+            /** Id */
+            id: string;
+            /** Metrics */
+            metrics: {
+                [key: string]: unknown;
+            };
+            /** Outcome Id */
+            outcome_id?: string | null;
+            /**
+             * Refresh Mode
+             * @enum {string}
+             */
+            refresh_mode: "manual" | "scheduled";
+            /** Reported Metrics */
+            reported_metrics?: string[];
+            /** Run Id */
+            run_id?: string | null;
+            /** Slot Id */
+            slot_id: string;
+            /** Source Label */
+            source_label: string;
+            /** Unreported Metrics */
+            unreported_metrics?: string[];
+        };
+        /** AnalyticsRefreshIn */
+        AnalyticsRefreshIn: {
+            /** Provider Metrics */
+            provider_metrics?: {
+                [key: string]: unknown;
+            } | null;
+            /** Source Label */
+            source_label?: string | null;
+        };
+        /** AnalyticsScheduledIn */
+        AnalyticsScheduledIn: {
+            /** Slot Ids */
+            slot_ids?: string[] | null;
+        };
         /** Approval */
         Approval: {
             /** Action */
@@ -1946,6 +2083,10 @@ export interface components {
             format: string;
             /** Id */
             id: string;
+            /** Outcome Badge */
+            outcome_badge?: {
+                [key: string]: unknown;
+            } | null;
             /** Pillar */
             pillar: string;
             /**
@@ -4607,6 +4748,13 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** ScheduledRefreshOut */
+        ScheduledRefreshOut: {
+            /** Refreshed */
+            refreshed?: components["schemas"]["AnalyticsPullOut"][];
+            /** Skipped Unverified */
+            skipped_unverified?: string[];
+        };
         /** ScoutFact */
         ScoutFact: {
             /**
@@ -4652,6 +4800,25 @@ export interface components {
             sources: string[];
         } & {
             [key: string]: unknown;
+        };
+        /** SlotAnalyticsOut */
+        SlotAnalyticsOut: {
+            /** Channel Badges */
+            channel_badges?: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Has Outcomes
+             * @default false
+             */
+            has_outcomes: boolean;
+            /** Slot Id */
+            slot_id: string;
+            /**
+             * Summary Text
+             * @default
+             */
+            summary_text: string;
         };
         /** SlotChannelsApproveIn */
         SlotChannelsApproveIn: {
@@ -5398,6 +5565,71 @@ export interface operations {
             };
         };
     };
+    list_analytics_pulls_api_analytics_pulls_get: {
+        parameters: {
+            query?: {
+                slot_id?: string | null;
+                channel?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnalyticsPullOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    refresh_scheduled_analytics_api_analytics_refresh_scheduled_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AnalyticsScheduledIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduledRefreshOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     logout_api_auth_logout_post: {
         parameters: {
             query?: never;
@@ -5706,6 +5938,37 @@ export interface operations {
             };
         };
     };
+    get_slot_analytics_api_calendar_slots__slot_id__analytics_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slot_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SlotAnalyticsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     approve_slot_channels_api_calendar_slots__slot_id__approve_channels_post: {
         parameters: {
             query?: never;
@@ -5759,6 +6022,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DeliveryOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    refresh_delivery_analytics_api_calendar_slots__slot_id__deliveries__channel__analytics_refresh_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                slot_id: string;
+                channel: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AnalyticsRefreshIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AnalyticsPullOut"];
                 };
             };
             /** @description Validation Error */
