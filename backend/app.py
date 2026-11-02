@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
-from backend import adapter, store, auth, drive_intake
+from backend import adapter, store, auth, drive_intake, dropbox_import
 from launchcrew import agents, receipts
 from launchcrew.outcome_log import KNOWN_CHANNELS as OUTCOME_KNOWN_CHANNELS
 from launchcrew.outcome_log import MAX_COUNT as OUTCOME_MAX_COUNT
@@ -525,6 +525,7 @@ async def lifespan(app):
 app = FastAPI(title='LaunchCrew', version='0.1.0', lifespan=lifespan)
 app.include_router(auth.router)
 app.include_router(drive_intake.router)
+app.include_router(dropbox_import.router)
 
 
 @app.middleware('http')

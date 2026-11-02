@@ -1026,6 +1026,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/dropbox-import/authorize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Dropbox Authorize
+         * @description Refuse closed until the owner configures the Dropbox app.
+         */
+        get: operations["dropbox_authorize_api_dropbox_import_authorize_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dropbox-import/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Dropbox Callback
+         * @description Refuse closed until the owner configures the Dropbox app.
+         */
+        get: operations["dropbox_callback_api_dropbox_import_callback_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/dropbox-import/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Dropbox Status
+         * @description Return Dropbox connector status without leaking any values.
+         */
+        get: operations["dropbox_status_api_dropbox_import_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/engagement/items": {
         parameters: {
             query?: never;
@@ -3618,6 +3678,24 @@ export interface components {
             status: "unconfirmed";
             /** Text */
             text: string;
+        };
+        /** DropboxStatusOut */
+        DropboxStatusOut: {
+            /** Available */
+            available: boolean;
+            /** Callback Path */
+            callback_path: string;
+            /** Configured */
+            configured: boolean;
+            /**
+             * Live Verified
+             * @default false
+             */
+            live_verified: boolean;
+            /** Reason */
+            reason: string;
+            /** Setup Names */
+            setup_names: string[];
         };
         /** EngagementItemIn */
         EngagementItemIn: {
@@ -8037,6 +8115,66 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dropbox_authorize_api_dropbox_import_authorize_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    dropbox_callback_api_dropbox_import_callback_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    dropbox_status_api_dropbox_import_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DropboxStatusOut"];
                 };
             };
         };

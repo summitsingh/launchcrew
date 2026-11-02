@@ -2371,6 +2371,48 @@
         "title": "DriveSuggestionItem",
         "type": "object"
       },
+      "DropboxStatusOut": {
+        "additionalProperties": false,
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "callback_path": {
+            "title": "Callback Path",
+            "type": "string"
+          },
+          "configured": {
+            "title": "Configured",
+            "type": "boolean"
+          },
+          "live_verified": {
+            "default": false,
+            "title": "Live Verified",
+            "type": "boolean"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "setup_names": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Setup Names",
+            "type": "array"
+          }
+        },
+        "required": [
+          "available",
+          "configured",
+          "reason",
+          "callback_path",
+          "setup_names"
+        ],
+        "title": "DropboxStatusOut",
+        "type": "object"
+      },
       "EngagementItemIn": {
         "additionalProperties": false,
         "properties": {
@@ -10621,6 +10663,59 @@
           }
         },
         "summary": "Drive Suggestions"
+      }
+    },
+    "/api/dropbox-import/authorize": {
+      "get": {
+        "description": "Refuse closed until the owner configures the Dropbox app.",
+        "operationId": "dropbox_authorize_api_dropbox_import_authorize_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Dropbox Authorize"
+      }
+    },
+    "/api/dropbox-import/callback": {
+      "get": {
+        "description": "Refuse closed until the owner configures the Dropbox app.",
+        "operationId": "dropbox_callback_api_dropbox_import_callback_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Dropbox Callback"
+      }
+    },
+    "/api/dropbox-import/status": {
+      "get": {
+        "description": "Return Dropbox connector status without leaking any values.",
+        "operationId": "dropbox_status_api_dropbox_import_status_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DropboxStatusOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Dropbox Status"
       }
     },
     "/api/engagement/items": {

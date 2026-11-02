@@ -28,12 +28,15 @@ named owner actions. One micro-commit per slice, pushed to main.
   owner-logged comments and DMs, suggested reply drafts, approve then
   mark handled. No auto-send. Live comment pull stays gated on
   platform tokens.
-- Slice G (this commit): voice memo intake. Transcript-text draft
-  source attached to a run with voice_transcript provenance, revision
-  bump, and reset approval. Real transcription stays gated on a
-  speech provider.
-- Slice H: cloud storage connector mirroring the Drive intake shape,
-  unconfigured by default. OAuth app and tokens stay owner-gated.
+- Slice G (dcac907): voice memo intake. Transcript-text draft source
+  attached to a run with voice_transcript provenance, revision bump,
+  and reset approval. Real transcription stays gated on a speech
+  provider.
+- Slice H (this commit): cloud storage connector mirroring the Drive
+  intake shape, unconfigured by default: config detection, status
+  reporting, and authorize plus callback routes that refuse closed.
+  No provider HTTP exists, so every path runs green keyless. OAuth
+  app and tokens stay owner-gated.
 
 ## Out (owner-gated, not buildable here)
 
