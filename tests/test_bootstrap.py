@@ -1052,6 +1052,11 @@ if [ "$1" = "cloudformation" ] && [ "$2" = "wait" ]; then
   fi
   exit 0
 fi
+if [ "$1" = "ecr" ] && [ "$2" = "describe-repositories" ]; then
+  if [ "$MODE" = "repo_mutable" ]; then printf 'MUTABLE\n'; exit 0; fi
+  if [ "$MODE" = "repo_mode_unverifiable" ]; then echo "An error occurred (RepositoryNotFoundException) when calling the DescribeRepositories operation" >&2; exit 254; fi
+  printf 'IMMUTABLE\n'; exit 0
+fi
 if [ "$1" = "ecr" ] && [ "$2" = "batch-get-image" ]; then
   if [ "$MODE" = "image_missing" ]; then
     echo "An error occurred (ImageNotFoundException) when calling the BatchGetImage operation: image not found" >&2
@@ -8735,6 +8740,97 @@ class TypedRecoveryTests(BootstrapHarness):
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
             self.assertIn("TASKDEF_OPERATION_MISMATCH:IMAGE_HISTORICAL_UNPINNED",
+                          combined)
+            self.assertEqual(prior.read_bytes(), before)
+            self.assertFalse(any("run-task" in c for c in calls))
+
+    def test_bootstrap_historical_full_sha_tag_admits(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_prior(
+                journals, "dbroles", "bootstrap",
+                "BootstrapTaskDefinition", self.ROLE_TOKEN, self.ROLE_TASK,
+                self.ROLE_TASKDEF, outcome="started")
+            before = prior.read_bytes()
+            new_image = image("launchcrew-bootstrap", "new007") + "@sha256:" + "8" * 64
+            old_sha_tag = image("launchcrew-bootstrap",
+                                "66ec9ea9b1b2436b87f231381f10119e94af8357")
+            args = [*self.base_args(**{"--bootstrap-image": new_image}),
+                    "--phase", "dbroles",
+                    "--release-generation", self.RELEASE]
+            result, calls = self.run_bootstrap(
+                args,
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_ORIG_BOOTSTRAP_IMAGE": old_sha_tag,
+                           "FAKE_ROLESTATE_EXIT": "10"},
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            combined = result.stdout + result.stderr
+            self.assertIn("historical image", combined.lower())
+            self.assertEqual(prior.read_bytes(), before)
+            runs = [c for c in calls if "run-task" in c]
+            self.assertEqual(len(runs), 1)
+            self.assertIn("launchcrew-demo-rolestate", runs[0])
+            self.assertFalse(any("launchcrew-demo-bootstrap" in c
+                                 for c in runs))
+            doc, _ = self.read_attestation(journals, prior.name)
+            self.assertEqual(doc.get("observed_head"), "007")
+            self.check_digest(doc)
+
+    def test_bootstrap_historical_short_tag_refuses(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_prior(
+                journals, "dbroles", "bootstrap",
+                "BootstrapTaskDefinition", self.ROLE_TOKEN, self.ROLE_TASK,
+                self.ROLE_TASKDEF, outcome="started")
+            before = prior.read_bytes()
+            new_image = image("launchcrew-bootstrap", "new007") + "@sha256:" + "8" * 64
+            old_short = image("launchcrew-bootstrap", "old006")
+            args = [*self.base_args(**{"--bootstrap-image": new_image}),
+                    "--phase", "dbroles",
+                    "--release-generation", self.RELEASE]
+            result, calls = self.run_bootstrap(
+                args,
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_ORIG_BOOTSTRAP_IMAGE": old_short,
+                           "FAKE_ROLESTATE_EXIT": "10"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("TASKDEF_OPERATION_MISMATCH:IMAGE_HISTORICAL_UNPINNED",
+                          combined)
+            self.assertEqual(prior.read_bytes(), before)
+            self.assertFalse(any("run-task" in c for c in calls))
+
+    def test_bootstrap_historical_mutable_repo_refuses(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_prior(
+                journals, "dbroles", "bootstrap",
+                "BootstrapTaskDefinition", self.ROLE_TOKEN, self.ROLE_TASK,
+                self.ROLE_TASKDEF, outcome="started")
+            before = prior.read_bytes()
+            new_image = image("launchcrew-bootstrap", "new007") + "@sha256:" + "8" * 64
+            old_sha_tag = image("launchcrew-bootstrap",
+                                "66ec9ea9b1b2436b87f231381f10119e94af8357")
+            args = [*self.base_args(**{"--bootstrap-image": new_image}),
+                    "--phase", "dbroles",
+                    "--release-generation", self.RELEASE]
+            result, calls = self.run_bootstrap(
+                args,
+                mode="repo_mutable",
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_ORIG_BOOTSTRAP_IMAGE": old_sha_tag,
+                           "FAKE_ROLESTATE_EXIT": "10"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("TASKDEF_OPERATION_MISMATCH:IMAGE_HISTORICAL_MUTABLE",
                           combined)
             self.assertEqual(prior.read_bytes(), before)
             self.assertFalse(any("run-task" in c for c in calls))

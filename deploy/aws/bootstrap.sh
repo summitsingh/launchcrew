@@ -3806,28 +3806,37 @@ PYEOF
 
 # Verify a historical image from an aged original task definition. Same owned
 # account, region, repository, explicit tag, no latest, digest present with no
-# failures as verify_image, but the URI must be digest-pinned (tag@sha256:...)
-# and is never required to equal the current CLI image. The original
+# failures as verify_image. The URI is either digest-pinned (tag@sha256:...),
+# which is never required to equal the current CLI image, or a tag-only full
+# git-SHA tag on a tag-immutable repository: the tag cannot have moved since
+# the original push, so resolving it in ECR at attestation time binds the
+# original digest with the same effect as pinning. The original
 # journal/taskdef/source binding is proven separately via the exact original
 # ARN plus config digest; this proves only the image itself is owned immutable.
-# Wrong repo, unpinned, moved digest, missing digest, or ECR failures refuse.
+# Wrong repo, unpinned non-SHA tags, mutable repository, moved digest,
+# missing digest, or ECR failures refuse.
 # Returns 0 on success, 1 on failure with TASKDEF_OPERATION_MISMATCH:IMAGE
 # text for typed recovery callers. Never prints the full URI.
 verify_historical_image() {
   HIST_IMAGE="$1"
   HIST_EXPECTED_REPO="$2"
   HIST_LABEL="$3"
+  HIST_SELF_BOUND=0
+  HIST_PINNED=""
   case "$HIST_IMAGE" in
     *REPLACE_WITH*|*PLACEHOLDER*|"") echo "refused: original $HIST_LABEL operation proof is TASKDEF_OPERATION_MISMATCH:IMAGE_HISTORICAL_PLACEHOLDER, historical image is placeholder or missing, no recovery claimed." >&2; return 1 ;;
   esac
   case "$HIST_IMAGE" in
     *@sha256:*) HIST_PINNED="sha256:$(printf '%s' "$HIST_IMAGE" | sed 's/^.*@sha256://')"
       HIST_BASE="$(printf '%s' "$HIST_IMAGE" | cut -d@ -f1)" ;;
-    *) echo "refused: original $HIST_LABEL operation proof is TASKDEF_OPERATION_MISMATCH:IMAGE_HISTORICAL_UNPINNED, tag-only historical image refused, no recovery claimed." >&2; return 1 ;;
+    *) HIST_SELF_BOUND=1
+      HIST_BASE="$HIST_IMAGE" ;;
   esac
   HIST_PINNED="$(printf '%s' "$HIST_PINNED" | tr -d '[:space:]')"
   HIST_BASE="$(printf '%s' "$HIST_BASE" | tr -d '[:space:]')"
-  [ -n "$HIST_PINNED" ] && [ "$HIST_PINNED" != "sha256:" ] && [ "$HIST_PINNED" != "None" ] || { echo "refused: original $HIST_LABEL operation proof is TASKDEF_OPERATION_MISMATCH:IMAGE_HISTORICAL_UNPINNED, historical pinned digest missing, no recovery claimed." >&2; return 1; }
+  if [ "$HIST_SELF_BOUND" != "1" ]; then
+    [ -n "$HIST_PINNED" ] && [ "$HIST_PINNED" != "sha256:" ] && [ "$HIST_PINNED" != "None" ] || { echo "refused: original $HIST_LABEL operation proof is TASKDEF_OPERATION_MISMATCH:IMAGE_HISTORICAL_UNPINNED, historical pinned digest missing, no recovery claimed." >&2; return 1; }
+  fi
   case "$HIST_BASE" in
     *:* ) ;;
     *) echo "refused: original $HIST_LABEL operation proof is TASKDEF_OPERATION_MISMATCH:IMAGE_HISTORICAL_TAG, historical image has no explicit tag, no recovery claimed." >&2; return 1 ;;
@@ -3852,6 +3861,18 @@ verify_historical_image() {
   if [ -z "$HIST_DIGEST" ] || [ "$HIST_DIGEST" = "None" ]; then
     echo "refused: original $HIST_LABEL operation proof is TASKDEF_OPERATION_MISMATCH:IMAGE_HISTORICAL_DIGEST, historical image $HIST_REPO_NAME:$HIST_IMAGE_TAG has no digest in ECR, no recovery claimed." >&2
     return 1
+  fi
+  if [ "$HIST_SELF_BOUND" = "1" ]; then
+    HIST_SHA_TAG="$(printf '%s' "$HIST_IMAGE_TAG" | grep -E '^[0-9a-f]{40}$' || true)"
+    [ -n "$HIST_SHA_TAG" ] || { echo "refused: original $HIST_LABEL operation proof is TASKDEF_OPERATION_MISMATCH:IMAGE_HISTORICAL_UNPINNED, tag-only historical image is not a full git-SHA tag, no recovery claimed." >&2; return 1; }
+    if ! HIST_REPO_MODE="$("$AWS_BIN" ecr describe-repositories --repository-names "$HIST_REPO_NAME" --region "$EXPECTED_REGION" --query "repositories[0].imageTagMutability" --output text 2>"$TMP_ERR")"; then
+      echo "refused: original $HIST_LABEL operation proof is TASKDEF_OPERATION_MISMATCH:IMAGE_HISTORICAL_MUTABLE, historical repository $HIST_REPO_NAME mutability unverifiable, no recovery claimed." >&2
+      return 1
+    fi
+    HIST_REPO_MODE="$(printf '%s' "$HIST_REPO_MODE" | tr -d '[:space:]')"
+    [ "$HIST_REPO_MODE" = "IMMUTABLE" ] || { echo "refused: original $HIST_LABEL operation proof is TASKDEF_OPERATION_MISMATCH:IMAGE_HISTORICAL_MUTABLE, historical repository $HIST_REPO_NAME is not tag-immutable, no recovery claimed." >&2; return 1; }
+    HIST_PINNED="$HIST_DIGEST"
+    echo "historical image tag self-bound to ECR digest at attestation time for $HIST_LABEL" >&2
   fi
   if [ "$HIST_DIGEST" != "$HIST_PINNED" ]; then
     echo "refused: original $HIST_LABEL operation proof is TASKDEF_OPERATION_MISMATCH:IMAGE_HISTORICAL_MOVED, historical pinned digest does not match ECR digest, no recovery claimed." >&2
