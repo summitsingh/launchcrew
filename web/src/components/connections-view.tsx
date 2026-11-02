@@ -39,6 +39,30 @@ export interface SocialConnection {
 export const PRIORITY_TIER = 'priority';
 export const FLAGGED_TIER = 'flag_gated';
 
+export interface ConnectCredentials {
+  token: string;
+  handle: string;
+}
+
+/** Build the connect-callback body from owner-supplied credentials only.
+ * Refuses blank input; never fabricates a token or handle. */
+export function buildConnectCallbackBody(
+  _platform: string,
+  token: string,
+  handle: string,
+): ConnectCredentials & { account_type: string; scopes: string[] } {
+  const cleanToken = (token || '').trim();
+  if (!cleanToken) throw new Error('A provider token is required to complete the brand connection');
+  const cleanHandle = (handle || '').trim();
+  if (!cleanHandle) throw new Error('A brand account handle is required to complete the brand connection');
+  return {
+    token: cleanToken,
+    handle: cleanHandle,
+    account_type: 'brand',
+    scopes: ['brand_profile', 'brand_capabilities_read'],
+  };
+}
+
 function capabilitySummary(capabilities: Record<string, unknown>): string {
   if (!capabilities || typeof capabilities !== 'object') return 'No live capabilities yet.';
   const parts: string[] = [];
@@ -198,6 +222,9 @@ export function ConnectionsView() {
   const client = useQueryClient();
   const [active, setActive] = useState<string | null>(null);
   const [message, setMessage] = useState('');
+  const [formFor, setFormFor] = useState<string | null>(null);
+  const [tokenInput, setTokenInput] = useState('');
+  const [handleInput, setHandleInput] = useState('');
   const platforms = useQuery({
     queryKey: ['social-platforms'],
     queryFn: () => unwrap(api.GET('/api/social/platforms')),
@@ -211,8 +238,14 @@ export function ConnectionsView() {
     client.invalidateQueries({ queryKey: ['social-connections'] });
     client.invalidateQueries({ queryKey: ['channel-capabilities'] });
   };
+  const openConnectForm = (platform: string) => {
+    setFormFor(platform);
+    setTokenInput('');
+    setHandleInput('');
+    setMessage('');
+  };
   const connect = useMutation({
-    mutationFn: async (platform: string) => {
+    mutationFn: async ({ platform, token, handle }: ConnectCredentials & { platform: string }) => {
       await unwrap(
         api.POST('/api/social/connections/{platform}/connect', {
           params: { path: { platform } },
@@ -222,23 +255,20 @@ export function ConnectionsView() {
       return unwrap(
         api.POST('/api/social/connections/{platform}/callback', {
           params: { path: { platform } },
-          body: {
-            code: `test-code-${platform}`,
-            handle: `@brand-${platform}`,
-            account_name: `Brand ${platform}`,
-            account_type: 'brand',
-            scopes: ['brand_profile', 'brand_capabilities_read'],
-          },
+          body: buildConnectCallbackBody(platform, token, handle),
         }),
       );
     },
-    onMutate: (platform: string) => {
+    onMutate: ({ platform }) => {
       setActive(platform);
       setMessage('');
     },
-    onSuccess: (_data, platform: string) => {
+    onSuccess: (_data, { platform }) => {
       setMessage(`Connected brand account for ${platform}.`);
       setActive(null);
+      setFormFor(null);
+      setTokenInput('');
+      setHandleInput('');
       refresh();
     },
     onError: (error: Error) => {
@@ -284,10 +314,62 @@ export function ConnectionsView() {
         <BrandAccountConnectionsPanel
           platforms={platforms.data as unknown as SocialPlatform[]}
           connections={connections.data as unknown as SocialConnection[]}
-          onConnect={platform => connect.mutate(platform)}
+          onConnect={openConnectForm}
           onDisconnect={platform => disconnect.mutate(platform)}
           pending={active}
         />
+      )}
+      {formFor && (
+        <form
+          aria-label={`Connect ${formFor} brand account`}
+          data-testid="connect-credentials-form"
+          onSubmit={event => {
+            event.preventDefault();
+            connect.mutate({ platform: formFor, token: tokenInput, handle: handleInput });
+          }}
+        >
+          <h3>Connect {formFor} brand account</h3>
+          <p className="hint">
+            Paste the provider token for the brand account and confirm its handle. Only brand
+            accounts are connected by explicit owner action.
+          </p>
+          <label className="hint" htmlFor="connect-token-input">
+            Provider token
+            <input
+              id="connect-token-input"
+              data-testid="connect-token-input"
+              type="password"
+              autoComplete="off"
+              value={tokenInput}
+              onChange={event => setTokenInput(event.target.value)}
+            />
+          </label>
+          <label className="hint" htmlFor="connect-handle-input">
+            Brand account handle
+            <input
+              id="connect-handle-input"
+              data-testid="connect-handle-input"
+              type="text"
+              autoComplete="off"
+              placeholder="@brand-handle"
+              value={handleInput}
+              onChange={event => setHandleInput(event.target.value)}
+            />
+          </label>
+          <div className="queue-actions">
+            <Button
+              type="submit"
+              variant="default"
+              data-testid="connect-submit"
+              disabled={connect.isPending || !tokenInput.trim() || !handleInput.trim()}
+            >
+              {connect.isPending ? 'Connecting...' : 'Complete brand connection'}
+            </Button>
+            <Button type="button" variant="outline" onClick={() => setFormFor(null)}>
+              Cancel
+            </Button>
+          </div>
+        </form>
       )}
     </div>
   );
