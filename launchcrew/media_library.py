@@ -221,6 +221,81 @@ def compute_crop_box(width: int, height: int, target: str) -> dict[str, int]:
     return {"x": 0, "y": offset_y, "width": crop_width, "height": crop_height}
 
 
+def normalize_focal_point(focal_x: Any, focal_y: Any) -> tuple[float, float]:
+    """Validate an owner focal point as relative coordinates in [0, 1].
+
+    (0.5, 0.5) is the frame center and reproduces the default centered
+    crop. Raises ValueError naming the rule.
+    """
+    for name, value in (("focal_x", focal_x), ("focal_y", focal_y)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(name + " must be a number between 0 and 1")
+        if not 0 <= float(value) <= 1:
+            raise ValueError(name + " must be a number between 0 and 1")
+    return (float(focal_x), float(focal_y))
+
+
+def compute_focal_crop_box(width: int, height: int, target: str,
+                           focal_x: float = 0.5,
+                           focal_y: float = 0.5) -> dict[str, int]:
+    """Crop box fitting the target aspect, biased toward the focal point.
+
+    The box keeps the centered size and stays fully inside the frame;
+    only its offset slides toward the owner focal point. The exact
+    center reproduces compute_crop_box. Raises ValueError naming the rule.
+    """
+    focal_x, focal_y = normalize_focal_point(focal_x, focal_y)
+    if focal_x == 0.5 and focal_y == 0.5:
+        return compute_crop_box(width, height, target)
+    box = compute_crop_box(width, height, target)
+    free_x = width - box["width"]
+    free_y = height - box["height"]
+    offset_x = min(free_x, max(0, int(round(free_x * focal_x)))) if free_x else 0
+    offset_y = min(free_y, max(0, int(round(free_y * focal_y)))) if free_y else 0
+    return {"x": offset_x, "y": offset_y,
+            "width": box["width"], "height": box["height"]}
+
+
+def focal_derivative_digest(source_digest: str, derivative_key: str,
+                            focal_x: float, focal_y: float) -> str:
+    """Distinct digest for one focal derivative, bound to its source."""
+    focal_x, focal_y = normalize_focal_point(focal_x, focal_y)
+    material = (str(source_digest) + ":" + str(derivative_key)
+                + ":%.6f,%.6f" % (focal_x, focal_y)).encode("utf-8")
+    return hashlib.sha256(material).hexdigest()
+
+
+def build_focal_derivatives(asset_id: str, width: int, height: int,
+                            source_digest: str, focal_x: float, focal_y: float,
+                            keys: Any = None) -> dict[str, dict[str, Any]]:
+    """Generate focal crop records without touching the original.
+
+    Each record carries its own digest, the focal crop box, the focal
+    point, and a back link to the source asset with original_preserved
+    True. Unknown aspect keys raise ValueError.
+    """
+    focal_x, focal_y = normalize_focal_point(focal_x, focal_y)
+    wanted = list(DERIVATIVE_KEYS) if keys is None else list(keys)
+    derivatives: dict[str, dict[str, Any]] = {}
+    for key in wanted:
+        if _parse_aspect_key(key) is None or key not in DERIVATIVE_KEYS:
+            raise ValueError("Unknown derivative aspect: %s" % (key,))
+        box = compute_focal_crop_box(width, height, key, focal_x, focal_y)
+        derivatives[key] = {
+            "derivative_key": key,
+            "aspect_ratio": key,
+            "width": box["width"],
+            "height": box["height"],
+            "crop_box": dict(box),
+            "focal_point": {"x": focal_x, "y": focal_y},
+            "derived_from_id": asset_id,
+            "original_preserved": True,
+            "sha256_digest": focal_derivative_digest(
+                source_digest, key, focal_x, focal_y),
+        }
+    return derivatives
+
+
 def build_derivatives(asset_id: str, width: int, height: int,
                       source_digest: str) -> dict[str, dict[str, Any]]:
     """Generate every channel-ready crop alongside the original.
@@ -452,9 +527,21 @@ def validate_slot_media(asset: dict[str, Any], slot_type: Any,
             "required_aspect_ratio": required}
 
 
+def focal_point_for(row: dict[str, Any]) -> dict[str, float] | None:
+    """Return the stored owner focal point, or None when centered."""
+    raw_x, raw_y = row.get("focal_x"), row.get("focal_y")
+    if raw_x is None and raw_y is None:
+        return None
+    try:
+        return {"x": float(raw_x), "y": float(raw_y)}
+    except (TypeError, ValueError):
+        return None
+
+
 def media_public_asset(row: dict[str, Any]) -> dict[str, Any]:
     """Public asset shape with format facts and derivatives intact."""
     return {"id": row.get("id"),
+            "focal_point": focal_point_for(row),
             "filename": row.get("filename"),
             "media_type": row.get("media_type"),
             "mime_type": row.get("mime_type"),

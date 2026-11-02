@@ -3740,6 +3740,18 @@
             "title": "Filename",
             "type": "string"
           },
+          "focal_point": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Focal Point"
+          },
           "format_facts": {
             "additionalProperties": true,
             "title": "Format Facts",
@@ -3880,6 +3892,48 @@
           "derivative_key"
         ],
         "title": "MediaDerivativeIn",
+        "type": "object"
+      },
+      "MediaFocalIn": {
+        "additionalProperties": false,
+        "properties": {
+          "derivative_key": {
+            "anyOf": [
+              {
+                "maxLength": 16,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Derivative Key"
+          },
+          "focal_x": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Focal X"
+          },
+          "focal_y": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Focal Y"
+          }
+        },
+        "title": "MediaFocalIn",
         "type": "object"
       },
       "MemoryItemEdit": {
@@ -11034,6 +11088,54 @@
           }
         },
         "summary": "Generate Media Derivative"
+      }
+    },
+    "/api/media/assets/{asset_id}/focal-point": {
+      "post": {
+        "description": "Set the owner focal point and recompute crops without touching the original.",
+        "operationId": "set_media_focal_point_api_media_assets__asset_id__focal_point_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "asset_id",
+            "required": true,
+            "schema": {
+              "title": "Asset Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MediaFocalIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Media Focal Point"
       }
     },
     "/api/memory": {

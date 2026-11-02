@@ -1358,6 +1358,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/media/assets/{asset_id}/focal-point": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Set Media Focal Point
+         * @description Set the owner focal point and recompute crops without touching the original.
+         */
+        post: operations["set_media_focal_point_api_media_assets__asset_id__focal_point_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/memory": {
         parameters: {
             query?: never;
@@ -4038,6 +4058,10 @@ export interface components {
              * @default
              */
             filename: string;
+            /** Focal Point */
+            focal_point?: {
+                [key: string]: unknown;
+            } | null;
             /** Format Facts */
             format_facts?: {
                 [key: string]: unknown;
@@ -4132,6 +4156,15 @@ export interface components {
         MediaDerivativeIn: {
             /** Derivative Key */
             derivative_key: string;
+        };
+        /** MediaFocalIn */
+        MediaFocalIn: {
+            /** Derivative Key */
+            derivative_key?: string | null;
+            /** Focal X */
+            focal_x?: number | null;
+            /** Focal Y */
+            focal_y?: number | null;
         };
         /** MemoryItemEdit */
         MemoryItemEdit: {
@@ -8301,6 +8334,41 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["MediaDerivativeIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_media_focal_point_api_media_assets__asset_id__focal_point_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                asset_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MediaFocalIn"];
             };
         };
         responses: {

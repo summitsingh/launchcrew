@@ -5459,12 +5459,19 @@ class MediaAssetOut(BaseModel):
     duration_seconds: float | None = None
     sha256_digest: str = ''
     derivatives: dict[str, Any] = Field(default_factory=dict)
+    focal_point: dict[str, Any] | None = None
     format_facts: dict[str, Any] = Field(default_factory=dict)
     created_at: Any | None = None
 
 
 class MediaDerivativeIn(Strict):
     derivative_key: str = Field(min_length=1, max_length=16)
+
+
+class MediaFocalIn(Strict):
+    focal_x: float | None = Field(default=None)
+    focal_y: float | None = Field(default=None)
+    derivative_key: str | None = Field(default=None, min_length=1, max_length=16)
 
 
 class SlotMediaAttachIn(Strict):
@@ -5493,7 +5500,8 @@ class SlotMediaOut(BaseModel):
 
 
 _MEDIA_PUBLIC_SELECT = ('id, workspace_id, filename, media_type, mime_type, width, height, '
-                        'aspect_ratio, duration_seconds, sha256_digest, derivatives, created_at')
+                        'aspect_ratio, duration_seconds, sha256_digest, derivatives, focal_x, '
+                        'focal_y, created_at')
 
 _ATTACHMENT_PUBLIC_SELECT = ('id, workspace_id, asset_id, slot_id, run_id, channels, '
                              'channel_derivatives, use_original_without_derivative, '
@@ -5602,6 +5610,54 @@ def get_media_asset(asset_id: str, actor: str = Depends(auth.actor)):
         return _public_media_asset(_load_media_asset(db, asset_id, workspace_id))
 
 
+@app.post('/api/media/assets/{asset_id}/focal-point')
+def set_media_focal_point(asset_id: str, body: MediaFocalIn,
+                          actor: str = Depends(auth.actor)):
+    """Set the owner focal point and recompute crops without touching the original."""
+    from launchcrew import media_library as media_mod
+    try:
+        focal_x, focal_y = media_mod.normalize_focal_point(
+            body.focal_x, body.focal_y)
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    wanted = list(media_mod.DERIVATIVE_KEYS)
+    if body.derivative_key is not None:
+        key = body.derivative_key.strip()
+        if media_mod._parse_aspect_key(key) is None or key not in media_mod.DERIVATIVE_KEYS:
+            raise HTTPException(422, 'derivative_key must be one of 4:5, 1:1, 9:16, 16:9')
+        wanted = [key]
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        stored = _load_media_asset(db, asset_id, workspace_id)
+        before = (stored.get('width'), stored.get('height'),
+                  stored.get('aspect_ratio'), stored.get('sha256_digest'))
+        try:
+            fresh = media_mod.build_focal_derivatives(
+                stored['id'], stored['width'], stored['height'],
+                stored['sha256_digest'], focal_x, focal_y, wanted)
+        except ValueError as error:
+            raise HTTPException(422, str(error))
+        merged = dict(stored.get('derivatives')) if isinstance(stored.get('derivatives'), dict) else {}
+        merged.update(fresh)
+        db.execute(text('UPDATE media_assets SET focal_x=:fx, focal_y=:fy,'
+                        ' derivatives=CAST(:derivatives AS jsonb)'
+                        ' WHERE id=:id AND workspace_id=:ws'),
+                   {'fx': focal_x, 'fy': focal_y,
+                    'derivatives': json.dumps(merged),
+                    'id': stored['id'], 'ws': workspace_id})
+        stored = _load_media_asset(db, asset_id, workspace_id)
+        after = (stored.get('width'), stored.get('height'),
+                 stored.get('aspect_ratio'), stored.get('sha256_digest'))
+        if before != after:
+            raise HTTPException(500, 'Media original must never change when refocusing')
+        recomputed = {key: stored['derivatives'][key] for key in wanted
+                      if isinstance(stored.get('derivatives'), dict)
+                      and isinstance(stored['derivatives'].get(key), dict)}
+        return {'asset_id': stored['id'],
+                'focal_point': {'x': focal_x, 'y': focal_y},
+                'derivatives': recomputed}
+
+
 @app.post('/api/media/assets/{asset_id}/derivatives')
 def generate_media_derivative(asset_id: str, body: MediaDerivativeIn,
                               actor: str = Depends(auth.actor)):
@@ -5617,6 +5673,23 @@ def generate_media_derivative(asset_id: str, body: MediaDerivativeIn,
                   stored.get('aspect_ratio'), stored.get('sha256_digest'))
         derivatives = stored.get('derivatives')
         record = derivatives.get(key) if isinstance(derivatives, dict) else None
+        focal = media_mod.focal_point_for(stored)
+        if (focal is not None
+                and (not isinstance(record, dict)
+                     or record.get('focal_point') != {'x': focal['x'],
+                                                      'y': focal['y']})):
+            fresh = media_mod.build_focal_derivatives(
+                stored['id'], stored['width'], stored['height'],
+                stored['sha256_digest'], focal['x'], focal['y'], [key])
+            record = fresh.get(key)
+            if not isinstance(record, dict):
+                raise HTTPException(422, 'derivative_key must be one of 4:5, 1:1, 9:16, 16:9')
+            merged = dict(derivatives) if isinstance(derivatives, dict) else {}
+            merged[key] = record
+            db.execute(text('UPDATE media_assets SET derivatives=CAST(:derivatives AS jsonb)'
+                            ' WHERE id=:id AND workspace_id=:ws'),
+                       {'derivatives': json.dumps(merged), 'id': stored['id'], 'ws': workspace_id})
+            stored = _load_media_asset(db, asset_id, workspace_id)
         if not isinstance(record, dict):
             fresh = media_mod.build_derivatives(stored['id'], stored['width'],
                                                 stored['height'], stored['sha256_digest'])
