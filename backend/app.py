@@ -2579,6 +2579,203 @@ def delete_fact_variant(variant_id: str, actor: str = Depends(auth.actor)):
     return Response(status_code=204)
 
 
+class OwnerTemplateIn(Strict):
+    name: str = Field(min_length=1, max_length=FACT_LIBRARY_NAME_MAX)
+    idea: str = Field(min_length=1, max_length=2000)
+    agent_name: str = Field(default='Maker', min_length=1, max_length=120)
+    scout_name: str | None = Field(default=None, min_length=1, max_length=120)
+    maker_name: str | None = Field(default=None, min_length=1, max_length=120)
+    checker_name: str | None = Field(default=None, min_length=1, max_length=120)
+    checker_profile: Literal['standard', 'strict'] = Field(default='standard')
+    product_facts: dict[str, Any] | None = None
+
+
+class OwnerTemplateOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    id: str = ''
+    name: str = ''
+    idea: str = ''
+    agent_name: str = 'Maker'
+    scout_name: str | None = None
+    maker_name: str | None = None
+    checker_name: str | None = None
+    checker_profile: str = 'standard'
+    product_facts: dict[str, Any] | None = None
+    run_count: int = 0
+    created_at: Any | None = None
+    updated_at: Any | None = None
+
+
+def _get_owner_template(db, template_id, workspace_id, lock=False):
+    row = db.execute(text('SELECT id, workspace_id, name, idea, agent_name, scout_name,'
+                          ' maker_name, checker_name, checker_profile, product_facts,'
+                          ' created_at, updated_at FROM owner_templates'
+                          ' WHERE id=:id AND workspace_id=:ws' + (' FOR UPDATE' if lock else '')),
+                     {'id': template_id, 'ws': workspace_id}).mappings().first()
+    if row is None:
+        raise HTTPException(404, 'Owner template not found')
+    return dict(row)
+
+
+def _public_owner_template(row):
+    data = dict(row)
+    for name in ('created_at', 'updated_at'):
+        value = data.get(name)
+        if hasattr(value, 'isoformat'):
+            data[name] = value.isoformat()
+    return {'id': data.get('id'), 'name': data.get('name'), 'idea': data.get('idea'),
+            'agent_name': data.get('agent_name') or 'Maker',
+            'scout_name': data.get('scout_name'), 'maker_name': data.get('maker_name'),
+            'checker_name': data.get('checker_name'),
+            'checker_profile': data.get('checker_profile') or 'standard',
+            'product_facts': data.get('product_facts'),
+            'created_at': data.get('created_at'), 'updated_at': data.get('updated_at')}
+
+
+def _validate_owner_template_facts(product_facts):
+    if product_facts is None:
+        return None
+    if not isinstance(product_facts, dict):
+        raise HTTPException(422, 'Template product_facts must be an object')
+    from launchcrew.facts import parse_product_facts
+    try:
+        parse_product_facts(product_facts)
+    except ValueError as error:
+        raise HTTPException(422, 'Template product_facts invalid: ' + str(error))
+    return copy.deepcopy(product_facts)
+
+
+@app.get('/api/owner-templates', response_model=list[OwnerTemplateOut])
+def list_owner_templates(actor: str = Depends(auth.actor)):
+    """List workspace owner templates with creation order."""
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        rows = db.execute(text('SELECT id, workspace_id, name, idea, agent_name, scout_name,'
+                               ' maker_name, checker_name, checker_profile, product_facts,'
+                               ' created_at, updated_at FROM owner_templates'
+                               ' WHERE workspace_id=:ws ORDER BY created_at, id'),
+                          {'ws': workspace_id}).mappings().all()
+        return [_public_owner_template(dict(row)) for row in rows]
+
+
+@app.post('/api/owner-templates', response_model=OwnerTemplateOut, status_code=201)
+def create_owner_template(body: OwnerTemplateIn, actor: str = Depends(auth.actor)):
+    """Save one owner template; duplicate names refuse with 409."""
+    name = _clean_fact_library_name(body.name, 'Template')
+    facts = _validate_owner_template_facts(body.product_facts)
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        existing = db.execute(text('SELECT id FROM owner_templates'
+                                   ' WHERE workspace_id=:ws AND LOWER(name)=LOWER(:name)'),
+                              {'ws': workspace_id, 'name': name}).fetchone()
+        if existing:
+            raise HTTPException(409, 'A template with this name already exists')
+        template_id = 'otmp_' + uuid4().hex
+        db.execute(text('INSERT INTO owner_templates(id, workspace_id, name, idea, agent_name,'
+                        ' scout_name, maker_name, checker_name, checker_profile, product_facts)'
+                        ' VALUES (:id,:ws,:name,:idea,:agent,:scout,:maker,:checker,:profile,'
+                        'CAST(:facts AS jsonb))'),
+                   {'id': template_id, 'ws': workspace_id, 'name': name,
+                    'idea': body.idea.strip(), 'agent': (body.agent_name or 'Maker').strip(),
+                    'scout': body.scout_name, 'maker': body.maker_name,
+                    'checker': body.checker_name, 'profile': body.checker_profile,
+                    'facts': json.dumps(facts) if facts is not None else None})
+        store.audit(db, None, 'owner_template_created', actor, workspace_id)
+        return _public_owner_template(_get_owner_template(db, template_id, workspace_id))
+
+
+@app.get('/api/owner-templates/{template_id}', response_model=OwnerTemplateOut)
+def get_owner_template(template_id: str, actor: str = Depends(auth.actor)):
+    """Return one owner template."""
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        return _public_owner_template(_get_owner_template(db, template_id, workspace_id))
+
+
+@app.put('/api/owner-templates/{template_id}', response_model=OwnerTemplateOut)
+def update_owner_template(template_id: str, body: OwnerTemplateIn,
+                          actor: str = Depends(auth.actor)):
+    """Replace one owner template; duplicate names refuse with 409."""
+    name = _clean_fact_library_name(body.name, 'Template')
+    facts = _validate_owner_template_facts(body.product_facts)
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        _get_owner_template(db, template_id, workspace_id, lock=True)
+        existing = db.execute(text('SELECT id FROM owner_templates'
+                                   ' WHERE workspace_id=:ws AND LOWER(name)=LOWER(:name)'
+                                   ' AND id<>:id'),
+                              {'ws': workspace_id, 'name': name, 'id': template_id}).fetchone()
+        if existing:
+            raise HTTPException(409, 'A template with this name already exists')
+        updated = db.execute(text('UPDATE owner_templates SET name=:name, idea=:idea,'
+                                  ' agent_name=:agent, scout_name=:scout, maker_name=:maker,'
+                                  ' checker_name=:checker, checker_profile=:profile,'
+                                  ' product_facts=CAST(:facts AS jsonb), updated_at=now()'
+                                  ' WHERE id=:id AND workspace_id=:ws'),
+                             {'name': name, 'idea': body.idea.strip(),
+                              'agent': (body.agent_name or 'Maker').strip(),
+                              'scout': body.scout_name, 'maker': body.maker_name,
+                              'checker': body.checker_name, 'profile': body.checker_profile,
+                              'facts': json.dumps(facts) if facts is not None else None,
+                              'id': template_id, 'ws': workspace_id})
+        if updated.rowcount == 0:
+            raise HTTPException(404, 'Owner template not found')
+        store.audit(db, None, 'owner_template_updated', actor, workspace_id)
+        return _public_owner_template(_get_owner_template(db, template_id, workspace_id))
+
+
+@app.delete('/api/owner-templates/{template_id}', status_code=204)
+def delete_owner_template(template_id: str, actor: str = Depends(auth.actor)):
+    """Delete one owner template; runs created from it keep their snapshots."""
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        _get_owner_template(db, template_id, workspace_id, lock=True)
+        result = db.execute(text('DELETE FROM owner_templates WHERE id=:id AND workspace_id=:ws'),
+                            {'id': template_id, 'ws': workspace_id})
+        if result.rowcount == 0:
+            raise HTTPException(404, 'Owner template not found')
+        store.audit(db, None, 'owner_template_deleted', actor, workspace_id)
+    return Response(status_code=204)
+
+
+@app.post('/api/owner-templates/{template_id}/apply', response_model=Receipt, status_code=201)
+def apply_owner_template(template_id: str, actor: str = Depends(auth.actor)):
+    """Create a run from one owner template through the normal pipeline.
+
+    The run binds a snapshot copy of the template facts and the
+    missing-core facts gate applies with no template waiver, so later
+    template edits never rewrite the stored run receipt.
+    """
+    from types import SimpleNamespace
+    from backend import adapter, model_admission
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        template = _get_owner_template(db, template_id, workspace_id)
+        facts_raw = copy.deepcopy(template.get('product_facts')) \
+            if isinstance(template.get('product_facts'), dict) else None
+        _enforce_missing_core_gate(facts_raw, False)
+        body = SimpleNamespace(agent_name=template.get('agent_name') or 'Maker',
+                               scout_name=template.get('scout_name'),
+                               maker_name=template.get('maker_name'),
+                               checker_name=template.get('checker_name'))
+        legacy, scout, maker, checker = load_stage_profiles(db, body, workspace_id)
+        _, maker_name, _ = stage_names(body)
+    run_id = 'run_' + uuid4().hex
+    factory = model_admission.admission_factory_for_run(store.engine(), run_id)
+    receipt = adapter.execute(
+        run_id, template['idea'], legacy, False, memory_items=[],
+        checker_profile=template.get('checker_profile') or 'standard',
+        scout_profile=scout, maker_profile=maker, checker_agent=checker,
+        product_facts=facts_raw, model_admission_factory=factory,
+        fact_library=None)
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        _mark_sync_voice_stale_if_changed(db, receipt, workspace_id, actor, lock=True, selection=None)
+        save_run(db, receipt, maker_name, actor, workspace_id)
+        store.audit(db, run_id, 'owner_template_applied', actor, workspace_id)
+    return receipt
+
+
 class RunDiff(Strict):
     run_a_id: str
     run_b_id: str

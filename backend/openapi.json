@@ -4368,6 +4368,196 @@
         "title": "OutcomeOut",
         "type": "object"
       },
+      "OwnerTemplateIn": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_name": {
+            "default": "Maker",
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Agent Name",
+            "type": "string"
+          },
+          "checker_name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checker Name"
+          },
+          "checker_profile": {
+            "default": "standard",
+            "enum": [
+              "standard",
+              "strict"
+            ],
+            "title": "Checker Profile",
+            "type": "string"
+          },
+          "idea": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Idea",
+            "type": "string"
+          },
+          "maker_name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maker Name"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "product_facts": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Product Facts"
+          },
+          "scout_name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scout Name"
+          }
+        },
+        "required": [
+          "name",
+          "idea"
+        ],
+        "title": "OwnerTemplateIn",
+        "type": "object"
+      },
+      "OwnerTemplateOut": {
+        "additionalProperties": true,
+        "properties": {
+          "agent_name": {
+            "default": "Maker",
+            "title": "Agent Name",
+            "type": "string"
+          },
+          "checker_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checker Name"
+          },
+          "checker_profile": {
+            "default": "standard",
+            "title": "Checker Profile",
+            "type": "string"
+          },
+          "created_at": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "id": {
+            "default": "",
+            "title": "Id",
+            "type": "string"
+          },
+          "idea": {
+            "default": "",
+            "title": "Idea",
+            "type": "string"
+          },
+          "maker_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Maker Name"
+          },
+          "name": {
+            "default": "",
+            "title": "Name",
+            "type": "string"
+          },
+          "product_facts": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Product Facts"
+          },
+          "run_count": {
+            "default": 0,
+            "title": "Run Count",
+            "type": "integer"
+          },
+          "scout_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scout Name"
+          },
+          "updated_at": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "title": "OwnerTemplateOut",
+        "type": "object"
+      },
       "PhotoCheckIn": {
         "additionalProperties": false,
         "properties": {
@@ -11377,6 +11567,225 @@
           }
         },
         "summary": "Model Capabilities"
+      }
+    },
+    "/api/owner-templates": {
+      "get": {
+        "description": "List workspace owner templates with creation order.",
+        "operationId": "list_owner_templates_api_owner_templates_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/OwnerTemplateOut"
+                  },
+                  "title": "Response List Owner Templates Api Owner Templates Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Owner Templates"
+      },
+      "post": {
+        "description": "Save one owner template; duplicate names refuse with 409.",
+        "operationId": "create_owner_template_api_owner_templates_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OwnerTemplateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerTemplateOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Owner Template"
+      }
+    },
+    "/api/owner-templates/{template_id}": {
+      "delete": {
+        "description": "Delete one owner template; runs created from it keep their snapshots.",
+        "operationId": "delete_owner_template_api_owner_templates__template_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "template_id",
+            "required": true,
+            "schema": {
+              "title": "Template Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Owner Template"
+      },
+      "get": {
+        "description": "Return one owner template.",
+        "operationId": "get_owner_template_api_owner_templates__template_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "template_id",
+            "required": true,
+            "schema": {
+              "title": "Template Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerTemplateOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Owner Template"
+      },
+      "put": {
+        "description": "Replace one owner template; duplicate names refuse with 409.",
+        "operationId": "update_owner_template_api_owner_templates__template_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "template_id",
+            "required": true,
+            "schema": {
+              "title": "Template Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OwnerTemplateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerTemplateOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Owner Template"
+      }
+    },
+    "/api/owner-templates/{template_id}/apply": {
+      "post": {
+        "description": "Create a run from one owner template through the normal pipeline.\n\nThe run binds a snapshot copy of the template facts and the\nmissing-core facts gate applies with no template waiver, so later\ntemplate edits never rewrite the stored run receipt.",
+        "operationId": "apply_owner_template_api_owner_templates__template_id__apply_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "template_id",
+            "required": true,
+            "schema": {
+              "title": "Template Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Receipt"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Apply Owner Template"
       }
     },
     "/api/publish/execute-due": {

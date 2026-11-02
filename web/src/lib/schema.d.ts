@@ -1449,6 +1449,82 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/owner-templates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Owner Templates
+         * @description List workspace owner templates with creation order.
+         */
+        get: operations["list_owner_templates_api_owner_templates_get"];
+        put?: never;
+        /**
+         * Create Owner Template
+         * @description Save one owner template; duplicate names refuse with 409.
+         */
+        post: operations["create_owner_template_api_owner_templates_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/owner-templates/{template_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Owner Template
+         * @description Return one owner template.
+         */
+        get: operations["get_owner_template_api_owner_templates__template_id__get"];
+        /**
+         * Update Owner Template
+         * @description Replace one owner template; duplicate names refuse with 409.
+         */
+        put: operations["update_owner_template_api_owner_templates__template_id__put"];
+        post?: never;
+        /**
+         * Delete Owner Template
+         * @description Delete one owner template; runs created from it keep their snapshots.
+         */
+        delete: operations["delete_owner_template_api_owner_templates__template_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/owner-templates/{template_id}/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apply Owner Template
+         * @description Create a run from one owner template through the normal pipeline.
+         *
+         *     The run binds a snapshot copy of the template facts and the
+         *     missing-core facts gate applies with no template waiver, so later
+         *     template edits never rewrite the stored run receipt.
+         */
+        post: operations["apply_owner_template_api_owner_templates__template_id__apply_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/publish/execute-due": {
         parameters: {
             query?: never;
@@ -4393,6 +4469,83 @@ export interface components {
             run_id: string;
             /** Sales */
             sales: number;
+        };
+        /** OwnerTemplateIn */
+        OwnerTemplateIn: {
+            /**
+             * Agent Name
+             * @default Maker
+             */
+            agent_name: string;
+            /** Checker Name */
+            checker_name?: string | null;
+            /**
+             * Checker Profile
+             * @default standard
+             * @enum {string}
+             */
+            checker_profile: "standard" | "strict";
+            /** Idea */
+            idea: string;
+            /** Maker Name */
+            maker_name?: string | null;
+            /** Name */
+            name: string;
+            /** Product Facts */
+            product_facts?: {
+                [key: string]: unknown;
+            } | null;
+            /** Scout Name */
+            scout_name?: string | null;
+        };
+        /** OwnerTemplateOut */
+        OwnerTemplateOut: {
+            /**
+             * Agent Name
+             * @default Maker
+             */
+            agent_name: string;
+            /** Checker Name */
+            checker_name?: string | null;
+            /**
+             * Checker Profile
+             * @default standard
+             */
+            checker_profile: string;
+            /** Created At */
+            created_at?: unknown | null;
+            /**
+             * Id
+             * @default
+             */
+            id: string;
+            /**
+             * Idea
+             * @default
+             */
+            idea: string;
+            /** Maker Name */
+            maker_name?: string | null;
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+            /** Product Facts */
+            product_facts?: {
+                [key: string]: unknown;
+            } | null;
+            /**
+             * Run Count
+             * @default 0
+             */
+            run_count: number;
+            /** Scout Name */
+            scout_name?: string | null;
+            /** Updated At */
+            updated_at?: unknown | null;
+        } & {
+            [key: string]: unknown;
         };
         /** PhotoCheckIn */
         PhotoCheckIn: {
@@ -8591,6 +8744,185 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ModelCapabilities"];
+                };
+            };
+        };
+    };
+    list_owner_templates_api_owner_templates_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OwnerTemplateOut"][];
+                };
+            };
+        };
+    };
+    create_owner_template_api_owner_templates_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OwnerTemplateIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OwnerTemplateOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_owner_template_api_owner_templates__template_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                template_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OwnerTemplateOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_owner_template_api_owner_templates__template_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                template_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OwnerTemplateIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OwnerTemplateOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_owner_template_api_owner_templates__template_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                template_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    apply_owner_template_api_owner_templates__template_id__apply_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                template_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Receipt"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
