@@ -29,7 +29,7 @@ class FargateSamTests(unittest.TestCase):
         container_start = api_block.index("- Name: api")
         container_block = api_block[container_start:]
         env_start = container_block.index("Environment:")
-        secrets_start = container_block.index("Secrets: !If")
+        secrets_start = container_block.index("Secrets:")
         env_block = container_block[env_start:secrets_start]
         self.assertIn(
             "{ Name: LAUNCHCREW_PHOTO_SAM_ENABLED, Value: 'true' }",

@@ -27,6 +27,7 @@ RUN echo "$RDS_CA_SHA256  /app/rds-ca-bundle.pem" | sha256sum -c - \
  && chmod 644 /app/rds-ca-bundle.pem
 COPY launchcrew ./launchcrew
 COPY backend ./backend
+COPY scripts/verify_live_auth.py ./scripts/verify_live_auth.py
 COPY agents ./agents
 COPY agent_presets ./agent_presets
 COPY facts ./facts

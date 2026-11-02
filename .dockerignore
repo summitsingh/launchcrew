@@ -12,6 +12,7 @@ runs
 !runs/.gitkeep
 *
 !Dockerfile
+!scripts/verify_live_auth.py
 !launchcrew/
 !launchcrew/**
 !agents/
