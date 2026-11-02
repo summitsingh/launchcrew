@@ -3407,6 +3407,141 @@
         "title": "ImageCharacterOut",
         "type": "object"
       },
+      "ImageGenerateIn": {
+        "additionalProperties": false,
+        "properties": {
+          "aspect": {
+            "default": "1:1",
+            "enum": [
+              "4:5",
+              "1:1",
+              "9:16",
+              "16:9"
+            ],
+            "title": "Aspect",
+            "type": "string"
+          },
+          "character_id": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Character Id"
+          },
+          "count": {
+            "default": 1,
+            "maximum": 2.0,
+            "minimum": 1.0,
+            "title": "Count",
+            "type": "integer"
+          },
+          "product_context": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Product Context",
+            "type": "string"
+          },
+          "provider": {
+            "maxLength": 16,
+            "minLength": 1,
+            "title": "Provider",
+            "type": "string"
+          },
+          "scene": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Scene",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "scene"
+        ],
+        "title": "ImageGenerateIn",
+        "type": "object"
+      },
+      "ImageGenerateOut": {
+        "additionalProperties": true,
+        "properties": {
+          "aspect": {
+            "default": "1:1",
+            "title": "Aspect",
+            "type": "string"
+          },
+          "asset_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Asset Ids",
+            "type": "array"
+          },
+          "character_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Character Id"
+          },
+          "character_snapshot": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Character Snapshot"
+          },
+          "count": {
+            "default": 1,
+            "title": "Count",
+            "type": "integer"
+          },
+          "created_at": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "id": {
+            "default": "",
+            "title": "Id",
+            "type": "string"
+          },
+          "model": {
+            "default": "",
+            "title": "Model",
+            "type": "string"
+          },
+          "prompt": {
+            "default": "",
+            "title": "Prompt",
+            "type": "string"
+          },
+          "provider": {
+            "default": "",
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "title": "ImageGenerateOut",
+        "type": "object"
+      },
       "ImportSuggestionItem": {
         "additionalProperties": false,
         "properties": {
@@ -11763,6 +11898,66 @@
           }
         },
         "summary": "Update Image Character"
+      }
+    },
+    "/api/image-generations": {
+      "get": {
+        "description": "List workspace image generation jobs with newest last.",
+        "operationId": "list_image_generations_api_image_generations_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ImageGenerateOut"
+                  },
+                  "title": "Response List Image Generations Api Image Generations Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Image Generations"
+      },
+      "post": {
+        "description": "Generate product images with one provider and store them as assets.\n\nBuilds the shoot prompt from the optional character plus scene,\ncalls the provider once, and stores every returned image as a media\nlibrary asset with channel-ready derivatives. Refusals: 422 for bad\ninput, 404 for a missing character, 503 when the provider key is\nnot configured, 422 when the provider refuses. Failed calls store\nnothing. Provider billing happens on the owner's provider account.",
+        "operationId": "generate_image_api_image_generations_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImageGenerateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImageGenerateOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Generate Image"
       }
     },
     "/api/import-suggestions": {

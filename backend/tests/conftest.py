@@ -33,7 +33,7 @@ def test_engine():
 def client(test_engine, monkeypatch):
     monkeypatch.setenv('AUTH_ENABLED', 'false')
     with test_engine.begin() as connection:
-        connection.execute(text('TRUNCATE fact_variants, fact_products, memory_items, campaign_days, campaigns, agents, runs, memory, calendar_slots, media_attachments, media_assets, viral_generations, viral_generation_credits, approvals, audit, auth_sessions, auth_live_verifications, sam_calls, social_connections, publish_executions, publish_executor_settings, workspace_api_keys, owner_templates, engagement_items, image_characters RESTART IDENTITY CASCADE'))
+        connection.execute(text('TRUNCATE fact_variants, fact_products, memory_items, campaign_days, campaigns, agents, runs, memory, calendar_slots, media_attachments, media_assets, viral_generations, viral_generation_credits, approvals, audit, auth_sessions, auth_live_verifications, sam_calls, social_connections, publish_executions, publish_executor_settings, workspace_api_keys, owner_templates, engagement_items, image_characters, image_generations RESTART IDENTITY CASCADE'))
         connection.execute(text("UPDATE sam_budget SET remaining_images=0 WHERE id='global'"))
     with TestClient(app, base_url='https://testserver') as client:
         yield client

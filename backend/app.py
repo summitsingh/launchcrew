@@ -3141,6 +3141,141 @@ def delete_image_character(character_id: str, actor: str = Depends(auth.actor)):
     return Response(status_code=204)
 
 
+class ImageGenerateIn(Strict):
+    provider: str = Field(min_length=1, max_length=16)
+    character_id: str | None = Field(default=None, min_length=1, max_length=200)
+    scene: str = Field(min_length=1, max_length=2000)
+    product_context: str = Field(default='', max_length=2000)
+    aspect: Literal['4:5', '1:1', '9:16', '16:9'] = Field(default='1:1')
+    count: int = Field(default=1, ge=1, le=2)
+
+
+class ImageGenerateOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    id: str = ''
+    provider: str = ''
+    model: str = ''
+    aspect: str = '1:1'
+    count: int = 1
+    prompt: str = ''
+    character_id: str | None = None
+    character_snapshot: str | None = None
+    asset_ids: list[str] = Field(default_factory=list)
+    created_at: Any | None = None
+
+
+_IMAGE_GENERATION_PUBLIC_SELECT = ('id, workspace_id, provider, model, character_id,'
+                                   ' character_snapshot, prompt, aspect, count, asset_ids,'
+                                   ' created_at')
+
+
+def _public_image_generation(row):
+    data = dict(row)
+    created = data.get('created_at')
+    if hasattr(created, 'isoformat'):
+        data['created_at'] = created.isoformat()
+    return {'id': data.get('id'), 'provider': data.get('provider'),
+            'model': data.get('model'), 'aspect': data.get('aspect'),
+            'count': int(data.get('count') or 0), 'prompt': data.get('prompt'),
+            'character_id': data.get('character_id'),
+            'character_snapshot': data.get('character_snapshot'),
+            'asset_ids': list(data.get('asset_ids') or []),
+            'created_at': data.get('created_at')}
+
+
+@app.get('/api/image-generations', response_model=list[ImageGenerateOut])
+def list_image_generations(actor: str = Depends(auth.actor)):
+    """List workspace image generation jobs with newest last."""
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        rows = db.execute(text('SELECT ' + _IMAGE_GENERATION_PUBLIC_SELECT
+                               + ' FROM image_generations WHERE workspace_id=:ws'
+                               ' ORDER BY created_at, id'),
+                          {'ws': workspace_id}).mappings().all()
+        return [_public_image_generation(dict(row)) for row in rows]
+
+
+@app.post('/api/image-generations', response_model=ImageGenerateOut, status_code=201)
+def generate_image(body: ImageGenerateIn, actor: str = Depends(auth.actor)):
+    """Generate product images with one provider and store them as assets.
+
+    Builds the shoot prompt from the optional character plus scene,
+    calls the provider once, and stores every returned image as a media
+    library asset with channel-ready derivatives. Refusals: 422 for bad
+    input, 404 for a missing character, 503 when the provider key is
+    not configured, 422 when the provider refuses. Failed calls store
+    nothing. Provider billing happens on the owner's provider account.
+    """
+    import os
+    from launchcrew import image_adapters as adapters_mod
+    from launchcrew import image_generation as image_mod
+    from launchcrew import media_library as media_mod
+    try:
+        provider = image_mod.normalize_provider(body.provider)
+        scene = image_mod.normalize_scene(body.scene)
+        count = adapters_mod.validate_count(body.count)
+    except (ValueError, adapters_mod.ImageProviderError) as error:
+        raise HTTPException(422, str(error))
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        appearance = 'product only, no model'
+        character_name = None
+        if body.character_id is not None:
+            character = _get_image_character(db, body.character_id, workspace_id)
+            appearance = character['appearance']
+            character_name = character['name']
+        prompt = image_mod.build_shoot_prompt(
+            appearance, scene,
+            body.product_context if isinstance(body.product_context, str) else '')
+        key = os.environ.get(adapters_mod.KEY_NAMES[provider], '').strip()
+        if not key:
+            raise HTTPException(503, 'Image provider %s key not configured: set %s'
+                                % (provider, adapters_mod.KEY_NAMES[provider]))
+        try:
+            images = adapters_mod.generate(provider, prompt, body.aspect, count, key)
+        except adapters_mod.ImageProviderError as error:
+            store.audit(db, None, 'image_generation_failed', actor, workspace_id)
+            raise HTTPException(422, str(error))
+        asset_ids = []
+        for index, b64 in enumerate(images):
+            filename = 'ai_%s_%s_%d.png' % (provider, uuid4().hex[:8], index)
+            try:
+                validated = media_mod.validate_upload(filename, 'image/png', None,
+                                                      None, None, b64)
+            except ValueError as error:
+                raise HTTPException(422, 'Provider returned undecodable image bytes')
+            asset_id = 'media_' + uuid4().hex
+            stored = media_mod.build_asset(asset_id, validated, b64)
+            db.execute(text('INSERT INTO media_assets(id, workspace_id, filename, media_type, mime_type,'
+                            ' width, height, aspect_ratio, duration_seconds, sha256_digest,'
+                            ' original_data_b64, derivatives)'
+                            ' VALUES (:id,:ws,:filename,:media_type,:mime,:width,:height,'
+                            ':aspect,:duration,:digest,:data,CAST(:derivatives AS jsonb))'),
+                       {'id': asset_id, 'ws': workspace_id, 'filename': stored['filename'],
+                        'media_type': stored['media_type'], 'mime': stored['mime_type'],
+                        'width': stored['width'], 'height': stored['height'],
+                        'aspect': stored['aspect_ratio'], 'duration': stored['duration_seconds'],
+                        'digest': stored['sha256_digest'], 'data': stored['original_data_b64'],
+                        'derivatives': json.dumps(stored['derivatives'])})
+            store.audit(db, None, 'media_asset_uploaded', actor, workspace_id)
+            asset_ids.append(asset_id)
+        job_id = 'img_' + uuid4().hex
+        db.execute(text('INSERT INTO image_generations(id, workspace_id, provider, model,'
+                        ' character_id, character_snapshot, prompt, aspect, count, asset_ids)'
+                        ' VALUES (:id,:ws,:provider,:model,:character,:snapshot,:prompt,'
+                        ':aspect,:count,CAST(:assets AS jsonb))'),
+                   {'id': job_id, 'ws': workspace_id, 'provider': provider,
+                    'model': adapters_mod.PROVIDER_MODELS[provider],
+                    'character': body.character_id, 'snapshot': character_name,
+                    'prompt': prompt, 'aspect': body.aspect, 'count': count,
+                    'assets': json.dumps(asset_ids)})
+        store.audit(db, None, 'image_generated', actor, workspace_id)
+        row = db.execute(text('SELECT ' + _IMAGE_GENERATION_PUBLIC_SELECT
+                              + ' FROM image_generations WHERE id=:id AND workspace_id=:ws'),
+                         {'id': job_id, 'ws': workspace_id}).mappings().first()
+        return _public_image_generation(dict(row))
+
+
 class RunDiff(Strict):
     run_a_id: str
     run_b_id: str

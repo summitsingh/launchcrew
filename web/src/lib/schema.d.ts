@@ -1395,6 +1395,37 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/image-generations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Image Generations
+         * @description List workspace image generation jobs with newest last.
+         */
+        get: operations["list_image_generations_api_image_generations_get"];
+        put?: never;
+        /**
+         * Generate Image
+         * @description Generate product images with one provider and store them as assets.
+         *
+         *     Builds the shoot prompt from the optional character plus scene,
+         *     calls the provider once, and stores every returned image as a media
+         *     library asset with channel-ready derivatives. Refusals: 422 for bad
+         *     input, 404 for a missing character, 503 when the provider key is
+         *     not configured, 422 when the provider refuses. Failed calls store
+         *     nothing. Provider billing happens on the owner's provider account.
+         */
+        post: operations["generate_image_api_image_generations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/import-suggestions": {
         parameters: {
             query?: never;
@@ -4172,6 +4203,74 @@ export interface components {
             style_notes?: string | null;
             /** Updated At */
             updated_at?: unknown | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** ImageGenerateIn */
+        ImageGenerateIn: {
+            /**
+             * Aspect
+             * @default 1:1
+             * @enum {string}
+             */
+            aspect: "4:5" | "1:1" | "9:16" | "16:9";
+            /** Character Id */
+            character_id?: string | null;
+            /**
+             * Count
+             * @default 1
+             */
+            count: number;
+            /**
+             * Product Context
+             * @default
+             */
+            product_context: string;
+            /** Provider */
+            provider: string;
+            /** Scene */
+            scene: string;
+        };
+        /** ImageGenerateOut */
+        ImageGenerateOut: {
+            /**
+             * Aspect
+             * @default 1:1
+             */
+            aspect: string;
+            /** Asset Ids */
+            asset_ids?: string[];
+            /** Character Id */
+            character_id?: string | null;
+            /** Character Snapshot */
+            character_snapshot?: string | null;
+            /**
+             * Count
+             * @default 1
+             */
+            count: number;
+            /** Created At */
+            created_at?: unknown | null;
+            /**
+             * Id
+             * @default
+             */
+            id: string;
+            /**
+             * Model
+             * @default
+             */
+            model: string;
+            /**
+             * Prompt
+             * @default
+             */
+            prompt: string;
+            /**
+             * Provider
+             * @default
+             */
+            provider: string;
         } & {
             [key: string]: unknown;
         };
@@ -9013,6 +9112,59 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_image_generations_api_image_generations_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImageGenerateOut"][];
+                };
+            };
+        };
+    };
+    generate_image_api_image_generations_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImageGenerateIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImageGenerateOut"];
+                };
             };
             /** @description Validation Error */
             422: {
