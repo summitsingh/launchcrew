@@ -7805,7 +7805,32 @@ attest_aged_init_recovery() {
   fi
   RECOVERY_EXPECT_EXEC="$(printf '%s' "$RECOVERY_EXPECT_EXEC" | tr -d '[:space:]')"
   RECOVERY_EXPECT_TASK_ROLE="$(printf '%s' "$RECOVERY_EXPECT_TASK_ROLE" | tr -d '[:space:]')"
-  RECOVERY_ORIG_OP="$(python3 - "$RECOVERY_ORIG_DEF_JSON" "$RECOVERY_EXPECT_EXEC" "$RECOVERY_EXPECT_TASK_ROLE" "${BOOTSTRAP_IMAGE:-}" 2>/dev/null <<'PYEOF'
+  RECOVERY_EXPECT_IMAGE="${BOOTSTRAP_IMAGE:-}"
+  RECOVERY_ACTUAL_IMAGE="$(python3 - "$RECOVERY_ORIG_DEF_JSON" 2>/dev/null <<'PYEOF'
+import json, sys
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+taskdef = doc.get("taskDefinition", doc)
+for container in taskdef.get("containerDefinitions", []) or []:
+    if (container.get("name", "") or "") == "sdk-init" and container.get("essential", True):
+        print(container.get("image", "") or "MISSING_IMAGE")
+        sys.exit(0)
+print("MISSING_CONTAINER")
+PYEOF
+)" || RECOVERY_ACTUAL_IMAGE="UNREADABLE"
+  RECOVERY_ACTUAL_IMAGE="$(printf '%s' "$RECOVERY_ACTUAL_IMAGE" | tr -d '[:space:]')"
+  if [ -n "$RECOVERY_ACTUAL_IMAGE" ] && [ "$RECOVERY_ACTUAL_IMAGE" != "MISSING_CONTAINER" ] && [ "$RECOVERY_ACTUAL_IMAGE" != "MISSING_IMAGE" ] && [ "$RECOVERY_ACTUAL_IMAGE" != "UNREADABLE" ] && [ "$RECOVERY_ACTUAL_IMAGE" != "None" ] && [ "$RECOVERY_ACTUAL_IMAGE" != "$RECOVERY_EXPECT_IMAGE" ]; then
+    if ! verify_historical_image "$RECOVERY_ACTUAL_IMAGE" "launchcrew-bootstrap" "sdk-init-recovery"; then
+      rm -f "$RECOVERY_ORIG_DEF_JSON"
+      echo "refused: original init operation proof is TASKDEF_OPERATION_MISMATCH:IMAGE, no recovery claimed. Inspect $RECOVERY_ORIG_PATH." >&2
+      phase_failed "$RECOVERY_FAIL_PHASE"
+    fi
+    echo "Verified original sdk-init historical image differs from current CLI but is owned self-bound with digest, operation proof continues."
+    RECOVERY_EXPECT_IMAGE="$RECOVERY_ACTUAL_IMAGE"
+  fi
+  RECOVERY_ORIG_OP="$(python3 - "$RECOVERY_ORIG_DEF_JSON" "$RECOVERY_EXPECT_EXEC" "$RECOVERY_EXPECT_TASK_ROLE" "$RECOVERY_EXPECT_IMAGE" 2>/dev/null <<'PYEOF'
 import json, sys
 doc_file, want_exec, want_task, want_image = sys.argv[1:5]
 try:

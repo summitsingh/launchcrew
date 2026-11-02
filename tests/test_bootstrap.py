@@ -1412,7 +1412,15 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-task""-definition" ]; then
       printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/MigrationExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/MigrationTaskRole%s","containerDefinitions":[{"name":"migration","essential":true,"image":"%s"%s%s,"secrets":[{"name":"DATABASE_URL","valueFrom":"%s:database-url::"}%s]}%s]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_MIG" "$TAMPER_CMD_JSON" "$TAMPER_EP_JSON" "$SEC_MG" "$EXTRA_SECRET_JSON" "$EXTRA_CONTAINER_JSON"
       exit 0 ;;
     *launchcrew-demo-bootstrap*)
-      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/BootstrapExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/BootstrapTaskRole%s","containerDefinitions":[{"name":"bootstrap-db-roles","essential":true,"image":"%s"%s%s,"secrets":[{"name":"MASTER_DB_PASSWORD","valueFrom":"%s:password::"},{"name":"RUNTIME_DB_URL","valueFrom":"%s:database-url::"},{"name":"MIGRATION_DB_URL","valueFrom":"%s:database-url::"}%s]}%s]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$ORIG_BOOT_IMG" "$TAMPER_CMD_JSON" "$TAMPER_EP_JSON" "$SEC_MASTER" "$SEC_RT" "$SEC_MG" "$EXTRA_SECRET_JSON" "$EXTRA_CONTAINER_JSON"
+      CUR_BOOT_IMG="$ORIG_BOOT_IMG"
+      if [ "${FAKE_SDKINIT_AGED_IMAGE:-0}" = "1" ]; then
+        BOOT_MARK="${FAKE_COUNT_FILE}.bootstrap-aged"
+        if [ ! -f "$BOOT_MARK" ]; then
+          : >"$BOOT_MARK"
+          CUR_BOOT_IMG="$IMG_BOOT"
+        fi
+      fi
+      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/BootstrapExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/BootstrapTaskRole%s","containerDefinitions":[{"name":"bootstrap-db-roles","essential":true,"image":"%s"%s%s,"secrets":[{"name":"MASTER_DB_PASSWORD","valueFrom":"%s:password::"},{"name":"RUNTIME_DB_URL","valueFrom":"%s:database-url::"},{"name":"MIGRATION_DB_URL","valueFrom":"%s:database-url::"}%s]}%s]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$CUR_BOOT_IMG" "$TAMPER_CMD_JSON" "$TAMPER_EP_JSON" "$SEC_MASTER" "$SEC_RT" "$SEC_MG" "$EXTRA_SECRET_JSON" "$EXTRA_CONTAINER_JSON"
       exit 0 ;;
     *launchcrew-demo-verify*)
       printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/VerifyExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/VerifyTaskRole%s","containerDefinitions":[{"name":"bootstrap-db-roles","essential":true,"command":["--verify"],"image":"%s","secrets":[{"name":"RUNTIME_DB_URL","valueFrom":"%s:database-url::"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_BOOT" "$SEC_RT"
@@ -1420,7 +1428,16 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-task""-definition" ]; then
     *launchcrew-demo-sdkinit*)
       SDK_CERT="${FAKE_CERT_ARN:-}"
       SDK_HOST="${FAKE_DB_HOST:-}"
-      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/SdkInitExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/SdkInitTaskRole%s","containerDefinitions":[{"name":"sdk-init","essential":true,"image":"%s","entryPoint":["/opt/venv/bin/python","/app/scripts/populate_prereqs.py"],"command":["--populate"],"environment":[{"name":"LAUNCHCREW_EXPECTED_ACCOUNT","value":"111122223333"},{"name":"LAUNCHCREW_EXPECTED_REGION","value":"us-east-1"},{"name":"LAUNCHCREW_EXPECTED_ROLE","value":"SdkInitTaskRole-physical"},{"name":"LAUNCHCREW_MASTER_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_RUNTIME_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_MIGRATION_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_TLS_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_CERT_ARN","value":"%s"},{"name":"LAUNCHCREW_DB_HOST","value":"%s"},{"name":"LAUNCHCREW_DB_TLS_MODE","value":"verify-full"},{"name":"DATABASE_SSL_ROOTCERT","value":"/app/rds-ca-bundle.pem"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_BOOT" "$SEC_MASTER" "$SEC_RT" "$SEC_MG" "$SEC_TLS" "$SDK_CERT" "$SDK_HOST"
+      SDK_IMG="$IMG_BOOT"
+      if [ "${FAKE_SDKINIT_AGED_IMAGE:-0}" = "1" ]; then
+        SDKINIT_MARK="${FAKE_COUNT_FILE}.sdkinit-aged"
+        if [ -f "$SDKINIT_MARK" ]; then
+          SDK_IMG="$ORIG_BOOT_IMG"
+        else
+          : >"$SDKINIT_MARK"
+        fi
+      fi
+      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/SdkInitExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/SdkInitTaskRole%s","containerDefinitions":[{"name":"sdk-init","essential":true,"image":"%s","entryPoint":["/opt/venv/bin/python","/app/scripts/populate_prereqs.py"],"command":["--populate"],"environment":[{"name":"LAUNCHCREW_EXPECTED_ACCOUNT","value":"111122223333"},{"name":"LAUNCHCREW_EXPECTED_REGION","value":"us-east-1"},{"name":"LAUNCHCREW_EXPECTED_ROLE","value":"SdkInitTaskRole-physical"},{"name":"LAUNCHCREW_MASTER_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_RUNTIME_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_MIGRATION_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_TLS_SECRET_ARN","value":"%s"},{"name":"LAUNCHCREW_CERT_ARN","value":"%s"},{"name":"LAUNCHCREW_DB_HOST","value":"%s"},{"name":"LAUNCHCREW_DB_TLS_MODE","value":"verify-full"},{"name":"DATABASE_SSL_ROOTCERT","value":"/app/rds-ca-bundle.pem"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$SDK_IMG" "$SEC_MASTER" "$SEC_RT" "$SEC_MG" "$SEC_TLS" "$SDK_CERT" "$SDK_HOST"
       exit 0 ;;
     *launchcrew-demo-sdkmaterial*)
       SDK_CERT="${FAKE_CERT_ARN:-}"
@@ -5622,6 +5639,48 @@ class InitRecoveryTests(BootstrapHarness):
             self.assertEqual(after, before)
             self.assertEqual(
                 _hashlib.sha256(after).hexdigest(), before_hash)
+
+    def test_init_recovery_self_binds_full_sha_orig_image(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            old_sha_tag = image("launchcrew-bootstrap",
+                                "66ec9ea9b1b2436b87f231381f10119e94af8357")
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_ORIG_BOOTSTRAP_IMAGE": old_sha_tag,
+                           "FAKE_SDKINIT_AGED_IMAGE": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            combined = result.stdout + result.stderr
+            self.assertIn("self-bound", combined)
+            self.assertIn("operation proof continues", combined)
+            self.assertEqual(prior.read_bytes(), before)
+            runs = [c for c in calls if "run-task" in c]
+            self.assertTrue(any("launchcrew-demo-sdkmaterial" in c for c in runs))
+
+    def test_init_recovery_short_tag_orig_refuses(self):
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            before = prior.read_bytes()
+            old_short = image("launchcrew-bootstrap", "old006")
+            result, calls = self.run_bootstrap(
+                self.init_args(),
+                extra_env={"FAKE_AGED_INIT": "1",
+                           "FAKE_ORIG_BOOTSTRAP_IMAGE": old_short,
+                           "FAKE_SDKINIT_AGED_IMAGE": "1"},
+                shared_dir=shared_tmp)
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertIn("TASKDEF_OPERATION_MISMATCH:IMAGE", combined)
+            self.assertEqual(prior.read_bytes(), before)
+            self.assertFalse(any("run-task" in c for c in calls))
 
     def test_pending_prior_refuses_with_no_verifier(self):
         with tempfile.TemporaryDirectory() as shared_tmp:
