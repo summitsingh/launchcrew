@@ -877,9 +877,10 @@ export interface paths {
          * @description Return the per-channel capabilities table (account_capabilities pattern, as data).
          *
          *     When the workspace has a connected brand account for a channel, the
-         *     fetched live account row overrides the baseline S2 row with source
-         *     live_account_capabilities and the connected handle. Otherwise the
-         *     baseline S2 row is returned with source baseline.
+         *     stored account row overrides the baseline S2 row with source
+         *     static_baseline and the connected handle. Capabilities are static
+         *     tables, never live platform pulls. Otherwise the baseline S2 row
+         *     is returned with source baseline.
          */
         get: operations["list_channel_capabilities_api_channel_capabilities_get"];
         put?: never;
@@ -5726,6 +5727,8 @@ export interface components {
         };
         /** SlotExecuteIn */
         SlotExecuteIn: {
+            /** Media Url */
+            media_url?: string | null;
             /** Simulate Failure */
             simulate_failure?: string | null;
         };

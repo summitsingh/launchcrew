@@ -7085,6 +7085,18 @@
       "SlotExecuteIn": {
         "additionalProperties": false,
         "properties": {
+          "media_url": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Media Url"
+          },
           "simulate_failure": {
             "anyOf": [
               {
@@ -10464,7 +10476,7 @@
     },
     "/api/channel-capabilities": {
       "get": {
-        "description": "Return the per-channel capabilities table (account_capabilities pattern, as data).\n\nWhen the workspace has a connected brand account for a channel, the\nfetched live account row overrides the baseline S2 row with source\nlive_account_capabilities and the connected handle. Otherwise the\nbaseline S2 row is returned with source baseline.",
+        "description": "Return the per-channel capabilities table (account_capabilities pattern, as data).\n\nWhen the workspace has a connected brand account for a channel, the\nstored account row overrides the baseline S2 row with source\nstatic_baseline and the connected handle. Capabilities are static\ntables, never live platform pulls. Otherwise the baseline S2 row\nis returned with source baseline.",
         "operationId": "list_channel_capabilities_api_channel_capabilities_get",
         "responses": {
           "200": {
