@@ -3785,6 +3785,87 @@
         "title": "MediaAssetOut",
         "type": "object"
       },
+      "MediaCreativeIn": {
+        "additionalProperties": false,
+        "properties": {
+          "confirmed_facts": {
+            "default": "",
+            "maxLength": 10000,
+            "title": "Confirmed Facts",
+            "type": "string"
+          },
+          "expected_revision": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Revision"
+          },
+          "output_format": {
+            "anyOf": [
+              {
+                "maxLength": 32,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Format"
+          }
+        },
+        "title": "MediaCreativeIn",
+        "type": "object"
+      },
+      "MediaCreativeOut": {
+        "additionalProperties": true,
+        "properties": {
+          "id": {
+            "default": "",
+            "title": "Id",
+            "type": "string"
+          },
+          "media_provenance": {
+            "default": "model_draft_unverified",
+            "title": "Media Provenance",
+            "type": "string"
+          },
+          "model_used": {
+            "default": "none",
+            "title": "Model Used",
+            "type": "string"
+          },
+          "output_format": {
+            "default": "",
+            "title": "Output Format",
+            "type": "string"
+          },
+          "pack": {
+            "additionalProperties": true,
+            "title": "Pack",
+            "type": "object"
+          },
+          "remaining_budget_micros": {
+            "default": 0,
+            "title": "Remaining Budget Micros",
+            "type": "integer"
+          },
+          "revision": {
+            "default": 0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "run_id": {
+            "default": "",
+            "title": "Run Id",
+            "type": "string"
+          }
+        },
+        "title": "MediaCreativeOut",
+        "type": "object"
+      },
       "MediaDerivativeIn": {
         "additionalProperties": false,
         "properties": {
@@ -12102,6 +12183,56 @@
           }
         },
         "summary": "Launch Matrix"
+      }
+    },
+    "/api/runs/{run_id}/media-creative": {
+      "post": {
+        "description": "Draft one AI media creative pack for owner-shot media.\n\nThe pack (scene scripts, hooks, voiceover lines, captions, shot\nguidance) is drafted by a single bounded model call and stored as\ndraft provenance on the receipt. No pixels or audio are synthesized.\nRefusals: 422 for bad format or facts, 404 for a missing run, 409\nfor a stale revision, 503 when the model key is not configured,\n402 when the model budget is zero. A failed or unparsable model\ncall refuses with 422 and stores nothing.",
+        "operationId": "generate_media_creative_api_runs__run_id__media_creative_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MediaCreativeIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MediaCreativeOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Generate Media Creative"
       }
     },
     "/api/runs/{run_id}/outcomes": {

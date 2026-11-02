@@ -5976,6 +5976,134 @@ def generate_viral_pack(body: ViralGenerateIn, actor: str = Depends(auth.actor))
         return public
 
 
+class MediaCreativeIn(Strict):
+    output_format: str | None = Field(default=None, max_length=32)
+    confirmed_facts: str = Field(default='', max_length=10000)
+    expected_revision: Any | None = None
+
+
+class MediaCreativeOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    id: str = ''
+    run_id: str = ''
+    output_format: str = ''
+    media_provenance: str = 'model_draft_unverified'
+    pack: dict[str, Any] = Field(default_factory=dict)
+    model_used: str = 'none'
+    remaining_budget_micros: int = 0
+    revision: int = 0
+
+
+@app.post('/api/runs/{run_id}/media-creative', response_model=MediaCreativeOut,
+          status_code=201)
+def generate_media_creative(run_id: str, body: MediaCreativeIn,
+                            actor: str = Depends(auth.actor)):
+    """Draft one AI media creative pack for owner-shot media.
+
+    The pack (scene scripts, hooks, voiceover lines, captions, shot
+    guidance) is drafted by a single bounded model call and stored as
+    draft provenance on the receipt. No pixels or audio are synthesized.
+    Refusals: 422 for bad format or facts, 404 for a missing run, 409
+    for a stale revision, 503 when the model key is not configured,
+    402 when the model budget is zero. A failed or unparsable model
+    call refuses with 422 and stores nothing.
+    """
+    import os
+    from launchcrew import media_creative as creative_mod
+    from launchcrew import human_review
+    from backend import model_admission
+    try:
+        output_format = creative_mod.normalize_format(body.output_format)
+        facts_text = creative_mod.normalize_facts(body.confirmed_facts)
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        receipt = get_receipt(db, run_id, workspace_id)
+        if receipt is None:
+            raise HTTPException(404, 'Run not found')
+        _reject_when_running(receipt)
+        ok, _ = human_review.valid_revision_context(receipt)
+        if not ok:
+            raise HTTPException(422, 'Media creative needs a reviewable revision')
+        if body.expected_revision != human_review.current_revision(receipt):
+            raise HTTPException(409, 'Media creative is stale; the draft changed')
+        if not os.environ.get('META_API_KEY', '').strip():
+            raise HTTPException(503, creative_mod.MODEL_NOT_CONFIGURED_MESSAGE)
+        generation_id = 'mc_' + uuid4().hex
+        factory = model_admission.admission_factory_for_run(
+            store.engine(), run_id)
+        try:
+            admission = factory('MediaCreative', generation_id)
+        except Exception:
+            raise HTTPException(402, creative_mod.BUDGET_EXHAUSTED_MESSAGE)
+        from launchcrew.spark import call_spark_strict_json
+        try:
+            result = call_spark_strict_json(
+                creative_mod.system_prompt_for(output_format),
+                creative_mod.user_prompt_for(output_format, facts_text),
+                creative_mod.schema_hint_for(output_format),
+                admission=admission)
+        except Exception:
+            raise HTTPException(422, creative_mod.MODEL_CALL_FAILED_MESSAGE)
+        if not isinstance(result, dict) or result.get('mode') != 'spark':
+            remaining = model_admission.budget_remaining_micros(store.engine())
+            if not result.get('attempted') and remaining <= 0:
+                raise HTTPException(402, creative_mod.BUDGET_EXHAUSTED_MESSAGE)
+            raise HTTPException(422, creative_mod.MODEL_CALL_FAILED_MESSAGE)
+        try:
+            pack = creative_mod.parse_pack(result.get('raw_json'),
+                                           output_format)
+        except ValueError:
+            raise HTTPException(422, creative_mod.MODEL_CALL_FAILED_MESSAGE)
+        usage = result.get('usage') if isinstance(result.get('usage'), dict) else {}
+        new_revision = int(receipt.get('revision', 0)) + 1
+        entry = {'revision': new_revision,
+                 'media_creative_event': 'media_creative_generated',
+                 'media_creative_id': generation_id,
+                 'output_format': output_format,
+                 'actor': actor}
+        history = list(receipt.get('revision_history', [])) + [entry]
+        model_usage = dict(receipt.get('model_usage', {}))
+        model_usage['spark_calls'] = int(model_usage.get('spark_calls', 0)) + 1
+        for name in ('prompt_tokens', 'completion_tokens', 'total_tokens'):
+            value = usage.get(name)
+            if type(value) is int and value >= 0:
+                model_usage[name] = int(model_usage.get(name, 0)) + value
+        receipt['revision'] = new_revision
+        receipt['revision_history'] = history
+        receipt['model_usage'] = model_usage
+        receipt['approval_state'] = 'pending_approval'
+        receipt['approvals'] = []
+        receipt['media_creative'] = {
+            'id': generation_id,
+            'output_format': output_format,
+            'media_provenance': creative_mod.PROVENANCE,
+            'pack': pack,
+            'model_used': result.get('model_used', 'none'),
+            'revision': new_revision,
+        }
+        updated = db.execute(
+            text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state'
+                 ' WHERE id=:id AND workspace_id=:ws'),
+            {'receipt': json.dumps(receipt),
+             'state': receipt['approval_state'], 'id': run_id,
+             'ws': workspace_id})
+        if updated.rowcount == 0:
+            raise HTTPException(404, 'Run not found')
+        db.execute(text('DELETE FROM approvals WHERE run_id=:id'),
+                   {'id': run_id})
+        store.audit(db, run_id, 'media_creative_generated', actor, workspace_id)
+        remaining = model_admission.budget_remaining_micros(store.engine())
+        return {'id': generation_id, 'run_id': run_id,
+                'output_format': output_format,
+                'media_provenance': creative_mod.PROVENANCE,
+                'pack': pack,
+                'model_used': result.get('model_used', 'none'),
+                'remaining_budget_micros': remaining,
+                'revision': new_revision}
+
+
 # SC6 agent surfaces: workspace keys, agent REST API, hosted MCP server, skill.
 # One backend backs four surfaces. The Web UI, REST API, hosted MCP
 # server, and CLI resolve the same workspace_id (from the workspace key

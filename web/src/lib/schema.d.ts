@@ -1808,6 +1808,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/media-creative": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Generate Media Creative
+         * @description Draft one AI media creative pack for owner-shot media.
+         *
+         *     The pack (scene scripts, hooks, voiceover lines, captions, shot
+         *     guidance) is drafted by a single bounded model call and stored as
+         *     draft provenance on the receipt. No pixels or audio are synthesized.
+         *     Refusals: 422 for bad format or facts, 404 for a missing run, 409
+         *     for a stale revision, 503 when the model key is not configured,
+         *     402 when the model budget is zero. A failed or unparsable model
+         *     call refuses with 422 and stores nothing.
+         */
+        post: operations["generate_media_creative_api_runs__run_id__media_creative_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/runs/{run_id}/outcomes": {
         parameters: {
             query?: never;
@@ -4041,6 +4069,62 @@ export interface components {
              * @default 0
              */
             width: number;
+        } & {
+            [key: string]: unknown;
+        };
+        /** MediaCreativeIn */
+        MediaCreativeIn: {
+            /**
+             * Confirmed Facts
+             * @default
+             */
+            confirmed_facts: string;
+            /** Expected Revision */
+            expected_revision?: unknown | null;
+            /** Output Format */
+            output_format?: string | null;
+        };
+        /** MediaCreativeOut */
+        MediaCreativeOut: {
+            /**
+             * Id
+             * @default
+             */
+            id: string;
+            /**
+             * Media Provenance
+             * @default model_draft_unverified
+             */
+            media_provenance: string;
+            /**
+             * Model Used
+             * @default none
+             */
+            model_used: string;
+            /**
+             * Output Format
+             * @default
+             */
+            output_format: string;
+            /** Pack */
+            pack?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Remaining Budget Micros
+             * @default 0
+             */
+            remaining_budget_micros: number;
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+            /**
+             * Run Id
+             * @default
+             */
+            run_id: string;
         } & {
             [key: string]: unknown;
         };
@@ -9098,6 +9182,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LaunchMatrixOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    generate_media_creative_api_runs__run_id__media_creative_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MediaCreativeIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MediaCreativeOut"];
                 };
             };
             /** @description Validation Error */
