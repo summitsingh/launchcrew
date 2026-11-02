@@ -281,6 +281,7 @@ def test_owner_retry_posts_after_reconnect(client):
     assert execution['platform_post_id']
     assert execution['attempt_count'] == 4
     assert execution['attempts'][-1]['outcome'] == 'posted'
+    assert execution['attempts'][-1]['simulated'] is True
 
 
 def test_kill_switch_pauses_leaving_slots_and_packs_untouched(client, monkeypatch):

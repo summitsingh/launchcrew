@@ -147,14 +147,17 @@ def simulate_failure_requested(value):
 
 def default_transport(channel, variant_text, subject, connection, key,
                       simulate_failure=None):
-    """Publish through the official platform API for one channel.
+    """Simulated publish for one channel. No platform is contacted.
 
     Uses the stored brand connection (encrypted server-side token,
-    never echoed) and the approved variant text. Returns a dict with
-    platform_post_id and live_url on success. Raises
-    PublishTransportError with a plain-language reason on any failure,
-    including revoked test tokens and disconnected accounts, so the
-    executor can record bounded retries without duplicating posts.
+    never echoed) and the approved variant text. Returns a dict with a
+    deterministic platform_post_id, a placeholder live_url under
+    example.com, and simulated True. Raises PublishTransportError with
+    a plain-language reason on any failure, including revoked test
+    tokens and disconnected accounts, so the executor can record
+    bounded retries without duplicating posts. A live platform
+    transport replaces this function per channel; see
+    launchcrew.instagram_publish for the Instagram path.
     """
     channel_key = normalize_channel(channel)
     forced = simulate_failure_requested(simulate_failure) or simulate_failure_requested(
@@ -179,4 +182,5 @@ def default_transport(channel, variant_text, subject, connection, key,
     return {
         'platform_post_id': 'post_' + digest[:16],
         'live_url': 'https://' + channel_key + '.example.com/posts/' + digest[:12],
+        'simulated': True,
     }

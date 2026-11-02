@@ -301,7 +301,7 @@ def fetch_live_capabilities(platform: str) -> dict[str, Any]:
         "carousel_max_frames": int(baseline["max_frames"]),
         "video_supported": bool(baseline["video_supported"]),
         "aspect_ratios": list(baseline["aspect_ratios"]),
-        "source": "live_account_capabilities",
+        "source": "static_baseline",
     }
 
 
@@ -337,7 +337,7 @@ def live_capability_row(platform: str, capabilities: dict[str, Any] | None,
             "min_frames": min_frames,
             "max_frames": max_frames,
         },
-        "source": "live_account_capabilities",
+        "source": "static_baseline",
         "connected": True,
         "connected_handle": handle or "",
     }
@@ -379,7 +379,7 @@ def public_connection(row: Any) -> dict[str, Any]:
         "scopes": [str(item) for item in scopes if isinstance(item, str)],
         "scopes_plain": [str(item) for item in scopes_plain if isinstance(item, str)],
         "capabilities": capabilities,
-        "capabilities_source": capabilities.get("source", "live_account_capabilities") if capabilities else "live_account_capabilities",
+        "capabilities_source": capabilities.get("source", "static_baseline") if capabilities else "static_baseline",
         "connected_at": data.get("connected_at"),
         "disconnected_at": data.get("disconnected_at"),
     }

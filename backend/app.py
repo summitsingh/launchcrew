@@ -654,9 +654,10 @@ def list_channel_capabilities(actor: str = Depends(auth.actor)):
     """Return the per-channel capabilities table (account_capabilities pattern, as data).
 
     When the workspace has a connected brand account for a channel, the
-    fetched live account row overrides the baseline S2 row with source
-    live_account_capabilities and the connected handle. Otherwise the
-    baseline S2 row is returned with source baseline.
+    stored account row overrides the baseline S2 row with source
+    static_baseline and the connected handle. Capabilities are static
+    tables, never live platform pulls. Otherwise the baseline S2 row
+    is returned with source baseline.
     """
     from launchcrew.format_library import list_channel_capabilities as _list_capabilities
     baseline = _list_capabilities()
@@ -5346,6 +5347,7 @@ class ExecuteDueIn(Strict):
 
 class SlotExecuteIn(Strict):
     simulate_failure: str | None = Field(default=None, max_length=64)
+    media_url: str | None = Field(default=None, max_length=2000)
 
 
 class PublishDueSlotOut(BaseModel):
@@ -5539,8 +5541,40 @@ def _verify_execution_binding(receipt, slot, channel):
     return True, None, ''
 
 
+def _run_publish_transport(channel, variant_text, subject, connection, key,
+                           simulate_failure, media_url):
+    """Run the live Instagram transport only when fully enabled.
+
+    Requires the owner live flag, a decryptable brand token, a numeric
+    Instagram user id on the connection, and an owner-supplied public
+    image URL. Anything less keeps the simulated default transport,
+    which stays explicitly labeled. Live failures map to the same
+    failed-attempt path as simulated ones.
+    """
+    from launchcrew import instagram_publish as ig_mod
+    from launchcrew import publish_executor as executor_mod
+    if channel == 'instagram' and media_url and ig_mod.instagram_live_enabled():
+        from launchcrew import social_connections as social_mod
+        try:
+            encrypted = connection.get('encrypted_token') if isinstance(connection, dict) else None
+            plaintext = social_mod.decrypt_token(encrypted) if encrypted else ''
+        except ValueError:
+            plaintext = ''
+        external_id = connection.get('external_account_id') if isinstance(connection, dict) else None
+        missing = ig_mod.live_prerequisites(external_id, plaintext, media_url, variant_text)
+        if not missing:
+            try:
+                return ig_mod.instagram_transport(str(external_id).strip(), media_url,
+                                                  variant_text, plaintext)
+            except ig_mod.InstagramTransportError as error:
+                raise executor_mod.PublishTransportError(
+                    'Instagram live publish failed: ' + error.reason)
+    return executor_mod.default_transport(channel, variant_text, subject, connection,
+                                          key, simulate_failure=simulate_failure)
+
+
 def _execute_slot_channel(db, slot, channel, workspace_id, actor, simulate_failure=None,
-                          manual_retry=False):
+                          manual_retry=False, media_url=None):
     """Execute one slot channel under the full Ready gate.
 
     Returns a dict with status (posted, failed, skipped_needs_approval,
@@ -5605,7 +5639,8 @@ def _execute_slot_channel(db, slot, channel, workspace_id, actor, simulate_failu
     entry = bundle.get(key) if isinstance(bundle, dict) else None
     variant_text = entry.get('text') if isinstance(entry, dict) else ''
     subject = entry.get('subject') if isinstance(entry, dict) else None
-    connection = db.execute(text('SELECT status, encrypted_token FROM social_connections'
+    connection = db.execute(text('SELECT status, encrypted_token, external_account_id'
+                                 ' FROM social_connections'
                                  ' WHERE workspace_id=:ws AND platform=:platform'),
                             {'ws': workspace_id, 'platform': key}).mappings().first()
     connection = dict(connection) if connection is not None else None
@@ -5621,8 +5656,8 @@ def _execute_slot_channel(db, slot, channel, workspace_id, actor, simulate_failu
             manual_added = True
         attempt = executor_mod.build_attempt(len(attempts) + 1, key, idem_key, 'attempted')
         try:
-            result = executor_mod.default_transport(key, variant_text, subject, connection,
-                                                    idem_key, simulate_failure=simulate_failure)
+            result = _run_publish_transport(key, variant_text, subject, connection,
+                                            idem_key, simulate_failure, media_url)
         except executor_mod.PublishTransportError as error:
             last_error = error.reason
             attempt = dict(attempt)
@@ -5646,6 +5681,7 @@ def _execute_slot_channel(db, slot, channel, workspace_id, actor, simulate_failu
         attempt['outcome'] = 'posted'
         attempt['platform_post_id'] = platform_post_id
         attempt['live_url'] = live_url
+        attempt['simulated'] = bool(result.get('simulated'))
         attempts = executor_mod.append_attempt(attempts, attempt)
         stored = _save_execution(db, workspace_id, slot['id'], key, idem_key, 'posted',
                                  platform_post_id=platform_post_id, live_url=live_url,
@@ -5667,7 +5703,8 @@ def _execute_slot_channel(db, slot, channel, workspace_id, actor, simulate_failu
             'reason': last_error or 'Publish failed after bounded retries.'}
 
 
-def _execute_ready_slot(db, slot_id, workspace_id, actor, simulate_failure=None):
+def _execute_ready_slot(db, slot_id, workspace_id, actor, simulate_failure=None,
+                        media_url=None):
     """Execute every selected channel of one Ready slot; refuse others."""
     slot = _load_slot(db, slot_id, workspace_id)
     if slot.get('schedule_state') != 'ready':
@@ -5682,7 +5719,8 @@ def _execute_ready_slot(db, slot_id, workspace_id, actor, simulate_failure=None)
     posted_any = False
     for channel in channels:
         outcome = _execute_slot_channel(db, dict(slot), channel, workspace_id, actor,
-                                        simulate_failure=simulate_failure)
+                                        simulate_failure=simulate_failure,
+                                        media_url=media_url)
         if outcome.get('execution') is not None:
             executions.append(outcome['execution'])
         status = outcome.get('status')
@@ -5802,7 +5840,8 @@ def execute_publish_slot(slot_id: str, body: SlotExecuteIn | None = None,
         workspace_id = store.ensure_workspace_seeded(db, actor)
         try:
             outcome = _execute_ready_slot(db, slot_id, workspace_id, actor,
-                                          simulate_failure=payload.simulate_failure)
+                                          simulate_failure=payload.simulate_failure,
+                                          media_url=payload.media_url)
         except HTTPException:
             raise
         return outcome
@@ -5848,7 +5887,8 @@ def retry_publish_slot(slot_id: str, body: SlotExecuteIn | None = None,
         for channel in retryable:
             outcome = _execute_slot_channel(db, dict(slot), channel, workspace_id, actor,
                                             simulate_failure=payload.simulate_failure,
-                                            manual_retry=True)
+                                            manual_retry=True,
+                                            media_url=payload.media_url)
             if outcome.get('execution') is not None:
                 executions.append(outcome['execution'])
             if outcome.get('status') in ('posted', 'already_posted'):

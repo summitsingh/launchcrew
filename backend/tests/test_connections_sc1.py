@@ -124,7 +124,7 @@ def test_brand_connect_encrypts_and_lists_live_capabilities(client, test_engine)
     assert any('Publish approved posts' in entry or 'capabilities' in entry.lower()
                for entry in body['scopes_plain'])
     capabilities = body['capabilities']
-    assert capabilities.get('source') == 'live_account_capabilities'
+    assert capabilities.get('source') == 'static_baseline'
     assert capabilities.get('caption_limit')
     assert capabilities.get('allowed_formats')
     assert 'encrypted_token' not in capabilities
@@ -149,7 +149,7 @@ def test_brand_connect_encrypts_and_lists_live_capabilities(client, test_engine)
     table = client.get('/api/channel-capabilities')
     assert table.status_code == 200, table.text
     rows = {entry['channel']: entry for entry in table.json()}
-    assert rows['instagram']['source'] == 'live_account_capabilities'
+    assert rows['instagram']['source'] == 'static_baseline'
     assert rows['instagram']['connected'] is True
     assert rows['instagram']['caption_limit'] == capabilities['caption_limit']
 

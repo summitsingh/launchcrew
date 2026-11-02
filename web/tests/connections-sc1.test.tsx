@@ -67,9 +67,9 @@ function connection(platform: string): SocialConnection {
       carousel_max_frames: 10,
       video_supported: false,
       aspect_ratios: ['4:5'],
-      source: 'live_account_capabilities',
+      source: 'static_baseline',
     },
-    capabilities_source: 'live_account_capabilities',
+    capabilities_source: 'static_baseline',
     connected_at: '2026-10-31T00:00:00+00:00',
     disconnected_at: null,
   };
@@ -102,7 +102,7 @@ describe('SC1 brand account connections panel', () => {
     expect(html).toContain('@brand-instagram');
     expect(html).toContain('Publish approved posts to your brand page');
     expect(html).toContain('Read account capabilities and limits');
-    expect(html).toContain('live_account_capabilities');
+    expect(html).toContain('static_baseline');
     expect(html).toContain('encrypted_at_rest');
     expect(html).toContain('disconnect-instagram');
     expect(html).toContain('One-tap disconnect');
