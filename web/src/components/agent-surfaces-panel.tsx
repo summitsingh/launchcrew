@@ -9,10 +9,13 @@ type WorkspaceKey = {
   label?: string;
   key_prefix?: string;
   scopes?: string[];
+  role?: string;
   revoked?: boolean;
   created_at?: string;
   raw_key?: string;
 };
+
+const SEAT_ROLES = ['owner', 'editor', 'viewer'] as const;
 
 type McpTool = { name: string; description?: string };
 
@@ -39,6 +42,7 @@ async function fetchSkill(): Promise<SkillDoc> {
 export function AgentSurfacesPanel() {
   const client = useQueryClient();
   const [label, setLabel] = useState('CLI key');
+  const [role, setRole] = useState<string>('owner');
   const [notice, setNotice] = useState('');
   const [rawKey, setRawKey] = useState('');
   const keys = useQuery({ queryKey: ['agent-keys'], queryFn: fetchKeys });
@@ -46,7 +50,7 @@ export function AgentSurfacesPanel() {
   const skill = useQuery({ queryKey: ['agent-skill'], queryFn: fetchSkill });
 
   const createKey = useMutation({
-    mutationFn: () => unwrap(api.POST('/api/agent-surfaces/keys', { body: { label } })),
+    mutationFn: () => unwrap(api.POST('/api/agent-surfaces/keys', { body: { label, role } })),
     onSuccess: (data) => {
       const created = data as WorkspaceKey;
       setRawKey(created.raw_key ?? '');
@@ -75,6 +79,10 @@ export function AgentSurfacesPanel() {
     <div className="queue-actions">
       <label htmlFor="agent-key-label">Key label</label>
       <input id="agent-key-label" value={label} maxLength={120} onChange={e => setLabel(e.target.value)} />
+      <label htmlFor="agent-key-role">Seat role</label>
+      <select id="agent-key-role" value={role} onChange={e => setRole(e.target.value)}>
+        {SEAT_ROLES.map(name => <option key={name} value={name}>{name}{name === 'viewer' ? ' (read-only)' : ''}</option>)}
+      </select>
       <Button data-testid="agent-create-key-btn" onClick={() => createKey.mutate()} disabled={createKey.isPending || !label.trim()}>
         {createKey.isPending ? 'Creating...' : 'Create workspace key'}
       </Button>
@@ -86,7 +94,7 @@ export function AgentSurfacesPanel() {
     <ul data-testid="agent-keys-list" aria-label="Workspace keys">
       {(keys.data ?? []).length === 0 && <li className="hint">No workspace keys yet.</li>}
       {(keys.data ?? []).map(key => <li key={key.id}>
-        <span>{key.label || 'Unlabeled'} · <code>{key.key_prefix}</code> · {(key.scopes ?? []).join(', ')}</span>
+        <span>{key.label || 'Unlabeled'} · <code>{key.key_prefix}</code> · {key.role ?? 'owner'} · {(key.scopes ?? []).join(', ')}</span>
         {' '}<span>{key.revoked ? 'revoked' : 'active'}</span>
         {!key.revoked && <Button variant="outline" onClick={() => revokeKey.mutate(key.id)} disabled={revokeKey.isPending}>Revoke</Button>}
       </li>)}

@@ -2382,6 +2382,11 @@ export interface components {
              * @default
              */
             label: string;
+            /**
+             * Role
+             * @default owner
+             */
+            role: string;
             /** Scopes */
             scopes?: string[] | null;
         };

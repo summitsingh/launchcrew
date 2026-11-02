@@ -52,6 +52,13 @@
             "title": "Label",
             "type": "string"
           },
+          "role": {
+            "default": "owner",
+            "maxLength": 16,
+            "minLength": 1,
+            "title": "Role",
+            "type": "string"
+          },
           "scopes": {
             "anyOf": [
               {

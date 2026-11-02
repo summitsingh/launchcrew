@@ -6383,6 +6383,7 @@ def generate_media_creative(run_id: str, body: MediaCreativeIn,
 class AgentKeyCreateIn(Strict):
     label: str = Field(default='', max_length=120)
     scopes: list[str] | None = None
+    role: str = Field(default='owner', min_length=1, max_length=16)
 
 
 class AgentValidateIn(BaseModel):
@@ -6431,12 +6432,18 @@ def _agent_workspace(request: Request, db, scope: str) -> str:
     from launchcrew import agent_surfaces as surfaces_mod
     raw = _raw_workspace_key(request)
     if raw:
-        row = db.execute(text('SELECT workspace_id, scopes, revoked FROM workspace_api_keys'
+        row = db.execute(text('SELECT workspace_id, scopes, revoked, role FROM workspace_api_keys'
                               ' WHERE key_hash=:digest'),
                          {'digest': surfaces_mod.hash_key(raw)}).fetchone()
         granted = list(row[1]) if row is not None and isinstance(row[1], list) else []
         if row is None or bool(row[2]) or scope not in granted:
             raise HTTPException(401, 'invalid_or_revoked_workspace_key')
+        try:
+            allowed = surfaces_mod.scope_allowed_for_role(scope, row[3] or 'owner')
+        except ValueError:
+            raise HTTPException(401, 'invalid_or_revoked_workspace_key')
+        if not allowed:
+            raise HTTPException(403, 'insufficient_key_role')
         return str(row[0])
     actor = _agent_session_actor(request)
     if actor is None:
@@ -6452,6 +6459,7 @@ def _public_agent_key(row) -> dict[str, Any]:
     return {'id': data.get('id'), 'label': data.get('label', ''),
             'key_prefix': data.get('key_prefix', ''),
             'scopes': list(data.get('scopes') or []),
+            'role': data.get('role') or 'owner',
             'revoked': bool(data.get('revoked', False)),
             'created_at': data.get('created_at')}
 
@@ -6467,16 +6475,21 @@ def create_workspace_key(body: AgentKeyCreateIn, actor: str = Depends(auth.actor
         unknown = [scope for scope in scopes if scope not in surfaces_mod.DEFAULT_SCOPES]
         if unknown:
             raise HTTPException(422, 'Unknown workspace key scope: ' + ', '.join(unknown))
+        try:
+            role = surfaces_mod.normalize_key_role(body.role or 'owner')
+        except ValueError as error:
+            raise HTTPException(422, str(error))
         raw = surfaces_mod.generate_raw_key()
         key_id = surfaces_mod.new_key_id()
         db.execute(text('INSERT INTO workspace_api_keys(id, workspace_id, label, key_prefix,'
-                        ' key_hash, scopes, revoked)'
-                        ' VALUES (:id,:ws,:label,:prefix,:digest,CAST(:scopes AS jsonb),false)'),
+                        ' key_hash, scopes, revoked, role)'
+                        ' VALUES (:id,:ws,:label,:prefix,:digest,CAST(:scopes AS jsonb),false,:role)'),
                    {'id': key_id, 'ws': workspace_id, 'label': label,
                     'prefix': surfaces_mod.key_prefix(raw),
-                    'digest': surfaces_mod.hash_key(raw), 'scopes': json.dumps(scopes)})
+                    'digest': surfaces_mod.hash_key(raw), 'scopes': json.dumps(scopes),
+                    'role': role})
         store.audit(db, None, 'workspace_key_created', actor, workspace_id)
-        row = db.execute(text('SELECT id, workspace_id, label, key_prefix, scopes, revoked, created_at'
+        row = db.execute(text('SELECT id, workspace_id, label, key_prefix, scopes, revoked, role, created_at'
                               ' FROM workspace_api_keys WHERE id=:id AND workspace_id=:ws'),
                          {'id': key_id, 'ws': workspace_id}).mappings().first()
         public = _public_agent_key(dict(row))
@@ -6490,7 +6503,7 @@ def list_workspace_keys(actor: str = Depends(auth.actor)):
     """List workspace keys without ever exposing raw key material."""
     with store.connect() as db:
         workspace_id = store.ensure_workspace_seeded(db, actor)
-        rows = db.execute(text('SELECT id, workspace_id, label, key_prefix, scopes, revoked, created_at'
+        rows = db.execute(text('SELECT id, workspace_id, label, key_prefix, scopes, revoked, role, created_at'
                                ' FROM workspace_api_keys WHERE workspace_id=:ws'
                                ' ORDER BY created_at, id'),
                           {'ws': workspace_id}).mappings().all()
@@ -6508,7 +6521,7 @@ def revoke_workspace_key(key_id: str, actor: str = Depends(auth.actor)):
         if result.rowcount == 0:
             raise HTTPException(404, 'Workspace key not found')
         store.audit(db, None, 'workspace_key_revoked', actor, workspace_id)
-        row = db.execute(text('SELECT id, workspace_id, label, key_prefix, scopes, revoked, created_at'
+        row = db.execute(text('SELECT id, workspace_id, label, key_prefix, scopes, revoked, role, created_at'
                               ' FROM workspace_api_keys WHERE id=:id AND workspace_id=:ws'),
                          {'id': key_id, 'ws': workspace_id}).mappings().first()
         return _public_agent_key(dict(row))

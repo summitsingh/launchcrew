@@ -15,6 +15,27 @@ from typing import Any
 
 KEY_PREFIX = 'lc_wk_'
 
+KEY_ROLES = ('owner', 'editor', 'viewer')
+
+READ_SCOPES = ('accounts', 'capabilities', 'validate', 'run_status')
+
+WRITE_SCOPES = ('upload', 'apply', 'mcp')
+
+
+def normalize_key_role(role: Any) -> str:
+    """Return the canonical seat role or raise ValueError naming the rule."""
+    if isinstance(role, str) and role.strip() in KEY_ROLES:
+        return role.strip()
+    raise ValueError('key role must be one of owner, editor, viewer')
+
+
+def scope_allowed_for_role(scope: str, role: str) -> bool:
+    """Viewer keys are read-only; editor and owner keys keep all scopes."""
+    role = normalize_key_role(role)
+    if role == 'viewer':
+        return scope in READ_SCOPES
+    return scope in DEFAULT_SCOPES
+
 DEFAULT_SCOPES = (
     'accounts',
     'capabilities',
@@ -39,6 +60,11 @@ REFUSAL_RULES = (
         'code': 'invalid_or_revoked_workspace_key',
         'reason': 'The workspace key is missing, unknown, or revoked.',
         'http_status': 401,
+    },
+    {
+        'code': 'insufficient_key_role',
+        'reason': 'The workspace key role is read-only for this operation.',
+        'http_status': 403,
     },
     {
         'code': 'pack_not_approved',
