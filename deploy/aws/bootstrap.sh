@@ -133,6 +133,8 @@ MASTER_SECRET_ARN=""
 TLS_SECRET_ARN=""
 GOOGLE_SECRET_ARN=""
 META_SECRET_ARN=""
+DRIVE_SECRET_ARN=""
+FACEBOOK_SECRET_ARN=""
 FOUNDATION_STACK_NAME=""
 PREREQS_STACK_NAME=""
 FOUNDATION_TEMPLATE_FILE=""
@@ -208,6 +210,10 @@ while [ $# -gt 0 ]; do
     --google-secret-arn=*) GOOGLE_SECRET_ARN="${1#--google-secret-arn=}"; shift ;;
     --meta-secret-arn) META_SECRET_ARN="${2:-}"; shift 2 ;;
     --meta-secret-arn=*) META_SECRET_ARN="${1#--meta-secret-arn=}"; shift ;;
+    --drive-secret-arn) DRIVE_SECRET_ARN="${2:-}"; shift 2 ;;
+    --drive-secret-arn=*) DRIVE_SECRET_ARN="${1#--drive-secret-arn=}"; shift ;;
+    --facebook-secret-arn) FACEBOOK_SECRET_ARN="${2:-}"; shift 2 ;;
+    --facebook-secret-arn=*) FACEBOOK_SECRET_ARN="${1#--facebook-secret-arn=}"; shift ;;
     --foundation-stack-name) FOUNDATION_STACK_NAME="${2:-}"; shift 2 ;;
     --foundation-stack-name=*) FOUNDATION_STACK_NAME="${1#--foundation-stack-name=}"; shift ;;
     --prereqs-stack-name) PREREQS_STACK_NAME="${2:-}"; shift 2 ;;
@@ -284,6 +290,8 @@ phase_plan() {
   echo "  Google auth, when EnableGoogleAuth true in the parameters file: images, infra, and enable need"
   echo "  --google-secret-arn with the exact owned Google secret for five secret API binding proof."
   echo "  --meta-secret-arn with the exact owned Meta key secret for live model API binding proof."
+  echo "  --drive-secret-arn with the exact owned Drive picker secret when DriveSecretArn is set."
+  echo "  --facebook-secret-arn with the exact owned Facebook secret when FacebookOAuthSecretArn is set."
   echo "  all needs everything enable needs plus --foundation-stack-name, --prereqs-stack-name,"
   echo "  and --foundation-parameters-file for the readiness chain."
   echo "Each phase re-verifies its own preconditions from live state, so a single phase can resume"
@@ -759,6 +767,8 @@ if needs_secret_checks; then
   if [ -n "$TLS_SECRET_ARN" ]; then check_secret_arn "$TLS_SECRET_ARN" "tls"; fi
   if [ -n "$GOOGLE_SECRET_ARN" ]; then check_secret_arn "$GOOGLE_SECRET_ARN" "google"; fi
   if [ -n "$META_SECRET_ARN" ]; then check_secret_arn "$META_SECRET_ARN" "meta"; fi
+  if [ -n "$DRIVE_SECRET_ARN" ]; then check_secret_arn "$DRIVE_SECRET_ARN" "drive"; fi
+  if [ -n "$FACEBOOK_SECRET_ARN" ]; then check_secret_arn "$FACEBOOK_SECRET_ARN" "facebook"; fi
 fi
 
 # The parameters file is what the stack deploys from, so every CLI image URI
@@ -771,7 +781,8 @@ check_params_match() {
 import json, sys
 KNOWN_SECRET_KEYS = {"RuntimeDbUrlSecretArn", "MigrationDbUrlSecretArn",
                      "MasterDbPasswordSecretArn", "TlsSecretArn",
-                     "GoogleOAuthSecretArn", "MetaSecretArn"}
+                     "GoogleOAuthSecretArn", "MetaSecretArn",
+                     "DriveSecretArn", "FacebookOAuthSecretArn"}
 MOVED_BUDGET_KEYS = {"BudgetLimitUsd", "BudgetNotifyEmail"}
 try:
     with open(sys.argv[1]) as handle:
@@ -827,6 +838,8 @@ PYEOF
   PARAM_MATCH TlsSecretArn "$TLS_SECRET_ARN" || exit 1
   PARAM_MATCH GoogleOAuthSecretArn "$GOOGLE_SECRET_ARN" || exit 1
   PARAM_MATCH MetaSecretArn "$META_SECRET_ARN" || exit 1
+  PARAM_MATCH DriveSecretArn "$DRIVE_SECRET_ARN" || exit 1
+  PARAM_MATCH FacebookOAuthSecretArn "$FACEBOOK_SECRET_ARN" || exit 1
   echo "Verified CLI images and secret ARNs match the parameters file being deployed"
 }
 
@@ -902,6 +915,63 @@ check_meta_key_gate() {
   [ "$META_FILE_ARN" = "$META_SECRET_ARN" ] || { echo "refused: parameters file MetaSecretArn does not equal the validated CLI value, validating one set while deploying another is refused" >&2; phase_failed "$META_GATE_LABEL"; }
   check_secret_arn "$META_SECRET_ARN" "meta"
   echo "Verified Meta key gate: exact owned Meta secret $META_SECRET_ARN"
+}
+
+# Drive picker secret gate, fail-closed before any mutation. Reads
+# DriveSecretArn from the parameters file being deployed. Empty leaves Drive
+# unconfigured; a set value requires an exact validated CLI Drive ARN that
+# equals the file value and passes the same ownership metadata proof as the
+# Google and Meta secrets. No secret value appears in argv, files, or logs.
+check_drive_secret_gate() {
+  DRIVE_GATE_LABEL="${1:-all}"
+  DRIVE_FILE_ARN="$(params_file_value DriveSecretArn 2>/dev/null || true)"
+  DRIVE_FILE_ARN="$(printf '%s' "$DRIVE_FILE_ARN" | tr -d '[:space:]')"
+  if [ -z "$DRIVE_FILE_ARN" ]; then
+    if [ -n "$DRIVE_SECRET_ARN" ]; then
+      echo "refused: --drive-secret-arn with empty DriveSecretArn in the parameters file validates one secret while deploying another, no change made" >&2
+      phase_failed "$DRIVE_GATE_LABEL"
+    fi
+    echo "Verified Drive gate: DriveSecretArn empty, Drive stays unconfigured"
+    return 0
+  fi
+  case "$DRIVE_FILE_ARN" in
+    *REPLACE_WITH*|*PLACEHOLDER*)
+      echo "refused: DriveSecretArn is a placeholder, replace with the exact owned Drive secret ARN before any mutation" >&2
+      phase_failed "$DRIVE_GATE_LABEL" ;;
+  esac
+  [ -n "$DRIVE_SECRET_ARN" ] || { echo "refused: DriveSecretArn is set, exact --drive-secret-arn is required, missing CLI value refused before any mutation" >&2; phase_failed "$DRIVE_GATE_LABEL"; }
+  [ "$DRIVE_FILE_ARN" = "$DRIVE_SECRET_ARN" ] || { echo "refused: parameters file DriveSecretArn does not equal the validated CLI value, validating one set while deploying another is refused" >&2; phase_failed "$DRIVE_GATE_LABEL"; }
+  check_secret_arn "$DRIVE_SECRET_ARN" "drive"
+  echo "Verified Drive gate: exact owned Drive secret $DRIVE_SECRET_ARN"
+}
+
+# Facebook OAuth secret gate, fail-closed before any mutation. Reads
+# FacebookOAuthSecretArn from the parameters file being deployed. Empty keeps
+# Facebook sign-in unavailable; a set value requires an exact validated CLI
+# Facebook ARN that equals the file value and passes the same ownership
+# metadata proof as the Google and Meta secrets. No secret value appears in
+# argv, files, or logs.
+check_facebook_secret_gate() {
+  FACEBOOK_GATE_LABEL="${1:-all}"
+  FACEBOOK_FILE_ARN="$(params_file_value FacebookOAuthSecretArn 2>/dev/null || true)"
+  FACEBOOK_FILE_ARN="$(printf '%s' "$FACEBOOK_FILE_ARN" | tr -d '[:space:]')"
+  if [ -z "$FACEBOOK_FILE_ARN" ]; then
+    if [ -n "$FACEBOOK_SECRET_ARN" ]; then
+      echo "refused: --facebook-secret-arn with empty FacebookOAuthSecretArn in the parameters file validates one secret while deploying another, no change made" >&2
+      phase_failed "$FACEBOOK_GATE_LABEL"
+    fi
+    echo "Verified Facebook gate: FacebookOAuthSecretArn empty, Facebook sign-in stays unavailable"
+    return 0
+  fi
+  case "$FACEBOOK_FILE_ARN" in
+    *REPLACE_WITH*|*PLACEHOLDER*)
+      echo "refused: FacebookOAuthSecretArn is a placeholder, replace with the exact owned Facebook secret ARN before any mutation" >&2
+      phase_failed "$FACEBOOK_GATE_LABEL" ;;
+  esac
+  [ -n "$FACEBOOK_SECRET_ARN" ] || { echo "refused: FacebookOAuthSecretArn is set, exact --facebook-secret-arn is required, missing CLI value refused before any mutation" >&2; phase_failed "$FACEBOOK_GATE_LABEL"; }
+  [ "$FACEBOOK_FILE_ARN" = "$FACEBOOK_SECRET_ARN" ] || { echo "refused: parameters file FacebookOAuthSecretArn does not equal the validated CLI value, validating one set while deploying another is refused" >&2; phase_failed "$FACEBOOK_GATE_LABEL"; }
+  check_secret_arn "$FACEBOOK_SECRET_ARN" "facebook"
+  echo "Verified Facebook gate: exact owned Facebook secret $FACEBOOK_SECRET_ARN"
 }
 
 # Least privilege proof for the conditional Google IAM policy, fail-closed
@@ -1001,7 +1071,7 @@ start = text.find(marker)
 if start < 0:
     print("POLICY_ABSENT")
     sys.exit(0)
-end = text.find("\n  ApiTaskDefinition:", start)
+end = text.find("\n  ApiDriveSecretPolicy:", start)
 if end < 0:
     end = len(text)
 block = text[start:end]
@@ -1045,6 +1115,144 @@ PYEOF
     phase_failed "$META_POLICY_LABEL"
   fi
   echo "Verified Meta policy least privilege: ApiMetaSecretPolicy allows only GetSecretValue on the exact owned secret for the exact API execution role"
+}
+
+# Least privilege proof for the conditional Drive IAM policy, fail-closed
+# before any infra mutation when a Drive secret is configured. Reads the
+# deployed template file and proves ApiDriveSecretPolicy carries exactly one
+# Allow for secretsmanager:GetSecretValue on only the exact Drive secret ref,
+# attached to only the exact ApiExecutionRole ref, with no wildcard, no
+# extra action, no extra resource, and no KMS grant. Secret ownership plus
+# CLI and file equality is already proven by the Drive gate before this
+# runs. Any other shape refuses with no mutation.
+verify_drive_policy_least_privilege() {
+  DRIVE_POLICY_LABEL="${1:-infra}"
+  DRIVE_POLICY_PROOF="$(python3 - "$TEMPLATE_FILE" 2>/dev/null <<'PYEOF'
+import sys
+path = sys.argv[1]
+try:
+    text = open(path, encoding="utf-8").read()
+except Exception:
+    print("TEMPLATE_UNREADABLE")
+    sys.exit(0)
+marker = "ApiDriveSecretPolicy:"
+start = text.find(marker)
+if start < 0:
+    print("POLICY_ABSENT")
+    sys.exit(0)
+end = text.find("\n  ApiFacebookSecretPolicy:", start)
+if end < 0:
+    end = len(text)
+block = text[start:end]
+def has(piece):
+    return piece in block
+required = [
+    "Type: AWS::IAM::Policy",
+    "Condition: DriveEnabled",
+    "PolicyName: api-drive-secret-only",
+    "Action: [secretsmanager:GetSecretValue]",
+    "Resource: [!Ref DriveSecretArn]",
+    "Roles: [!Ref ApiExecutionRole]",
+    "Effect: Allow",
+]
+for piece in required:
+    if not has(piece):
+        print("POLICY_MISSING")
+        sys.exit(0)
+if "*" in block:
+    print("POLICY_WILDCARD")
+    sys.exit(0)
+lowered = block.lower()
+if "putsecretvalue" in lowered or "kms:" in lowered:
+    print("POLICY_EXTRA_ACTION")
+    sys.exit(0)
+if block.count("Resource:") != 1:
+    print("POLICY_EXTRA_RESOURCE")
+    sys.exit(0)
+if block.count("Action:") != 1:
+    print("POLICY_EXTRA_ACTION")
+    sys.exit(0)
+if "Effect: Deny" in block:
+    print("POLICY_DENY")
+    sys.exit(0)
+print("OK")
+PYEOF
+)" || DRIVE_POLICY_PROOF="UNREADABLE"
+  DRIVE_POLICY_PROOF="$(printf '%s' "$DRIVE_POLICY_PROOF" | tr -d '[:space:]')"
+  if [ "$DRIVE_POLICY_PROOF" != "OK" ]; then
+    echo "refused: Drive policy least privilege proof is $DRIVE_POLICY_PROOF, expected only GetSecretValue on the exact Drive secret for the exact API execution role with no wildcard, no change made." >&2
+    phase_failed "$DRIVE_POLICY_LABEL"
+  fi
+  echo "Verified Drive policy least privilege: ApiDriveSecretPolicy allows only GetSecretValue on the exact owned secret for the exact API execution role"
+}
+
+# Least privilege proof for the conditional Facebook IAM policy, fail-closed
+# before any infra mutation when a Facebook secret is configured. Reads the
+# deployed template file and proves ApiFacebookSecretPolicy carries exactly
+# one Allow for secretsmanager:GetSecretValue on only the exact Facebook
+# secret ref, attached to only the exact ApiExecutionRole ref, with no
+# wildcard, no extra action, no extra resource, and no KMS grant. Secret
+# ownership plus CLI and file equality is already proven by the Facebook gate
+# before this runs. Any other shape refuses with no mutation.
+verify_facebook_policy_least_privilege() {
+  FACEBOOK_POLICY_LABEL="${1:-infra}"
+  FACEBOOK_POLICY_PROOF="$(python3 - "$TEMPLATE_FILE" 2>/dev/null <<'PYEOF'
+import sys
+path = sys.argv[1]
+try:
+    text = open(path, encoding="utf-8").read()
+except Exception:
+    print("TEMPLATE_UNREADABLE")
+    sys.exit(0)
+marker = "ApiFacebookSecretPolicy:"
+start = text.find(marker)
+if start < 0:
+    print("POLICY_ABSENT")
+    sys.exit(0)
+end = text.find("\n  ApiTaskDefinition:", start)
+if end < 0:
+    end = len(text)
+block = text[start:end]
+def has(piece):
+    return piece in block
+required = [
+    "Type: AWS::IAM::Policy",
+    "Condition: FacebookEnabled",
+    "PolicyName: api-facebook-secret-only",
+    "Action: [secretsmanager:GetSecretValue]",
+    "Resource: [!Ref FacebookOAuthSecretArn]",
+    "Roles: [!Ref ApiExecutionRole]",
+    "Effect: Allow",
+]
+for piece in required:
+    if not has(piece):
+        print("POLICY_MISSING")
+        sys.exit(0)
+if "*" in block:
+    print("POLICY_WILDCARD")
+    sys.exit(0)
+lowered = block.lower()
+if "putsecretvalue" in lowered or "kms:" in lowered:
+    print("POLICY_EXTRA_ACTION")
+    sys.exit(0)
+if block.count("Resource:") != 1:
+    print("POLICY_EXTRA_RESOURCE")
+    sys.exit(0)
+if block.count("Action:") != 1:
+    print("POLICY_EXTRA_ACTION")
+    sys.exit(0)
+if "Effect: Deny" in block:
+    print("POLICY_DENY")
+    sys.exit(0)
+print("OK")
+PYEOF
+)" || FACEBOOK_POLICY_PROOF="UNREADABLE"
+  FACEBOOK_POLICY_PROOF="$(printf '%s' "$FACEBOOK_POLICY_PROOF" | tr -d '[:space:]')"
+  if [ "$FACEBOOK_POLICY_PROOF" != "OK" ]; then
+    echo "refused: Facebook policy least privilege proof is $FACEBOOK_POLICY_PROOF, expected only GetSecretValue on the exact Facebook secret for the exact API execution role with no wildcard, no change made." >&2
+    phase_failed "$FACEBOOK_POLICY_LABEL"
+  fi
+  echo "Verified Facebook policy least privilege: ApiFacebookSecretPolicy allows only GetSecretValue on the exact owned secret for the exact API execution role"
 }
 
 # Cost allocation tag admission, read-only and fail-closed. It runs before
@@ -2038,6 +2246,14 @@ case "$PHASE" in
   infra|images|init|material|dbroles|migrate|enable|all) check_meta_key_gate "$PHASE" ;;
 esac
 
+case "$PHASE" in
+  infra|images|init|material|dbroles|migrate|enable|all) check_drive_secret_gate "$PHASE" ;;
+esac
+
+case "$PHASE" in
+  infra|images|init|material|dbroles|migrate|enable|all) check_facebook_secret_gate "$PHASE" ;;
+esac
+
 # Read-only prereqs readiness for every paid app phase, never a deploy. It
 # verifies the owned prereqs stack tags and COMPLETE status, binds the exact
 # READY physical refs to the actual app parameter AcmCertificateArn plus the
@@ -2686,6 +2902,40 @@ if wants_phase infra; then
       phase_failed infra
     fi
   fi
+  INFRA_DRIVE_ARN="$(params_file_value DriveSecretArn 2>/dev/null || true)"
+  INFRA_DRIVE_ARN="$(printf '%s' "$INFRA_DRIVE_ARN" | tr -d '[:space:]')"
+  if [ -n "$INFRA_DRIVE_ARN" ]; then
+    case "$INFRA_DRIVE_ARN" in
+      *REPLACE_WITH*|*PLACEHOLDER*)
+        echo "refused: infra DriveSecretArn is a placeholder, replace with the exact owned Drive secret ARN, no change made" >&2
+        phase_failed infra ;;
+    esac
+    [ -n "$DRIVE_SECRET_ARN" ] || { echo "refused: infra DriveSecretArn requires exact --drive-secret-arn for infra staging, no change made" >&2; phase_failed infra; }
+    [ "$INFRA_DRIVE_ARN" = "$DRIVE_SECRET_ARN" ] || { echo "refused: infra DriveSecretArn does not equal the validated CLI value, no change made" >&2; phase_failed infra; }
+    verify_drive_policy_least_privilege infra
+  else
+    if [ -n "$DRIVE_SECRET_ARN" ]; then
+      echo "refused: --drive-secret-arn requires DriveSecretArn in the parameters file for infra staging, validating one secret while deploying another is refused" >&2
+      phase_failed infra
+    fi
+  fi
+  INFRA_FACEBOOK_ARN="$(params_file_value FacebookOAuthSecretArn 2>/dev/null || true)"
+  INFRA_FACEBOOK_ARN="$(printf '%s' "$INFRA_FACEBOOK_ARN" | tr -d '[:space:]')"
+  if [ -n "$INFRA_FACEBOOK_ARN" ]; then
+    case "$INFRA_FACEBOOK_ARN" in
+      *REPLACE_WITH*|*PLACEHOLDER*)
+        echo "refused: infra FacebookOAuthSecretArn is a placeholder, replace with the exact owned Facebook secret ARN, no change made" >&2
+        phase_failed infra ;;
+    esac
+    [ -n "$FACEBOOK_SECRET_ARN" ] || { echo "refused: infra FacebookOAuthSecretArn requires exact --facebook-secret-arn for infra staging, no change made" >&2; phase_failed infra; }
+    [ "$INFRA_FACEBOOK_ARN" = "$FACEBOOK_SECRET_ARN" ] || { echo "refused: infra FacebookOAuthSecretArn does not equal the validated CLI value, no change made" >&2; phase_failed infra; }
+    verify_facebook_policy_least_privilege infra
+  else
+    if [ -n "$FACEBOOK_SECRET_ARN" ]; then
+      echo "refused: --facebook-secret-arn requires FacebookOAuthSecretArn in the parameters file for infra staging, validating one secret while deploying another is refused" >&2
+      phase_failed infra
+    fi
+  fi
   if [ "$WAS_NEW" -eq 1 ]; then
     echo "Infra: proving both owned services stopped before any task definition update."
     verify_ecs_service_stopped ApiService api infra
@@ -2805,13 +3055,15 @@ PYEOF
       echo "refused: infra change set has unreviewed pages after 3, no change made. Pending change set $INFRA_CHANGESET preserved for inspection." >&2
       phase_failed infra
     fi
-    INFRA_RAW="$(python3 - "$INFRA_PAGES_DIR" "$STACK_NAME" "$STACK_ID" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$INFRA_CHANGESET" "$PARAMETERS_FILE" "$INFRA_GOOGLE_ENABLE" "$INFRA_GOOGLE_ARN" "$INFRA_META_ARN" 2>/dev/null <<'PYEOF'
+    INFRA_RAW="$(python3 - "$INFRA_PAGES_DIR" "$STACK_NAME" "$STACK_ID" "$EXPECTED_ACCOUNT" "$EXPECTED_REGION" "$INFRA_CHANGESET" "$PARAMETERS_FILE" "$INFRA_GOOGLE_ENABLE" "$INFRA_GOOGLE_ARN" "$INFRA_META_ARN" "$INFRA_DRIVE_ARN" "$INFRA_FACEBOOK_ARN" 2>/dev/null <<'PYEOF'
 import glob, json, os, sys
 pages_dir, want_stack, want_id = sys.argv[1:4]
 want_account, want_region, want_name, params_file = sys.argv[4:8]
 google_enable = sys.argv[8] if len(sys.argv) > 8 else "false"
 google_arn = sys.argv[9] if len(sys.argv) > 9 else ""
 meta_arn = sys.argv[10] if len(sys.argv) > 10 else ""
+drive_arn = sys.argv[11] if len(sys.argv) > 11 else ""
+facebook_arn = sys.argv[12] if len(sys.argv) > 12 else ""
 pages = sorted(glob.glob(os.path.join(pages_dir, "page-*.json")))
 if not pages:
     print("MALFORMED")
@@ -2865,7 +3117,7 @@ for page_file in pages:
         print("MALFORMED")
         sys.exit(0)
     changes.extend(part)
-    if len(changes) > 10:
+    if len(changes) > 12:
         print("TOO_MANY_%d" % len(changes))
         sys.exit(0)
 if len(changes) == 0:
@@ -2953,6 +3205,106 @@ for entry in changes:
         if not meta_arn.startswith(
                 "arn:aws:secretsmanager:%s:%s:secret:" % (want_region, want_account)):
             print("META_ARN_FOREIGN")
+            sys.exit(0)
+        if logical in seen:
+            print("DUPLICATE_%s" % logical)
+            sys.exit(0)
+        seen.add(logical)
+        if action != "Add":
+            print("ACTION_%s_%s" % (logical, action or "EMPTY"))
+            sys.exit(0)
+        if rtype != "AWS::IAM::Policy":
+            print("TYPE_%s_%s" % (logical, rtype or "EMPTY"))
+            sys.exit(0)
+        if str(replacement) != "False":
+            print("REPLACEMENT_%s_%s" % (logical, str(replacement)))
+            sys.exit(0)
+        scope = rc.get("Scope", None)
+        if scope is not None:
+            if not isinstance(scope, list):
+                print("SCOPE_%s" % logical)
+                sys.exit(0)
+            if len(scope) == 0:
+                pass
+            elif scope != ["Properties"]:
+                for item in scope:
+                    if item != "Properties":
+                        print("SCOPE_%s_%s" % (logical, str(item)))
+                        sys.exit(0)
+                print("SCOPE_%s" % logical)
+                sys.exit(0)
+        details = rc.get("Details", None)
+        if not isinstance(details, list):
+            print("DETAILS_%s_MALFORMED" % logical)
+            sys.exit(0)
+        if len(details) != 0:
+            try:
+                blob = json.dumps(details)
+            except Exception:
+                blob = ""
+            if "*" in blob:
+                print("WILDCARD_%s" % logical)
+                sys.exit(0)
+            print("DETAILS_%s_UNEXPECTED" % logical)
+            sys.exit(0)
+        continue
+    if logical == "ApiDriveSecretPolicy":
+        if not drive_arn or "REPLACE_WITH" in drive_arn or "PLACEHOLDER" in drive_arn:
+            print("DRIVE_ARN_EMPTY")
+            sys.exit(0)
+        if not drive_arn.startswith(
+                "arn:aws:secretsmanager:%s:%s:secret:" % (want_region, want_account)):
+            print("DRIVE_ARN_FOREIGN")
+            sys.exit(0)
+        if logical in seen:
+            print("DUPLICATE_%s" % logical)
+            sys.exit(0)
+        seen.add(logical)
+        if action != "Add":
+            print("ACTION_%s_%s" % (logical, action or "EMPTY"))
+            sys.exit(0)
+        if rtype != "AWS::IAM::Policy":
+            print("TYPE_%s_%s" % (logical, rtype or "EMPTY"))
+            sys.exit(0)
+        if str(replacement) != "False":
+            print("REPLACEMENT_%s_%s" % (logical, str(replacement)))
+            sys.exit(0)
+        scope = rc.get("Scope", None)
+        if scope is not None:
+            if not isinstance(scope, list):
+                print("SCOPE_%s" % logical)
+                sys.exit(0)
+            if len(scope) == 0:
+                pass
+            elif scope != ["Properties"]:
+                for item in scope:
+                    if item != "Properties":
+                        print("SCOPE_%s_%s" % (logical, str(item)))
+                        sys.exit(0)
+                print("SCOPE_%s" % logical)
+                sys.exit(0)
+        details = rc.get("Details", None)
+        if not isinstance(details, list):
+            print("DETAILS_%s_MALFORMED" % logical)
+            sys.exit(0)
+        if len(details) != 0:
+            try:
+                blob = json.dumps(details)
+            except Exception:
+                blob = ""
+            if "*" in blob:
+                print("WILDCARD_%s" % logical)
+                sys.exit(0)
+            print("DETAILS_%s_UNEXPECTED" % logical)
+            sys.exit(0)
+        continue
+    if logical == "ApiFacebookSecretPolicy":
+        if not facebook_arn or "REPLACE_WITH" in facebook_arn or "PLACEHOLDER" in facebook_arn:
+            print("FACEBOOK_ARN_EMPTY")
+            sys.exit(0)
+        if not facebook_arn.startswith(
+                "arn:aws:secretsmanager:%s:%s:secret:" % (want_region, want_account)):
+            print("FACEBOOK_ARN_FOREIGN")
             sys.exit(0)
         if logical in seen:
             print("DUPLICATE_%s" % logical)
@@ -3106,6 +3458,14 @@ if meta_arn:
     if expected.get("MetaSecretArn", "") != meta_arn:
         print("PARAMS_META_ARN")
         sys.exit(0)
+if drive_arn:
+    if expected.get("DriveSecretArn", "") != drive_arn:
+        print("PARAMS_DRIVE_ARN")
+        sys.exit(0)
+if facebook_arn:
+    if expected.get("FacebookOAuthSecretArn", "") != facebook_arn:
+        print("PARAMS_FACEBOOK_ARN")
+        sys.exit(0)
 if len(expected) > 20:
     print("PARAMS_MANY")
     sys.exit(0)
@@ -3167,7 +3527,7 @@ PYEOF
       fi
     elif [ "$INFRA_REVIEW" != "OK" ]; then
       rm -rf "$INFRA_PAGES_DIR"
-      echo "refused: infra review proof is $INFRA_REVIEW, expected only owned task definition image or service taskdef Modify with taskdef-only replacement plus optional exact ApiGoogleAuthPolicy Add only when Google explicitly enabled and optional exact ApiMetaSecretPolicy Add only when MetaSecretArn is set, each with least privilege proof, and no DB, network, cert, or other secrets change. Pending change set $INFRA_CHANGESET preserved for inspection, no execute made, no delete made." >&2
+      echo "refused: infra review proof is $INFRA_REVIEW, expected only owned task definition image or service taskdef Modify with taskdef-only replacement plus optional exact ApiGoogleAuthPolicy Add only when Google explicitly enabled and optional exact ApiMetaSecretPolicy Add only when MetaSecretArn is set and optional exact ApiDriveSecretPolicy Add only when DriveSecretArn is set and optional exact ApiFacebookSecretPolicy Add only when FacebookOAuthSecretArn is set, each with least privilege proof, and no DB, network, cert, or other secrets change. Pending change set $INFRA_CHANGESET preserved for inspection, no execute made, no delete made." >&2
       phase_failed infra
     else
       INFRA_CHANGESET_ID="$(printf '%s\n' "$INFRA_RAW" | awk -F'\t' '$1=="ID"{print $2}')"
@@ -3227,6 +3587,42 @@ PYEOF
         fi
       fi
     fi
+    if [ -n "$INFRA_DRIVE_ARN" ]; then
+      INFRA_DRIVE_PHYSICAL=""
+      if ! INFRA_DRIVE_PHYSICAL="$(stack_resource ApiDriveSecretPolicy 2>"$TMP_ERR")"; then
+        echo "refused: infra Drive policy missing after update, expected exact ApiDriveSecretPolicy, no later phase started." >&2
+        phase_failed infra
+      fi
+      INFRA_DRIVE_PHYSICAL="$(printf '%s' "$INFRA_DRIVE_PHYSICAL" | tr -d '[:space:]')"
+      [ -n "$INFRA_DRIVE_PHYSICAL" ] && [ "$INFRA_DRIVE_PHYSICAL" != "None" ] || { echo "refused: infra Drive policy physical ID missing after update, no later phase started." >&2; phase_failed infra; }
+      echo "Verified infra Drive policy present: ApiDriveSecretPolicy"
+    else
+      if INFRA_DRIVE_PHYSICAL="$(stack_resource ApiDriveSecretPolicy 2>/dev/null)"; then
+        INFRA_DRIVE_PHYSICAL="$(printf '%s' "$INFRA_DRIVE_PHYSICAL" | tr -d '[:space:]')"
+        if [ -n "$INFRA_DRIVE_PHYSICAL" ] && [ "$INFRA_DRIVE_PHYSICAL" != "None" ]; then
+          echo "refused: infra Drive policy present while DriveSecretArn empty, expected absent, no later phase started." >&2
+          phase_failed infra
+        fi
+      fi
+    fi
+    if [ -n "$INFRA_FACEBOOK_ARN" ]; then
+      INFRA_FACEBOOK_PHYSICAL=""
+      if ! INFRA_FACEBOOK_PHYSICAL="$(stack_resource ApiFacebookSecretPolicy 2>"$TMP_ERR")"; then
+        echo "refused: infra Facebook policy missing after update, expected exact ApiFacebookSecretPolicy, no later phase started." >&2
+        phase_failed infra
+      fi
+      INFRA_FACEBOOK_PHYSICAL="$(printf '%s' "$INFRA_FACEBOOK_PHYSICAL" | tr -d '[:space:]')"
+      [ -n "$INFRA_FACEBOOK_PHYSICAL" ] && [ "$INFRA_FACEBOOK_PHYSICAL" != "None" ] || { echo "refused: infra Facebook policy physical ID missing after update, no later phase started." >&2; phase_failed infra; }
+      echo "Verified infra Facebook policy present: ApiFacebookSecretPolicy"
+    else
+      if INFRA_FACEBOOK_PHYSICAL="$(stack_resource ApiFacebookSecretPolicy 2>/dev/null)"; then
+        INFRA_FACEBOOK_PHYSICAL="$(printf '%s' "$INFRA_FACEBOOK_PHYSICAL" | tr -d '[:space:]')"
+        if [ -n "$INFRA_FACEBOOK_PHYSICAL" ] && [ "$INFRA_FACEBOOK_PHYSICAL" != "None" ]; then
+          echo "refused: infra Facebook policy present while FacebookOAuthSecretArn empty, expected absent, no later phase started." >&2
+          phase_failed infra
+        fi
+      fi
+    fi
   fi
   if [ "$WAS_NEW" -eq 0 ]; then
     if ! cloudformation_deploy "$TARGET_SERVICES" infra; then
@@ -3269,6 +3665,42 @@ PYEOF
         INFRA_META_PHYSICAL="$(printf '%s' "$INFRA_META_PHYSICAL" | tr -d '[:space:]')"
         if [ -n "$INFRA_META_PHYSICAL" ] && [ "$INFRA_META_PHYSICAL" != "None" ]; then
           echo "refused: infra Meta policy present while MetaSecretArn empty, expected absent, no later phase started." >&2
+          phase_failed infra
+        fi
+      fi
+    fi
+    if [ -n "$INFRA_DRIVE_ARN" ]; then
+      INFRA_DRIVE_PHYSICAL=""
+      if ! INFRA_DRIVE_PHYSICAL="$(stack_resource ApiDriveSecretPolicy 2>"$TMP_ERR")"; then
+        echo "refused: infra Drive policy missing after create, expected exact ApiDriveSecretPolicy, no later phase started." >&2
+        phase_failed infra
+      fi
+      INFRA_DRIVE_PHYSICAL="$(printf '%s' "$INFRA_DRIVE_PHYSICAL" | tr -d '[:space:]')"
+      [ -n "$INFRA_DRIVE_PHYSICAL" ] && [ "$INFRA_DRIVE_PHYSICAL" != "None" ] || { echo "refused: infra Drive policy physical ID missing after create, no later phase started." >&2; phase_failed infra; }
+      echo "Verified infra Drive policy present: ApiDriveSecretPolicy"
+    else
+      if INFRA_DRIVE_PHYSICAL="$(stack_resource ApiDriveSecretPolicy 2>/dev/null)"; then
+        INFRA_DRIVE_PHYSICAL="$(printf '%s' "$INFRA_DRIVE_PHYSICAL" | tr -d '[:space:]')"
+        if [ -n "$INFRA_DRIVE_PHYSICAL" ] && [ "$INFRA_DRIVE_PHYSICAL" != "None" ]; then
+          echo "refused: infra Drive policy present while DriveSecretArn empty, expected absent, no later phase started." >&2
+          phase_failed infra
+        fi
+      fi
+    fi
+    if [ -n "$INFRA_FACEBOOK_ARN" ]; then
+      INFRA_FACEBOOK_PHYSICAL=""
+      if ! INFRA_FACEBOOK_PHYSICAL="$(stack_resource ApiFacebookSecretPolicy 2>"$TMP_ERR")"; then
+        echo "refused: infra Facebook policy missing after create, expected exact ApiFacebookSecretPolicy, no later phase started." >&2
+        phase_failed infra
+      fi
+      INFRA_FACEBOOK_PHYSICAL="$(printf '%s' "$INFRA_FACEBOOK_PHYSICAL" | tr -d '[:space:]')"
+      [ -n "$INFRA_FACEBOOK_PHYSICAL" ] && [ "$INFRA_FACEBOOK_PHYSICAL" != "None" ] || { echo "refused: infra Facebook policy physical ID missing after create, no later phase started." >&2; phase_failed infra; }
+      echo "Verified infra Facebook policy present: ApiFacebookSecretPolicy"
+    else
+      if INFRA_FACEBOOK_PHYSICAL="$(stack_resource ApiFacebookSecretPolicy 2>/dev/null)"; then
+        INFRA_FACEBOOK_PHYSICAL="$(printf '%s' "$INFRA_FACEBOOK_PHYSICAL" | tr -d '[:space:]')"
+        if [ -n "$INFRA_FACEBOOK_PHYSICAL" ] && [ "$INFRA_FACEBOOK_PHYSICAL" != "None" ]; then
+          echo "refused: infra Facebook policy present while FacebookOAuthSecretArn empty, expected absent, no later phase started." >&2
           phase_failed infra
         fi
       fi
@@ -3888,13 +4320,16 @@ verify_historical_image() {
   return 0
 }
 
-# API task definition binding with Google plus Meta shape awareness. Reads
-# EnableGoogleAuth and MetaSecretArn from the parameters file being deployed.
-# Google true proves the five secret Google shape with exact owned Google
-# client ID plus secret refs. A set MetaSecretArn adds the exact owned Meta
-# key ref on top of either shape. Both empty proves the keyless three secret
-# shape. No secret value appears here, only ARNs plus key names. Called in
-# images plus enable before any boot.
+# API task definition binding with Google plus Meta plus Drive plus
+# Facebook shape awareness. Reads EnableGoogleAuth, MetaSecretArn,
+# DriveSecretArn, and FacebookOAuthSecretArn from the parameters file being
+# deployed. Google true proves the five secret Google shape with exact owned
+# Google client ID plus secret refs. A set MetaSecretArn adds the exact owned
+# Meta key ref, a set DriveSecretArn adds the Drive pair, and a set
+# FacebookOAuthSecretArn adds the Facebook pair, each on top of the base
+# shape. All empty proves the keyless three secret shape. No secret value
+# appears here, only ARNs plus key names. Called in images plus enable
+# before any boot.
 check_api_taskdef_binding() {
   API_BIND_LABEL="${1:-images}"
   API_BIND_ENABLE="$(params_file_value EnableGoogleAuth 2>/dev/null || true)"
@@ -3911,42 +4346,54 @@ check_api_taskdef_binding() {
       phase_failed "$API_BIND_LABEL"
     fi
   fi
-  API_BIND_EXTRA=""
-  if [ -n "$API_BIND_META" ]; then
-    API_BIND_EXTRA="api.META_API_KEY=$META_SECRET_ARN:meta-api-key::"
+  API_BIND_DRIVE="$(params_file_value DriveSecretArn 2>/dev/null || true)"
+  API_BIND_DRIVE="$(printf '%s' "$API_BIND_DRIVE" | tr -d '[:space:]')"
+  if [ -n "$API_BIND_DRIVE" ]; then
+    [ -n "$DRIVE_SECRET_ARN" ] || { echo "refused: DriveSecretArn is set, exact --drive-secret-arn is required for API binding proof" >&2; phase_failed "$API_BIND_LABEL"; }
+    [ "$API_BIND_DRIVE" = "$DRIVE_SECRET_ARN" ] || { echo "refused: API binding DriveSecretArn does not equal the validated CLI value, no change made" >&2; phase_failed "$API_BIND_LABEL"; }
+  else
+    if [ -n "$DRIVE_SECRET_ARN" ]; then
+      echo "refused: --drive-secret-arn requires DriveSecretArn in the parameters file for API binding proof, no change made" >&2
+      phase_failed "$API_BIND_LABEL"
+    fi
+  fi
+  API_BIND_FACEBOOK="$(params_file_value FacebookOAuthSecretArn 2>/dev/null || true)"
+  API_BIND_FACEBOOK="$(printf '%s' "$API_BIND_FACEBOOK" | tr -d '[:space:]')"
+  if [ -n "$API_BIND_FACEBOOK" ]; then
+    [ -n "$FACEBOOK_SECRET_ARN" ] || { echo "refused: FacebookOAuthSecretArn is set, exact --facebook-secret-arn is required for API binding proof" >&2; phase_failed "$API_BIND_LABEL"; }
+    [ "$API_BIND_FACEBOOK" = "$FACEBOOK_SECRET_ARN" ] || { echo "refused: API binding FacebookOAuthSecretArn does not equal the validated CLI value, no change made" >&2; phase_failed "$API_BIND_LABEL"; }
+  else
+    if [ -n "$FACEBOOK_SECRET_ARN" ]; then
+      echo "refused: --facebook-secret-arn requires FacebookOAuthSecretArn in the parameters file for API binding proof, no change made" >&2
+      phase_failed "$API_BIND_LABEL"
+    fi
   fi
   if [ "$API_BIND_ENABLE" = "true" ]; then
     [ -n "$GOOGLE_SECRET_ARN" ] || { echo "refused: EnableGoogleAuth true requires exact --google-secret-arn for API binding proof" >&2; phase_failed "$API_BIND_LABEL"; }
-    if [ -n "$API_BIND_EXTRA" ]; then
-      check_taskdef_binding ApiTaskDefinition ApiExecutionRole ApiTaskRole \
-        "api.DATABASE_URL=$RUNTIME_SECRET_ARN:database-url::" \
-        "api.TLS_CERT_B64=$TLS_SECRET_ARN:tls-cert-b64::" \
-        "api.TLS_KEY_B64=$TLS_SECRET_ARN:tls-key-b64::" \
-        "api.GOOGLE_CLIENT_ID=$GOOGLE_SECRET_ARN:google-client-id::" \
-        "api.GOOGLE_CLIENT_SECRET=$GOOGLE_SECRET_ARN:google-client-secret::" \
-        "$API_BIND_EXTRA"
-    else
-      check_taskdef_binding ApiTaskDefinition ApiExecutionRole ApiTaskRole \
-        "api.DATABASE_URL=$RUNTIME_SECRET_ARN:database-url::" \
-        "api.TLS_CERT_B64=$TLS_SECRET_ARN:tls-cert-b64::" \
-        "api.TLS_KEY_B64=$TLS_SECRET_ARN:tls-key-b64::" \
-        "api.GOOGLE_CLIENT_ID=$GOOGLE_SECRET_ARN:google-client-id::" \
-        "api.GOOGLE_CLIENT_SECRET=$GOOGLE_SECRET_ARN:google-client-secret::"
-    fi
+    set -- ApiTaskDefinition ApiExecutionRole ApiTaskRole \
+      "api.DATABASE_URL=$RUNTIME_SECRET_ARN:database-url::" \
+      "api.TLS_CERT_B64=$TLS_SECRET_ARN:tls-cert-b64::" \
+      "api.TLS_KEY_B64=$TLS_SECRET_ARN:tls-key-b64::" \
+      "api.GOOGLE_CLIENT_ID=$GOOGLE_SECRET_ARN:google-client-id::" \
+      "api.GOOGLE_CLIENT_SECRET=$GOOGLE_SECRET_ARN:google-client-secret::"
   else
-    if [ -n "$API_BIND_EXTRA" ]; then
-      check_taskdef_binding ApiTaskDefinition ApiExecutionRole ApiTaskRole \
-        "api.DATABASE_URL=$RUNTIME_SECRET_ARN:database-url::" \
-        "api.TLS_CERT_B64=$TLS_SECRET_ARN:tls-cert-b64::" \
-        "api.TLS_KEY_B64=$TLS_SECRET_ARN:tls-key-b64::" \
-        "$API_BIND_EXTRA"
-    else
-      check_taskdef_binding ApiTaskDefinition ApiExecutionRole ApiTaskRole \
-        "api.DATABASE_URL=$RUNTIME_SECRET_ARN:database-url::" \
-        "api.TLS_CERT_B64=$TLS_SECRET_ARN:tls-cert-b64::" \
-        "api.TLS_KEY_B64=$TLS_SECRET_ARN:tls-key-b64::"
-    fi
+    set -- ApiTaskDefinition ApiExecutionRole ApiTaskRole \
+      "api.DATABASE_URL=$RUNTIME_SECRET_ARN:database-url::" \
+      "api.TLS_CERT_B64=$TLS_SECRET_ARN:tls-cert-b64::" \
+      "api.TLS_KEY_B64=$TLS_SECRET_ARN:tls-key-b64::"
   fi
+  if [ -n "$API_BIND_META" ]; then
+    set -- "$@" "api.META_API_KEY=$META_SECRET_ARN:meta-api-key::"
+  fi
+  if [ -n "$API_BIND_DRIVE" ]; then
+    set -- "$@" "api.GOOGLE_DRIVE_API_KEY=$DRIVE_SECRET_ARN:google-drive-api-key::" \
+      "api.GOOGLE_DRIVE_APP_ID=$DRIVE_SECRET_ARN:google-drive-app-id::"
+  fi
+  if [ -n "$API_BIND_FACEBOOK" ]; then
+    set -- "$@" "api.FACEBOOK_CLIENT_ID=$FACEBOOK_SECRET_ARN:facebook-client-id::" \
+      "api.FACEBOOK_CLIENT_SECRET=$FACEBOOK_SECRET_ARN:facebook-client-secret::"
+  fi
+  check_taskdef_binding "$@"
 }
 
 if wants_phase images; then

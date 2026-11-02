@@ -33,6 +33,8 @@ SECRET_MASTER = f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:launchcrew-ma
 SECRET_TLS = f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:launchcrew-tls-QrStUv"
 SECRET_GOOGLE = f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:launchcrew-google-AbCdEf"
 SECRET_META = f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:launchcrew-meta-AbCdEf"
+SECRET_DRIVE = f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:launchcrew-drive-AbCdEf"
+SECRET_FACEBOOK = f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:launchcrew-facebook-AbCdEf"
 TOPIC_ARN = f"arn:aws:sns:{REGION}:{ACCOUNT}:launchcrew-foundation-BudgetTopic-ABC123"
 SUB_ARN = f"{TOPIC_ARN}:12345678-90ab-cdef-1234-567890abcdef"
 CERT_ARN = f"arn:aws:acm:{REGION}:{ACCOUNT}:certificate/12345678-90ab-cdef-1234-567890abcde1"
@@ -367,6 +369,16 @@ def policy_meta_exact():
         "Action": "Add", "LogicalResourceId": "ApiMetaSecretPolicy",
         "PhysicalResourceId": "", "ResourceType": "AWS::IAM::Policy",
         "Replacement": "False", "Scope": ["Properties"], "Details": []}}
+def policy_drive_exact():
+    return {"Type": "Resource", "ResourceChange": {
+        "Action": "Add", "LogicalResourceId": "ApiDriveSecretPolicy",
+        "PhysicalResourceId": "", "ResourceType": "AWS::IAM::Policy",
+        "Replacement": "False", "Scope": ["Properties"], "Details": []}}
+def policy_facebook_exact():
+    return {"Type": "Resource", "ResourceChange": {
+        "Action": "Add", "LogicalResourceId": "ApiFacebookSecretPolicy",
+        "PhysicalResourceId": "", "ResourceType": "AWS::IAM::Policy",
+        "Replacement": "False", "Scope": ["Properties"], "Details": []}}
 if mode == "malformed":
     print("not-json{{{")
 elif mode == "empty":
@@ -431,6 +443,8 @@ elif mode == "meta_exact":
     print(json.dumps(base(FULL + [policy_meta_exact()], iparams())))
 elif mode == "meta_foreign":
     print(json.dumps(base(FULL[:8] + [policy_meta_exact(), FOREIGN_DB], iparams())))
+elif mode == "drive_facebook_exact":
+    print(json.dumps(base(FULL + [policy_meta_exact(), policy_drive_exact(), policy_facebook_exact()], iparams())))
 else:
     print(json.dumps(base(FULL, iparams())))
 PYEOF
@@ -648,6 +662,32 @@ if [ "$1" = "cloudformation" ] && [ "$2" = "describe-stack-resource" ]; then
         exit 254
       fi
       printf 'launchcrew-demo-ApiMetaSecretPolicy-ABC123\\n'; exit 0 ;;
+    ApiDriveSecretPolicy)
+      if [ "${FAKE_DRIVE_POLICY_ABSENT:-no}" = "yes" ]; then
+        echo "An error occurred (ValidationError) when calling the DescribeStackResource operation: resource does not exist" >&2
+        exit 254
+      fi
+      if [ "${FAKE_DRIVE_POLICY_PRESENT:-no}" = "yes" ]; then
+        printf 'launchcrew-demo-ApiDriveSecretPolicy-UNEXPECTED\\n'; exit 0
+      fi
+      if [ -z "${FAKE_DRIVE_ARN:-}" ]; then
+        echo "An error occurred (ValidationError) when calling the DescribeStackResource operation: resource does not exist" >&2
+        exit 254
+      fi
+      printf 'launchcrew-demo-ApiDriveSecretPolicy-ABC123\\n'; exit 0 ;;
+    ApiFacebookSecretPolicy)
+      if [ "${FAKE_FACEBOOK_POLICY_ABSENT:-no}" = "yes" ]; then
+        echo "An error occurred (ValidationError) when calling the DescribeStackResource operation: resource does not exist" >&2
+        exit 254
+      fi
+      if [ "${FAKE_FACEBOOK_POLICY_PRESENT:-no}" = "yes" ]; then
+        printf 'launchcrew-demo-ApiFacebookSecretPolicy-UNEXPECTED\\n'; exit 0
+      fi
+      if [ -z "${FAKE_FACEBOOK_ARN:-}" ]; then
+        echo "An error occurred (ValidationError) when calling the DescribeStackResource operation: resource does not exist" >&2
+        exit 254
+      fi
+      printf 'launchcrew-demo-ApiFacebookSecretPolicy-ABC123\\n'; exit 0 ;;
     ApiExecutionRole|WebExecutionRole|MigrationExecutionRole|BootstrapExecutionRole|VerifyExecutionRole|SdkInitExecutionRole|SdkMaterialExecutionRole|RoleStateExecutionRole|ApiTaskRole|WebTaskRole|MigrationTaskRole|BootstrapTaskRole|VerifyTaskRole|SdkInitTaskRole|SdkMaterialTaskRole|RoleStateTaskRole) printf '%s-physical\\n' "$RESOURCE_LOGICAL"; exit 0 ;;
   esac
   echo "fake-aws: unexpected resource lookup: $*" >&2
@@ -1318,6 +1358,8 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-task""-definition" ]; then
   SEC_TLS="${FAKE_TLS_ARN:-}"
   SEC_GOOGLE="${FAKE_GOOGLE_ARN:-}"
   SEC_META="${FAKE_META_ARN:-}"
+  SEC_DRIVE="${FAKE_DRIVE_ARN:-}"
+  SEC_FACEBOOK="${FAKE_FACEBOOK_ARN:-}"
   if [ "$MODE" = "taskdef_image_mismatch" ]; then
     IMG_API="111122223333.dkr.ecr.us-east-1.amazonaws.com/wrong-repo:bad"
     IMG_WEB="111122223333.dkr.ecr.us-east-1.amazonaws.com/wrong-repo:bad"
@@ -1351,7 +1393,9 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-task""-definition" ]; then
   ORIG_BOOT_IMG="${FAKE_ORIG_BOOTSTRAP_IMAGE:-$IMG_BOOT}"
   case "$TASKDEF" in
     *launchcrew-demo-api*)
-      if [ -n "$SEC_GOOGLE" ] && [ -n "$SEC_META" ]; then
+      if [ -n "$SEC_GOOGLE" ] && [ -n "$SEC_META" ] && [ -n "$SEC_DRIVE" ] && [ -n "$SEC_FACEBOOK" ]; then
+        printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/ApiExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/ApiTaskRole%s","containerDefinitions":[{"name":"api","essential":true,"image":"%s","secrets":[{"name":"DATABASE_URL","valueFrom":"%s:database-url::"},{"name":"TLS_CERT_B64","valueFrom":"%s:tls-cert-b64::"},{"name":"TLS_KEY_B64","valueFrom":"%s:tls-key-b64::"},{"name":"GOOGLE_CLIENT_ID","valueFrom":"%s:google-client-id::"},{"name":"GOOGLE_CLIENT_SECRET","valueFrom":"%s:google-client-secret::"},{"name":"META_API_KEY","valueFrom":"%s:meta-api-key::"},{"name":"GOOGLE_DRIVE_API_KEY","valueFrom":"%s:google-drive-api-key::"},{"name":"GOOGLE_DRIVE_APP_ID","valueFrom":"%s:google-drive-app-id::"},{"name":"FACEBOOK_CLIENT_ID","valueFrom":"%s:facebook-client-id::"},{"name":"FACEBOOK_CLIENT_SECRET","valueFrom":"%s:facebook-client-secret::"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_API" "$SEC_RT" "$SEC_TLS" "$SEC_TLS" "$SEC_GOOGLE" "$SEC_GOOGLE" "$SEC_META" "$SEC_DRIVE" "$SEC_DRIVE" "$SEC_FACEBOOK" "$SEC_FACEBOOK"
+      elif [ -n "$SEC_GOOGLE" ] && [ -n "$SEC_META" ]; then
         printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/ApiExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/ApiTaskRole%s","containerDefinitions":[{"name":"api","essential":true,"image":"%s","secrets":[{"name":"DATABASE_URL","valueFrom":"%s:database-url::"},{"name":"TLS_CERT_B64","valueFrom":"%s:tls-cert-b64::"},{"name":"TLS_KEY_B64","valueFrom":"%s:tls-key-b64::"},{"name":"GOOGLE_CLIENT_ID","valueFrom":"%s:google-client-id::"},{"name":"GOOGLE_CLIENT_SECRET","valueFrom":"%s:google-client-secret::"},{"name":"META_API_KEY","valueFrom":"%s:meta-api-key::"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_API" "$SEC_RT" "$SEC_TLS" "$SEC_TLS" "$SEC_GOOGLE" "$SEC_GOOGLE" "$SEC_META"
       elif [ -n "$SEC_GOOGLE" ]; then
         printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/ApiExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/ApiTaskRole%s","containerDefinitions":[{"name":"api","essential":true,"image":"%s","secrets":[{"name":"DATABASE_URL","valueFrom":"%s:database-url::"},{"name":"TLS_CERT_B64","valueFrom":"%s:tls-cert-b64::"},{"name":"TLS_KEY_B64","valueFrom":"%s:tls-key-b64::"},{"name":"GOOGLE_CLIENT_ID","valueFrom":"%s:google-client-id::"},{"name":"GOOGLE_CLIENT_SECRET","valueFrom":"%s:google-client-secret::"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_API" "$SEC_RT" "$SEC_TLS" "$SEC_TLS" "$SEC_GOOGLE" "$SEC_GOOGLE"
@@ -1549,6 +1593,8 @@ class BootstrapHarness(unittest.TestCase):
         "--tls-secret-arn": "TlsSecretArn",
         "--google-secret-arn": "GoogleOAuthSecretArn",
         "--meta-secret-arn": "MetaSecretArn",
+        "--drive-secret-arn": "DriveSecretArn",
+        "--facebook-secret-arn": "FacebookOAuthSecretArn",
     }
     IMAGE_ENV = {
         "--api-image": "FAKE_API_IMAGE",
@@ -1564,6 +1610,8 @@ class BootstrapHarness(unittest.TestCase):
         "--tls-secret-arn": "FAKE_TLS_ARN",
         "--google-secret-arn": "FAKE_GOOGLE_ARN",
         "--meta-secret-arn": "FAKE_META_ARN",
+        "--drive-secret-arn": "FAKE_DRIVE_ARN",
+        "--facebook-secret-arn": "FAKE_FACEBOOK_ARN",
     }
 
     def run_bootstrap(self, args, mode="success", extra_env=None,
@@ -5241,6 +5289,89 @@ class MetaKeyGateTests(BootstrapHarness):
         self.assertNotEqual(result.returncode, 0)
         combined = result.stdout + result.stderr
         self.assertIn("MISSING", combined)
+
+
+class DriveFacebookBindingTests(BootstrapHarness):
+    def full_args(self):
+        return self.base_args(**{"--google-secret-arn": SECRET_GOOGLE,
+                                 "--meta-secret-arn": SECRET_META,
+                                 "--drive-secret-arn": SECRET_DRIVE,
+                                 "--facebook-secret-arn": SECRET_FACEBOOK})
+
+    def full_params(self):
+        return {"EnableGoogleAuth": "true",
+                "GoogleOAuthSecretArn": SECRET_GOOGLE,
+                "MetaSecretArn": SECRET_META,
+                "DriveSecretArn": SECRET_DRIVE,
+                "FacebookOAuthSecretArn": SECRET_FACEBOOK}
+
+    def test_drive_facebook_ten_secret_images_success(self):
+        result, calls = self.run_bootstrap(
+            [*self.full_args(), "--phase", "images"],
+            params_overrides=self.full_params())
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        combined = result.stdout + result.stderr
+        self.assertIn("Verified Drive gate", combined)
+        self.assertIn("Verified Facebook gate", combined)
+        self.assertIn("ApiTaskDefinition", combined)
+
+    def test_new_pairs_missing_from_deployed_refused(self):
+        # The deployed fixture without the new ARNs serves the old six-secret
+        # shape; the checker reports the first missing key in sorted order.
+        result, calls = self.run_bootstrap(
+            [*self.full_args(), "--phase", "images"],
+            extra_env={"FAKE_DRIVE_ARN": "", "FAKE_FACEBOOK_ARN": ""},
+            params_overrides=self.full_params())
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("MISSING:api.FACEBOOK_CLIENT_ID", combined)
+
+    def test_drive_missing_cli_refused_before_mutation(self):
+        args = self.base_args(**{"--google-secret-arn": SECRET_GOOGLE,
+                                 "--meta-secret-arn": SECRET_META,
+                                 "--facebook-secret-arn": SECRET_FACEBOOK})
+        result, calls = self.run_bootstrap(
+            [*args, "--phase", "images"],
+            params_overrides=self.full_params())
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("exact --drive-secret-arn is required", combined)
+        self.assertFalse(any("run-task" in call for call in calls))
+
+    def test_facebook_missing_cli_refused_before_mutation(self):
+        args = self.base_args(**{"--google-secret-arn": SECRET_GOOGLE,
+                                 "--meta-secret-arn": SECRET_META,
+                                 "--drive-secret-arn": SECRET_DRIVE})
+        result, calls = self.run_bootstrap(
+            [*args, "--phase", "images"],
+            params_overrides=self.full_params())
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("exact --facebook-secret-arn is required", combined)
+        self.assertFalse(any("run-task" in call for call in calls))
+
+    def test_infra_drive_facebook_policies_succeed(self):
+        result, calls = self.run_bootstrap(
+            [*self.full_args(), "--phase", "infra"],
+            extra_env={"FAKE_INFRA_CHANGESET": "drive_facebook_exact"},
+            params_overrides=self.full_params())
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        combined = result.stdout + result.stderr
+        self.assertIn("Verified Drive policy least privilege", combined)
+        self.assertIn("Verified Facebook policy least privilege", combined)
+        self.assertIn("Verified infra Drive policy present: ApiDriveSecretPolicy", combined)
+        self.assertIn("Verified infra Facebook policy present: ApiFacebookSecretPolicy", combined)
+        self.assertEqual(len([call for call in calls if "execute-change-set" in call]), 1)
+        self.assertIn("BOOTSTRAP COMPLETE", result.stdout)
+
+    def test_infra_unexpected_drive_policy_while_empty_refused(self):
+        result, calls = self.run_bootstrap(
+            [*self.base_args(), "--phase", "infra"],
+            extra_env={"FAKE_DRIVE_POLICY_PRESENT": "yes"})
+        self.assertNotEqual(result.returncode, 0)
+        combined = result.stdout + result.stderr
+        self.assertIn("Drive policy present while DriveSecretArn empty", combined)
+        self.assertNotIn("BOOTSTRAP COMPLETE", result.stdout)
 
 
 class MetaInfraPolicyTests(BootstrapHarness):
