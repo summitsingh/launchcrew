@@ -8,12 +8,12 @@ Description: >-
   NOT confirmed, see deploy README. Cost cap is a user choice, not a default.
   Teardown required after Nov 4 and no later than Nov 9, 2026.
   Fresh VPC 10.42.0.0/16 avoids 10.0.0.0/16, no existing network changes.
-Metadata:
-  AWSToolsMetrics:
-    AWSAgentToolkit: aws-cloudformation@3
   Filter with no data or 0 is not proof of zero spend and not a hard cap.
   Tag activation see deploy README. Two SDK jobs share bootstrap image
   with explicit EntryPoint; default stays binder --bind.
+Metadata:
+  AWSToolsMetrics:
+    AWSAgentToolkit: aws-cloudformation@3
 Parameters:
   AcmCertificateArn:
     Type: String
