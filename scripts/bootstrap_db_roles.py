@@ -56,13 +56,13 @@ Modes, selected by argv flag only (no secret ever appears in argv):
             and every relation and function ownership by the migration role,
             schema and table and sequence grants plus default grants for
             future objects, model table and function ownership and EXECUTE
-            scope with no PUBLIC, plus the actual alembic head and critical
-            schema properties including voice_profile at 007 and 008 and the
-            run_outcomes table at 008 only. Head 008 returns 0, head 007
-            ready for the single 008 migration returns 10, any other head or
-            any partial or inconsistent state returns 1 and requires a
-            separately reviewed repair. Never logs a password, URL, or
-            statement with secret material.
+            scope with no PUBLIC, plus the alembic head proved to be a
+            revision of the shipped migration chain, with voice_profile
+            required wherever the chain carries 007 and the run_outcomes
+            table required wherever the chain carries 008. Any head outside
+            the shipped chain, or any partial or inconsistent state,
+            returns 1 and requires a separately reviewed repair. Never logs
+            a password, URL, or statement with secret material.
 
 TLS guard: LAUNCHCREW_DB_TLS_MODE must be verify-full and
 DATABASE_SSL_ROOTCERT must be an existing CA bundle file, otherwise the job
@@ -89,8 +89,94 @@ NATIVE_BOOTSTRAP_OID = 10
 PHASES_BIND = ("db-ensure", "password-binding", "schema-acls",
                "runtime-grants", "default-privileges")
 ROOTCERT_ENV = "DATABASE_SSL_ROOTCERT"
-EXPECTED_HEAD = "008"
-PREDECESSOR_HEAD = "007"
+MIGRATION_VERSIONS_IMAGE_DIR = "/app/migration-versions"
+
+
+def _migration_versions_dirs():
+    here = os.path.dirname(os.path.abspath(__file__))
+    repo = os.path.join(os.path.dirname(here), "backend", "migrations",
+                        "versions")
+    return (MIGRATION_VERSIONS_IMAGE_DIR, repo)
+
+
+def _chain_revisions():
+    """Ordered revision ids root-first from the shipped alembic chain.
+
+    Returns None when the chain cannot be read or linked, which fails
+    every head proof closed. No backend import: plain filename parsing.
+    """
+    rev_down = {}
+    for directory in _migration_versions_dirs():
+        try:
+            names = os.listdir(directory)
+        except OSError:
+            continue
+        for name in sorted(names):
+            if not name.endswith(".py"):
+                continue
+            try:
+                from pathlib import Path as _ChainPath
+                text = _ChainPath(os.path.join(directory, name)).read_text(
+                    encoding="utf-8")
+            except OSError:
+                return None
+            rev = re.search(r"^revision\s*=\s*['\"]([^'\"]+)['\"]",
+                            text, re.MULTILINE)
+            if not rev:
+                return None
+            down = re.search(r"^down_revision\s*=\s*(.+)$", text,
+                             re.MULTILINE)
+            downs = []
+            if down:
+                expr = down.group(1).strip()
+                if expr != "None":
+                    downs = re.findall(r"['\"]([^'\"]+)['\"]", expr)
+                    if not downs:
+                        return None
+            rev_down[rev.group(1)] = downs
+        if rev_down:
+            break
+    if not rev_down:
+        return None
+    referenced = set()
+    for downs in rev_down.values():
+        referenced.update(downs)
+    heads = [rev for rev in rev_down if rev not in referenced]
+    if len(heads) != 1:
+        return None
+    ordered = []
+    seen = set()
+    current = heads[0]
+    while current is not None:
+        if current in seen or current not in rev_down:
+            return None
+        seen.add(current)
+        ordered.append(current)
+        parents = rev_down[current]
+        if len(parents) > 1:
+            return None
+        current = parents[0] if parents else None
+    ordered.reverse()
+    return ordered
+
+
+def _chain_head():
+    ordered = _chain_revisions()
+    return ordered[-1] if ordered else None
+
+
+def _chain_ancestors(head):
+    """Revision set containing head plus everything it descends from.
+
+    Returns None when head is unknown or the chain is unreadable.
+    """
+    ordered = _chain_revisions()
+    if not ordered or head not in ordered:
+        return None
+    return set(ordered[:ordered.index(head) + 1])
+
+
+EXPECTED_HEAD = _chain_head() or "008"
 MODEL_TABLES = ("model_budget", "model_calls")
 OUTCOME_TABLE = "run_outcomes"
 OUTCOME_CONSTRAINTS = (
@@ -1108,7 +1194,8 @@ def do_verify_role_state():
             mcur.execute("SELECT version_num FROM alembic_version")
             version = mcur.fetchone()
             head = str(version[0]) if version and version[0] else ""
-            if head not in ("007", "008"):
+            lineage = _chain_ancestors(head)
+            if lineage is None:
                 try:
                     mconn.rollback()
                 except Exception:
@@ -1161,25 +1248,25 @@ def do_verify_role_state():
                     pass
                 return _fail("role-state-check-missing")
             has_voice = "voice_profile" in cdef
-            if head == "007" and not has_voice:
+            if "007" not in lineage:
                 try:
                     mconn.rollback()
                 except Exception:
                     pass
-                return _fail("role-state-check-007")
-            if head == "008" and not has_voice:
+                return _fail("role-state-check-era")
+            if not has_voice:
                 try:
                     mconn.rollback()
                 except Exception:
                     pass
-                return _fail("role-state-check-008")
-            if head == "007" and OUTCOME_TABLE in names:
+                return _fail("role-state-check-voice")
+            if "008" not in lineage and OUTCOME_TABLE in names:
                 try:
                     mconn.rollback()
                 except Exception:
                     pass
                 return _fail("role-state-outcome-unexpected")
-            if head == "008":
+            if "008" in lineage:
                 if OUTCOME_TABLE not in names:
                     try:
                         mconn.rollback()
@@ -1516,13 +1603,15 @@ def do_verify_role_state():
             gconn.close()
         except Exception:
             pass
-    if head == "008":
-        print("bootstrap-db-roles: ROLE-STATE COMPLETE head=008 "
-              "roles=2 read-only, no master, repair not needed", flush=True)
+    if head == EXPECTED_HEAD:
+        print("bootstrap-db-roles: ROLE-STATE COMPLETE head=%s "
+              "roles=2 read-only, no master, repair not needed"
+              % _redact(head), flush=True)
         return 0
-    print("bootstrap-db-roles: ROLE-STATE COMPLETE head=007 "
-          "roles=2 read-only, ready for single 008 migration", flush=True)
-    return 10
+    print("bootstrap-db-roles: ROLE-STATE COMPLETE head=%s behind=%s "
+          "roles=2 read-only, no master, migration outstanding"
+          % (_redact(head), _redact(EXPECTED_HEAD)), flush=True)
+    return 0
 
 
 def do_verify():
@@ -1563,7 +1652,8 @@ def do_verify():
         try:
             cur.execute("SELECT version_num FROM alembic_version")
             version = cur.fetchone()
-            if not version or version[0] != EXPECTED_HEAD:
+            known = _chain_revisions()
+            if not version or known is None or version[0] not in known:
                 return _fail("verify-schema")
             print("bootstrap-db-roles: verify-schema ok revision=%s"
                   % _redact(version[0]), flush=True)
@@ -1922,7 +2012,8 @@ def do_verify():
         except Exception:
             pass
     print("bootstrap-db-roles: VERIFY COMPLETE runtime read-only, "
-          "schema 008, DDL refused, model and outcome guards ok", flush=True)
+          "schema head %s, DDL refused, model and outcome guards ok"
+          % _redact(EXPECTED_HEAD), flush=True)
     return 0
 
 

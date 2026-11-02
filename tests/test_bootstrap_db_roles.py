@@ -1229,8 +1229,8 @@ class VerifyJobTests(BindJobTests):
         code, _ = self.run_main("--verify")
         self.assertNotEqual(code, 0)
 
-    def test_verify_refuses_wrong_head(self):
-        self.state.schema_version = "004"
+    def test_verify_refuses_unknown_head(self):
+        self.state.schema_version = "999"
         code, _ = self.run_main("--verify")
         self.assertNotEqual(code, 0)
 
@@ -1797,16 +1797,19 @@ class RoleStateVerifierTests(unittest.TestCase):
         self.assertNotIn(MG_PW, out)
         self.assertNotIn("postgresql://", out)
 
-    def test_role_state_head007_returns_ten(self):
+    def test_role_state_head007_returns_zero_behind_head(self):
+        # The verifier is read-only: alembic owns advancement, so any
+        # known chain revision verifies clean. 007 is behind the chain
+        # head and reports that instead of the old ready-to-migrate 10.
         self.state.schema_version = "007"
         self.state.outcome_present = False
         self.state.inventory = [
             row for row in self.state.inventory
             if row[0] != "run_outcomes"]
         code, out = self.run_main()
-        self.assertEqual(code, 10, msg=out)
+        self.assertEqual(code, 0, msg=out)
         self.assertIn("head=007", out)
-        self.assertIn("ready for single 008 migration", out)
+        self.assertIn("behind=", out)
         self.assertEqual(self.state.commits, 0)
 
     def test_role_state_007_with_outcome_refuses(self):
@@ -1868,11 +1871,35 @@ class RoleStateVerifierTests(unittest.TestCase):
         self.assertEqual(code, 1, msg=out)
         self.assertIn("role-state-role-safety", out)
 
-    def test_role_state_unknown_head_refuses(self):
+    def test_role_state_pre007_era_refuses(self):
         self.state.schema_version = "005"
         code, out = self.run_main()
         self.assertEqual(code, 1, msg=out)
+        self.assertIn("role-state-check-era", out)
+
+    def test_role_state_midchain_head_verifies_behind(self):
+        # Tonight's recovery shape: the live database sits at a valid
+        # older chain revision while the chain head has moved on. The
+        # verifier proves the environment sane and names the lag.
+        self.state.schema_version = "021"
+        code, out = self.run_main()
+        self.assertEqual(code, 0, msg=out)
+        self.assertIn("head=021", out)
+        self.assertIn("behind=", out)
+        self.assertEqual(self.state.commits, 0)
+
+    def test_role_state_unknown_head_refuses(self):
+        self.state.schema_version = "999"
+        code, out = self.run_main()
+        self.assertEqual(code, 1, msg=out)
         self.assertIn("role-state-head", out)
+
+    def test_chain_head_matches_shipped_migrations(self):
+        ordered = self.module._chain_revisions()
+        self.assertTrue(ordered)
+        self.assertEqual(ordered[-1], self.module.EXPECTED_HEAD)
+        self.assertIn("008", ordered)
+        self.assertLess(ordered.index("007"), ordered.index("008"))
 
     def test_role_state_006_now_refuses(self):
         self.state.schema_version = "006"

@@ -40,6 +40,7 @@ RUN echo "$RDS_CA_SHA256  /app/rds-ca-bundle.pem" | sha256sum -c - \
  && chmod 644 /app/rds-ca-bundle.pem
 COPY scripts/bootstrap_db_roles.py /app/scripts/bootstrap_db_roles.py
 COPY scripts/populate_prereqs.py /app/scripts/populate_prereqs.py
+COPY backend/migrations/versions /app/migration-versions
 USER 10001:10001
 # Bootstrap database-role task only by default. No server is started here,
 # alembic is never run here, and this image never receives runtime traffic.
