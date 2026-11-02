@@ -38,9 +38,19 @@ named owner actions. One micro-commit per slice, pushed to main.
   No provider HTTP exists, so every path runs green keyless. OAuth
   app and tokens stay owner-gated.
 
+## AI product image generation (new scope, built)
+
+- Image characters library (owner-described virtual models) with
+  render-ready prompt packs.
+- OpenAI gpt-image-1, xAI grok-2-image, and Gemini imagen-4 adapters,
+  request-shape tested, keys via OPENAI_API_KEY, XAI_API_KEY, and
+  GEMINI_API_KEY. Generation stores every image as a media asset with
+  derivatives. No key means 503 with zero HTTP; failures store
+  nothing. Provider billing stays on the owner's provider accounts.
+
 ## Out (owner-gated, not buildable here)
 
-- Rendered image, video, and audio bytes (no generative media provider).
-- Live Spark and SAM proofs (credits and budget).
+- Rendered video and voice bytes (no provider wired).
+- Live Spark and SAM proofs (credits and budget), live pixels (keys).
 - Google Drive values and redirect URI, second account for two-user
   proof, demo video, final submission, teardown verification.
