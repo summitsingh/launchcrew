@@ -3009,6 +3009,138 @@ def attach_voice_memo(run_id: str, body: VoiceMemoIn,
                 'transcript': transcript, 'revision': new_revision}
 
 
+class ImageCharacterIn(Strict):
+    name: str = Field(min_length=1, max_length=120)
+    appearance: str = Field(min_length=1, max_length=2000)
+    style_notes: str | None = Field(default=None, min_length=1, max_length=2000)
+
+
+class ImageCharacterOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    id: str = ''
+    name: str = ''
+    appearance: str = ''
+    style_notes: str | None = None
+    created_at: Any | None = None
+    updated_at: Any | None = None
+
+
+_CHARACTER_PUBLIC_SELECT = ('id, workspace_id, name, appearance, style_notes,'
+                            ' created_at, updated_at')
+
+
+def _get_image_character(db, character_id, workspace_id, lock=False):
+    row = db.execute(text('SELECT ' + _CHARACTER_PUBLIC_SELECT + ' FROM image_characters'
+                          ' WHERE id=:id AND workspace_id=:ws' + (' FOR UPDATE' if lock else '')),
+                     {'id': character_id, 'ws': workspace_id}).mappings().first()
+    if row is None:
+        raise HTTPException(404, 'Image character not found')
+    return dict(row)
+
+
+def _public_image_character(row):
+    data = dict(row)
+    for name in ('created_at', 'updated_at'):
+        value = data.get(name)
+        if hasattr(value, 'isoformat'):
+            data[name] = value.isoformat()
+    return {'id': data.get('id'), 'name': data.get('name'),
+            'appearance': data.get('appearance'),
+            'style_notes': data.get('style_notes'),
+            'created_at': data.get('created_at'),
+            'updated_at': data.get('updated_at')}
+
+
+@app.get('/api/image-characters', response_model=list[ImageCharacterOut])
+def list_image_characters(actor: str = Depends(auth.actor)):
+    """List workspace virtual characters with creation order."""
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        rows = db.execute(text('SELECT ' + _CHARACTER_PUBLIC_SELECT
+                               + ' FROM image_characters WHERE workspace_id=:ws'
+                               ' ORDER BY created_at, id'),
+                          {'ws': workspace_id}).mappings().all()
+        return [_public_image_character(dict(row)) for row in rows]
+
+
+@app.post('/api/image-characters', response_model=ImageCharacterOut, status_code=201)
+def create_image_character(body: ImageCharacterIn, actor: str = Depends(auth.actor)):
+    """Save one virtual character; duplicate names refuse with 409."""
+    from launchcrew import image_generation as image_mod
+    try:
+        name = image_mod.normalize_character_name(body.name)
+        appearance = image_mod.normalize_appearance(body.appearance)
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        existing = db.execute(text('SELECT id FROM image_characters'
+                                   ' WHERE workspace_id=:ws AND LOWER(name)=LOWER(:name)'),
+                              {'ws': workspace_id, 'name': name}).fetchone()
+        if existing:
+            raise HTTPException(409, 'A character with this name already exists')
+        character_id = 'chr_' + uuid4().hex
+        db.execute(text('INSERT INTO image_characters(id, workspace_id, name, appearance,'
+                        ' style_notes) VALUES (:id,:ws,:name,:appearance,:notes)'),
+                   {'id': character_id, 'ws': workspace_id, 'name': name,
+                    'appearance': appearance, 'notes': body.style_notes})
+        store.audit(db, None, 'image_character_created', actor, workspace_id)
+        return _public_image_character(_get_image_character(db, character_id, workspace_id))
+
+
+@app.get('/api/image-characters/{character_id}', response_model=ImageCharacterOut)
+def get_image_character(character_id: str, actor: str = Depends(auth.actor)):
+    """Return one virtual character."""
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        return _public_image_character(_get_image_character(db, character_id, workspace_id))
+
+
+@app.put('/api/image-characters/{character_id}', response_model=ImageCharacterOut)
+def update_image_character(character_id: str, body: ImageCharacterIn,
+                           actor: str = Depends(auth.actor)):
+    """Replace one virtual character; duplicate names refuse with 409."""
+    from launchcrew import image_generation as image_mod
+    try:
+        name = image_mod.normalize_character_name(body.name)
+        appearance = image_mod.normalize_appearance(body.appearance)
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        _get_image_character(db, character_id, workspace_id, lock=True)
+        existing = db.execute(text('SELECT id FROM image_characters'
+                                   ' WHERE workspace_id=:ws AND LOWER(name)=LOWER(:name)'
+                                   ' AND id<>:id'),
+                              {'ws': workspace_id, 'name': name, 'id': character_id}).fetchone()
+        if existing:
+            raise HTTPException(409, 'A character with this name already exists')
+        updated = db.execute(text('UPDATE image_characters SET name=:name,'
+                                  ' appearance=:appearance, style_notes=:notes,'
+                                  ' updated_at=now() WHERE id=:id AND workspace_id=:ws'),
+                             {'name': name, 'appearance': appearance,
+                              'notes': body.style_notes,
+                              'id': character_id, 'ws': workspace_id})
+        if updated.rowcount == 0:
+            raise HTTPException(404, 'Image character not found')
+        store.audit(db, None, 'image_character_updated', actor, workspace_id)
+        return _public_image_character(_get_image_character(db, character_id, workspace_id))
+
+
+@app.delete('/api/image-characters/{character_id}', status_code=204)
+def delete_image_character(character_id: str, actor: str = Depends(auth.actor)):
+    """Delete one virtual character; past generations keep their snapshots."""
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        _get_image_character(db, character_id, workspace_id, lock=True)
+        result = db.execute(text('DELETE FROM image_characters WHERE id=:id AND workspace_id=:ws'),
+                            {'id': character_id, 'ws': workspace_id})
+        if result.rowcount == 0:
+            raise HTTPException(404, 'Image character not found')
+        store.audit(db, None, 'image_character_deleted', actor, workspace_id)
+    return Response(status_code=204)
+
+
 class RunDiff(Strict):
     run_a_id: str
     run_b_id: str

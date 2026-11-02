@@ -1343,6 +1343,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/image-characters": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Image Characters
+         * @description List workspace virtual characters with creation order.
+         */
+        get: operations["list_image_characters_api_image_characters_get"];
+        put?: never;
+        /**
+         * Create Image Character
+         * @description Save one virtual character; duplicate names refuse with 409.
+         */
+        post: operations["create_image_character_api_image_characters_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/image-characters/{character_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Image Character
+         * @description Return one virtual character.
+         */
+        get: operations["get_image_character_api_image_characters__character_id__get"];
+        /**
+         * Update Image Character
+         * @description Replace one virtual character; duplicate names refuse with 409.
+         */
+        put: operations["update_image_character_api_image_characters__character_id__put"];
+        post?: never;
+        /**
+         * Delete Image Character
+         * @description Delete one virtual character; past generations keep their snapshots.
+         */
+        delete: operations["delete_image_character_api_image_characters__character_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/import-suggestions": {
         parameters: {
             query?: never;
@@ -4087,6 +4139,41 @@ export interface components {
         Idea: {
             /** Idea */
             idea: string;
+        };
+        /** ImageCharacterIn */
+        ImageCharacterIn: {
+            /** Appearance */
+            appearance: string;
+            /** Name */
+            name: string;
+            /** Style Notes */
+            style_notes?: string | null;
+        };
+        /** ImageCharacterOut */
+        ImageCharacterOut: {
+            /**
+             * Appearance
+             * @default
+             */
+            appearance: string;
+            /** Created At */
+            created_at?: unknown | null;
+            /**
+             * Id
+             * @default
+             */
+            id: string;
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+            /** Style Notes */
+            style_notes?: string | null;
+            /** Updated At */
+            updated_at?: unknown | null;
+        } & {
+            [key: string]: unknown;
         };
         /** ImportSuggestionItem */
         ImportSuggestionItem: {
@@ -8786,6 +8873,154 @@ export interface operations {
                     "application/json": {
                         [key: string]: string;
                     };
+                };
+            };
+        };
+    };
+    list_image_characters_api_image_characters_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImageCharacterOut"][];
+                };
+            };
+        };
+    };
+    create_image_character_api_image_characters_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImageCharacterIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImageCharacterOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_image_character_api_image_characters__character_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                character_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImageCharacterOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_image_character_api_image_characters__character_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                character_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ImageCharacterIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImageCharacterOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_image_character_api_image_characters__character_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                character_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
