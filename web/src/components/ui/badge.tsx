@@ -13,7 +13,7 @@ const badgeVariants = cva(
           'border-transparent bg-destructive text-destructive-foreground shadow hover:bg-destructive/80',
         outline: 'text-foreground',
         success:
-          'border-transparent bg-emerald-100 text-emerald-800 shadow hover:bg-emerald-100/80 dark:bg-emerald-900/30 dark:text-emerald-300',
+          'border-success/30 bg-success/10 shadow hover:bg-success/20 [color:color-mix(in_srgb,var(--success)_70%,black)] dark:[color:color-mix(in_srgb,var(--success)_80%,white)]',
       },
     },
     defaultVariants: {
