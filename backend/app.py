@@ -2776,6 +2776,168 @@ def apply_owner_template(template_id: str, actor: str = Depends(auth.actor)):
     return receipt
 
 
+class EngagementItemIn(Strict):
+    platform: str = Field(min_length=1, max_length=64)
+    kind: str = Field(default='comment', min_length=1, max_length=16)
+    external_ref: str = Field(min_length=1, max_length=256)
+    author_handle: str = Field(min_length=1, max_length=120)
+    text: str = Field(min_length=1, max_length=2000)
+
+
+class EngagementItemOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    id: str = ''
+    platform: str = ''
+    kind: str = 'comment'
+    external_ref: str = ''
+    author_handle: str = ''
+    text: str = ''
+    triage: str = 'neutral'
+    reply_draft: str | None = None
+    reply_status: str = 'none'
+    created_at: Any | None = None
+    updated_at: Any | None = None
+
+
+_ENGAGEMENT_PUBLIC_SELECT = ('id, workspace_id, platform, kind, external_ref, author_handle,'
+                             ' text, triage, reply_draft, reply_status, created_at, updated_at')
+
+
+def _public_engagement_item(row):
+    data = dict(row)
+    for name in ('created_at', 'updated_at'):
+        value = data.get(name)
+        if hasattr(value, 'isoformat'):
+            data[name] = value.isoformat()
+    return {'id': data.get('id'), 'platform': data.get('platform'),
+            'kind': data.get('kind'), 'external_ref': data.get('external_ref'),
+            'author_handle': data.get('author_handle'), 'text': data.get('text'),
+            'triage': data.get('triage'), 'reply_draft': data.get('reply_draft'),
+            'reply_status': data.get('reply_status') or 'none',
+            'created_at': data.get('created_at'),
+            'updated_at': data.get('updated_at')}
+
+
+def _get_engagement_item(db, item_id, workspace_id, lock=False):
+    row = db.execute(text('SELECT ' + _ENGAGEMENT_PUBLIC_SELECT + ' FROM engagement_items'
+                          ' WHERE id=:id AND workspace_id=:ws' + (' FOR UPDATE' if lock else '')),
+                     {'id': item_id, 'ws': workspace_id}).mappings().first()
+    if row is None:
+        raise HTTPException(404, 'Engagement item not found')
+    return dict(row)
+
+
+@app.post('/api/engagement/items', response_model=EngagementItemOut, status_code=201)
+def log_engagement_item(body: EngagementItemIn, actor: str = Depends(auth.actor)):
+    """Log one platform comment or DM and classify it deterministically.
+
+    Duplicate platform references refuse with 409. Nothing is sent,
+    hidden, or deleted anywhere.
+    """
+    from launchcrew import engagement_triage as triage_mod
+    from launchcrew import social_connections as social_mod
+    platform = social_mod.normalize_platform(body.platform)
+    if platform is None:
+        raise HTTPException(422, 'Unknown social platform')
+    try:
+        kind = triage_mod.normalize_kind(body.kind)
+        ref = triage_mod.normalize_ref(body.external_ref)
+        handle = triage_mod.normalize_handle(body.author_handle)
+        item_text = triage_mod.normalize_text(body.text)
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    triage = triage_mod.classify_text(item_text)
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        existing = db.execute(text('SELECT id FROM engagement_items WHERE workspace_id=:ws'
+                                   ' AND platform=:platform AND external_ref=:ref'),
+                              {'ws': workspace_id, 'platform': platform,
+                               'ref': ref}).fetchone()
+        if existing:
+            raise HTTPException(409, 'This platform item is already logged')
+        item_id = 'eng_' + uuid4().hex
+        db.execute(text('INSERT INTO engagement_items(id, workspace_id, platform, kind,'
+                        ' external_ref, author_handle, text, triage, reply_status)'
+                        ' VALUES (:id,:ws,:platform,:kind,:ref,:handle,:text,:triage,\'none\')'),
+                   {'id': item_id, 'ws': workspace_id, 'platform': platform,
+                    'kind': kind, 'ref': ref, 'handle': handle,
+                    'text': item_text, 'triage': triage})
+        store.audit(db, None, 'engagement_item_logged', actor, workspace_id)
+        return _public_engagement_item(_get_engagement_item(db, item_id, workspace_id))
+
+
+@app.get('/api/engagement/items', response_model=list[EngagementItemOut])
+def list_engagement_items(triage: str | None = None, actor: str = Depends(auth.actor)):
+    """List logged engagement, optionally filtered to one triage label."""
+    from launchcrew import engagement_triage as triage_mod
+    wanted = None
+    if triage is not None:
+        if triage not in triage_mod.TRIAGE_LABELS:
+            raise HTTPException(422, 'Unknown triage label')
+        wanted = triage
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        if wanted is None:
+            rows = db.execute(text('SELECT ' + _ENGAGEMENT_PUBLIC_SELECT
+                                   + ' FROM engagement_items WHERE workspace_id=:ws'
+                                   ' ORDER BY created_at, id'),
+                              {'ws': workspace_id}).mappings().all()
+        else:
+            rows = db.execute(text('SELECT ' + _ENGAGEMENT_PUBLIC_SELECT
+                                   + ' FROM engagement_items WHERE workspace_id=:ws'
+                                   ' AND triage=:triage ORDER BY created_at, id'),
+                              {'ws': workspace_id, 'triage': wanted}).mappings().all()
+        return [_public_engagement_item(dict(row)) for row in rows]
+
+
+@app.post('/api/engagement/items/{item_id}/suggest', response_model=EngagementItemOut)
+def suggest_engagement_reply(item_id: str, actor: str = Depends(auth.actor)):
+    """Draft a suggested reply for one item. Spam risk refuses with 422."""
+    from launchcrew import engagement_triage as triage_mod
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        item = _get_engagement_item(db, item_id, workspace_id, lock=True)
+        try:
+            draft = triage_mod.suggest_reply(item['triage'], item['author_handle'], item['text'])
+        except ValueError as error:
+            raise HTTPException(422, str(error))
+        db.execute(text('UPDATE engagement_items SET reply_draft=:draft, reply_status=\'draft\','
+                        ' updated_at=now() WHERE id=:id AND workspace_id=:ws'),
+                   {'draft': draft, 'id': item_id, 'ws': workspace_id})
+        store.audit(db, None, 'engagement_reply_drafted', actor, workspace_id)
+        return _public_engagement_item(_get_engagement_item(db, item_id, workspace_id))
+
+
+@app.post('/api/engagement/items/{item_id}/approve', response_model=EngagementItemOut)
+def approve_engagement_reply(item_id: str, actor: str = Depends(auth.actor)):
+    """Approve a drafted reply for manual sending outside the product."""
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        item = _get_engagement_item(db, item_id, workspace_id, lock=True)
+        if not item.get('reply_draft') or item.get('reply_status') not in ('draft', 'approved'):
+            raise HTTPException(422, 'A suggested draft is required before approval')
+        db.execute(text('UPDATE engagement_items SET reply_status=\'approved\','
+                        ' updated_at=now() WHERE id=:id AND workspace_id=:ws'),
+                   {'id': item_id, 'ws': workspace_id})
+        store.audit(db, None, 'engagement_reply_approved', actor, workspace_id)
+        return _public_engagement_item(_get_engagement_item(db, item_id, workspace_id))
+
+
+@app.post('/api/engagement/items/{item_id}/handle', response_model=EngagementItemOut)
+def handle_engagement_item(item_id: str, actor: str = Depends(auth.actor)):
+    """Mark an approved item handled once the manual reply is done."""
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        item = _get_engagement_item(db, item_id, workspace_id, lock=True)
+        if item.get('reply_status') != 'approved':
+            raise HTTPException(422, 'Approval is required before marking handled')
+        db.execute(text('UPDATE engagement_items SET reply_status=\'handled\','
+                        ' updated_at=now() WHERE id=:id AND workspace_id=:ws'),
+                   {'id': item_id, 'ws': workspace_id})
+        store.audit(db, None, 'engagement_item_handled', actor, workspace_id)
+        return _public_engagement_item(_get_engagement_item(db, item_id, workspace_id))
+
+
 class RunDiff(Strict):
     run_a_id: str
     run_b_id: str

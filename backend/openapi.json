@@ -2371,6 +2371,126 @@
         "title": "DriveSuggestionItem",
         "type": "object"
       },
+      "EngagementItemIn": {
+        "additionalProperties": false,
+        "properties": {
+          "author_handle": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Author Handle",
+            "type": "string"
+          },
+          "external_ref": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "External Ref",
+            "type": "string"
+          },
+          "kind": {
+            "default": "comment",
+            "maxLength": 16,
+            "minLength": 1,
+            "title": "Kind",
+            "type": "string"
+          },
+          "platform": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Platform",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "platform",
+          "external_ref",
+          "author_handle",
+          "text"
+        ],
+        "title": "EngagementItemIn",
+        "type": "object"
+      },
+      "EngagementItemOut": {
+        "additionalProperties": true,
+        "properties": {
+          "author_handle": {
+            "default": "",
+            "title": "Author Handle",
+            "type": "string"
+          },
+          "created_at": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "external_ref": {
+            "default": "",
+            "title": "External Ref",
+            "type": "string"
+          },
+          "id": {
+            "default": "",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "default": "comment",
+            "title": "Kind",
+            "type": "string"
+          },
+          "platform": {
+            "default": "",
+            "title": "Platform",
+            "type": "string"
+          },
+          "reply_draft": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reply Draft"
+          },
+          "reply_status": {
+            "default": "none",
+            "title": "Reply Status",
+            "type": "string"
+          },
+          "text": {
+            "default": "",
+            "title": "Text",
+            "type": "string"
+          },
+          "triage": {
+            "default": "neutral",
+            "title": "Triage",
+            "type": "string"
+          },
+          "updated_at": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "title": "EngagementItemOut",
+        "type": "object"
+      },
       "ExecuteDueIn": {
         "additionalProperties": false,
         "properties": {
@@ -10444,6 +10564,214 @@
           }
         },
         "summary": "Drive Suggestions"
+      }
+    },
+    "/api/engagement/items": {
+      "get": {
+        "description": "List logged engagement, optionally filtered to one triage label.",
+        "operationId": "list_engagement_items_api_engagement_items_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "triage",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Triage"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/EngagementItemOut"
+                  },
+                  "title": "Response List Engagement Items Api Engagement Items Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Engagement Items"
+      },
+      "post": {
+        "description": "Log one platform comment or DM and classify it deterministically.\n\nDuplicate platform references refuse with 409. Nothing is sent,\nhidden, or deleted anywhere.",
+        "operationId": "log_engagement_item_api_engagement_items_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EngagementItemIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngagementItemOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Log Engagement Item"
+      }
+    },
+    "/api/engagement/items/{item_id}/approve": {
+      "post": {
+        "description": "Approve a drafted reply for manual sending outside the product.",
+        "operationId": "approve_engagement_reply_api_engagement_items__item_id__approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngagementItemOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Approve Engagement Reply"
+      }
+    },
+    "/api/engagement/items/{item_id}/handle": {
+      "post": {
+        "description": "Mark an approved item handled once the manual reply is done.",
+        "operationId": "handle_engagement_item_api_engagement_items__item_id__handle_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngagementItemOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Handle Engagement Item"
+      }
+    },
+    "/api/engagement/items/{item_id}/suggest": {
+      "post": {
+        "description": "Draft a suggested reply for one item. Spam risk refuses with 422.",
+        "operationId": "suggest_engagement_reply_api_engagement_items__item_id__suggest_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "item_id",
+            "required": true,
+            "schema": {
+              "title": "Item Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EngagementItemOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Suggest Engagement Reply"
       }
     },
     "/api/fact-products": {

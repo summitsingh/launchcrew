@@ -1026,6 +1026,93 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/engagement/items": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Engagement Items
+         * @description List logged engagement, optionally filtered to one triage label.
+         */
+        get: operations["list_engagement_items_api_engagement_items_get"];
+        put?: never;
+        /**
+         * Log Engagement Item
+         * @description Log one platform comment or DM and classify it deterministically.
+         *
+         *     Duplicate platform references refuse with 409. Nothing is sent,
+         *     hidden, or deleted anywhere.
+         */
+        post: operations["log_engagement_item_api_engagement_items_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/engagement/items/{item_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve Engagement Reply
+         * @description Approve a drafted reply for manual sending outside the product.
+         */
+        post: operations["approve_engagement_reply_api_engagement_items__item_id__approve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/engagement/items/{item_id}/handle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Handle Engagement Item
+         * @description Mark an approved item handled once the manual reply is done.
+         */
+        post: operations["handle_engagement_item_api_engagement_items__item_id__handle_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/engagement/items/{item_id}/suggest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Suggest Engagement Reply
+         * @description Draft a suggested reply for one item. Spam risk refuses with 422.
+         */
+        post: operations["suggest_engagement_reply_api_engagement_items__item_id__suggest_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/fact-products": {
         parameters: {
             query?: never;
@@ -3507,6 +3594,73 @@ export interface components {
             status: "unconfirmed";
             /** Text */
             text: string;
+        };
+        /** EngagementItemIn */
+        EngagementItemIn: {
+            /** Author Handle */
+            author_handle: string;
+            /** External Ref */
+            external_ref: string;
+            /**
+             * Kind
+             * @default comment
+             */
+            kind: string;
+            /** Platform */
+            platform: string;
+            /** Text */
+            text: string;
+        };
+        /** EngagementItemOut */
+        EngagementItemOut: {
+            /**
+             * Author Handle
+             * @default
+             */
+            author_handle: string;
+            /** Created At */
+            created_at?: unknown | null;
+            /**
+             * External Ref
+             * @default
+             */
+            external_ref: string;
+            /**
+             * Id
+             * @default
+             */
+            id: string;
+            /**
+             * Kind
+             * @default comment
+             */
+            kind: string;
+            /**
+             * Platform
+             * @default
+             */
+            platform: string;
+            /** Reply Draft */
+            reply_draft?: string | null;
+            /**
+             * Reply Status
+             * @default none
+             */
+            reply_status: string;
+            /**
+             * Text
+             * @default
+             */
+            text: string;
+            /**
+             * Triage
+             * @default neutral
+             */
+            triage: string;
+            /** Updated At */
+            updated_at?: unknown | null;
+        } & {
+            [key: string]: unknown;
         };
         /** ExecuteDueIn */
         ExecuteDueIn: {
@@ -7813,6 +7967,163 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DriveImportOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_engagement_items_api_engagement_items_get: {
+        parameters: {
+            query?: {
+                triage?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EngagementItemOut"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    log_engagement_item_api_engagement_items_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EngagementItemIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EngagementItemOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    approve_engagement_reply_api_engagement_items__item_id__approve_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EngagementItemOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    handle_engagement_item_api_engagement_items__item_id__handle_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EngagementItemOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    suggest_engagement_reply_api_engagement_items__item_id__suggest_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                item_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EngagementItemOut"];
                 };
             };
             /** @description Validation Error */
