@@ -23,12 +23,15 @@ named owner actions. One micro-commit per slice, pushed to main.
 
 ## Next, in order
 
-- Slice F: engagement triage intake. Pure deterministic classifier
-  (question, complaint, praise, spam risk, neutral) over owner-logged
-  comments and DMs, suggested reply drafts, approve then mark handled.
-  No auto-send. Live comment pull stays gated on platform tokens.
-- Slice G: voice memo intake. Transcript-text draft source with voice
-  provenance. Real transcription stays gated on a speech provider.
+- Slice F (17f9be1): engagement triage intake. Pure deterministic
+  classifier (question, complaint, praise, spam risk, neutral) over
+  owner-logged comments and DMs, suggested reply drafts, approve then
+  mark handled. No auto-send. Live comment pull stays gated on
+  platform tokens.
+- Slice G (this commit): voice memo intake. Transcript-text draft
+  source attached to a run with voice_transcript provenance, revision
+  bump, and reset approval. Real transcription stays gated on a
+  speech provider.
 - Slice H: cloud storage connector mirroring the Drive intake shape,
   unconfigured by default. OAuth app and tokens stay owner-gated.
 

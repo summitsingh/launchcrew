@@ -2164,6 +2164,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/runs/{run_id}/voice-memo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Attach Voice Memo
+         * @description Attach owner-supplied transcript text to a run as draft context.
+         *
+         *     Accepts text only; no audio is decoded here. Refusals: 422 for bad
+         *     text or a non-reviewable revision, 404 for a missing run, 409 for
+         *     a stale revision. The receipt revision bumps and approvals reset.
+         */
+        post: operations["attach_voice_memo_api_runs__run_id__voice_memo_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/social/connections": {
         parameters: {
             query?: never;
@@ -6227,6 +6251,43 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** VoiceMemoIn */
+        VoiceMemoIn: {
+            /** Expected Revision */
+            expected_revision?: unknown | null;
+            /** Transcript Text */
+            transcript_text: string;
+        };
+        /** VoiceMemoOut */
+        VoiceMemoOut: {
+            /**
+             * Id
+             * @default
+             */
+            id: string;
+            /**
+             * Media Provenance
+             * @default voice_transcript
+             */
+            media_provenance: string;
+            /**
+             * Revision
+             * @default 0
+             */
+            revision: number;
+            /**
+             * Run Id
+             * @default
+             */
+            run_id: string;
+            /**
+             * Transcript
+             * @default
+             */
+            transcript: string;
+        } & {
+            [key: string]: unknown;
+        };
         /** VoiceProfileSection */
         VoiceProfileSection: {
             /** Banned Term Count */
@@ -10201,6 +10262,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LandingParityOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    attach_voice_memo_api_runs__run_id__voice_memo_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VoiceMemoIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VoiceMemoOut"];
                 };
             };
             /** @description Validation Error */

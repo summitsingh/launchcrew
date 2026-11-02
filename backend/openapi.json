@@ -8230,6 +8230,63 @@
         "title": "ViralGenerationOut",
         "type": "object"
       },
+      "VoiceMemoIn": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Revision"
+          },
+          "transcript_text": {
+            "maxLength": 5000,
+            "minLength": 1,
+            "title": "Transcript Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "transcript_text"
+        ],
+        "title": "VoiceMemoIn",
+        "type": "object"
+      },
+      "VoiceMemoOut": {
+        "additionalProperties": true,
+        "properties": {
+          "id": {
+            "default": "",
+            "title": "Id",
+            "type": "string"
+          },
+          "media_provenance": {
+            "default": "voice_transcript",
+            "title": "Media Provenance",
+            "type": "string"
+          },
+          "revision": {
+            "default": 0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "run_id": {
+            "default": "",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "transcript": {
+            "default": "",
+            "title": "Transcript",
+            "type": "string"
+          }
+        },
+        "title": "VoiceMemoOut",
+        "type": "object"
+      },
       "VoiceProfileSection": {
         "additionalProperties": true,
         "properties": {
@@ -13446,6 +13503,56 @@
           }
         },
         "summary": "Verify Landing Page"
+      }
+    },
+    "/api/runs/{run_id}/voice-memo": {
+      "post": {
+        "description": "Attach owner-supplied transcript text to a run as draft context.\n\nAccepts text only; no audio is decoded here. Refusals: 422 for bad\ntext or a non-reviewable revision, 404 for a missing run, 409 for\na stale revision. The receipt revision bumps and approvals reset.",
+        "operationId": "attach_voice_memo_api_runs__run_id__voice_memo_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VoiceMemoIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VoiceMemoOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Attach Voice Memo"
       }
     },
     "/api/social/connections": {

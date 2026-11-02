@@ -2938,6 +2938,75 @@ def handle_engagement_item(item_id: str, actor: str = Depends(auth.actor)):
         return _public_engagement_item(_get_engagement_item(db, item_id, workspace_id))
 
 
+class VoiceMemoIn(Strict):
+    transcript_text: str = Field(min_length=1, max_length=5000)
+    expected_revision: Any | None = None
+
+
+class VoiceMemoOut(BaseModel):
+    model_config = ConfigDict(extra='allow')
+    id: str = ''
+    run_id: str = ''
+    media_provenance: str = 'voice_transcript'
+    transcript: str = ''
+    revision: int = 0
+
+
+@app.post('/api/runs/{run_id}/voice-memo', response_model=VoiceMemoOut,
+          status_code=201)
+def attach_voice_memo(run_id: str, body: VoiceMemoIn,
+                      actor: str = Depends(auth.actor)):
+    """Attach owner-supplied transcript text to a run as draft context.
+
+    Accepts text only; no audio is decoded here. Refusals: 422 for bad
+    text or a non-reviewable revision, 404 for a missing run, 409 for
+    a stale revision. The receipt revision bumps and approvals reset.
+    """
+    from launchcrew import human_review
+    from launchcrew import voice_memo as memo_mod
+    try:
+        transcript = memo_mod.normalize_transcript(body.transcript_text)
+    except ValueError as error:
+        raise HTTPException(422, str(error))
+    with store.connect() as db:
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        receipt = get_receipt(db, run_id, workspace_id)
+        if receipt is None:
+            raise HTTPException(404, 'Run not found')
+        _reject_when_running(receipt)
+        ok, _ = human_review.valid_revision_context(receipt)
+        if not ok:
+            raise HTTPException(422, 'Voice memo needs a reviewable revision')
+        if body.expected_revision != human_review.current_revision(receipt):
+            raise HTTPException(409, 'Voice memo is stale; the draft changed')
+        memo_id = 'vm_' + uuid4().hex
+        new_revision = int(receipt.get('revision', 0)) + 1
+        entry = {'revision': new_revision,
+                 'voice_memo_event': 'voice_memo_attached',
+                 'voice_memo_id': memo_id,
+                 'actor': actor}
+        receipt['revision'] = new_revision
+        receipt['revision_history'] = list(receipt.get('revision_history', [])) + [entry]
+        receipt['approval_state'] = 'pending_approval'
+        receipt['approvals'] = []
+        receipt['voice_memo'] = memo_mod.build_memo_section(
+            memo_id, transcript, new_revision, actor)
+        updated = db.execute(
+            text('UPDATE runs SET receipt=CAST(:receipt AS jsonb),state=:state'
+                 ' WHERE id=:id AND workspace_id=:ws'),
+            {'receipt': json.dumps(receipt),
+             'state': receipt['approval_state'], 'id': run_id,
+             'ws': workspace_id})
+        if updated.rowcount == 0:
+            raise HTTPException(404, 'Run not found')
+        db.execute(text('DELETE FROM approvals WHERE run_id=:id'),
+                   {'id': run_id})
+        store.audit(db, run_id, 'voice_memo_attached', actor, workspace_id)
+        return {'id': memo_id, 'run_id': run_id,
+                'media_provenance': memo_mod.PROVENANCE,
+                'transcript': transcript, 'revision': new_revision}
+
+
 class RunDiff(Strict):
     run_a_id: str
     run_b_id: str
