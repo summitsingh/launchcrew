@@ -57,11 +57,11 @@ def detected_photo(**overrides):
 
 
 class ProfileSpineTests(unittest.TestCase):
-    def test_four_profiles_validate(self):
+    def test_six_profiles_validate(self):
         profiles = extra_crews.list_extra_crew_profiles()
-        self.assertEqual(len(profiles), 4)
+        self.assertEqual(len(profiles), 6)
         names = sorted(p["name"].lower() for p in profiles)
-        self.assertEqual(names, ["analyst", "designer", "research", "support"])
+        self.assertEqual(names, ["analyst", "designer", "drop", "finance", "research", "support"])
 
     def test_get_profile_returns_copy(self):
         first = extra_crews.get_extra_crew_profile("Support")
@@ -91,6 +91,8 @@ class ProfileSpineTests(unittest.TestCase):
             "designer": ["superlatives"],
             "analyst": ["cliches"],
             "research": ["custom:moonshot"],
+            "drop": ["custom:selling out"],
+            "finance": ["custom:guaranteed"],
         }
         seen = set()
         for crew, policies in expected.items():
@@ -99,7 +101,7 @@ class ProfileSpineTests(unittest.TestCase):
                 enforced = parse_checker_agent(profile)["enforced_policies"]
                 self.assertEqual(enforced, policies)
                 seen.add(tuple(enforced))
-        self.assertEqual(len(seen), 4)
+        self.assertEqual(len(seen), 6)
 
     def test_tools_limited_to_spine(self):
         for profile in extra_crews.list_extra_crew_profiles():

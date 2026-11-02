@@ -13,6 +13,8 @@ EXPECTED_POLICIES = {
     'Designer': ['superlatives'],
     'Analyst': ['cliches'],
     'Research': ['custom:moonshot'],
+    'Drop': ['custom:selling out'],
+    'Finance': ['custom:guaranteed'],
 }
 
 EXPECTED_ROLES = {
@@ -20,6 +22,8 @@ EXPECTED_ROLES = {
     'Designer': 'Intended Photo Layout Suggestion Helper',
     'Analyst': 'Intended Outcome Summary Helper',
     'Research': 'Intended Sourced Fact Suggestion Helper',
+    'Drop': 'Intended Product Drop Announcement Helper',
+    'Finance': 'Intended Pricing and Offer Claim Helper',
 }
 
 
@@ -99,17 +103,17 @@ def test_container_packages_crew_presets():
 
 def test_crew_presets_seeded_and_selectable(client):
     names = {profile['name'] for profile in client.get('/api/agents').json()}
-    for preset in ('Support', 'Designer', 'Analyst', 'Research'):
+    for preset in ('Support', 'Designer', 'Analyst', 'Research', 'Drop', 'Finance'):
         assert preset in names, names
 
 
 def test_crew_preset_prompts_are_distinct(client):
     bodies = {name: client.get('/api/agents/' + name).json()
-              for name in ('Support', 'Designer', 'Analyst', 'Research')}
+              for name in ('Support', 'Designer', 'Analyst', 'Research', 'Drop', 'Finance')}
     roles = {body['role'] for body in bodies.values()}
     assert roles == set(EXPECTED_ROLES.values()), roles
     personalities = {body['personality'] for body in bodies.values()}
-    assert len(personalities) == 4, personalities
+    assert len(personalities) == 6, personalities
 
 
 def test_crew_preset_checker_policies_are_distinct(client):
@@ -120,7 +124,7 @@ def test_crew_preset_checker_policies_are_distinct(client):
         enforced = preview.json()['checker_enforcement']['enforced_policies']
         assert enforced == expected, (name, enforced)
         seen[name] = tuple(enforced)
-    assert len(set(seen.values())) == 4, seen
+    assert len(set(seen.values())) == 6, seen
 
 
 def _run_with_checker(client, checker):

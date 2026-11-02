@@ -1,6 +1,6 @@
 """Isolated foundation for Slice 6 extra crews (stdlib only).
 
-Covers four prebuilt helper profiles on the existing agent spine:
+Covers six prebuilt helper profiles on the existing agent spine:
 
 * Support: FAQ and reply drafts checked against confirmed facts.
 * Designer: crop and layout suggestions in words only, grounded in
@@ -11,6 +11,10 @@ Covers four prebuilt helper profiles on the existing agent spine:
   with intact self-report provenance.
 * Research: sourced fact gathering as unconfirmed suggestions, with
   owner-supplied references kept distinct from verified sources.
+* Drop: product drop announcement drafts with no invented scarcity,
+  dates, or stock levels.
+* Finance: pricing and offer claim drafts with no invented prices,
+  discounts, or guaranteed terms.
 
 Scope guarantees:
 
@@ -19,7 +23,9 @@ Scope guarantees:
 * Profiles validate through ``launchcrew.agents.validate`` with zero
   spend, ``approve_each``, one distinct enforced Checker policy each
   (Support blocks price claims, Designer blocks superlatives, Analyst
-  blocks marketing cliches, Research bans the custom phrase moonshot),
+  blocks marketing cliches, Research bans the custom phrase moonshot,
+  Drop bans the custom phrase selling out, Finance bans the custom
+  phrase guaranteed),
   and tools limited to the existing ``ALLOWED_TOOLS`` set.
 * Nothing here confirms facts, approves drafts, writes to any memory
   or approval store, or crosses the owner and workspace boundary.
@@ -60,7 +66,7 @@ STATUS_UNCONFIRMED = "unconfirmed"
 PROVENANCE_SELF_REPORTED = "self_reported"
 ENTERED_BY_OWNER = "owner_entered"
 
-EXTRA_CREW_NAMES = ("support", "designer", "analyst", "research")
+EXTRA_CREW_NAMES = ("support", "designer", "analyst", "research", "drop", "finance")
 
 ACTOR_PLACEHOLDER = "demo_placeholder"
 MAX_NOTE_LENGTH = 500
@@ -206,11 +212,83 @@ _RESEARCH_PROFILE = {
     "examples": [],
 }
 
+_DROP_PROFILE = {
+    "name": "Drop",
+    "role": "Intended Product Drop Announcement Helper",
+    "department": "Drop",
+    "personality": (
+        "Urgent but honest. Intended to draft product drop announcements only "
+        "from workspace-confirmed facts and owner provided notes. Would cite "
+        "its source for each claim and mark anything unverified. Would never "
+        "invent scarcity, countdowns, launch dates, or restock windows. Would "
+        "require owner confirmation and Checker approval before any draft is "
+        "used, and would not approve its own drafts or bypass review."
+    ),
+    "expertise": (
+        "Intended coverage of product drop announcement drafting from "
+        "workspace-confirmed facts and owner provided notes. No network "
+        "lookup. No invented launch dates, stock levels, or availability "
+        "windows. Source is limited to cited workspace-confirmed fact "
+        "entries, confirmation is limited to owner review, and approval is "
+        "limited to Checker review for each draft. Checker veto remains "
+        "authoritative."
+    ),
+    "decision_rules": [
+        "Use only workspace-confirmed facts and owner provided notes as source, and cite the source for each claim",
+        "Mark any claim without a source as unverified and leave it for owner confirmation",
+        "Prepare drafts for owner confirmation and Checker approval, and do not approve drafts or bypass review",
+        "If sources conflict or are missing, ask for owner input instead of guessing",
+        "Ban phrase selling out",
+    ],
+    "veto_scope": ["banned:selling out"],
+    "tools_allowed": ["facts_file", "spark_strict_json", "receipt_log", "claim_check"],
+    "spend_limit": 0,
+    "approval_level": "approve_each",
+    "examples": [],
+}
+
+_FINANCE_PROFILE = {
+    "name": "Finance",
+    "role": "Intended Pricing and Offer Claim Helper",
+    "department": "Finance",
+    "personality": (
+        "Precise and conservative. Intended to draft pricing and offer claims "
+        "only from workspace-confirmed facts and owner provided notes. Would "
+        "cite its source for each figure and mark anything unverified. Would "
+        "never promise guaranteed savings, returns, or refunds. Would require "
+        "owner confirmation and Checker approval before any draft is used, "
+        "and would not approve its own drafts or bypass review."
+    ),
+    "expertise": (
+        "Intended coverage of pricing and offer claim drafting from "
+        "workspace-confirmed facts and owner provided notes. No network "
+        "lookup. No invented prices, discounts, savings totals, or refund "
+        "terms. Source is limited to cited workspace-confirmed fact "
+        "entries, confirmation is limited to owner review, and approval is "
+        "limited to Checker review for each draft. Checker veto remains "
+        "authoritative."
+    ),
+    "decision_rules": [
+        "Use only workspace-confirmed facts and owner provided notes as source, and cite the source for each figure",
+        "Mark any claim without a source as unverified and leave it for owner confirmation",
+        "Prepare drafts for owner confirmation and Checker approval, and do not approve drafts or bypass review",
+        "If sources conflict or are missing, ask for owner input instead of guessing",
+        "Ban phrase guaranteed",
+    ],
+    "veto_scope": ["banned:guaranteed"],
+    "tools_allowed": ["facts_file", "spark_strict_json", "receipt_log", "claim_check"],
+    "spend_limit": 0,
+    "approval_level": "approve_each",
+    "examples": [],
+}
+
 _PROFILES = {
     "support": _SUPPORT_PROFILE,
     "designer": _DESIGNER_PROFILE,
     "analyst": _ANALYST_PROFILE,
     "research": _RESEARCH_PROFILE,
+    "drop": _DROP_PROFILE,
+    "finance": _FINANCE_PROFILE,
 }
 
 __all__ = [
@@ -254,7 +332,7 @@ def get_extra_crew_profile(name):
 
 
 def list_extra_crew_profiles():
-    """Return deep copies of all four prebuilt extra crew profiles."""
+    """Return deep copies of all six prebuilt extra crew profiles."""
     return [get_extra_crew_profile(name) for name in EXTRA_CREW_NAMES]
 
 

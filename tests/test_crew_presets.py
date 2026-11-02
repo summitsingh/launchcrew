@@ -7,7 +7,8 @@ from launchcrew import agents
 ROOT = Path(__file__).resolve().parents[1]
 PRESETS_DIR = ROOT / "agent_presets"
 AGENTS_DIR = ROOT / "agents"
-PRESET_FILES = ["support.json", "designer.json", "analyst.json", "research.json"]
+PRESET_FILES = ["support.json", "designer.json", "analyst.json", "research.json",
+                "drop.json", "finance.json"]
 
 
 def load_preset(filename):
@@ -90,6 +91,8 @@ class CrewPresetTests(unittest.TestCase):
             "designer.json": ["superlatives"],
             "analyst.json": ["cliches"],
             "research.json": ["custom:moonshot"],
+            "drop.json": ["custom:selling out"],
+            "finance.json": ["custom:guaranteed"],
         }
         seen = set()
         for filename, policies in expected.items():
@@ -98,7 +101,7 @@ class CrewPresetTests(unittest.TestCase):
                 enforced = parse_checker_agent(profile)["enforced_policies"]
                 self.assertEqual(enforced, policies)
                 seen.add(tuple(enforced))
-        self.assertEqual(len(seen), 4)
+        self.assertEqual(len(seen), 6)
 
     def test_no_claim_of_auto_approval_or_active_running(self):
         forbidden_claims = (
