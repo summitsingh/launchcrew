@@ -2,12 +2,15 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 
 describe('site files (sitemap, favicon, demo facts)', () => {
-  it('ships a valid sitemap listing / and /plans', () => {
+  it('ships a valid sitemap listing /, /plans, /privacy, /terms, and /demo', () => {
     const xml = readFileSync('public/sitemap.xml', 'utf8');
     expect(xml).toContain('<urlset');
     expect(xml).toContain('http://www.sitemaps.org/schemas/sitemap/0.9');
     expect(xml).toContain('<loc>https://launchcrew.summitsingh.com/</loc>');
     expect(xml).toContain('<loc>https://launchcrew.summitsingh.com/plans</loc>');
+    expect(xml).toContain('<loc>https://launchcrew.summitsingh.com/privacy</loc>');
+    expect(xml).toContain('<loc>https://launchcrew.summitsingh.com/terms</loc>');
+    expect(xml).toContain('<loc>https://launchcrew.summitsingh.com/demo</loc>');
     expect(xml).not.toContain(String.fromCharCode(8212));
   });
 

@@ -145,7 +145,7 @@ export default function TermsPage() {
 
           <footer className="page-footer">
             <span>LaunchCrew</span>
-            <span><a href="/privacy">Privacy</a> · <a href="/terms" aria-current="page">Terms</a> · <a href="/plans">Plans</a></span>
+            <span><a href="/privacy">Privacy</a> · <a href="/terms" aria-current="page">Terms</a> · <a href="/plans">Plans</a> · <a href="/demo">Demo</a></span>
             <a href="https://github.com/summitsingh/launchcrew">Public GitHub repo</a>
           </footer>
         </main>
