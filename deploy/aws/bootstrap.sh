@@ -7745,6 +7745,16 @@ PYEOF
 # originals use an exact 14-key branch, never fabricate StackId, head, or
 # generation, and mark legacy_unversioned. Never Put, Export, bind, or
 # migration through this route. Returns 0 on recovered, else fails.
+# Per-release recovery attestation path. A release earns its own attestation
+# through a fresh full verification; an older release's file stays on disk as
+# history and is never read or mutated by a newer release. The same release
+# recomputes the same path, so same-release restart re-verifies against its
+# own attestation with no new file. All proof checks downstream are unchanged.
+recovery_file_for_release() {
+  _rfr_gen="$(printf '%s' "${RELEASE_GEN:-}" | tr -c 'A-Za-z0-9_-' '_')"
+  [ -n "$_rfr_gen" ] || _rfr_gen="unknown-release"
+  printf '%s' "$LAUNCH_JOURNAL_DIR/recovery/$1.$_rfr_gen.recovery.json"
+}
 attest_aged_init_recovery() {
   RECOVERY_FAIL_PHASE="$1"
   RECOVERY_ORIG_PATH="$2"
@@ -7920,7 +7930,7 @@ PYEOF
   RECOVERY_CERT_TYPE="$(printf '%s\n' "$RECOVERY_CERT_IDENTITY" | awk -F'\t' '$1=="TYPE"{print $2}' | tr -d '[:space:]')"
   RECOVERY_CERT_EXPORT="$(printf '%s\n' "$RECOVERY_CERT_IDENTITY" | awk -F'\t' '$1=="EXPORT"{print $2}' | tr -d '[:space:]')"
   ensure_recovery_dir
-  RECOVERY_FILE="$LAUNCH_JOURNAL_DIR/recovery/$RECOVERY_ORIG_BASENAME.recovery.json"
+  RECOVERY_FILE="$(recovery_file_for_release "$RECOVERY_ORIG_BASENAME")"
   if [ -L "$RECOVERY_FILE" ]; then
     echo "refused: recovery attestation is a symlink, no recovery claimed. Inspect $RECOVERY_FILE." >&2
     phase_failed "$RECOVERY_FAIL_PHASE"
@@ -7935,7 +7945,7 @@ PYEOF
       "$RECOVERY_ORIG_BASENAME" "$RECOVERY_ORIG_SHA" "$RECOVERY_ORIG_TOKEN" "$RECOVERY_ORIG_TASK" \
       "$RECOVERY_ORIG_TASKDEF" "$RECOVERY_ORIG_GEN" "$RECOVERY_ORIG_SOURCE" "$RECOVERY_ORIG_HEAD" \
       "$RECOVERY_STACK_ID" "${RECOVERY_ORIG_LEGACY:-false}" 2>/dev/null <<'PYEOF'
-import hashlib, json, os, sys
+import hashlib, json, os, re, sys
 (path, want_stack, want_account, want_region, want_cluster,
  want_base, want_sha, want_token, want_task,
  want_taskdef, want_gen, want_source, want_head,
@@ -7963,7 +7973,8 @@ if not isinstance(doc, dict):
     print("PROOF\tMALFORMED")
     sys.exit(0)
 try:
-    if os.path.basename(path) != want_base + ".recovery.json":
+    if not re.fullmatch(re.escape(want_base) + "\\.[A-Za-z0-9_-]+\\.recovery\\.json",
+                        os.path.basename(path)):
         print("PROOF\tPATH_MISMATCH")
         sys.exit(0)
     if os.path.basename(os.path.dirname(os.path.abspath(path))) != "recovery":
@@ -8956,7 +8967,7 @@ PYEOF
   RECOVERY_CERT_TYPE="$(printf '%s\n' "$RECOVERY_CERT_IDENTITY" | awk -F'\t' '$1=="TYPE"{print $2}' | tr -d '[:space:]')"
   RECOVERY_CERT_EXPORT="$(printf '%s\n' "$RECOVERY_CERT_IDENTITY" | awk -F'\t' '$1=="EXPORT"{print $2}' | tr -d '[:space:]')"
   ensure_recovery_dir
-  RECOVERY_FILE="$LAUNCH_JOURNAL_DIR/recovery/$RECOVERY_ORIG_BASENAME.recovery.json"
+  RECOVERY_FILE="$(recovery_file_for_release "$RECOVERY_ORIG_BASENAME")"
   if [ -L "$RECOVERY_FILE" ]; then
     echo "refused: recovery attestation is a symlink, no recovery claimed. Inspect $RECOVERY_FILE." >&2
     phase_failed "$RECOVERY_FAIL_PHASE"
@@ -8971,7 +8982,7 @@ PYEOF
       "$RECOVERY_KIND" "$RECOVERY_ORIG_BASENAME" "$RECOVERY_ORIG_SHA" "$RECOVERY_ORIG_TOKEN" "$RECOVERY_ORIG_TASK" \
       "$RECOVERY_ORIG_TASKDEF" "$RECOVERY_ORIG_GEN" "$RECOVERY_ORIG_SOURCE" "$RECOVERY_ORIG_HEAD" "$RECOVERY_ORIG_OUTCOME" \
       "$RECOVERY_STACK_ID" "${RECOVERY_ORIG_LEGACY:-false}" 2>/dev/null <<'PYEOF'
-import hashlib, json, os, sys
+import hashlib, json, os, re, sys
 (path, want_stack, want_account, want_region, want_cluster,
  want_kind, want_base, want_sha, want_token, want_task,
  want_taskdef, want_gen, want_source, want_head, want_outcome,
@@ -8999,7 +9010,8 @@ if not isinstance(doc, dict):
     print("PROOF\tMALFORMED")
     sys.exit(0)
 try:
-    if os.path.basename(path) != want_base + ".recovery.json":
+    if not re.fullmatch(re.escape(want_base) + "\\.[A-Za-z0-9_-]+\\.recovery\\.json",
+                        os.path.basename(path)):
         print("PROOF\tPATH_MISMATCH")
         sys.exit(0)
     if os.path.basename(os.path.dirname(os.path.abspath(path))) != "recovery":
@@ -11685,7 +11697,7 @@ PYEOF
             if [ "$ACTIVE_PRE_CHECK" = "NO_TASK" ]; then
               echo "$TASK_LABEL prior mutating complete aged out NO_TASK, requiring recovery attestation with no resend."
               attest_aged_typed_recovery "$TASK_PHASE" "$ACTIVE_FILE" "$(basename "$ACTIVE_FILE")" "migrate" "migration" "MigrationTaskDefinition" "migration-recovery-attestation" "RoleStateTaskDefinition" "bootstrap-db-roles" "0" "1"
-              MIGRATION_ACTIVE_OBS="$(python3 - "$LAUNCH_JOURNAL_DIR/recovery/$(basename "$ACTIVE_FILE").recovery.json" 2>/dev/null <<'PYEOF'
+              MIGRATION_ACTIVE_OBS="$(python3 - "$RECOVERY_FILE" 2>/dev/null <<'PYEOF'
 import json, sys
 try:
     doc = json.load(open(sys.argv[1]))

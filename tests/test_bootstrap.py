@@ -5640,6 +5640,42 @@ class InitRecoveryTests(BootstrapHarness):
             self.assertEqual(
                 _hashlib.sha256(after).hexdigest(), before_hash)
 
+    def test_stale_release_attestation_earns_fresh_per_release_proof(self):
+        import json as _json
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            prior = self.write_init_prior(journals)
+            stale_dir = journals / "recovery"
+            stale_dir.mkdir(mode=0o700)
+            stale_dir.chmod(0o700)
+            stale = stale_dir / (prior.name + ".recovery.json")
+            stale.write_text(_json.dumps({
+                "version": 1, "kind": "init-recovery-attestation",
+                "outcome": "complete", "release_generation": "head008-older",
+                "source_sha": "", "target_head": "008",
+            }), encoding="utf-8")
+            stale.chmod(0o600)
+            stale_before = stale.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.material_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            combined = result.stdout + result.stderr
+            self.assertIn("recovery admission persisted", combined)
+            self.assertEqual(stale.read_bytes(), stale_before)
+            fresh = stale_dir / (
+                prior.name + "." + self.RELEASE + ".recovery.json")
+            self.assertTrue(fresh.is_file(), msg=str(fresh))
+            doc = _json.loads(fresh.read_text(encoding="utf-8"))
+            self.assertEqual(doc.get("outcome"), "complete")
+            self.assertEqual(doc.get("release_generation"), self.RELEASE)
+            runs = [c for c in calls if "run-task" in c]
+            self.assertTrue(any("launchcrew-demo-sdkmaterial" in c
+                                for c in runs))
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in runs))
+
     def test_init_recovery_self_binds_full_sha_orig_image(self):
         import tempfile as _tempfile
         with _tempfile.TemporaryDirectory() as shared_tmp:
@@ -6308,7 +6344,7 @@ class InitRecoveryTests(BootstrapHarness):
                                    f"{self.RELEASE}-active.json")
             self.assertFalse(new_file.exists())
             pending_recovery = journals / "recovery" / (
-                pending_prior.name + ".recovery.json")
+                pending_prior.name + "." + self.RELEASE + ".recovery.json")
             self.assertFalse(pending_recovery.exists())
 
     def test_unversioned_legacy_aged_prior_init_short_circuits(self):
@@ -6546,7 +6582,8 @@ class InitRecoveryTests(BootstrapHarness):
             self.assertIn("no new verifier", combined.lower())
             self.assertFalse(any("run-task" in c for c in calls))
 
-    def test_release_generation_mismatch_on_restart_refuses(self):
+    def test_release_generation_mismatch_earns_fresh_per_release_proof(self):
+        import json as _json
         with tempfile.TemporaryDirectory() as shared_tmp:
             _, journals = self.fresh_shared(shared_tmp)
             self.write_init_prior(journals)
@@ -6556,17 +6593,32 @@ class InitRecoveryTests(BootstrapHarness):
                 shared_dir=shared_tmp)
             self.assertEqual(first.returncode, 0,
                              msg=first.stdout + first.stderr)
+            old_files = list((journals / "recovery").glob("*.recovery.json"))
+            self.assertEqual(len(old_files), 1)
+            old_before = old_files[0].read_bytes()
             other_args = [*self.base_args(), "--phase", "material",
                           "--release-generation", "head008-zzz9999"]
             result, calls = self.run_bootstrap(
                 other_args,
                 extra_env={"FAKE_AGED_INIT": "1"},
                 shared_dir=shared_tmp)
-            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
             combined = result.stdout + result.stderr
-            self.assertIn("release generation", combined.lower())
-            self.assertIn("same-release", combined)
-            self.assertFalse(any("run-task" in c for c in calls))
+            self.assertIn("recovery admission persisted", combined)
+            self.assertEqual(old_files[0].read_bytes(), old_before)
+            new_files = list((journals / "recovery").glob("*.recovery.json"))
+            self.assertEqual(len(new_files), 2)
+            fresh = [p for p in new_files
+                     if p.name.endswith(".head008-zzz9999.recovery.json")]
+            self.assertEqual(len(fresh), 1)
+            doc = _json.loads(fresh[0].read_text(encoding="utf-8"))
+            self.assertEqual(doc.get("outcome"), "complete")
+            self.assertEqual(doc.get("release_generation"), "head008-zzz9999")
+            runs = [c for c in calls if "run-task" in c]
+            self.assertTrue(any("launchcrew-demo-sdkmaterial" in c
+                                for c in runs))
+            self.assertFalse(any("launchcrew-demo-sdkinit" in c for c in runs))
 
     def test_material_arn_mismatch_on_restart_refuses(self):
         other_rt = (f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:"
@@ -7940,7 +7992,8 @@ class TypedRecoveryTests(BootstrapHarness):
 
     def read_attestation(self, journals, orig_basename):
         import json as _json
-        path = journals / "recovery" / (orig_basename + ".recovery.json")
+        path = journals / "recovery" / (
+            orig_basename + "." + self.RELEASE + ".recovery.json")
         self.assertTrue(path.is_file(), msg=str(path))
         doc = _json.loads(path.read_text(encoding="utf-8"))
         self.assertEqual(doc.get("outcome"), "complete")
@@ -8806,7 +8859,7 @@ class TypedRecoveryTests(BootstrapHarness):
             self.assertEqual(doc007.get("original_target_head"), "007")
             self.assertEqual(doc007.get("observed_head"), "007")
             self.check_digest(doc007)
-            rec008 = journals / "recovery" / (prior008.name + ".recovery.json")
+            rec008 = journals / "recovery" / (prior008.name + "." + self.RELEASE + ".recovery.json")
             self.assertFalse(rec008.exists())
 
     def test_migration_mixed_with_ambiguous_008_refuses(self):
@@ -9085,7 +9138,7 @@ class TypedRecoveryTests(BootstrapHarness):
             new_file = journals / (f"launchcrew-{STACK}-migrate-migration-"
                                    f"{self.RELEASE}-active.json")
             self.assertFalse(new_file.exists())
-            rec008 = journals / "recovery" / (prior008.name + ".recovery.json")
+            rec008 = journals / "recovery" / (prior008.name + "." + self.RELEASE + ".recovery.json")
             self.assertFalse(rec008.exists())
 
     def test_migration_live_006_only_refuses_with_no_resend(self):
@@ -10207,11 +10260,11 @@ class EnableEvidenceTests(BootstrapHarness):
             rec_dir = journals / "recovery"
             orig = rec_dir / (
                 f"launchcrew-{STACK}-dbroles-bootstrap-"
-                "head006-abc1234-active.json.recovery.json")
+                f"head006-abc1234-active.json.{self.RELEASE}.recovery.json")
             self.assertTrue(orig.is_file())
             dup = rec_dir / (
                 f"launchcrew-{STACK}-dbroles-bootstrap-"
-                "head006-abc1234-active-copy.recovery.json")
+                f"head006-abc1234-active.json.{self.RELEASE}-copy.recovery.json")
             _shutil.copyfile(orig, dup)
             dup.chmod(0o600)
             base = self.base_args()
