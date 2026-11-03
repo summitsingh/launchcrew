@@ -14,3 +14,11 @@ slice. Velocity only.
 - To re-enable: owner says so, then restore the per-slice targeted
   gates plus the full suite at milestones.
 - Nothing here edits a test, the Checker, or the approval binding.
+
+## AWS credentials (owner directive, Nov 2026)
+
+- The default login token expires. When any AWS call fails with
+  ExpiredToken, retry the same call with `AWS_PROFILE=launchcrew`
+  before asking the owner to re-authenticate.
+- The launchcrew profile is approved as the standing fallback.
+  Never print its key values.
