@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AUTH_STATUS_RETRY_COUNT, authStatusQueryOptions } from '../src/lib/desk-query';
+import { AUTH_STATUS_RETRY_COUNT, authStatusQueryOptions } from '../src/lib/auth-retry-policy';
 
 describe('desk auth status query policy', () => {
   it('keeps a bounded retry budget so one transient failure cannot freeze polling', () => {

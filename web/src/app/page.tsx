@@ -17,7 +17,7 @@ import { api, unwrap } from '@/lib/api';
 import { canCopyDraft, copyAuthorizedDraft, requestDraftCopy, type DraftKind } from '@/lib/draft-copy';
 import { canClone, canPreview, canSave, canSelect } from '@/lib/agent-boundary';
 import { queueTextSource, photoRevisionSuffix } from '@/lib/v2';
-import { authStatusQueryOptions } from '@/lib/desk-query';
+import { authStatusQueryOptions } from '@/lib/auth-retry-policy';
 import { ALLOWED_CLAIMS_MAX, buildProductFactsInput, emptyOwnerFacts, hasAnyOwnerValue, missingCoreFacts, validateOwnerFacts } from '@/lib/product-facts';
 import { FactLibrarySection, MissingFactsPrompt, type LibrarySelection } from '@/components/fact-library';
 import { BrandKitPanel, EMPTY_FORMAT_SPEC, FormatCheckPanel, FormatLibraryPanel, FormatSpecPicker, buildFormatSpecPayload, type FormatSpecInput } from '@/components/format-library';
