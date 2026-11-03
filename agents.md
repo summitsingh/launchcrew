@@ -22,3 +22,10 @@ slice. Velocity only.
   before asking the owner to re-authenticate.
 - The launchcrew profile is approved as the standing fallback.
   Never print its key values.
+
+## Scope (owner directive, Nov 2026)
+
+- Facebook sign-in is out of scope for now. Do not pursue
+  live_verified for facebook and do not change auth code for it.
+- The demo runs on Google sign-in only. Instagram stays as the
+  posted proof artifact.
