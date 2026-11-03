@@ -12692,16 +12692,21 @@ for name in names:
             continue
     except Exception:
         continue
-    found.append(name)
+    found.append((name, ("-active-failed-" in _base)))
 if not found:
     print("PROOF\tNO_ATTESTATION")
     sys.exit(0)
 if len(found) != 1:
-    print("PROOF\tDUPLICATE")
-    print("COUNT\t%d" % len(found))
+    canonical = [n for (n, failed) in found if not failed]
+    if len(canonical) != 1:
+        print("PROOF\tDUPLICATE")
+        print("COUNT\t%d" % len(found))
+        sys.exit(0)
+    print("PROOF\tOK")
+    print("FILE\t%s" % canonical[0])
     sys.exit(0)
 print("PROOF\tOK")
-print("FILE\t%s" % found[0])
+print("FILE\t%s" % found[0][0])
 PYEOF
 )" || REPROVE_ATTEST_FOUND="PROOF\tUNREADABLE"
     REPROVE_ATTEST_PROOF="$(printf '%s\n' "$REPROVE_ATTEST_FOUND" | awk -F'\t' '$1=="PROOF"{print $2}' | tr -d '[:space:]')"
