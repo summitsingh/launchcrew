@@ -1,8 +1,9 @@
 """Instagram live transport: real Graph API single-image publish path.
 
-Two-step flow against a fixed Graph API version: create a media
-container from a public image URL plus caption, then publish the
-container. Used only when every live prerequisite holds: the
+Three-step flow against a fixed Graph API version: create a media
+container from a public image URL plus caption, publish the
+container, then read back the public permalink for verification.
+Used only when every live prerequisite holds: the
 LAUNCHCREW_INSTAGRAM_LIVE flag is true, the stored brand connection
 carries a real owner token, and the execute call supplies a public
 https image URL. Otherwise the caller keeps the simulated default
@@ -112,14 +113,7 @@ def normalize_token(value: Any) -> str:
     return cleaned
 
 
-def _post(path: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
-    body = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(
-        GRAPH_ORIGIN + "/" + GRAPH_VERSION + path,
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+def _read_json(request: urllib.request.Request, timeout: float) -> dict[str, Any]:
     try:
         with urlopen(request, timeout=timeout) as response:
             raw = response.read()
@@ -137,6 +131,28 @@ def _post(path: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
         raise InstagramTransportError(
             PROVIDER_MESSAGE % str(error.get("message") or "unknown provider error")[:300])
     return data
+
+
+def _post(path: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
+    body = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        GRAPH_ORIGIN + "/" + GRAPH_VERSION + path,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    return _read_json(request, timeout)
+
+
+def _get(path_query: str, token: str, timeout: float) -> dict[str, Any]:
+    # The token travels in the Authorization header, never in the URL,
+    # so request lines in logs or error reports cannot carry it.
+    request = urllib.request.Request(
+        GRAPH_ORIGIN + "/" + GRAPH_VERSION + path_query,
+        headers={"Authorization": "Bearer " + token},
+        method="GET",
+    )
+    return _read_json(request, timeout)
 
 
 def create_container(ig_user_id: str, media_url: str, caption: str,
@@ -199,9 +215,44 @@ def live_prerequisites(ig_user_id: Any, token: Any, media_url: Any,
     return missing
 
 
+def media_permalink(media_id: str, token: str,
+                    timeout: float = 30.0) -> str | None:
+    """Return the public permalink for a published media id, or None.
+
+    Returns None instead of raising when the provider answers without a
+    usable permalink. Provider refusals still raise, and the caller
+    decides whether a missing link fails the post.
+    """
+    cleaned = media_id.strip() if isinstance(media_id, str) else ""
+    if not cleaned:
+        return None
+    key = normalize_token(token)
+    data = _get("/%s?fields=permalink" % cleaned, key, timeout)
+    link = data.get("permalink")
+    if not isinstance(link, str) or not link.strip():
+        return None
+    try:
+        parsed = urlparse(link.strip())
+    except ValueError:
+        return None
+    if parsed.scheme != "https" or not parsed.hostname:
+        return None
+    return link.strip()
+
+
 def instagram_transport(ig_user_id: str, media_url: str, caption: str,
                         token: str, timeout: float = 30.0) -> dict[str, Any]:
-    """Publish one image post; return the real media id, never simulated."""
+    """Publish one image post; return the real media id, never simulated.
+
+    The public permalink is read back after publishing so the execution
+    and delivery records carry a live URL for verification. A permalink
+    read failure never fails the post itself: the media is already
+    published, and recording a failure would risk a duplicate on retry.
+    """
     creation_id = create_container(ig_user_id, media_url, caption, token, timeout)
     media_id = publish_container(ig_user_id, creation_id, token, timeout)
-    return {"platform_post_id": media_id, "live_url": None, "simulated": False}
+    try:
+        live_url = media_permalink(media_id, token, timeout)
+    except InstagramTransportError:
+        live_url = None
+    return {"platform_post_id": media_id, "live_url": live_url, "simulated": False}

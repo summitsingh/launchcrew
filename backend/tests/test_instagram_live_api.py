@@ -23,6 +23,9 @@ def _response(payload):
 def _live_opener(request, timeout=None):
     if request.full_url.endswith('/media'):
         return _response({'id': 'creation_live_1'})
+    if 'fields=permalink' in request.full_url:
+        return _response({'id': 'media_live_1',
+                          'permalink': 'https://www.instagram.com/p/DbLiveOpener1/'})
     return _response({'id': 'media_live_1'})
 
 
@@ -89,7 +92,56 @@ def test_live_instagram_posts_real_id_when_fully_enabled(client, monkeypatch):
     assert execution['status'] == 'posted'
     assert execution['platform_post_id'] == 'media_live_1'
     assert execution['attempts'][-1]['simulated'] is False
-    assert transport.call_count == 2
+    assert execution['live_url'] == 'https://www.instagram.com/p/DbLiveOpener1/'
+    assert transport.call_count == 3
+
+
+def test_live_instagram_records_permalink_as_live_url(client, monkeypatch):
+    monkeypatch.setenv('LAUNCHCREW_INSTAGRAM_LIVE', 'true')
+    receipt = new_run(client)
+    approve(client, receipt['run_id'])
+    slot = ready_instagram_slot(client, receipt['run_id'])
+    connect_instagram(client, NUMERIC_ID)
+    link = 'https://www.instagram.com/p/DbFakeLink1/'
+
+    def opener(request, timeout=None):
+        if request.full_url.endswith('/media'):
+            return _response({'id': 'creation_live_9'})
+        if 'fields=permalink' in request.full_url:
+            return _response({'id': 'media_live_9', 'permalink': link})
+        return _response({'id': 'media_live_9'})
+
+    with patch.object(ig_mod, 'urlopen', side_effect=opener):
+        done = execute(client, slot['id'], MEDIA)
+    assert done.status_code == 200, done.text
+    execution = done.json()['executions'][0]
+    assert execution['status'] == 'posted'
+    assert execution['platform_post_id'] == 'media_live_9'
+    assert execution['live_url'] == link
+
+
+def test_live_instagram_permalink_failure_still_posts(client, monkeypatch):
+    monkeypatch.setenv('LAUNCHCREW_INSTAGRAM_LIVE', 'true')
+    receipt = new_run(client)
+    approve(client, receipt['run_id'])
+    slot = ready_instagram_slot(client, receipt['run_id'])
+    connect_instagram(client, NUMERIC_ID)
+
+    def opener(request, timeout=None):
+        if request.full_url.endswith('/media'):
+            return _response({'id': 'creation_live_7'})
+        if 'fields=permalink' in request.full_url:
+            return _response({'error': {'message': 'transient read failure',
+                                        'type': 'OAuthException', 'code': 2}})
+        return _response({'id': 'media_live_7'})
+
+    with patch.object(ig_mod, 'urlopen', side_effect=opener):
+        done = execute(client, slot['id'], MEDIA)
+    assert done.status_code == 200, done.text
+    execution = done.json()['executions'][0]
+    assert execution['status'] == 'posted'
+    assert execution['platform_post_id'] == 'media_live_7'
+    assert execution['live_url'] is None
 
 
 def test_flag_off_stays_simulated(client, monkeypatch):
