@@ -70,7 +70,7 @@ export default function PlansPage() {
 
           <footer className="page-footer">
             <span>LaunchCrew · Demo workspace</span>
-            <span><a href="/plans">Plans</a> · <a href="/">Review desk</a></span>
+            <span><a href="/plans">Plans</a> · <a href="/">Review desk</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a></span>
             <a href="https://github.com/summitsingh/launchcrew">Public GitHub repo</a>
           </footer>
         </main>
