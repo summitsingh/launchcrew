@@ -8244,6 +8244,53 @@ class TypedRecoveryTests(BootstrapHarness):
             self.assertEqual(doc.get("observed_head"), "008")
             self.check_digest(doc)
 
+    def test_migration_legacy_observed008_runs_migration_to_converge(self):
+        import hashlib as _hashlib
+        import json as _json
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            name = f"launchcrew-{STACK}-migrate-migration-active.json"
+            path = journals / name
+            doc = {
+                "version": 1, "stack": STACK, "phase": "migrate",
+                "label": "migration",
+                "taskdef_logical": "MigrationTaskDefinition",
+                "taskdef_arn": self.MIG_TASKDEF, "cluster": STACK,
+                "client_token": self.MIG_TOKEN,
+                "config_digest": "1" * 32, "region": REGION,
+                "account": ACCOUNT, "outcome": "complete",
+                "task_arn": self.MIG_TASK,
+                "updated_utc": "2026-01-01T00:00:00Z",
+            }
+            raw = "|".join([
+                doc["account"], doc["region"], doc["stack"],
+                doc["cluster"], doc["phase"], doc["label"],
+                doc["taskdef_logical"], doc["taskdef_arn"],
+            ])
+            doc["config_digest"] = _hashlib.sha256(
+                raw.encode("utf-8")).hexdigest()[:32]
+            path.write_text(_json.dumps(doc), encoding="utf-8")
+            path.chmod(0o600)
+            before = path.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.migrate_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            self.assertEqual(path.read_bytes(), before)
+            runs = [c for c in calls if "run-task" in c]
+            mig_runs = [c for c in runs
+                        if "launchcrew-demo-migration" in c]
+            self.assertEqual(len(mig_runs), 1)
+            self.assertTrue(any("launchcrew-demo-rolestate" in c
+                                for c in runs))
+            self.assertTrue(any("launchcrew-demo-verify" in c
+                                for c in runs))
+            att, _ = self.read_attestation(journals, name)
+            self.assertEqual(att.get("observed_head"), "008")
+
     def test_migration_head007_admits_single_deliberate_migration(self):
         import tempfile as _tempfile
         with _tempfile.TemporaryDirectory() as shared_tmp:

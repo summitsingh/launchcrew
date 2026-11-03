@@ -11849,15 +11849,15 @@ for name in names:
         sys.exit(0)
     if doc.get("kind", "") != "migration-recovery-attestation":
         continue
-    if doc.get("outcome", "") != "complete":
-        print("PROOF\tUNRESOLVED")
-        sys.exit(0)
     if doc.get("release_generation", "") != want_gen:
         continue
     if doc.get("source_sha", "") != want_source:
         continue
     if doc.get("target_head", "") != want_head:
         continue
+    if doc.get("outcome", "") != "complete":
+        print("PROOF\tUNRESOLVED")
+        sys.exit(0)
     head = doc.get("observed_head", "")
     if head not in ("007", "008"):
         print("PROOF\tHEAD_UNKNOWN")
@@ -11915,7 +11915,7 @@ PYEOF
       echo "refused: migration recovery observed head proof is $MIGRATION_OBS_PROOF, no new migration and no skip without exact head. Inspect $LAUNCH_JOURNAL_DIR/recovery." >&2
       phase_failed "$TASK_PHASE"
     fi
-    if [ "$MIGRATION_OBS_HEAD" = "008" ]; then
+    if [ "$MIGRATION_OBS_HEAD" = "008" ] && [ "$MIGRATION_ORIG_LEGACY" != "true" ]; then
       echo "$TASK_LABEL aged prior recovered with observed head008 plus verified equivalence, skipping migration with no new run-task under typed attestation; fresh runtime verification still required. Preserved history, no resend."
       release_operation_lock
       return 0
@@ -12055,6 +12055,8 @@ EOF_ORIG_LIST
         phase_failed "$TASK_PHASE"
       fi
       echo "$TASK_LABEL aged prior recovered with observed head007 plus validated original target007, admitting at most one deliberate 007->008 migration after old-token and current-state checks; never automatically resending an ambiguous 008 attempt."
+    elif [ "$MIGRATION_OBS_HEAD" = "008" ]; then
+      echo "$TASK_LABEL aged prior recovered with observed head008 from legacy pre-scheme original with unknown app-schema era; running migration to converge idempotently with no skip. Preserved history, no resend."
     else
       release_operation_lock
       echo "refused: migration recovery observed head is $MIGRATION_OBS_HEAD, not 007 or 008, no migration and no skip. Inspect $LAUNCH_JOURNAL_DIR/recovery." >&2
