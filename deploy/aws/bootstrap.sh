@@ -8451,6 +8451,10 @@ PYEOF
       echo "recovery resumed to complete: desired-state equivalence for $RECOVERY_ORIG_BASENAME, not retroactive proof."
       return 0
     fi
+    # A recorded terminal-failed verifier poisons this release: resume
+    # re-proves the dead task and refuses, and ageing still refuses.
+    # Never delete the started attestation to force a retry. Cut a fresh
+    # release instead; it re-earns every proof from scratch on live state.
     release_recovery_lock
     echo "refused: existing recovery is $RECOVERY_EXIST_OUTCOME unresolved, manual review required with no new verifier and no resend. Inspect $RECOVERY_FILE." >&2
     phase_failed "$RECOVERY_FAIL_PHASE"
@@ -9515,6 +9519,10 @@ PYEOF
       echo "recovery resumed to complete: desired-state equivalence for $RECOVERY_ORIG_BASENAME, not retroactive proof."
       return 0
     fi
+    # A recorded terminal-failed verifier poisons this release: resume
+    # re-proves the dead task and refuses, and ageing still refuses.
+    # Never delete the started attestation to force a retry. Cut a fresh
+    # release instead; it re-earns every proof from scratch on live state.
     release_recovery_lock
     echo "refused: existing recovery is $RECOVERY_EXIST_OUTCOME unresolved, manual review required with no new verifier and no resend. Inspect $RECOVERY_FILE." >&2
     phase_failed "$RECOVERY_FAIL_PHASE"
