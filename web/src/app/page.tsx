@@ -17,6 +17,7 @@ import { api, unwrap } from '@/lib/api';
 import { canCopyDraft, copyAuthorizedDraft, requestDraftCopy, type DraftKind } from '@/lib/draft-copy';
 import { canClone, canPreview, canSave, canSelect } from '@/lib/agent-boundary';
 import { queueTextSource, photoRevisionSuffix } from '@/lib/v2';
+import { authStatusQueryOptions } from '@/lib/desk-query';
 import { ALLOWED_CLAIMS_MAX, buildProductFactsInput, emptyOwnerFacts, hasAnyOwnerValue, missingCoreFacts, validateOwnerFacts } from '@/lib/product-facts';
 import { FactLibrarySection, MissingFactsPrompt, type LibrarySelection } from '@/components/fact-library';
 import { BrandKitPanel, EMPTY_FORMAT_SPEC, FormatCheckPanel, FormatLibraryPanel, FormatSpecPicker, buildFormatSpecPayload, type FormatSpecInput } from '@/components/format-library';
@@ -54,7 +55,10 @@ function Desk() {
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
   const [exported, setExported] = useState('');
-  const auth = useQuery({ queryKey: ['auth'], queryFn: () => unwrap(api.GET('/api/auth/status')) });
+  // A single transient /api/auth/status failure must never freeze the desk:
+  // every run, queue, and agent poll is gated on this query, so it retries
+  // instead of failing once and disabling all polling until a reload.
+  const auth = useQuery(authStatusQueryOptions(() => unwrap(api.GET('/api/auth/status'))));
   const authSuccess = auth.isSuccess && auth.data !== undefined;
   const authStatusError = auth.isError;
   const authEnabled = authSuccess && auth.data?.enabled === true;
