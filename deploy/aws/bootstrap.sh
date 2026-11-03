@@ -5252,7 +5252,7 @@ if not isinstance(token, str) or len(token) != 33 or not token.startswith("lc-")
     print("PROOF\tTOKEN_MALFORMED")
     sys.exit(0)
 outcome = doc.get("outcome", "")
-allowed_prior = ("complete", "started") if (want_phase == "dbroles" and want_label == "bootstrap") else ("complete",)
+allowed_prior = ("complete", "started") if ((want_phase == "dbroles" and want_label == "bootstrap") or (want_phase == "migrate" and want_label == "verify")) else ("complete",)
 if outcome not in allowed_prior:
     print("PROOF\tUNRESOLVED")
     print("OUTCOME\t%s" % (outcome if isinstance(outcome, str) and outcome else "MISSING"))
@@ -5394,7 +5394,7 @@ PYEOF
         RECOVERED_AGED_PRIOR_MIGRATION=1
       elif [ "$PRIOR_CHECK" = "NO_TASK" ] && [ "$TASK_LABEL" = "verify" ] && [ "$TASK_PHASE" = "migrate" ]; then
         echo "$TASK_LABEL prior $PRIOR_GEN aged out NO_TASK, requiring recovery attestation before new $RELEASE_GEN launch."
-        attest_aged_typed_recovery "$TASK_PHASE" "$PRIOR_PATH" "$PRIOR_BASE" "migrate" "verify" "VerifyTaskDefinition" "runtime-recovery-attestation" "VerifyTaskDefinition" "bootstrap-db-roles" "0" "0"
+        attest_aged_typed_recovery "$TASK_PHASE" "$PRIOR_PATH" "$PRIOR_BASE" "migrate" "verify" "VerifyTaskDefinition" "runtime-recovery-attestation" "VerifyTaskDefinition" "bootstrap-db-roles" "1" "0"
         echo "$TASK_LABEL prior $PRIOR_GEN recovered via attestation, desired-state equivalence for new $RELEASE_GEN, not retroactive proof. Preserved at $PRIOR_PATH."
         RECOVERED_AGED_PRIOR_VERIFY=1
       else
@@ -12288,7 +12288,7 @@ if wants_phase migrate; then
   [ "$STACK_EXISTS" -eq 1 ] || { echo "refused: no stack owns the migration task; run --phase infra first" >&2; phase_failed migrate; }
   require_init_desired_state migrate
   require_typed_desired_state migrate migrate migration MigrationTaskDefinition migration-recovery-attestation RoleStateTaskDefinition bootstrap-db-roles 0 1
-  require_typed_desired_state migrate migrate verify VerifyTaskDefinition runtime-recovery-attestation VerifyTaskDefinition bootstrap-db-roles 0 0
+  require_typed_desired_state migrate migrate verify VerifyTaskDefinition runtime-recovery-attestation VerifyTaskDefinition bootstrap-db-roles 1 0
   check_taskdef_binding MigrationTaskDefinition MigrationExecutionRole MigrationTaskRole \
     "migration.DATABASE_URL=$MIGRATION_SECRET_ARN:database-url::"
   check_taskdef_binding VerifyTaskDefinition VerifyExecutionRole VerifyTaskRole \

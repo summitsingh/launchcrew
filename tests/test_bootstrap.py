@@ -8291,6 +8291,41 @@ class TypedRecoveryTests(BootstrapHarness):
             att, _ = self.read_attestation(journals, name)
             self.assertEqual(att.get("observed_head"), "008")
 
+    def test_verify_prior_release_started_attempt_recovers_with_fresh_run(self):
+        with tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            mig_prior = self.write_prior(
+                journals, "migrate", "migration",
+                "MigrationTaskDefinition", self.MIG_TOKEN, self.MIG_TASK,
+                self.MIG_TASKDEF, generation="head008-older999",
+                head="008")
+            mig_before = mig_prior.read_bytes()
+            ver_prior = self.write_prior(
+                journals, "migrate", "verify",
+                "VerifyTaskDefinition", self.VER_TOKEN, self.VER_TASK,
+                self.VER_TASKDEF, generation="head008-older999",
+                outcome="started", head="008")
+            ver_before = ver_prior.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.migrate_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            self.assertEqual(mig_prior.read_bytes(), mig_before)
+            self.assertEqual(ver_prior.read_bytes(), ver_before)
+            combined = result.stdout + result.stderr
+            self.assertIn("recovered via attestation", combined)
+            runs = [c for c in calls if "run-task" in c]
+            self.assertTrue(any("launchcrew-demo-verify" in c
+                                for c in runs))
+            self.assertFalse(any("launchcrew-demo-migration" in c
+                                 for c in runs))
+            att, _ = self.read_attestation(journals, ver_prior.name)
+            self.assertEqual(att.get("observed_head"), "008")
+            self.assertEqual(att.get("kind"),
+                             "runtime-recovery-attestation")
+
     def test_migration_head007_admits_single_deliberate_migration(self):
         import tempfile as _tempfile
         with _tempfile.TemporaryDirectory() as shared_tmp:
