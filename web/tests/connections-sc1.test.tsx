@@ -27,7 +27,7 @@ const PLATFORMS: SocialPlatform[] = [
     enabled: true,
     status: 'active',
     oauth_configured: false,
-    limitation: 'OAuth client not configured; brand account test connection still supported',
+    limitation: `No ${platform} brand account connected yet; connect one with its account handle and access token by explicit owner action.`,
     flag_name: null,
     client_env: `${platform.toUpperCase()}_CLIENT_ID`,
   })),

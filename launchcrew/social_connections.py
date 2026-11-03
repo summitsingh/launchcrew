@@ -143,10 +143,10 @@ def limitation_for(platform: str) -> str | None:
             "set %s=true to enable after review" % (flag, flag)
         )
     if not oauth_configured(platform):
-        env_name = CLIENT_ENV_BY_PLATFORM.get(platform, "")
         return (
-            "OAuth client not configured (set %s); brand account test "
-            "connection still supported with explicit owner action" % env_name
+            "No %s brand account connected yet; connect one with its account "
+            "handle and access token by explicit owner action. The token is "
+            "stored encrypted and used only for owner-approved publishing." % platform
         )
     if platform in FLAGGED_PLATFORMS:
         return "Capability flag enabled; platform review still pending, connect a brand account only"
