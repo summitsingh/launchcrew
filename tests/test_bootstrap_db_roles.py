@@ -1207,7 +1207,7 @@ class VerifyJobTests(BindJobTests):
                        "verify-runtime-no-create ok",
                        "verify-runtime-no-alter ok",
                        "verify-runtime-no-drop ok",
-                       "verify-model-budget-zero ok",
+                       "verify-model-budget-grant ok",
                        "verify-model-no-direct ok",
                        "verify-model-functions ok",
                        "verify-model-owners ok",
@@ -1279,7 +1279,13 @@ class VerifyJobTests(BindJobTests):
         self.state.model_budget_remaining = 4000000
         code, out = self.run_main("--verify")
         self.assertNotEqual(code, 0)
-        self.assertIn("verify-model-budget-zero", out)
+        self.assertIn("verify-model-budget-grant", out)
+
+    def test_verify_accepts_sanctioned_grant_model_budget(self):
+        self.state.model_budget_remaining = 10000000
+        code, out = self.run_main("--verify")
+        self.assertEqual(code, 0, msg=out)
+        self.assertIn("verify-model-budget-grant ok", out)
 
     def test_verify_refuses_direct_model_write(self):
         self.state.model_direct_allow = True

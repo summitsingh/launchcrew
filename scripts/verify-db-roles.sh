@@ -829,7 +829,7 @@ print("outcome grants ok")
   [ "$VERIFY_CODE" -eq 0 ] || { printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify failed at head 008"; }
   case "$VERIFY_OUT" in *"VERIFY COMPLETE"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed VERIFY COMPLETE" ;; esac
   case "$VERIFY_OUT" in *"revision=008"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed revision=008" ;; esac
-  case "$VERIFY_OUT" in *"verify-model-budget-zero ok"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed model budget proof" ;; esac
+  case "$VERIFY_OUT" in *"verify-model-budget-grant ok"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed model budget proof" ;; esac
   case "$VERIFY_OUT" in *"verify-model-no-direct ok"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed model direct DML proof" ;; esac
   case "$VERIFY_OUT" in *"verify-model-functions ok"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed model function proof" ;; esac
   case "$VERIFY_OUT" in *"verify-model-owners ok"*) ;; *) printf '%s' "$VERIFY_OUT" | safe_emit >&2; fail "actual --verify missed model owner proof" ;; esac

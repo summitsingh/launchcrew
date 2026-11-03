@@ -34,7 +34,8 @@ Modes, selected by argv flag only (no secret ever appears in argv):
             works, the alembic schema version equals 008, the connected
             identity equals the runtime role, a rolled-back write proves DML
             without committing, runtime CREATE/ALTER/DROP each fail with
-            SQLSTATE 42501, the global model budget reads zero, runtime
+            SQLSTATE 42501, the global model budget reads zero or exactly
+            the sanctioned 026 grant with any other balance refusing, runtime
             direct model ledger and budget DML each fail with 42501, exact
             reserve and finalize EXECUTE grants allow only the runtime role
             with no PUBLIC and no default future EXECUTE. The reserve,
@@ -178,6 +179,10 @@ def _chain_ancestors(head):
 
 EXPECTED_HEAD = _chain_head() or "008"
 MODEL_TABLES = ("model_budget", "model_calls")
+# Sanctioned USD 10 planning grant from migration 026, in micros. Verify
+# accepts exactly zero (pre-grant) or exactly this grant (funded untouched);
+# any partial or phantom balance refuses.
+MODEL_GRANT_MICROS = 10000000
 OUTCOME_TABLE = "run_outcomes"
 OUTCOME_CONSTRAINTS = (
     "run_outcomes_workspace_fkey",
@@ -1719,20 +1724,20 @@ def do_verify():
             cur.execute("SELECT remaining_micros FROM public.model_budget "
                         "WHERE id = %s", ("global",))
             budget = cur.fetchone()
-            if not budget or budget[0] != 0:
+            if not budget or budget[0] not in (0, MODEL_GRANT_MICROS):
                 try:
                     conn.rollback()
                 except Exception:
                     pass
-                return _fail("verify-model-budget-zero")
+                return _fail("verify-model-budget-grant")
             conn.rollback()
-            _ok("verify-model-budget-zero")
+            _ok("verify-model-budget-grant")
         except Exception:
             try:
                 conn.rollback()
             except Exception:
                 pass
-            return _fail("verify-model-budget-zero")
+            return _fail("verify-model-budget-grant")
         for stmt, params in (
                 ("INSERT INTO public.model_budget(id, remaining_micros) "
                  "VALUES (%s, %s)", ("other", 1)),
