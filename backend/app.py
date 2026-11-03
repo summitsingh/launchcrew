@@ -6009,6 +6009,37 @@ def _execute_ready_slot(db, slot_id, workspace_id, actor, simulate_failure=None,
             'reason': reason, 'executions': executions}
 
 
+def _slot_fully_posted(db, slot, workspace_id):
+    """True when every selected channel already posted under the current binding.
+
+    Mirrors the executor's already-posted predicate (a posted execution
+    carrying a platform id under the current idempotency key) so the
+    status board and the autonomous tick stop listing finished work. A
+    re-approved pack gets a new binding digest and therefore a new key,
+    so new content lists again honestly. Slots with no selected
+    channels are never treated as done.
+    """
+    from launchcrew import human_review
+    from launchcrew import publish_executor as executor_mod
+    channels = list(slot.get('selected_channels') or [])
+    if not channels:
+        return False
+    receipt = _receipt_for_slot(db, slot, workspace_id)
+    try:
+        binding = human_review.approval_binding(receipt) if isinstance(receipt, dict) else None
+        digest = binding.get('digest') if isinstance(binding, dict) else None
+    except Exception:
+        digest = None
+    for channel in channels:
+        key = executor_mod.normalize_channel(channel)
+        idem_key = executor_mod.idempotency_key(slot['id'], key, digest)
+        existing = _load_execution_by_key(db, workspace_id, idem_key)
+        if not (existing is not None and existing.get('status') == 'posted'
+                and existing.get('platform_post_id')):
+            return False
+    return True
+
+
 @app.get('/api/publish/status', response_model=PublishStatusOut)
 def publish_status(as_of: str | None = None, actor: str = Depends(auth.actor)):
     """Executor status: kill switch, due and ready slots, recent executions."""
@@ -6023,6 +6054,8 @@ def publish_status(as_of: str | None = None, actor: str = Depends(auth.actor)):
         for raw in rows:
             slot = _public_calendar_slot(dict(raw))
             if slot.get('schedule_state') != 'ready':
+                continue
+            if _slot_fully_posted(db, dict(raw), workspace_id):
                 continue
             entry = {'slot_id': slot['id'], 'slot_date': slot['slot_date'],
                      'planned_time': slot.get('planned_time') or '09:00',
@@ -6084,6 +6117,8 @@ def execute_due_slots(body: ExecuteDueIn | None = None, actor: str = Depends(aut
         for raw in rows:
             slot = dict(raw)
             if not _slot_is_due(slot, moment):
+                continue
+            if _slot_fully_posted(db, slot, workspace_id):
                 continue
             outcome = _execute_ready_slot(db, slot['id'], workspace_id, actor,
                                           simulate_failure=simulate)

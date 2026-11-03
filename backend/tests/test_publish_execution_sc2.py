@@ -138,6 +138,44 @@ def test_ready_slot_posts_at_scheduled_time_and_hands_off_to_s5(client):
     assert board.json()[0]['delivery_state'] == 'posted'
 
 
+def test_posted_slot_leaves_due_and_ready_lists(client):
+    receipt = new_run(client)
+    run_id = receipt['run_id']
+    approve(client, run_id)
+    channel = usable_channel(client, run_id)
+    slot = ready_slot(client, run_id, channel)
+    connect_brand(client, channel)
+    before = client.get('/api/publish/status').json()
+    assert any(entry['slot_id'] == slot['id'] for entry in before['ready_slots'])
+    tick = client.post('/api/publish/execute-due', json={'as_of': DUE_AS_OF})
+    assert tick.status_code == 200, tick.text
+    assert slot['id'] in tick.json()['executed_slots']
+    status = client.get('/api/publish/status').json()
+    assert all(entry['slot_id'] != slot['id'] for entry in status['due_slots'])
+    assert all(entry['slot_id'] != slot['id'] for entry in status['ready_slots'])
+
+
+def test_failed_slot_stays_listed_for_owner_retry(client):
+    receipt = new_run(client)
+    run_id = receipt['run_id']
+    approve(client, run_id)
+    channel = usable_channel(client, run_id)
+    slot = ready_slot(client, run_id, channel)
+    connect_brand(client, channel)
+
+    from launchcrew import publish_executor as executor_mod
+
+    def refused(*args, **kwargs):
+        raise executor_mod.PublishTransportError('boom, always fails')
+
+    with patch.object(executor_mod, 'default_transport', side_effect=refused):
+        first = client.post('/api/publish/execute-due', json={'as_of': DUE_AS_OF})
+    assert first.status_code == 200, first.text
+    status = client.get('/api/publish/status').json()
+    assert any(entry['slot_id'] == slot['id'] for entry in status['due_slots'])
+    assert any(entry['slot_id'] == slot['id'] for entry in status['ready_slots'])
+
+
 def test_unapproved_slot_refused_with_no_publish_call(client, monkeypatch):
     from launchcrew import publish_executor as executor_mod
     calls = []
