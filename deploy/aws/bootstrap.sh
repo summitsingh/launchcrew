@@ -2988,6 +2988,29 @@ PYEOF
       echo "refused: infra change set create failed; an existing same-name change set is never deleted or replaced, inspect $INFRA_CHANGESET manually after review. No change made." >&2
       phase_failed infra
     fi
+    INFRA_WAIT_TRY=0
+    while true; do
+      INFRA_WAIT_STATUS="$("$AWS_BIN" cloudformation describe-change-set --stack-name "$STACK_NAME" --change-set-name "$INFRA_CHANGESET" --region "$EXPECTED_REGION" --output json 2>/dev/null | python3 -c 'import json, sys
+try:
+    print(json.load(sys.stdin).get("Status", "") or "EMPTY")
+except Exception:
+    print("MALFORMED")')"
+      INFRA_WAIT_STATUS="$(printf '%s' "$INFRA_WAIT_STATUS" | tr -d '[:space:]')"
+      if [ "$INFRA_WAIT_STATUS" = "CREATE_COMPLETE" ] || [ "$INFRA_WAIT_STATUS" = "FAILED" ]; then
+        break
+      fi
+      if [ "$INFRA_WAIT_STATUS" != "CREATE_IN_PROGRESS" ] && [ "$INFRA_WAIT_STATUS" != "CREATE_PENDING" ]; then
+        break
+      fi
+      if [ "$INFRA_WAIT_TRY" -lt 18 ]; then
+        INFRA_WAIT_TRY=$((INFRA_WAIT_TRY + 1))
+        echo "Infra: change set $INFRA_CHANGESET status $INFRA_WAIT_STATUS, waiting bounded ($INFRA_WAIT_TRY/18) before review."
+        sleep 10 2>/dev/null || true
+        continue
+      fi
+      echo "refused: infra change set $INFRA_CHANGESET still $INFRA_WAIT_STATUS after bounded wait (18 tries), no execute made. Pending change set preserved for inspection, no delete made." >&2
+      phase_failed infra
+    done
     INFRA_PAGES_DIR="$(mktemp -d /tmp/launchcrew-infra-pages-XXXXXX)"
     INFRA_NEXT=""
     INFRA_PAGE_NUM=0
@@ -13603,10 +13626,10 @@ PYEOF
 )" || QUIESCE_WAIT_STATUS="MALFORMED"
         QUIESCE_WAIT_STATUS="$(printf '%s' "$QUIESCE_WAIT_STATUS" | tr -d '[:space:]')"
         if [ "$QUIESCE_WAIT_STATUS" = "CREATE_IN_PROGRESS" ] || [ "$QUIESCE_WAIT_STATUS" = "CREATE_PENDING" ]; then
-          if [ "$QUIESCE_WAIT_TRY" -lt 5 ]; then
+          if [ "$QUIESCE_WAIT_TRY" -lt 18 ]; then
             QUIESCE_WAIT_TRY=$((QUIESCE_WAIT_TRY + 1))
-            echo "Quiesce: change set $QUIESCE_CHANGESET status $QUIESCE_WAIT_STATUS, waiting bounded ($QUIESCE_WAIT_TRY/5) before review."
-            sleep 2 2>/dev/null || true
+            echo "Quiesce: change set $QUIESCE_CHANGESET status $QUIESCE_WAIT_STATUS, waiting bounded ($QUIESCE_WAIT_TRY/18) before review."
+            sleep 10 2>/dev/null || true
             QUIESCE_PAGE_NUM=0
             rm -f "$QUIESCE_PAGE_FILE"
             QUIESCE_NEXT=""
@@ -13614,7 +13637,7 @@ PYEOF
           else
             rm -rf "$QUIESCE_PAGES_DIR"
             rm -f "$QUIESCE_OLD_API_JSON" "$QUIESCE_OLD_WEB_JSON" "$QUIESCE_STACK_JSON"
-            echo "refused: quiesce change set $QUIESCE_CHANGESET still $QUIESCE_WAIT_STATUS after bounded wait, no execute made. Pending change set preserved for inspection." >&2
+            echo "refused: quiesce change set $QUIESCE_CHANGESET still $QUIESCE_WAIT_STATUS after bounded wait (18 tries), no execute made. Pending change set preserved for inspection." >&2
             phase_failed quiesce
           fi
         fi
