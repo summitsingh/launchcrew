@@ -13196,7 +13196,7 @@ if wants_phase enable; then
   require_typed_desired_state enable material sdk-material SdkMaterialTaskDefinition material-recovery-attestation SdkMaterialTaskDefinition sdk-material 0 0
   require_typed_desired_state enable dbroles bootstrap BootstrapTaskDefinition dbroles-recovery-attestation RoleStateTaskDefinition bootstrap-db-roles 1 1
   require_typed_desired_state enable migrate migration MigrationTaskDefinition migration-recovery-attestation RoleStateTaskDefinition bootstrap-db-roles 0 1
-  require_typed_desired_state enable migrate verify VerifyTaskDefinition runtime-recovery-attestation VerifyTaskDefinition bootstrap-db-roles 0 0
+  require_typed_desired_state enable migrate verify VerifyTaskDefinition runtime-recovery-attestation VerifyTaskDefinition bootstrap-db-roles 1 0
   RECOVERY_READONLY=0
   reprove_prior_one_off_readonly SdkMaterialTaskDefinition sdk-material material
   reprove_prior_one_off_readonly BootstrapTaskDefinition bootstrap dbroles
