@@ -36,24 +36,27 @@ describe('plans catalog', () => {
     expect(html).not.toMatch(/credit/i);
   });
 
-  it('renders the about section with the launch copilot mission', () => {
+  it('renders the about section with the Ready-gate mission', () => {
     const html = renderToStaticMarkup(<PlansPage />);
     expect(html).toContain('About LaunchCrew');
-    expect(html).toContain('deterministic');
-    expect(html).toContain('fact-grounded');
-    expect(ABOUT_MISSION).toMatch(/e-commerce|founders/i);
-    expect(ABOUT_MISSION).toMatch(/hallucination/i);
-    expect(ABOUT_MISSION).toMatch(/policy compliance/i);
+    expect(html).toContain('Muse Spark');
+    expect(ABOUT_MISSION).toMatch(/confirmed product facts/i);
+    expect(ABOUT_MISSION).toMatch(/nothing publishes without passing the Ready gate/i);
+    expect(ABOUT_MISSION).toMatch(/Checker blocks unsupported claims/i);
+    expect(ABOUT_MISSION).toMatch(/Muse Spark/i);
+    expect(ABOUT_MISSION).not.toMatch(/auto-post/i);
+    expect(ABOUT_MISSION).not.toMatch(/hallucination/i);
   });
 });
 
 describe('demo video slot', () => {
-  it('shows an honest placeholder when no video URL is configured', () => {
+  it('hides the demo slot when no video URL is configured', () => {
     delete process.env.NEXT_PUBLIC_DEMO_VIDEO_URL;
     expect(demoVideoUrl()).toBe('');
     const html = renderToStaticMarkup(<PlansPage />);
-    expect(html).toContain('demo video link will appear here');
+    expect(html).not.toContain('demo video link will appear here');
     expect(html).not.toContain('demo-link');
+    expect(html).not.toContain('demo-slot');
   });
 
   it('shows the video link only when a URL is configured', () => {

@@ -6,17 +6,17 @@ const jakarta = Plus_Jakarta_Sans({ subsets: ['latin'], variable: '--font-jakart
 const jetbrains = JetBrains_Mono({ subsets: ['latin'], variable: '--font-jetbrains', display: 'swap' });
 export const metadata: Metadata = {
   title: 'LaunchCrew | Review desk',
-  description: 'Launch drafts with individual approval and receipts. Product facts stay explicit, nothing publishes.',
+  description: 'Launch drafts with individual approval and receipts. Product facts stay explicit; nothing publishes without passing the Ready gate.',
   icons: { icon: [{ url: '/favicon.ico', sizes: 'any' }, { url: '/favicon.svg', type: 'image/svg+xml' }] },
   openGraph: {
     title: 'LaunchCrew review desk',
-    description: 'Launch drafts with individual approval and receipts. Product facts stay explicit, nothing publishes.',
+    description: 'Launch drafts with individual approval and receipts. Product facts stay explicit; nothing publishes without passing the Ready gate.',
     type: 'website',
   },
   twitter: {
     card: 'summary',
     title: 'LaunchCrew review desk',
-    description: 'Launch drafts with individual approval and receipts. Product facts stay explicit, nothing publishes.',
+    description: 'Launch drafts with individual approval and receipts. Product facts stay explicit; nothing publishes without passing the Ready gate.',
   },
 };
 // Runs before paint so the saved theme applies without a flash. Stored

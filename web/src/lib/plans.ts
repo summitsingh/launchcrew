@@ -51,10 +51,10 @@ export const CHECKER_UNMETERED_NOTE =
   'Checker safety verification stays unmetered on every tier: every draft is fully checked with no usage limits.';
 
 export const ABOUT_MISSION =
-  'LaunchCrew is a deterministic, fact-grounded launch copilot for e-commerce and founders. ' +
+  'LaunchCrew is a trust layer for AI launch content for solo founders. ' +
   'Every draft is built only from explicitly confirmed product facts, the Checker blocks ' +
-  'unsupported claims before you review, and nothing auto-posts or publishes. ' +
-  'No hallucinations, no invented claims, and platform policy compliance stays enforced on every draft.';
+  'unsupported claims before you review, and nothing publishes without passing the Ready gate. ' +
+  'Candidate drafts are generated with Muse Spark; deterministic gates decide every verdict.';
 
 export function demoVideoUrl(): string {
   return (process.env.NEXT_PUBLIC_DEMO_VIDEO_URL || '').trim();

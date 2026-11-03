@@ -53,15 +53,13 @@ export default function PlansPage() {
             <p>{ABOUT_MISSION}</p>
           </section>
 
-          <section aria-label="Demo video" className="panel" data-testid="demo-slot">
-            <p className="eyebrow">DEMO</p>
-            <h2>See LaunchCrew in action</h2>
-            {videoUrl ? (
+          {videoUrl ? (
+            <section aria-label="Demo video" className="panel" data-testid="demo-slot">
+              <p className="eyebrow">DEMO</p>
+              <h2>See LaunchCrew in action</h2>
               <a href={videoUrl} data-testid="demo-link">Watch the demo video</a>
-            ) : (
-              <p className="hint" data-testid="demo-placeholder">A demo video link will appear here once it is published.</p>
-            )}
-          </section>
+            </section>
+          ) : null}
 
           <section aria-label="Join the waitlist" className="panel" data-testid="waitlist-section">
             <p className="eyebrow">WAITLIST</p>
