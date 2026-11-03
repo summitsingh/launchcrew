@@ -176,6 +176,29 @@ def test_failed_slot_stays_listed_for_owner_retry(client):
     assert any(entry['slot_id'] == slot['id'] for entry in status['ready_slots'])
 
 
+def test_disconnect_needs_confirm_after_post(client):
+    receipt = new_run(client)
+    run_id = receipt['run_id']
+    approve(client, run_id)
+    channel = usable_channel(client, run_id)
+    slot = ready_slot(client, run_id, channel)
+    connect_brand(client, channel)
+    tick = client.post('/api/publish/execute-due', json={'as_of': DUE_AS_OF})
+    assert tick.status_code == 200, tick.text
+    assert slot['id'] in tick.json()['executed_slots']
+    refused = client.post(f'/api/social/connections/{channel}/disconnect', json={})
+    assert refused.status_code == 409, refused.text
+    assert 'confirm' in refused.text.lower()
+    listed = {entry['platform']: entry for entry in client.get('/api/social/connections').json()}
+    assert listed[channel]['status'] == 'connected'
+    assert listed[channel]['token_present'] is True
+    confirmed = client.post(
+        f'/api/social/connections/{channel}/disconnect', json={'confirm': True})
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()['status'] == 'disconnected'
+    assert confirmed.json()['token_present'] is False
+
+
 def test_unapproved_slot_refused_with_no_publish_call(client, monkeypatch):
     from launchcrew import publish_executor as executor_mod
     calls = []

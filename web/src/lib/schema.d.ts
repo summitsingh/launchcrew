@@ -2435,10 +2435,13 @@ export interface paths {
         put?: never;
         /**
          * Disconnect Social Connection
-         * @description One-tap disconnect: revokes where the platform allows and deletes the stored token.
+         * @description Disconnect a brand account: deletes the stored token.
          *
          *     Sets encrypted_token NULL and status disconnected while leaving all
          *     run receipts, verification history, and exports intact and exportable.
+         *     When this platform already has a posted execution in the workspace,
+         *     the call needs confirm true, so a stray tap cannot silently stop
+         *     future publishing; the UI asks twice in that case.
          */
         post: operations["disconnect_social_connection_api_social_connections__platform__disconnect_post"];
         delete?: never;
@@ -6130,6 +6133,14 @@ export interface components {
             workspace_id: string;
         } & {
             [key: string]: unknown;
+        };
+        /** SocialDisconnectIn */
+        SocialDisconnectIn: {
+            /**
+             * Confirm
+             * @default false
+             */
+            confirm: boolean;
         };
         /** SocialPlatformOut */
         SocialPlatformOut: {
@@ -10972,7 +10983,11 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["SocialDisconnectIn"] | null;
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

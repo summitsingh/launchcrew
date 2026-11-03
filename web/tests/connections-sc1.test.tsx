@@ -108,6 +108,22 @@ describe('SC1 brand account connections panel', () => {
     expect(html).toContain('One-tap disconnect');
   });
 
+  it('asks twice before disconnecting an account with posted content', () => {
+    const html = renderToStaticMarkup(
+      <BrandAccountConnectionsPanel
+        platforms={PLATFORMS}
+        connections={[connection('instagram'), connection('x')]}
+        onConnect={() => {}}
+        onDisconnect={() => {}}
+        confirming="instagram"
+      />,
+    );
+    expect(html).toContain('disconnect-instagram');
+    expect(html).toContain('Confirm disconnect');
+    expect(html).toContain('disconnect-x');
+    expect(html).toContain('One-tap disconnect');
+  });
+
   it('marks flag-gated platforms behind capability flags pending review', () => {
     const html = renderToStaticMarkup(
       <BrandAccountConnectionsPanel platforms={PLATFORMS} connections={[]} onConnect={() => {}} onDisconnect={() => {}} />,

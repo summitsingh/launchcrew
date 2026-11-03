@@ -5523,14 +5523,23 @@ def complete_social_connect(platform: str, body: SocialCallbackIn,
         return _social_row_to_public(dict(row))
 
 
+class SocialDisconnectIn(Strict):
+    confirm: bool = False
+
+
 @app.post('/api/social/connections/{platform}/disconnect', response_model=SocialConnectionOut)
-def disconnect_social_connection(platform: str, actor: str = Depends(auth.actor)):
-    """One-tap disconnect: revokes where the platform allows and deletes the stored token.
+def disconnect_social_connection(platform: str, body: SocialDisconnectIn | None = None,
+                                 actor: str = Depends(auth.actor)):
+    """Disconnect a brand account: deletes the stored token.
 
     Sets encrypted_token NULL and status disconnected while leaving all
     run receipts, verification history, and exports intact and exportable.
+    When this platform already has a posted execution in the workspace,
+    the call needs confirm true, so a stray tap cannot silently stop
+    future publishing; the UI asks twice in that case.
     """
     key = _require_social_platform(platform)
+    confirmed = bool(body is not None and body.confirm is True)
     with store.connect() as db:
         workspace_id = store.ensure_workspace_seeded(db, actor)
         row = db.execute(text('SELECT id, workspace_id, platform, account_handle, account_name,'
@@ -5540,6 +5549,15 @@ def disconnect_social_connection(platform: str, actor: str = Depends(auth.actor)
                          {'ws': workspace_id, 'platform': key}).mappings().first()
         if row is None:
             raise HTTPException(404, 'Connection not found')
+        if not confirmed:
+            posted = db.execute(text('SELECT 1 FROM publish_executions'
+                                     ' WHERE workspace_id=:ws AND channel=:channel'
+                                     " AND status='posted' LIMIT 1"),
+                                {'ws': workspace_id, 'channel': key}).first()
+            if posted is not None:
+                raise HTTPException(409, 'This brand account has posted content. Resend with'
+                                         ' confirm true to disconnect; the token is deleted and'
+                                         ' past posts and receipts stay in place.')
         db.execute(text('UPDATE social_connections SET encrypted_token=NULL, status=:status,'
                         ' disconnected_at=now(), updated_at=now()'
                         ' WHERE workspace_id=:ws AND platform=:platform'),

@@ -7795,6 +7795,18 @@
         "title": "SocialConnectionOut",
         "type": "object"
       },
+      "SocialDisconnectIn": {
+        "additionalProperties": false,
+        "properties": {
+          "confirm": {
+            "default": false,
+            "title": "Confirm",
+            "type": "boolean"
+          }
+        },
+        "title": "SocialDisconnectIn",
+        "type": "object"
+      },
       "SocialPlatformOut": {
         "additionalProperties": true,
         "properties": {
@@ -14303,7 +14315,7 @@
     },
     "/api/social/connections/{platform}/disconnect": {
       "post": {
-        "description": "One-tap disconnect: revokes where the platform allows and deletes the stored token.\n\nSets encrypted_token NULL and status disconnected while leaving all\nrun receipts, verification history, and exports intact and exportable.",
+        "description": "Disconnect a brand account: deletes the stored token.\n\nSets encrypted_token NULL and status disconnected while leaving all\nrun receipts, verification history, and exports intact and exportable.\nWhen this platform already has a posted execution in the workspace,\nthe call needs confirm true, so a stray tap cannot silently stop\nfuture publishing; the UI asks twice in that case.",
         "operationId": "disconnect_social_connection_api_social_connections__platform__disconnect_post",
         "parameters": [
           {
@@ -14316,6 +14328,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/SocialDisconnectIn"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "content": {

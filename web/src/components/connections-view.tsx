@@ -87,12 +87,14 @@ export function BrandAccountConnectionsPanel({
   onConnect,
   onDisconnect,
   pending,
+  confirming,
 }: {
   platforms: SocialPlatform[];
   connections: SocialConnection[];
   onConnect: (platform: string) => void;
   onDisconnect: (platform: string) => void;
   pending?: string | null;
+  confirming?: string | null;
 }) {
   const byPlatform = new Map(connections.map(item => [item.platform, item]));
   const priorityPlatforms = platforms.filter(item => item.tier === PRIORITY_TIER || item.priority);
@@ -143,7 +145,7 @@ export function BrandAccountConnectionsPanel({
                       disabled={pending === item.platform}
                       onClick={() => onDisconnect(item.platform)}
                     >
-                      {pending === item.platform ? 'Disconnecting...' : 'One-tap disconnect'}
+                      {pending === item.platform ? 'Disconnecting...' : confirming === item.platform ? 'Confirm disconnect' : 'One-tap disconnect'}
                     </Button>
                   </div>
                 </>
@@ -192,7 +194,7 @@ export function BrandAccountConnectionsPanel({
                       disabled={pending === item.platform}
                       onClick={() => onDisconnect(item.platform)}
                     >
-                      {pending === item.platform ? 'Disconnecting...' : 'One-tap disconnect'}
+                      {pending === item.platform ? 'Disconnecting...' : confirming === item.platform ? 'Confirm disconnect' : 'One-tap disconnect'}
                     </Button>
                   </div>
                 </>
@@ -276,24 +278,36 @@ export function ConnectionsView() {
       setActive(null);
     },
   });
+  const [confirming, setConfirming] = useState<string | null>(null);
   const disconnect = useMutation({
-    mutationFn: (platform: string) =>
+    mutationFn: (input: { platform: string; confirm: boolean }) =>
       unwrap(
         api.POST('/api/social/connections/{platform}/disconnect', {
-          params: { path: { platform } },
+          params: { path: { platform: input.platform } },
+          body: { confirm: input.confirm },
         }),
       ),
-    onMutate: (platform: string) => {
-      setActive(platform);
+    onMutate: (input: { platform: string; confirm: boolean }) => {
+      setActive(input.platform);
       setMessage('');
     },
-    onSuccess: (_data, platform: string) => {
-      setMessage(`Disconnected ${platform}; token deleted, receipts preserved.`);
+    onSuccess: (_data, input: { platform: string; confirm: boolean }) => {
+      setMessage(`Disconnected ${input.platform}; token deleted, receipts preserved.`);
       setActive(null);
+      setConfirming(null);
       refresh();
     },
-    onError: (error: Error) => {
-      setMessage(error.message);
+    onError: (error: Error, input: { platform: string; confirm: boolean }) => {
+      // The server refuses with 409 when the account has posted content.
+      // Arm the button instead of failing: the next tap confirms.
+      if (!input.confirm && /confirm/i.test(error.message)) {
+        setConfirming(input.platform);
+        setMessage(
+          `This brand account has posted content. Tap disconnect on ${input.platform} again to confirm; past posts and receipts stay.`,
+        );
+      } else {
+        setMessage(error.message);
+      }
       setActive(null);
     },
   });
@@ -315,8 +329,9 @@ export function ConnectionsView() {
           platforms={platforms.data as unknown as SocialPlatform[]}
           connections={connections.data as unknown as SocialConnection[]}
           onConnect={openConnectForm}
-          onDisconnect={platform => disconnect.mutate(platform)}
+          onDisconnect={platform => disconnect.mutate({ platform, confirm: confirming === platform })}
           pending={active}
+          confirming={confirming}
         />
       )}
       {formFor && (
