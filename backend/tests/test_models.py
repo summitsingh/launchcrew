@@ -285,6 +285,17 @@ def test_non_model_routes_do_not_call_transport(client, monkeypatch):
     visual.assert_not_called()
 
 
+def test_model_capabilities_reports_budget_balance(client):
+    from sqlalchemy import text
+    from backend import model_admission, store
+    with store.engine().begin() as connection:
+        connection.execute(text("UPDATE model_budget SET remaining_micros=:n WHERE id='global'"),
+                           {'n': 2500000})
+    body = client.get('/api/model-capabilities').json()
+    assert body['budget_remaining_micros'] == 2500000
+    assert body['budget_remaining_micros'] == model_admission.budget_remaining_micros(store.engine())
+
+
 def test_runs_route_calls_server_transport(client, monkeypatch):
     # Controlled Postgres: grant three fixed reservations so the sync route
     # can reserve-before-send with fake transport. Zero budget refuses.

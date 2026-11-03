@@ -4748,6 +4748,8 @@ export interface components {
         };
         /** ModelCapabilities */
         ModelCapabilities: {
+            /** Budget Remaining Micros */
+            budget_remaining_micros?: number | null;
             /**
              * Note
              * @default Key presence means configured only; it does not prove the API works, credits, or authorization. No live call is made here.

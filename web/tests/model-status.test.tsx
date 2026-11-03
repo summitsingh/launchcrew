@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { capabilityCopy, dataModeCopy, dataModeLabel, dataModeNote } from '../src/components/model-status';
+import { budgetCopy, capabilityCopy, dataModeCopy, dataModeLabel, dataModeNote } from '../src/components/model-status';
 import { ScoutFactsSection } from '../src/components/v2-views';
 import type { components } from '../src/lib/schema';
 
@@ -66,6 +66,18 @@ describe('model status footer copy', () => {
     expect(html).toContain('Actual calls are in receipts');
     expect(html).toContain('No live call');
     expect(html).not.toContain('not yet tested');
+  });
+
+  it('shows the model budget balance when the server reports it', () => {
+    expect(budgetCopy(undefined)).toBeNull();
+    expect(budgetCopy({ spark_configured: true } as never)).toBeNull();
+    expect(budgetCopy({ spark_configured: true, budget_remaining_micros: null } as never)).toBeNull();
+    expect(budgetCopy({ spark_configured: true, budget_remaining_micros: 10000000 } as never)).toBe(
+      'Model budget remaining: $10.00.',
+    );
+    expect(budgetCopy({ spark_configured: true, budget_remaining_micros: 0 } as never)).toBe(
+      'Model budget remaining: $0.00.',
+    );
   });
 });
 

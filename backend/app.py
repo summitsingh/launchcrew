@@ -370,6 +370,7 @@ class ModelCapabilities(Strict):
     spark_configured: bool = False
     wonder_configured: bool = False
     sam_configured: bool = False
+    budget_remaining_micros: int | None = None
     spark_variant: Literal['standard', 'contributor', 'unknown', 'not_configured'] = 'not_configured'
     wonder_variant: Literal['standard', 'unknown', 'not_configured'] = 'not_configured'
     note: str = ('Key presence means configured only; it does not prove the API works, '
@@ -775,7 +776,13 @@ def _capability_snapshot():
 
 @app.get('/api/model-capabilities', response_model=ModelCapabilities)
 def model_capabilities(actor: str = Depends(auth.actor)):
-    return _capability_snapshot()
+    snapshot = _capability_snapshot()
+    try:
+        from backend import model_admission, store
+        snapshot['budget_remaining_micros'] = model_admission.budget_remaining_micros(store.engine())
+    except Exception:
+        snapshot['budget_remaining_micros'] = None
+    return snapshot
 
 
 @app.post('/api/import-suggestions', response_model=ImportSuggestionsOut)

@@ -15,6 +15,12 @@ export function capabilityCopy(status: Capabilities | undefined, isPending: bool
   return 'Configuration present. This readonly check does not verify availability or credits. Actual calls are in receipts. No live call made from this page.';
 }
 
+export function budgetCopy(status: Capabilities | undefined): string | null {
+  const micros = status?.budget_remaining_micros;
+  if (typeof micros !== 'number' || !Number.isFinite(micros) || micros < 0) return null;
+  return `Model budget remaining: $${(micros / 1000000).toFixed(2)}.`;
+}
+
 export const DATA_BASIS_V2 = 'v2';
 
 type UsageLike = {
@@ -66,5 +72,6 @@ export function dataModeNote(usage: Usage | null | undefined): string {
 
 export function ModelStatusFooter() {
   const query = useQuery({ queryKey: ['model-capabilities'], queryFn: () => unwrap(api.GET('/api/model-capabilities')) });
-  return <span className="tiny">{capabilityCopy(query.data, query.isPending, query.isError)}</span>;
+  const budget = budgetCopy(query.data);
+  return <span className="tiny">{capabilityCopy(query.data, query.isPending, query.isError)}{budget ? ` ${budget}` : ''}</span>;
 }

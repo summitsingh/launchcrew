@@ -4467,6 +4467,17 @@
       "ModelCapabilities": {
         "additionalProperties": false,
         "properties": {
+          "budget_remaining_micros": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Budget Remaining Micros"
+          },
           "note": {
             "default": "Key presence means configured only; it does not prove the API works, credits, or authorization. No live call is made here.",
             "title": "Note",
