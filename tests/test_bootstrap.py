@@ -8096,6 +8096,79 @@ class TypedRecoveryTests(BootstrapHarness):
             orig = _json.loads(after.decode("utf-8"))
             self.assertEqual(orig.get("outcome"), "started")
 
+    def test_roles_legacy_failed_shape_recovers_with_attestation(self):
+        import hashlib as _hashlib
+        import json as _json
+        import tempfile as _tempfile
+        with _tempfile.TemporaryDirectory() as shared_tmp:
+            _, journals = self.fresh_shared(shared_tmp)
+            legacy_complete = journals / (
+                f"launchcrew-{STACK}-dbroles-bootstrap-active.json")
+            legacy_failed = journals / (
+                f"launchcrew-{STACK}-dbroles-bootstrap-active-failed-"
+                f"exit1-lc-{'0' * 30}.json")
+
+            def legacy_doc(token, task, outcome):
+                raw = "|".join([
+                    ACCOUNT, REGION, STACK, STACK, "dbroles",
+                    "bootstrap", "BootstrapTaskDefinition", self.ROLE_TASKDEF,
+                ])
+                return {
+                    "version": 1,
+                    "stack": STACK,
+                    "phase": "dbroles",
+                    "label": "bootstrap",
+                    "taskdef_logical": "BootstrapTaskDefinition",
+                    "taskdef_arn": self.ROLE_TASKDEF,
+                    "cluster": STACK,
+                    "client_token": token,
+                    "config_digest": _hashlib.sha256(
+                        raw.encode("utf-8")).hexdigest()[:32],
+                    "region": REGION,
+                    "account": ACCOUNT,
+                    "outcome": outcome,
+                    "task_arn": task,
+                    "updated_utc": "2026-10-29T04:51:17Z",
+                }
+
+            legacy_complete.write_text(_json.dumps(legacy_doc(
+                self.ROLE_TOKEN, self.ROLE_TASK, "complete")),
+                encoding="utf-8")
+            legacy_complete.chmod(0o600)
+            failed_task = (
+                f"arn:aws:ecs:{REGION}:{ACCOUNT}:"
+                "task/launchcrew-demo/aged-roles-legacy-001")
+            failed_token = "lc-" + "0" * 30
+            legacy_failed.write_text(_json.dumps(legacy_doc(
+                failed_token, failed_task, "started")), encoding="utf-8")
+            legacy_failed.chmod(0o600)
+            complete_before = legacy_complete.read_bytes()
+            failed_before = legacy_failed.read_bytes()
+            result, calls = self.run_bootstrap(
+                self.dbroles_args(),
+                extra_env={"FAKE_AGED_INIT": "1"},
+                shared_dir=shared_tmp)
+            self.assertEqual(result.returncode, 0,
+                             msg=result.stdout + result.stderr)
+            combined = result.stdout + result.stderr
+            self.assertNotIn("GENERATION_MISSING", combined)
+            self.assertIn("recovery admission persisted", combined)
+            self.assertEqual(legacy_complete.read_bytes(), complete_before)
+            self.assertEqual(legacy_failed.read_bytes(), failed_before)
+            runs = [c for c in calls if "run-task" in c]
+            self.assertTrue(any("launchcrew-demo-rolestate" in c
+                                for c in runs))
+            self.assertFalse(any("launchcrew-demo-bootstrap" in c
+                                 for c in runs))
+            recovery_files = list((journals / "recovery").glob(
+                "launchcrew-*-dbroles-bootstrap-*.recovery.json"))
+            self.assertEqual(len(recovery_files), 2)
+            for path in recovery_files:
+                doc = _json.loads(path.read_text(encoding="utf-8"))
+                self.assertEqual(doc.get("outcome"), "complete")
+                self.assertEqual(doc.get("release_generation"), self.RELEASE)
+                self.check_digest(doc)
+
     def test_roles_partial_bind_refuses_with_no_binder(self):
         import tempfile as _tempfile
         with _tempfile.TemporaryDirectory() as shared_tmp:

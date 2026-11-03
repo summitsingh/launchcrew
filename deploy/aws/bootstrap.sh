@@ -5077,6 +5077,7 @@ prefix = "launchcrew-%s-%s-%s-" % (stack, phase, label)
 base = "launchcrew-" + re.escape(stack) + "-" + re.escape(phase) + "-" + re.escape(label)
 active_re = re.compile(r"^" + base + r"-([A-Za-z0-9_.-]+)-active\.json$")
 archive_re = re.compile(r"^" + base + r"-([A-Za-z0-9_.-]+)-complete-(lc-[A-Za-z0-9]{30})\.json$")
+legacy_failed_re = re.compile(r"^" + base + r"-active-failed-[A-Za-z0-9_.-]+\.json$")
 try:
     names = sorted(os.listdir(directory))
 except Exception:
@@ -5087,6 +5088,8 @@ for name in names:
     if not name.startswith(prefix) or not name.endswith(".json"):
         continue
     if name == active_base or name == legacy_base:
+        continue
+    if legacy_failed_re.match(name):
         continue
     if not active_re.match(name) and not archive_re.match(name):
         print("PROOF\tUNKNOWN_FILE")
@@ -6408,7 +6411,9 @@ except Exception:
     print("PROOF\tPATH_MISMATCH")
     sys.exit(0)
 legacy_base = "launchcrew-%s-%s-%s-active.json" % (want_stack, want_phase, want_label)
-if want_base == legacy_base:
+legacy_stem = legacy_base[:-len(".json")]
+legacy_failed_re = re.compile(r"^" + re.escape(legacy_stem) + r"-failed-[A-Za-z0-9_.-]+\.json$")
+if want_base == legacy_base or (isinstance(want_base, str) and legacy_failed_re.fullmatch(want_base)):
     legacy_expected = {"account", "client_token", "cluster", "config_digest",
                        "label", "outcome", "phase", "region", "stack",
                        "task_arn", "taskdef_arn", "taskdef_logical",
