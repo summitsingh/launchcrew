@@ -164,6 +164,23 @@ class TemplateTests(unittest.TestCase):
             self.assertNotIn("111122223333", entry["ParameterValue"])
 
 
+class ApiImageProofScriptsTests(unittest.TestCase):
+    """The bounded Spark and SAM proofs must ship inside the API image.
+
+    The live proofs run as one-off tasks from the API task definition,
+    so scripts/verify_live_meta.py (and its verify_live_auth.py and
+    verify_sam.py companions) have to be copied into the image. If a
+    future Containerfile edit drops one, the in-environment proof path
+    breaks with no local signal.
+    """
+
+    def test_proof_scripts_copied_into_api_image(self):
+        containerfile = (ROOT / "containers" / "api.Containerfile").read_text(encoding="utf-8")
+        self.assertIn("COPY scripts/verify_live_auth.py ./scripts/verify_live_auth.py", containerfile)
+        self.assertIn("COPY scripts/verify_live_meta.py ./scripts/verify_live_meta.py", containerfile)
+        self.assertIn("COPY scripts/verify_sam.py ./scripts/verify_sam.py", containerfile)
+
+
 class ControllerTests(unittest.TestCase):
     def run_wrapper(self, args, mode="success", extra_env=None):
         tmp_obj = tempfile.TemporaryDirectory()
