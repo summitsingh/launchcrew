@@ -686,6 +686,7 @@ Resources:
             - { Name: META_MODEL, Value: muse-spark-1.3 }
             - { Name: META_API_BASE_URL, Value: https://api.meta.ai/v1 }
             - { Name: LAUNCHCREW_PHOTO_SAM_ENABLED, Value: 'true' }
+            - { Name: LAUNCHCREW_INSTAGRAM_LIVE, Value: 'true' }
           Secrets:
             - { Name: DATABASE_URL, ValueFrom: !Sub '${RuntimeDbUrlSecretArn}:database-url::' }
             - { Name: TLS_CERT_B64, ValueFrom: !Sub '${TlsSecretArn}:tls-cert-b64::' }

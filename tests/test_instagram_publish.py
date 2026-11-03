@@ -56,18 +56,21 @@ class NormalizeTests(unittest.TestCase):
 
 
 class RequestShapeTests(unittest.TestCase):
-    def test_container_then_publish_sequence(self):
+    def test_container_then_publish_then_permalink_sequence(self):
         calls = []
 
         def fake_opener(request, timeout=None):
             calls.append(request)
             if request.full_url.endswith("/media"):
                 return _response({"id": "creation_1"})
+            if "fields=permalink" in request.full_url:
+                return _response({"id": "media_9",
+                                  "permalink": "https://www.instagram.com/p/DbSeq9/"})
             return _response({"id": "media_9"})
 
         with patch.object(ig, "urlopen", side_effect=fake_opener):
             result = ig.instagram_transport(USER, MEDIA, CAPTION, TOKEN)
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 3)
         first = calls[0]
         self.assertEqual(first.get_method(), "POST")
         self.assertTrue(first.full_url.startswith(ig.GRAPH_ORIGIN + "/v21.0/123456789/media"))
@@ -79,8 +82,14 @@ class RequestShapeTests(unittest.TestCase):
         self.assertTrue(second.full_url.endswith("/media_publish"))
         body = json.loads(second.data.decode())
         self.assertEqual(body["creation_id"], "creation_1")
+        third = calls[2]
+        self.assertEqual(third.get_method(), "GET")
+        self.assertIn("fields=permalink", third.full_url)
+        self.assertEqual(third.get_header("Authorization"), "Bearer " + TOKEN)
+        self.assertNotIn(TOKEN, third.full_url)
         self.assertEqual(result, {"platform_post_id": "media_9",
-                                  "live_url": None, "simulated": False})
+                                  "live_url": "https://www.instagram.com/p/DbSeq9/",
+                                  "simulated": False})
 
     def test_token_never_leaks_into_errors(self):
         def bad_token_opener(request, timeout=None):
@@ -119,6 +128,33 @@ class RequestShapeTests(unittest.TestCase):
                                        CAPTION, TOKEN)
             with self.assertRaises(ig.InstagramTransportError):
                 ig.instagram_transport(USER, MEDIA, "x" * 2201, TOKEN)
+
+
+class LiveFlagTemplateTests(unittest.TestCase):
+    """The live flag must survive stack rollouts via the template.
+
+    LAUNCHCREW_INSTAGRAM_LIVE lived only in manually registered task
+    definition revisions, so every CloudFormation rollout reconciled it
+    away and live publishing silently reverted to simulated. It belongs
+    in the ApiTaskDefinition container environment next to the other
+    plain (non-secret) launch flags.
+    """
+
+    def test_live_flag_in_api_environment(self):
+        from pathlib import Path
+        text = (Path(__file__).resolve().parents[1]
+                / "deploy" / "aws" / "fargate.yaml").read_text(encoding="utf-8")
+        api_start = text.index("ApiTaskDefinition:")
+        api_block = text[api_start:text.index("WebTaskDefinition:")]
+        container_start = api_block.index("- Name: api")
+        container_block = api_block[container_start:]
+        env_start = container_block.index("Environment:")
+        secrets_start = container_block.index("Secrets:")
+        env_block = container_block[env_start:secrets_start]
+        self.assertIn(
+            "{ Name: LAUNCHCREW_INSTAGRAM_LIVE, Value: 'true' }",
+            env_block,
+        )
 
 
 class PrerequisitesTests(unittest.TestCase):
