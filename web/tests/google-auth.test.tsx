@@ -5,6 +5,16 @@ function desk(): string {
   return readFileSync('src/app/page.tsx', 'utf8');
 }
 
+describe('signed-out demo front door', () => {
+  it('shows a prominent fictional demo call to action without sign-in', () => {
+    const source = desk();
+    expect(source).toContain('data-testid="demo-front-door"');
+    expect(source).toContain('See the fictional demo');
+    expect(source).toContain('href="/demo"');
+    expect(source).toContain('authEnabled && !authUser');
+  });
+});
+
 describe('google and facebook auth UI', () => {
   it('renders the Facebook option next to Google when configured', () => {
     const source = desk();
