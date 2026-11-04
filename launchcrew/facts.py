@@ -435,63 +435,6 @@ WRAPPER_WORDS = frozenset({
     'and', 'the', 'a', 'an',
 })
 
-# P0-2 additive formatting and neutral wrapper path. Conservative only:
-# a stripped Subject label, exact limited neutral standalone lines, and
-# hashtags derived deterministically from confirmed fact text. No generic
-# marketing text is allowed. All value, superlative, negation, conflict,
-# role, and fact-span checks still run first.
-NEUTRAL_STANDALONE_PHRASES = frozenset({
-    'hello', 'hi', 'hey', 'welcome', 'thank you', 'thanks',
-    'thanks for reading', 'shop now', 'learn more', 'see details below',
-    'link in bio', 'tap to shop', 'see details', 'shop the post',
-})
-
-import re as _re_hashtag
-HASHTAG_RE = _re_hashtag.compile(r'#([A-Za-z0-9_]+)')
-
-
-def _strip_subject_label(text):
-    if not isinstance(text, str):
-        return text, False
-    stripped = text.strip()
-    lowered = stripped.lower()
-    if lowered.startswith('subject:'):
-        return stripped[len('subject:'):].strip(), True
-    if lowered == 'subject':
-        return '', True
-    return text, False
-
-
-def _is_neutral_standalone(text):
-    if not isinstance(text, str):
-        return False
-    cleaned = ' '.join(text.strip().lower().rstrip('.!?').split())
-    return cleaned in NEUTRAL_STANDALONE_PHRASES
-
-
-def _derived_hashtag_ok(tag, approved):
-    lowered = (tag or '').lower()
-    if not lowered:
-        return False
-    for fact in approved or []:
-        if not isinstance(fact, str) or not fact.strip():
-            continue
-        tokens = _ordered_tokens(fact)
-        if not tokens:
-            continue
-        if lowered in tokens:
-            return True
-        joined = ''.join(tokens)
-        if lowered == joined:
-            return True
-        for start in range(len(tokens)):
-            acc = ''
-            for end in range(start, min(len(tokens), start + 4)):
-                acc += tokens[end]
-                if acc == lowered:
-                    return True
-    return False
-
 NEGATION_WORDS = frozenset({
     'not', 'no', 'never', 'none', 'without', 'cannot',
     'neither', 'nor', 'nothing', 'nowhere', 'hardly', 'scarcely', 'barely',
@@ -645,13 +588,7 @@ def check_sentence(sentence, facts):
     # Safety: only confirmed approved_claims are evidence. Demo fields,
     # memory, briefs, idea text, and founder notes never authorize.
     approved = _approved_claims(facts)
-    raw_text = sentence if isinstance(sentence, str) else ''
-    # P0-2 formatting path: strip a leading Subject label for checking.
-    # The label itself carries no factual claim.
-    text, had_subject = _strip_subject_label(raw_text)
-    if had_subject and not (text or '').strip():
-        return {'claim': sentence, 'verified': True, 'verdict': SUPPORTED,
-                'evidence': None, 'reason': 'Formatting label only, no factual claim'}
+    text = sentence if isinstance(sentence, str) else ''
     # Exact allowlist equality is supported. It implies value and
     # superlative checks already pass, since the blob is built from the
     # same allowlist. Grammar-supported wrapper lines and narrow
@@ -672,55 +609,33 @@ def check_sentence(sentence, facts):
         if not any(m.group().lower() == match.group().lower() and m.lastgroup == match.lastgroup
                    for m in VALUE_PATTERN.finditer(blob)):
             return {'claim': sentence, 'verified': False, 'verdict': UNSUPPORTED,
-                    'evidence': None, 'reason': 'Unmatched ' + match.lastgroup + ' value. Not in your confirmed facts'}
+                    'evidence': None, 'reason': 'Unmatched ' + match.lastgroup + ' value'}
     if 'best in texas' in text.lower():
         return {'claim': sentence, 'verified': False, 'verdict': UNSUPPORTED,
-                'evidence': None, 'reason': 'Claim not found in facts file. Not in your confirmed facts'}
+                'evidence': None, 'reason': 'Claim not found in facts file'}
     if _has_negation(text):
         return {'claim': sentence, 'verified': False, 'verdict': UNSUPPORTED,
-                'evidence': None, 'reason': 'Unapproved negation. Not in your confirmed facts'}
+                'evidence': None, 'reason': 'Unapproved negation'}
     if any(not re.search(r'\b' + re.escape(m.group()) + r'\b', blob, re.I)
            for m in SUPERLATIVES.finditer(text)):
         return {'claim': sentence, 'verified': False, 'verdict': UNSUPPORTED,
-                'evidence': None, 'reason': 'Unapproved superlative or absolute. Not in your confirmed facts'}
-    # P0-2 neutral standalone path: exact limited CTA, salutation, and
-    # formatting phrases only. Value, superlative, negation, and conflict
-    # checks above still ran first, so no factual bypass is possible.
-    if _is_neutral_standalone(text):
-        return {'claim': sentence, 'verified': True, 'verdict': SUPPORTED,
-                'evidence': None, 'reason': 'Formatting only, no factual claim'}
-    # P0-2 hashtag path: every hashtag must be deterministically derived
-    # from confirmed fact text. Free hashtags stay unsupported.
-    tags = HASHTAG_RE.findall(text or '')
-    text_for_spans = text
-    if tags:
-        for tag in tags:
-            if not _derived_hashtag_ok(tag, approved):
-                return {'claim': sentence, 'verified': False, 'verdict': UNSUPPORTED,
-                        'evidence': None, 'reason': 'Unsupported hashtag not derived from confirmed facts. Not in your confirmed facts'}
-        text_for_spans = HASHTAG_RE.sub(' ', text)
-        if not text_for_spans.strip():
-            return {'claim': sentence, 'verified': True, 'verdict': SUPPORTED,
-                    'evidence': None, 'reason': 'Hashtag derived from confirmed facts only'}
-        if _is_neutral_standalone(text_for_spans):
-            return {'claim': sentence, 'verified': True, 'verdict': SUPPORTED,
-                    'evidence': None, 'reason': 'Formatting only, no factual claim'}
-    spans = _find_fact_spans(text_for_spans, approved)
+                'evidence': None, 'reason': 'Unapproved superlative or absolute'}
+    spans = _find_fact_spans(text, approved)
     if spans:
-        ok, _ = _grammar_wrapper_ok(text_for_spans, spans)
+        ok, _ = _grammar_wrapper_ok(text, spans)
         if ok:
             matched = [fact for _, _, fact in spans]
             return {'claim': sentence, 'verified': True, 'verdict': SUPPORTED,
                     'evidence': matched[0], 'evidence_claims': list(matched),
                     'reason': 'Matched approved fact span with wrapper only'}
         return {'claim': sentence, 'verified': False, 'verdict': UNSUPPORTED,
-                'evidence': None, 'reason': 'Unsupported wording outside confirmed facts. Not in your confirmed facts'}
-    paraphrased = _find_paraphrase_match(text_for_spans, approved)
+                'evidence': None, 'reason': 'Unsupported wording outside confirmed facts'}
+    paraphrased = _find_paraphrase_match(text, approved)
     if paraphrased is not None:
         return {'claim': sentence, 'verified': True, 'verdict': SUPPORTED,
                 'evidence': paraphrased, 'reason': 'Matched approved fact paraphrase'}
     return {'claim': sentence, 'verified': False, 'verdict': UNSUPPORTED,
-            'evidence': None, 'reason': 'Sentence not in approved claims. Not in your confirmed facts'}
+            'evidence': None, 'reason': 'Sentence not in approved claims'}
 
 
 def check_draft(draft_text, facts):

@@ -283,17 +283,6 @@ def _usage_int(value):
     return None
 
 
-def _http_status_of(error):
-    # Safe HTTP status only: int code, no body, no headers, no tokens.
-    try:
-        code = getattr(error, 'code', None)
-        if type(code) is int and 100 <= code <= 599:
-            return code
-    except Exception:
-        pass
-    return None
-
-
 def _safe_finalize(admission, call_id, status, outcome, usage):
     """Attempt one durable finalize; True only when the commit succeeds.
 
@@ -457,9 +446,7 @@ def _call(system_prompt, user_prompt, schema_hint, model, *, admission=None):
                 'raw_json': raw, 'usage': dict(usage), 'request_provider': provider}
     except Exception as error:
         # Never include exception text, response bodies, or authorization headers.
-        # Only the safe int status is recorded, so a 402 can stop later spend.
         name = type(error).__name__
-        http_status = _http_status_of(error)
         if name in _PROOF_AMBIGUOUS_ERRORS:
             committed = _safe_finalize(admission, call_id, 'ambiguous_terminal',
                                        'ambiguous:send_failed', usage)
@@ -470,11 +457,10 @@ def _call(system_prompt, user_prompt, schema_hint, model, *, admission=None):
         if not committed:
             return {'mode': 'deterministic_fallback', 'model_used': 'none', 'attempted': True,
                     'attempted_model': model, 'error_type': name, 'usage': {},
-                    'request_provider': provider, 'finalize_committed': False,
-                    'http_status': http_status}
+                    'request_provider': provider, 'finalize_committed': False}
         return {'mode': 'deterministic_fallback', 'model_used': 'none', 'attempted': True,
                 'attempted_model': model, 'error_type': name, 'usage': dict(usage),
-                'request_provider': provider, 'http_status': http_status}
+                'request_provider': provider}
 
 
 def call_spark_strict_json(system_prompt, user_prompt, schema_hint, *, admission=None):
@@ -514,24 +500,14 @@ def spark_for_agent(agent, task_text, stage=None, *, admission=None):
         is_maker = (agent.get('name') == 'Maker')
     if is_scout:
         schema = {'facts_used': ['approved claim'], 'risks': ['demo risk, no statistics']}
-        prompt += ('\nScout input note. The task text supplies the actual structured facts. '
-                   'Use only those supplied facts. No external file access is needed.')
     elif is_maker:
         # Structured Maker candidates: explicit claims plus post/email lines.
         # All values stay string arrays for the strict transport. Model
         # evidence would be untrusted; run.py validates every factual
         # sentence against confirmed facts and policy before use.
-        # Claims stay exact confirmed strings; post and email lines stay
-        # distinct channels with no facts from brief or style references.
-        schema = {'claims': ['exact confirmed claim string'],
-                  'post_lines': ['Instagram caption line: hook, caption line, neutral CTA, or fact-derived hashtag'],
-                  'email_lines': ['email line: Subject line or separate body line']}
-        prompt += ('\nMaker channel rules. Claims must be exact confirmed strings. '
-                   'Post lines form the Instagram caption, one hook or caption line per entry, '
-                   'preserving line breaks, with a neutral CTA and only fact-derived hashtags. '
-                   'Email lines form the Subject line plus separate body lines. '
-                   'Post and email lines must stay distinct. Use only confirmed facts for every '
-                   'factual sentence. The brief and style references supply no facts.')
+        schema = {'claims': ['copy approved claims exactly'],
+                  'post_lines': ['post sentence, copy approved claims exactly'],
+                  'email_lines': ['email sentence, copy approved claims exactly']}
     else:
         schema = {'claims': ['copy approved claims exactly']}
     return call_spark_strict_json(prompt, task_text, schema, admission=admission)

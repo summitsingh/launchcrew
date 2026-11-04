@@ -479,149 +479,6 @@ def _seed_marker(seed_enabled, v1_claims=None, v1=None, v2_claims=None, v2=None)
             'note': 'Demo test seed only; v1 records the block, v2 removes it.'}
 
 
-# P0-2 additive flags. Enabled by default; legacy identical-fallback
-# behavior stays available behind the False branch in run_pipeline.
-P02_PRESERVE_V1_CANDIDATE = True
-P02_REVISION_ENABLED = True
-P02_DISTINCT_FALLBACK = True
-
-
-def _p02_scout_task(idea, claims, sources, brief=None):
-    # Structured Scout input: confirmed facts plus brief stay explicit,
-    # with a clear instruction that all facts are provided and no
-    # external file access is needed. Legacy keys are preserved.
-    payload = {'idea': idea, 'approved_claims': list(claims),
-               'confirmed_facts': list(claims), 'sources': list(sources or []),
-               'campaign_brief': brief,
-               'instruction': ('All facts are provided in confirmed_facts. '
-                               'Use only these facts. No external file access is needed.') }
-    return json.dumps(payload)
-
-
-def _p02_maker_task(idea, claims, sources, brief=None, seed_unverified=False, voice_label=None):
-    # Structured Maker input: write a real distinct Instagram caption
-    # (hook, line breaks, CTA, hashtags) and email (Subject line plus
-    # separate body) in the selected brand voice, using only confirmed
-    # facts. Legacy schema arrays claims, post_lines, email_lines stay.
-    label = voice_label or 'Warm, plain, no hype'
-    seed_line = (' Include the exact phrase best in Texas in the v1 draft only. '
-                 if seed_unverified else '')
-    payload = {'idea': idea, 'approved_claims': list(claims),
-               'confirmed_facts': list(claims), 'sources': list(sources or []),
-               'campaign_brief': brief, 'brand_voice': label,
-               'instruction': ('Write a real distinct Instagram caption with hook, '
-                               'line breaks, CTA, and hashtags, plus an email with '
-                               'a Subject line and a separate body, in the selected '
-                               'brand voice. Use only confirmed facts for every '
-                               'factual sentence.' + seed_line +
-                               ' All facts are provided. No external file access is needed.'),
-               'schema': ['claims', 'post_lines', 'email_lines']}
-    return json.dumps(payload)
-
-
-def _p02_stage_evidence(stage_attempts, last_result=None):
-    # Per-stage measured evidence for reached() so run steps persist it:
-    # measured model id, actual stage call count, stage latency, and
-    # mode/status. Callers pass only this stage's attempt slice
-    # (attempts[start:]), or [] for deterministic stages with no model
-    # call, so rows never record cumulative pipeline calls. The
-    # attempted model id is exposed even on failure.
-    stage_attempts = list(stage_attempts or [])
-    spark_attempts = [r for kind, r in stage_attempts if kind == 'spark' and r.get('attempted', False)]
-    count = len(spark_attempts)
-    latency = 0.0
-    for entry in spark_attempts:
-        value = entry.get('latency_ms', 0)
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
-            continue
-        latency += float(value)
-    if isinstance(last_result, dict):
-        attempted_model = (last_result.get('attempted_model')
-                           or last_result.get('model_used') or 'none')
-        model_id = _sanitized_model_name(attempted_model)
-        mode = last_result.get('mode', 'deterministic_fallback')
-        status = last_result.get('error_type', 'ok' if mode == 'spark' else mode)
-        single = last_result.get('latency_ms', 0)
-        try:
-            single_latency = float(single) if not isinstance(single, bool) else 0.0
-        except (TypeError, ValueError):
-            single_latency = 0.0
-    else:
-        model_id = 'none'
-        mode = 'deterministic_fallback'
-        status = mode
-        single_latency = 0.0
-    return {'model_id': model_id, 'model_used': model_id, 'attempted_model': model_id,
-            'mode': mode, 'status': status, 'spark_calls': count,
-            'latency_ms': round(latency, 3),
-            'stage_latency_ms': round(single_latency, 3)}
-
-
-def _p02_admission_for(factory, stage, attempt_id='1'):
-    if factory is None:
-        return None
-    try:
-        try:
-            return factory(stage, attempt_id)
-        except TypeError:
-            return factory(stage)
-    except Exception:
-        return None
-
-
-def _p02_billing_failed(attempts):
-    # Any raw candidate call reporting HTTP 402 stops subsequent paid
-    # calls in this pipeline. Status only, no bodies or token details.
-    return any(isinstance(r, dict) and r.get('http_status') == 402
-               for _, r in (attempts or []))
-
-
-def _p02_sentence_clean(sentence, facts, policies, blocked_names, voice_snapshot, voice_ref, context_policy, context_scope):
-    # Deterministic keep rule for one revised sentence: must pass the
-    # full check_sentence plus policy, specificity, voice, context, and
-    # blocked rules. Model claims arrays never whitelist text.
-    if not isinstance(sentence, str) or not sentence.strip():
-        return False
-    if normalize(sentence) in (blocked_names or set()):
-        return False
-    verdict = check_sentence(sentence, facts)
-    if not verdict.get('verified', False):
-        return False
-    if _policy_block_for_claim(sentence, policies) is not None:
-        return False
-    if _specificity_block_for_claim(sentence) is not None:
-        return False
-    if _voice_blocks_claim(sentence, voice_snapshot, voice_ref):
-        return False
-    if _context_blocks_claim(sentence, facts, context_policy, context_scope):
-        return False
-    return True
-
-
-def _p02_filter_lines(lines, facts, policies, blocked_names, voice_snapshot, voice_ref, context_policy, context_scope):
-    # Keep safe model lines deterministically, drop the rest. A wholly
-    # safe line is kept verbatim with punctuation intact; only partially
-    # unsafe lines are reconstructed from safe sentences. Newlines and
-    # channel lines are preserved by the caller.
-    kept = []
-    for line in lines or []:
-        if not isinstance(line, str) or not line.strip():
-            continue
-        text = line.strip()
-        sentences = split_sentences(text)
-        if not sentences:
-            continue
-        good = [s for s in sentences
-                if _p02_sentence_clean(s, facts, policies, blocked_names,
-                                       voice_snapshot, voice_ref,
-                                       context_policy, context_scope)]
-        if len(good) == len(sentences):
-            kept.append(text)
-        elif good:
-            kept.append(' '.join(good))
-    return kept
-
-
 def _sanitized_model_name(name):
     return sanitize_model_name(name)
 
@@ -875,15 +732,6 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
         reached('deterministic_checks', 'Scout', 'Checked facts file before optional synthesis', profiles['Scout']['name'],
                 {'facts': len(claims)})
         task = json.dumps({'idea': idea, 'approved_claims': claims, 'sources': facts['sources']})
-        # P0-2 structured inputs. Legacy task stays for compatibility.
-        scout_task = _p02_scout_task(idea, claims, facts['sources'], brief)
-        voice_label = None
-        try:
-            voice_label = profiles['Maker'].get('personality')
-        except Exception:
-            voice_label = None
-        maker_task = _p02_maker_task(idea, claims, facts['sources'], brief,
-                                     seed_unverified_claim, voice_label)
 
         def _admission_for(admission_stage):
             if model_admission_factory is None:
@@ -899,33 +747,29 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
         step = 'scout'
         gate('scout')
         note('scout', 'started', profiles['Scout']['name'])
-        scout_start = len(attempts)
         wonder = _timed_model_call(lambda: wonder_synthesize_for_scout(
-            scout_task, None, profiles['Scout'],
-            admission=_admission_for('Scout:Wonder'))) if (model_enabled and not _p02_billing_failed(attempts)) else None
+            task, None, profiles['Scout'],
+            admission=_admission_for('Scout:Wonder'))) if model_enabled else None
         if wonder is not None:
             attempts.append(('wonder', wonder))
         wonder_used = wonder is not None and wonder['mode'] == 'spark'
         if wonder_used:
             model = wonder
-        elif model_enabled and not _p02_billing_failed(attempts):
+        elif model_enabled:
             model = _timed_model_call(lambda: spark_for_agent(
-                profiles['Scout'], scout_task, stage='Scout',
+                profiles['Scout'], task, stage='Scout',
                 admission=_admission_for('Scout:Spark')))
         else:
             model = {'mode': 'deterministic_fallback', 'model_used': 'none', 'attempted': False}
         if not wonder_used:
             attempts.append(('spark', model))
 
-        def model_candidate(name, text, admission_stage=None, attempt_id='1'):
+        def model_candidate(name, text):
             if not model_enabled:
                 return None
-            if _p02_billing_failed(attempts):
-                return None
-            stage_label = admission_stage or name
             result = _timed_model_call(lambda: spark_for_agent(
                 profiles[name], text, stage=name,
-                admission=_p02_admission_for(model_admission_factory, stage_label, attempt_id)))
+                admission=_admission_for(name)))
             attempts.append(('spark', result))
             return result if result['mode'] == 'spark' else None
 
@@ -948,10 +792,8 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
             risks = raw.get('risks', [])
             if isinstance(risks, list):
                 scout['risks'].extend('Unverified model risk: ' + r for r in risks if isinstance(r, str))
-        scout_evidence = {'facts_used': len(scout['facts_used']), 'risks': len(scout['risks']), 'model_mode': model['mode']}
-        scout_evidence.update(_p02_stage_evidence(attempts[scout_start:], model))
         reached('scout', 'Scout', 'Produced sourced facts and demo risks; filtered optional model facts', profiles['Scout']['name'],
-                scout_evidence)
+                {'facts_used': len(scout['facts_used']), 'risks': len(scout['risks']), 'model_mode': model['mode']})
         # Memory blocked rules never enter the Maker draft on their own: they
         # filter the actual candidate claims and draft text in check_pack.
         # Only the explicit demo seed below may add an unsupported claim, so a
@@ -965,8 +807,7 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
         step = 'maker_draft_v1'
         gate('maker_draft_v1')
         note('maker_draft_v1', 'started', profiles['Maker']['name'])
-        v1_start = len(attempts)
-        maker_result = model_candidate('Maker', maker_task)
+        maker_result = model_candidate('Maker', task)
         maker = maker_result.get('raw_json') if maker_result else None
         maker_model = maker_result.get('model_used') if maker_result else 'none'
         v1 = None
@@ -975,48 +816,7 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
         v1_safe_claims = None
         v1_safe_model = 'none'
         v1_safe_schema = 'structured_post_email'
-        if P02_PRESERVE_V1_CANDIDATE and maker:
-            # P0-2 candidate path: preserve the original Spark candidate as
-            # v1 including unsafe phrases. No claims-array whitelisting: the
-            # model claims array never verifies text; check_pack below runs
-            # the existing deterministic checks against full claims AND every
-            # post and email sentence. Safe lines are kept separately for v2.
-            raw_claims_p02 = _clean_model_lines(maker.get('claims'))
-            raw_post_p02 = _clean_model_lines(maker.get('post_lines'))
-            raw_email_p02 = _clean_model_lines(maker.get('email_lines'))
-            if raw_post_p02 or raw_email_p02 or raw_claims_p02:
-                post_p02 = '\n'.join(raw_post_p02) if raw_post_p02 else '. '.join(raw_claims_p02) + '.'
-                email_p02 = '\n'.join(raw_email_p02) if raw_email_p02 else '. '.join(raw_claims_p02) + '.'
-                v1_claims_p02 = list(raw_claims_p02) if raw_claims_p02 else list(claims)
-                if seed_unverified_claim and SEED_CLAIM not in v1_claims_p02 and SEED_CLAIM not in (post_p02 + '\n' + email_p02):
-                    v1_claims_p02 = list(v1_claims_p02) + [SEED_CLAIM]
-                    post_p02 = post_p02.rstrip() + ' best in Texas.'
-                    email_p02 = email_p02.rstrip() + '\nbest in Texas'
-                    raw_post_p02 = list(raw_post_p02) + ['best in Texas.'] if raw_post_p02 else ['best in Texas.']
-                    raw_email_p02 = list(raw_email_p02) + ['best in Texas'] if raw_email_p02 else ['best in Texas']
-                v1_claims = list(v1_claims_p02)
-                line_evidence_p02 = (_model_line_evidence(raw_post_p02, facts, 'post')
-                                     + _model_line_evidence(raw_email_p02, facts, 'email'))
-                v1 = {'post': post_p02, 'email': email_p02, 'claims': list(v1_claims_p02),
-                      'draft_origin': 'model_candidate_v1', 'model_written': True,
-                      'maker_schema': 'structured_post_email',
-                      'model_used': _sanitized_model_name(maker_model),
-                      'line_evidence': line_evidence_p02}
-                # Safe subsets for the v2 path, computed deterministically.
-                safe_claims_p02 = [c for c in raw_claims_p02 if check_claim(c, facts)['verified']]
-                safe_post_p02 = _p02_filter_lines(raw_post_p02, facts, effective, blocked_names,
-                                                  effective_voice, normalized_voice_ref,
-                                                  effective_context_policy, effective_context_scope)
-                safe_email_p02 = _p02_filter_lines(raw_email_p02, facts, effective, blocked_names,
-                                                   effective_voice, normalized_voice_ref,
-                                                   effective_context_policy, effective_context_scope)
-                if safe_post_p02 and safe_email_p02 and safe_claims_p02:
-                    v1_safe_post_lines = list(safe_post_p02)
-                    v1_safe_email_lines = list(safe_email_p02)
-                    v1_safe_claims = list(safe_claims_p02)
-                    v1_safe_model = _sanitized_model_name(maker_model)
-                    v1_safe_schema = 'structured_post_email'
-        if maker and v1 is None:
+        if maker:
             # Every model string is untrusted. Founder note text is not in the
             # allowlist unless separately confirmed as allowed_claim, so raw
             # founder notes cannot pass checks. No model output bypasses
@@ -1033,7 +833,7 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
                 # deterministic reformatting is never labelled model-written.
                 # Any failure rejects to fallback below.
                 if raw_post and raw_email:
-                    post_text = '\n'.join(raw_post)
+                    post_text = ' '.join(raw_post)
                     email_text = '\n'.join(raw_email)
                     proposed = {'post': post_text, 'email': email_text, 'claims': list(safe)}
                     if (raw_post != raw_email and post_text != email_text
@@ -1085,19 +885,15 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
             # plus seed; model-safe partial output is never half-trusted.
             v1_claims = list(claims) + (['best in Texas'] if seed_unverified_claim else [])
             v1 = make_draft(v1_claims)
-        v1_evidence = {'claims': len(v1_claims), 'draft_chars': len(v1['post'])}
-        v1_evidence.update(_p02_stage_evidence(attempts[v1_start:], maker_result))
         reached('maker_draft_v1', 'Maker', 'Prepared local post and email drafts', profiles['Maker']['name'],
-                v1_evidence)
+                {'claims': len(v1_claims), 'draft_chars': len(v1['post'])})
         step = 'checker_v1'
         gate('checker_v1')
         note('checker_v1', 'started', profiles['Checker']['name'])
-        c1_start = len(attempts)
         checker_result = model_candidate('Checker', json.dumps({'draft': v1, 'approved_claims': claims}))
         suggestion = checker_result.get('raw_json') if checker_result else None
         if suggestion:
             # Candidate claims are checked but cannot change the actual draft verdict.
-            # Advisory only: the deterministic c1 verdict below decides.
             raw_suggest = _clean_model_lines(suggestion.get('claims'))
             check_pack(make_draft(raw_suggest), facts, blocked_claims, checker_profile, effective,
                        voice_snapshot=effective_voice, voice_ref=normalized_voice_ref,
@@ -1107,114 +903,20 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
                         voice_snapshot=effective_voice, voice_ref=normalized_voice_ref,
                         context_policy=effective_context_policy,
                         context_scope=effective_context_scope)
-        c1_evidence = {'blocked_count': c1.get('blocked_count'), 'verified_count': c1.get('verified_count')}
-        c1_evidence.update(_p02_stage_evidence(attempts[c1_start:], checker_result))
         reached('checker_v1', 'Checker', 'Checked explicit claims and draft text; blocked_count=' + str(c1['blocked_count']),
                 profiles['Checker']['name'],
-                c1_evidence)
-        # P0-2 revision path: when v1 is blocked, ask Spark once to revise
-        # using confirmed facts plus the concrete blocked claims and reasons.
-        # Unique spend admission (Maker:Revision, attempt 2) never reuses a
-        # reservation. The revision is rechecked and any remaining
-        # unsupported sentences are removed deterministically below.
-        step = 'maker_draft_v2'
-        gate('maker_draft_v2')
-        note('maker_draft_v2', 'started', profiles['Maker']['name'])
-        revision_post_lines = None
-        revision_email_lines = None
-        revision_model = 'none'
-        revision_result = None
-        rev_start = len(attempts)
-        if (P02_REVISION_ENABLED and c1.get('blocked_count') and model_enabled
-                and not _p02_billing_failed(attempts)):
-            try:
-                revision_prompt = json.dumps({
-                    'confirmed_facts': list(claims),
-                    'original_post': v1.get('post'),
-                    'original_email': v1.get('email'),
-                    'blocked_claims': [{'claim': b.get('claim'), 'reason': b.get('reason')}
-                                       for b in (c1.get('blocked_claims') or [])],
-                    'instruction': ('Rewrite the post and email using only confirmed facts. '
-                                    'Remove every blocked claim. Keep safe lines, line breaks, '
-                                    'and channel distinctions. All facts are provided. '
-                                    'No external file access is needed.')})
-                revision_result = model_candidate('Maker', revision_prompt,
-                                                  admission_stage='Maker:Revision',
-                                                  attempt_id='2')
-                if revision_result is not None:
-                    revision_raw = revision_result.get('raw_json') or {}
-                    cand_post = _clean_model_lines(revision_raw.get('post_lines'))
-                    cand_email = _clean_model_lines(revision_raw.get('email_lines'))
-                    kept_post = _p02_filter_lines(cand_post, facts, effective, blocked_names,
-                                                  effective_voice, normalized_voice_ref,
-                                                  effective_context_policy, effective_context_scope)
-                    kept_email = _p02_filter_lines(cand_email, facts, effective, blocked_names,
-                                                   effective_voice, normalized_voice_ref,
-                                                   effective_context_policy, effective_context_scope)
-                    if kept_post and kept_email:
-                        proposed_rev = {'post': '\n'.join(kept_post),
-                                        'email': '\n'.join(kept_email),
-                                        'claims': [c for c in claims
-                                                   if normalize(c) not in blocked_names]}
-                        if not check_pack(proposed_rev, facts, blocked_claims,
-                                          checker_profile, effective,
-                                          voice_snapshot=effective_voice,
-                                          voice_ref=normalized_voice_ref,
-                                          context_policy=effective_context_policy,
-                                          context_scope=effective_context_scope)['blocked_count']:
-                            revision_post_lines = list(kept_post)
-                            revision_email_lines = list(kept_email)
-                            revision_model = _sanitized_model_name(
-                                revision_result.get('model_used'))
-            except Exception:
-                revision_post_lines = None
-                revision_email_lines = None
+                {'blocked_count': c1.get('blocked_count'), 'verified_count': c1.get('verified_count')})
         # Final draft preserves verbatim accepted model text when v1 was
         # model-safe; otherwise rebuild from the verified allowlist. Blocked,
         # policy-blocked, and seeded claims are excluded here, so the final
         # draft stays clean while v1 still records the verdict difference.
         # Checker v2 rechecks the exact v2 text below.
-        # The maker_draft_v2 started note above already covers the
-        # in-flight revision call for streaming.
+        step = 'maker_draft_v2'
+        gate('maker_draft_v2')
+        note('maker_draft_v2', 'started', profiles['Maker']['name'])
         v2 = None
         v2_claims = []
-        if (P02_REVISION_ENABLED and revision_post_lines is not None
-                and revision_email_lines is not None):
-            # P0-2 revised model copy wins when it survives the
-            # deterministic recheck above. Safe lines, newlines, and
-            # channel distinctions are preserved from the revision.
-            rev_filtered = [c for c in (v1_safe_claims or claims)
-                            if normalize(c) not in blocked_names
-                            and _policy_block_for_claim(c, effective) is None
-                            and _specificity_block_for_claim(c) is None
-                            and not _voice_blocks_claim(c, effective_voice, normalized_voice_ref)
-                            and not _context_blocks_claim(c, facts, effective_context_policy,
-                                                          effective_context_scope)]
-            if not rev_filtered:
-                rev_filtered = [c for c in claims
-                                if normalize(c) not in blocked_names
-                                and _policy_block_for_claim(c, effective) is None
-                                and _specificity_block_for_claim(c) is None
-                                and not _voice_blocks_claim(c, effective_voice, normalized_voice_ref)
-                                and not _context_blocks_claim(c, facts, effective_context_policy,
-                                                              effective_context_scope)]
-            rev_post = '\n'.join(revision_post_lines)
-            rev_email = '\n'.join(revision_email_lines)
-            proposed_rev2 = {'post': rev_post, 'email': rev_email, 'claims': list(rev_filtered)}
-            if (revision_post_lines != revision_email_lines and rev_post != rev_email
-                    and not check_pack(proposed_rev2, facts, blocked_claims,
-                                       checker_profile, effective,
-                                       voice_snapshot=effective_voice,
-                                       voice_ref=normalized_voice_ref,
-                                       context_policy=effective_context_policy,
-                                       context_scope=effective_context_scope)['blocked_count']):
-                v2_claims = list(rev_filtered)
-                v2 = {'post': rev_post, 'email': rev_email, 'claims': list(v2_claims),
-                      'draft_origin': 'model_safe', 'model_written': True,
-                      'maker_schema': 'structured_post_email', 'model_used': revision_model,
-                      'line_evidence': (_model_line_evidence(revision_post_lines, facts, 'post')
-                                       + _model_line_evidence(revision_email_lines, facts, 'email'))}
-        if v2 is None and (v1_safe_post_lines is not None and v1_safe_email_lines is not None
+        if (v1_safe_post_lines is not None and v1_safe_email_lines is not None
                 and v1_safe_claims is not None):
             safe_filtered = [c for c in v1_safe_claims
                              if normalize(c) not in blocked_names
@@ -1223,7 +925,7 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
                              and not _voice_blocks_claim(c, effective_voice, normalized_voice_ref)
                              and not _context_blocks_claim(c, facts, effective_context_policy,
                                                            effective_context_scope)]
-            post_v2 = '\n'.join(v1_safe_post_lines)
+            post_v2 = ' '.join(v1_safe_post_lines)
             email_v2 = '\n'.join(v1_safe_email_lines)
             proposed_v2 = {'post': post_v2, 'email': email_v2, 'claims': list(safe_filtered)}
             if (v1_safe_post_lines != v1_safe_email_lines and post_v2 != email_v2
@@ -1246,22 +948,9 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
                          and not _voice_blocks_claim(c, effective_voice, normalized_voice_ref)
                          and not _context_blocks_claim(c, facts, effective_context_policy,
                                                        effective_context_scope)]
-            # P0-2 distinct fallback: separate post and email channels from
-            # the deterministic formatter, honestly labelled fallback with
-            # model_written False and model_used none. Legacy identical copy
-            # stays behind the flag.
-            if P02_DISTINCT_FALLBACK:
-                v2 = make_distinct_draft(v2_claims)
-            else:
-                v2 = make_draft(v2_claims)
-        v2_evidence = {'claims': len(v2_claims), 'draft_chars': len(v2['post'])}
-        rev_slice = list(attempts[rev_start:])
-        if rev_slice:
-            v2_evidence.update(_p02_stage_evidence(rev_slice, rev_slice[-1][1]))
-        else:
-            v2_evidence.update(_p02_stage_evidence([], None))
+            v2 = make_draft(v2_claims)
         reached('maker_draft_v2', 'Maker', 'Revised using approved facts file claims', profiles['Maker']['name'],
-                v2_evidence)
+                {'claims': len(v2_claims), 'draft_chars': len(v2['post'])})
         step = 'checker_v2'
         gate('checker_v2')
         note('checker_v2', 'started', profiles['Checker']['name'])
@@ -1269,11 +958,8 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
                         voice_snapshot=effective_voice, voice_ref=normalized_voice_ref,
                         context_policy=effective_context_policy,
                         context_scope=effective_context_scope)
-        c2_evidence = {'blocked_count': c2.get('blocked_count'), 'verified_count': c2.get('verified_count')}
-        c2_evidence.update(_p02_stage_evidence([], None))
-        c2_evidence['status'] = 'fixed_rules'
         reached('checker_v2', 'Checker', 'Rechecked revised drafts; blocked_count=' + str(c2['blocked_count']), profiles['Checker']['name'],
-                c2_evidence)
+                {'blocked_count': c2.get('blocked_count'), 'verified_count': c2.get('verified_count')})
         if c2['blocked_count']:
             raise ValueError('Final draft has blocked claims')
         event('receipt', 'LaunchCrew', 'Prepared receipt for storage; no submission attempted', 'LaunchCrew')
