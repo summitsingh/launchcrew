@@ -1,12 +1,7 @@
-"""Google plus Meta plus Drive plus Facebook CloudFormation wiring: conditional
-injection and least privilege.
+"""Public CloudFormation wiring: no sign-in secrets, scoped Meta and Drive grants.
 
-Static checks only, no AWS calls. Verifies template defaults stay keyless,
-Google secret injection is conditional on explicit enable plus exact ARN,
-Meta key injection is conditional on an exact Meta secret ARN, Drive picker
-injection is conditional on an exact Drive secret ARN, Facebook injection is
-conditional on an exact Facebook secret ARN, IAM grants scope to each exact
-secret with no wildcard, and PUBLIC_BASE_URL is exact HTTPS. No secret values.
+Static checks only. Sign-in stays disabled and has no credential injection.
+Meta and Drive remain conditional on exact ARNs, with least-privilege policies.
 """
 import json
 import unittest
@@ -23,23 +18,15 @@ class GoogleTemplateTests(unittest.TestCase):
         self.text = FARGATE.read_text(encoding="utf-8")
 
     def test_enable_defaults_off(self):
-        self.assertIn("EnableGoogleAuth:", self.text)
-        self.assertIn("Default: 'false'", self.text)
-        self.assertIn("AllowedValues: ['true', 'false']", self.text)
-        self.assertIn("GoogleOAuthSecretArn:", self.text)
-        self.assertIn("Default: ''", self.text)
+        self.assertIn("AUTH_ENABLED, Value: 'false'", self.text)
+        self.assertNotIn('EnableGoogleAuth:', self.text)
 
     def test_condition_requires_enable_and_exact_arn(self):
-        self.assertIn("GoogleAuthEnabled:", self.text)
-        self.assertIn("!And [!Equals ['true', !Ref EnableGoogleAuth]", self.text)
-        self.assertIn("!Not [!Equals ['', !Ref GoogleOAuthSecretArn]]", self.text)
+        self.assertNotIn('GoogleAuthEnabled:', self.text)
+        self.assertNotIn('GoogleOAuthSecretArn:', self.text)
 
     def test_rule_refuses_enable_true_with_empty_arn(self):
-        self.assertIn("Rules:", self.text)
-        self.assertIn("GoogleAuthRequiresSecret:", self.text)
-        self.assertIn("RuleCondition: !Equals ['true', !Ref EnableGoogleAuth]", self.text)
-        self.assertIn("Assert: !Not [!Equals ['', !Ref GoogleOAuthSecretArn]]", self.text)
-        self.assertIn("empty refused before any mutation", self.text)
+        self.assertNotIn('GoogleAuthRequiresSecret:', self.text)
 
     def test_public_base_url_exact_https(self):
         self.assertIn("PUBLIC_BASE_URL, Value: 'https://launchcrew.summitsingh.com'", self.text)
@@ -47,25 +34,23 @@ class GoogleTemplateTests(unittest.TestCase):
         self.assertNotIn("https://launchcrew.summitsingh.com/", self.text)
 
     def test_auth_enabled_conditional_not_hardcoded_true(self):
-        self.assertIn("AUTH_ENABLED, Value: !If [GoogleAuthEnabled, 'true', 'false']", self.text)
-        api_start = self.text.index("ApiTaskDefinition:")
-        api_block = self.text[api_start:self.text.index("WebTaskDefinition:")]
-        self.assertNotIn("AUTH_ENABLED, Value: 'true'", api_block)
+        self.assertIn("AUTH_ENABLED, Value: 'false'", self.text)
+        self.assertNotIn('AUTH_ENABLED, Value: !If', self.text)
 
     def test_secrets_conditional_per_entry(self):
         api_start = self.text.index("ApiTaskDefinition:")
         api_block = self.text[api_start:self.text.index("WebTaskDefinition:")]
-        self.assertIn("GoogleAuthEnabled", api_block)
-        self.assertIn("GOOGLE_CLIENT_ID, ValueFrom: !Sub '${GoogleOAuthSecretArn}:google-client-id::'", api_block)
-        self.assertIn("GOOGLE_CLIENT_SECRET, ValueFrom: !Sub '${GoogleOAuthSecretArn}:google-client-secret::'", api_block)
+        self.assertNotIn("GoogleAuthEnabled", api_block)
+        self.assertNotIn("GOOGLE_CLIENT_ID, ValueFrom: !Sub '${GoogleOAuthSecretArn}:google-client-id::'", api_block)
+        self.assertNotIn("GOOGLE_CLIENT_SECRET, ValueFrom: !Sub '${GoogleOAuthSecretArn}:google-client-secret::'", api_block)
         self.assertIn("MetaKeyEnabled", api_block)
         self.assertIn("META_API_KEY, ValueFrom: !Sub '${MetaSecretArn}:meta-api-key::'", api_block)
         self.assertIn("DriveEnabled", api_block)
         self.assertIn("GOOGLE_DRIVE_API_KEY, ValueFrom: !Sub '${DriveSecretArn}:google-drive-api-key::'", api_block)
         self.assertIn("GOOGLE_DRIVE_APP_ID, ValueFrom: !Sub '${DriveSecretArn}:google-drive-app-id::'", api_block)
-        self.assertIn("FacebookEnabled", api_block)
-        self.assertIn("FACEBOOK_CLIENT_ID, ValueFrom: !Sub '${FacebookOAuthSecretArn}:facebook-client-id::'", api_block)
-        self.assertIn("FACEBOOK_CLIENT_SECRET, ValueFrom: !Sub '${FacebookOAuthSecretArn}:facebook-client-secret::'", api_block)
+        self.assertNotIn("FacebookEnabled", api_block)
+        self.assertNotIn("FACEBOOK_CLIENT_ID, ValueFrom: !Sub '${FacebookOAuthSecretArn}:facebook-client-id::'", api_block)
+        self.assertNotIn("FACEBOOK_CLIENT_SECRET, ValueFrom: !Sub '${FacebookOAuthSecretArn}:facebook-client-secret::'", api_block)
         self.assertIn("!Ref 'AWS::NoValue'", api_block)
         self.assertNotIn("Secrets: !If", api_block)
 
@@ -81,19 +66,8 @@ class GoogleTemplateTests(unittest.TestCase):
         self.assertIn("META_API_BASE_URL, Value: https://api.meta.ai/v1", api_block)
 
     def test_google_policy_least_privilege_exact(self):
-        self.assertIn("ApiGoogleAuthPolicy:", self.text)
-        start = self.text.index("ApiGoogleAuthPolicy:")
-        block = self.text[start:self.text.index("ApiTaskDefinition:")]
-        self.assertIn("Condition: GoogleAuthEnabled", block)
-        self.assertIn("api-google-auth-secret-only", block)
-        self.assertIn("secretsmanager:GetSecretValue", block)
-        self.assertIn("Resource: [!Ref GoogleOAuthSecretArn]", block)
-        self.assertIn("Roles: [!Ref ApiExecutionRole]", block)
-        self.assertNotIn("Resource: '*'", block)
-        self.assertNotIn('Resource: "*"', block)
-        self.assertNotIn("secretsmanager:PutSecretValue", block)
-        self.assertNotIn("kms:", block.lower())
-        self.assertNotIn("*", block.split("Resource:")[1].split("\n")[0])
+        self.assertNotIn('ApiGoogleAuthPolicy:', self.text)
+        self.assertNotIn('GOOGLE_CLIENT_SECRET', self.text)
 
     def test_base_execution_role_unchanged_no_google(self):
         start = self.text.index("ApiExecutionRole:")
@@ -124,7 +98,7 @@ class GoogleTemplateTests(unittest.TestCase):
         self.assertIn("DriveEnabled:", self.text)
         self.assertIn("DriveSecretArn:", self.text)
         start = self.text.index("ApiDriveSecretPolicy:")
-        block = self.text[start:self.text.index("ApiFacebookSecretPolicy:")]
+        block = self.text[start:self.text.index("ApiTaskDefinition:")]
         self.assertIn("Condition: DriveEnabled", block)
         self.assertIn("api-drive-secret-only", block)
         self.assertIn("secretsmanager:GetSecretValue", block)
@@ -137,21 +111,9 @@ class GoogleTemplateTests(unittest.TestCase):
         self.assertNotIn("*", block.split("Resource:")[1].split("\n")[0])
 
     def test_facebook_policy_least_privilege_exact(self):
-        self.assertIn("ApiFacebookSecretPolicy:", self.text)
-        self.assertIn("FacebookEnabled:", self.text)
-        self.assertIn("FacebookOAuthSecretArn:", self.text)
-        start = self.text.index("ApiFacebookSecretPolicy:")
-        block = self.text[start:self.text.index("ApiTaskDefinition:")]
-        self.assertIn("Condition: FacebookEnabled", block)
-        self.assertIn("api-facebook-secret-only", block)
-        self.assertIn("secretsmanager:GetSecretValue", block)
-        self.assertIn("Resource: [!Ref FacebookOAuthSecretArn]", block)
-        self.assertIn("Roles: [!Ref ApiExecutionRole]", block)
-        self.assertNotIn("Resource: '*'", block)
-        lowered = block.lower()
-        self.assertNotIn("putsecretvalue", lowered)
-        self.assertNotIn("kms:", lowered)
-        self.assertNotIn("*", block.split("Resource:")[1].split("\n")[0])
+        self.assertNotIn('ApiFacebookSecretPolicy:', self.text)
+        self.assertNotIn('FACEBOOK_CLIENT_SECRET', self.text)
+        self.assertNotIn('FacebookOAuthSecretArn:', self.text)
 
     def test_no_secret_values_or_wildcards(self):
         self.assertNotIn("apps.googleusercontent.com", self.text)
@@ -165,12 +127,10 @@ class GoogleTemplateTests(unittest.TestCase):
 
 class GoogleParamsTests(unittest.TestCase):
     def test_example_carries_google_keys_placeholder_only(self):
-        doc = json.loads(PARAMS.read_text(encoding="utf-8"))
-        by_key = {entry["ParameterKey"]: entry["ParameterValue"] for entry in doc}
-        self.assertEqual(by_key["EnableGoogleAuth"], "false")
-        self.assertIn("REPLACE_WITH_GOOGLE_OAUTH_SECRET_ARN", by_key["GoogleOAuthSecretArn"])
-        self.assertNotIn("111122223333", by_key["GoogleOAuthSecretArn"])
-        self.assertNotIn("apps.googleusercontent.com", PARAMS.read_text(encoding="utf-8"))
+        doc = json.loads(PARAMS.read_text())
+        keys = {entry['ParameterKey'] for entry in doc}
+        self.assertNotIn('EnableGoogleAuth', keys)
+        self.assertNotIn('GoogleOAuthSecretArn', keys)
 
     def test_bootstrap_allows_google_secret_key(self):
         text = BOOTSTRAP.read_text(encoding="utf-8")

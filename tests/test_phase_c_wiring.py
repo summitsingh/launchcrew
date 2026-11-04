@@ -324,6 +324,10 @@ if [ "$1" = "rds" ] && [ "$2" = "describe-db-instances" ]; then
   printf '%s\\n' "${FAKE_DB_HOST:-launchcrew-demo.abc123.us-east-1.rds.amazonaws.com}"
   exit 0
 fi
+if [ "$1" = "ecr" ] && [ "$2" = "describe-images" ]; then
+  printf '{"imageDetails":[{"imageDigest":"sha256:abc123"}]}\\n'
+  exit 0
+fi
 if [ "$1" = "ecr" ] && [ "$2" = "batch-get-image" ]; then
   case "$*" in
     *"imageDigest"*) printf 'sha256:abc123\\n'; exit 0 ;;
@@ -521,6 +525,9 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-tasks" ]; then
   CONTAINERS=""
   for NAME in $NAMES; do
     ENTRY="$(printf '{"name":"%s","lastStatus":"STOPPED","exitCode":0}' "$NAME")"
+    if [ "$NAME" = "migration" ]; then
+      ENTRY="$(printf '{"name":"%s","lastStatus":"STOPPED","exitCode":0,"image":"%s","imageDigest":"sha256:abc123"}' "$NAME" "${FAKE_MIGRATION_IMAGE:-111122223333.dkr.ecr.us-east-1.amazonaws.com/launchcrew-migration:abc123}")"
+    fi
     if [ -z "$CONTAINERS" ]; then CONTAINERS="$ENTRY"; else CONTAINERS="$CONTAINERS,$ENTRY"; fi
   done
   if [ -n "$STARTED_BY" ]; then
@@ -566,7 +573,7 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-task""-definition" ]; then
       printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/WebExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/WebTaskRole%s","containerDefinitions":[{"name":"web-app","essential":true,"image":"%s","secrets":[]},{"name":"web-proxy","essential":true,"image":"%s","secrets":[{"name":"TLS_CERT_B64","valueFrom":"%s:tls-cert-b64::"},{"name":"TLS_KEY_B64","valueFrom":"%s:tls-key-b64::"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_WEB" "$IMG_PROXY" "$SEC_TLS" "$SEC_TLS"
       exit 0 ;;
     *launchcrew-demo-migration*)
-      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/MigrationExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/MigrationTaskRole%s","containerDefinitions":[{"name":"migration","essential":true,"image":"%s","secrets":[{"name":"DATABASE_URL","valueFrom":"%s:database-url::"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_MIG" "$SEC_MG"
+      printf '{"taskDefinition":{"taskDefinitionArn":"%s","executionRoleArn":"arn:aws:iam::111122223333:role/MigrationExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/MigrationTaskRole%s","containerDefinitions":[{"name":"migration","essential":true,"image":"%s","secrets":[{"name":"DATABASE_URL","valueFrom":"%s:database-url::"}]}]}}\\n' "$TASKDEF" "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_MIG" "$SEC_MG"
       exit 0 ;;
     *launchcrew-demo-bootstrap*)
       printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/BootstrapExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/BootstrapTaskRole%s","containerDefinitions":[{"name":"bootstrap-db-roles","essential":true,"image":"%s","secrets":[{"name":"MASTER_DB_PASSWORD","valueFrom":"%s:password::"},{"name":"RUNTIME_DB_URL","valueFrom":"%s:database-url::"},{"name":"MIGRATION_DB_URL","valueFrom":"%s:database-url::"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_BOOT" "$SEC_MASTER" "$SEC_RT" "$SEC_MG"

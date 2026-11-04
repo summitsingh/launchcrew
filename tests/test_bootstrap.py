@@ -425,6 +425,16 @@ elif mode == "paginated_extra":
         print(json.dumps(base([FOREIGN_DB], iparams())))
 elif mode == "truncated":
     print(json.dumps(base(FULL[:1], iparams(), token_out="more")))
+elif mode in ("public_auth_remove", "public_auth_foreign_remove"):
+    removals = [{"Type": "Resource", "ResourceChange": {
+        "Action": "Remove", "LogicalResourceId": logical,
+        "ResourceType": "AWS::IAM::Policy", "Replacement": "False"}}
+        for logical in ("ApiGoogleAuthPolicy", "ApiFacebookSecretPolicy")]
+    if mode == "public_auth_foreign_remove":
+        removals.append({"Type": "Resource", "ResourceChange": {
+            "Action": "Remove", "LogicalResourceId": "OtherPolicy",
+            "ResourceType": "AWS::IAM::Policy", "Replacement": "False"}})
+    print(json.dumps(base(FULL + removals, iparams())))
 elif mode == "google_exact":
     print(json.dumps(base(FULL + [policy_exact()], iparams())))
 elif mode == "google_foreign":
@@ -1097,6 +1107,10 @@ if [ "$1" = "ecr" ] && [ "$2" = "describe-repositories" ]; then
   if [ "$MODE" = "repo_mode_unverifiable" ]; then echo "An error occurred (RepositoryNotFoundException) when calling the DescribeRepositories operation" >&2; exit 254; fi
   printf 'IMMUTABLE\n'; exit 0
 fi
+if [ "$1" = "ecr" ] && [ "$2" = "describe-images" ]; then
+  printf '{"imageDetails":[{"imageDigest":"sha256:abc123"}]}\\n'
+  exit 0
+fi
 if [ "$1" = "ecr" ] && [ "$2" = "batch-get-image" ]; then
   if [ "$MODE" = "image_missing" ]; then
     echo "An error occurred (ImageNotFoundException) when calling the BatchGetImage operation: image not found" >&2
@@ -1301,6 +1315,9 @@ PYEOF
   CONTAINERS=""
   for NAME in $NAMES; do
     ENTRY="$(printf '{"name":"%s","lastStatus":"%s","exitCode":%s}' "$NAME" "$CONTAINER_STATUS" "$EXIT0")"
+    if [ "$NAME" = "migration" ]; then
+      ENTRY="$(printf '{"name":"%s","lastStatus":"%s","exitCode":%s,"image":"%s","imageDigest":"sha256:abc123"}' "$NAME" "$CONTAINER_STATUS" "$EXIT0" "${FAKE_MIGRATION_IMAGE:-111122223333.dkr.ecr.us-east-1.amazonaws.com/launchcrew-migration:abc123}")"
+    fi
     if [ -z "$CONTAINERS" ]; then CONTAINERS="$ENTRY"; else CONTAINERS="$CONTAINERS,$ENTRY"; fi
   done
   STARTED_BY="$LINE_TOKEN"
@@ -1393,7 +1410,9 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-task""-definition" ]; then
   ORIG_BOOT_IMG="${FAKE_ORIG_BOOTSTRAP_IMAGE:-$IMG_BOOT}"
   case "$TASKDEF" in
     *launchcrew-demo-api*)
-      if [ -n "$SEC_GOOGLE" ] && [ -n "$SEC_META" ] && [ -n "$SEC_DRIVE" ] && [ -n "$SEC_FACEBOOK" ]; then
+      if [ -z "$SEC_GOOGLE" ] && [ -n "$SEC_META" ] && [ -n "$SEC_DRIVE" ]; then
+        printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/ApiExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/ApiTaskRole%s","containerDefinitions":[{"name":"api","essential":true,"image":"%s","secrets":[{"name":"DATABASE_URL","valueFrom":"%s:database-url::"},{"name":"TLS_CERT_B64","valueFrom":"%s:tls-cert-b64::"},{"name":"TLS_KEY_B64","valueFrom":"%s:tls-key-b64::"},{"name":"META_API_KEY","valueFrom":"%s:meta-api-key::"},{"name":"GOOGLE_DRIVE_API_KEY","valueFrom":"%s:google-drive-api-key::"},{"name":"GOOGLE_DRIVE_APP_ID","valueFrom":"%s:google-drive-app-id::"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_API" "$SEC_RT" "$SEC_TLS" "$SEC_TLS" "$SEC_META" "$SEC_DRIVE" "$SEC_DRIVE"
+      elif [ -n "$SEC_GOOGLE" ] && [ -n "$SEC_META" ] && [ -n "$SEC_DRIVE" ] && [ -n "$SEC_FACEBOOK" ]; then
         printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/ApiExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/ApiTaskRole%s","containerDefinitions":[{"name":"api","essential":true,"image":"%s","secrets":[{"name":"DATABASE_URL","valueFrom":"%s:database-url::"},{"name":"TLS_CERT_B64","valueFrom":"%s:tls-cert-b64::"},{"name":"TLS_KEY_B64","valueFrom":"%s:tls-key-b64::"},{"name":"GOOGLE_CLIENT_ID","valueFrom":"%s:google-client-id::"},{"name":"GOOGLE_CLIENT_SECRET","valueFrom":"%s:google-client-secret::"},{"name":"META_API_KEY","valueFrom":"%s:meta-api-key::"},{"name":"GOOGLE_DRIVE_API_KEY","valueFrom":"%s:google-drive-api-key::"},{"name":"GOOGLE_DRIVE_APP_ID","valueFrom":"%s:google-drive-app-id::"},{"name":"FACEBOOK_CLIENT_ID","valueFrom":"%s:facebook-client-id::"},{"name":"FACEBOOK_CLIENT_SECRET","valueFrom":"%s:facebook-client-secret::"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_API" "$SEC_RT" "$SEC_TLS" "$SEC_TLS" "$SEC_GOOGLE" "$SEC_GOOGLE" "$SEC_META" "$SEC_DRIVE" "$SEC_DRIVE" "$SEC_FACEBOOK" "$SEC_FACEBOOK"
       elif [ -n "$SEC_GOOGLE" ] && [ -n "$SEC_META" ]; then
         printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/ApiExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/ApiTaskRole%s","containerDefinitions":[{"name":"api","essential":true,"image":"%s","secrets":[{"name":"DATABASE_URL","valueFrom":"%s:database-url::"},{"name":"TLS_CERT_B64","valueFrom":"%s:tls-cert-b64::"},{"name":"TLS_KEY_B64","valueFrom":"%s:tls-key-b64::"},{"name":"GOOGLE_CLIENT_ID","valueFrom":"%s:google-client-id::"},{"name":"GOOGLE_CLIENT_SECRET","valueFrom":"%s:google-client-secret::"},{"name":"META_API_KEY","valueFrom":"%s:meta-api-key::"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_API" "$SEC_RT" "$SEC_TLS" "$SEC_TLS" "$SEC_GOOGLE" "$SEC_GOOGLE" "$SEC_META"
@@ -1409,7 +1428,7 @@ if [ "$1" = "ecs" ] && [ "$2" = "describe-task""-definition" ]; then
       printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/WebExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/WebTaskRole%s","containerDefinitions":[{"name":"web-app","essential":true,"image":"%s","secrets":[]},{"name":"web-proxy","essential":true,"image":"%s","secrets":[{"name":"TLS_CERT_B64","valueFrom":"%s:tls-cert-b64::"},{"name":"TLS_KEY_B64","valueFrom":"%s:tls-key-b64::"}]}]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_WEB" "$IMG_PROXY" "$SEC_TLS" "$SEC_TLS"
       exit 0 ;;
     *launchcrew-demo-migration*)
-      printf '{"taskDefinition":{"executionRoleArn":"arn:aws:iam::111122223333:role/MigrationExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/MigrationTaskRole%s","containerDefinitions":[{"name":"migration","essential":true,"image":"%s"%s%s,"secrets":[{"name":"DATABASE_URL","valueFrom":"%s:database-url::"}%s]}%s]}}\\n' "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_MIG" "$TAMPER_CMD_JSON" "$TAMPER_EP_JSON" "$SEC_MG" "$EXTRA_SECRET_JSON" "$EXTRA_CONTAINER_JSON"
+      printf '{"taskDefinition":{"taskDefinitionArn":"%s","executionRoleArn":"arn:aws:iam::111122223333:role/MigrationExecutionRole%s","taskRoleArn":"arn:aws:iam::111122223333:role/MigrationTaskRole%s","containerDefinitions":[{"name":"migration","essential":true,"image":"%s"%s%s,"secrets":[{"name":"DATABASE_URL","valueFrom":"%s:database-url::"}%s]}%s]}}\\n' "$TASKDEF" "$EXEC_SUFFIX" "$EXEC_SUFFIX" "$IMG_MIG" "$TAMPER_CMD_JSON" "$TAMPER_EP_JSON" "$SEC_MG" "$EXTRA_SECRET_JSON" "$EXTRA_CONTAINER_JSON"
       exit 0 ;;
     *launchcrew-demo-bootstrap*)
       CUR_BOOT_IMG="$ORIG_BOOT_IMG"
@@ -2864,10 +2883,8 @@ class TemplateStagingTests(unittest.TestCase):
                           "BootstrapImageUri", "RuntimeDbUrlSecretArn",
                           "MigrationDbUrlSecretArn", "TlsSecretArn",
                           "MasterDbPasswordSecretArn", "DatabaseUsername",
-                          "EnableServices", "EnableGoogleAuth",
-                          "GoogleOAuthSecretArn", "MetaSecretArn"})
-        for key in ("BootstrapImageUri", "EnableServices", "EnableGoogleAuth",
-                    "GoogleOAuthSecretArn", "MetaSecretArn"):
+                          "EnableServices", "MetaSecretArn"})
+        for key in ("BootstrapImageUri", "EnableServices", "MetaSecretArn"):
             self.assertIn(key, self.example)
         self.assertNotIn("BudgetLimitUsd", self.example)
         self.assertNotIn("BudgetNotifyEmail", self.example)
@@ -3641,204 +3658,35 @@ class InfraDiffGuardTests(BootstrapHarness):
 
 
 class InfraGooglePolicyTests(BootstrapHarness):
-    def google_infra_args(self):
-        return [*self.base_args(**{"--google-secret-arn": SECRET_GOOGLE}),
-                "--phase", "infra"]
+    def test_public_infra_removes_only_retired_signin_policies(self):
+        result, calls = self.run_bootstrap([*self.base_args(), "--phase", "infra"],
+            extra_env={"FAKE_INFRA_CHANGESET": "public_auth_remove"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(sum("execute-change-set" in call for call in calls), 1)
 
-    def google_params(self):
-        return {"EnableGoogleAuth": "true",
-                "GoogleOAuthSecretArn": SECRET_GOOGLE}
+    def test_public_infra_refuses_unrelated_policy_removal(self):
+        result, calls = self.run_bootstrap([*self.base_args(), "--phase", "infra"],
+            extra_env={"FAKE_INFRA_CHANGESET": "public_auth_foreign_remove"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any("execute-change-set" in call for call in calls))
 
-    def test_infra_google_exact_policy_add_succeeds(self):
-        result, calls = self.run_bootstrap(
-            self.google_infra_args(),
-            extra_env={"FAKE_INFRA_CHANGESET": "google_exact"},
-            params_overrides=self.google_params())
-        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
-        combined = result.stdout + result.stderr
-        self.assertIn("Verified Google policy least privilege", combined)
-        self.assertIn("ApiGoogleAuthPolicy", combined)
-        self.assertNotIn("apps.googleusercontent.com", combined)
-        executes = [call for call in calls if "execute-change-set" in call]
-        self.assertEqual(len(executes), 1)
-        self.assertIn("changeSet/infra-008/", executes[0])
-        self.assertFalse(any("deploy " in call for call in calls))
-        self.assertFalse(any("delete-change-set" in call for call in calls))
-        self.assertFalse(any("run-task" in call for call in calls))
-        self.assertIn("BOOTSTRAP COMPLETE", result.stdout)
-
-    def test_infra_google_policy_rejected_when_disabled(self):
+    def test_public_infra_rejects_signin_policy_add(self):
         result, calls = self.run_bootstrap(
             [*self.base_args(), "--phase", "infra"],
-            extra_env={"FAKE_INFRA_CHANGESET": "google_exact"},
-            params_overrides={"EnableGoogleAuth": "false"})
+            extra_env={"FAKE_INFRA_CHANGESET": "google_exact"})
         self.assertNotEqual(result.returncode, 0)
-        combined = result.stdout + result.stderr
-        self.assertIn("GOOGLE_DISABLED", combined)
-        self.assertIn("preserved for inspection", combined)
-        self.assertFalse(any("execute-change-set" in call for call in calls))
-        self.assertFalse(any("delete-change-set" in call for call in calls))
-        self.assertFalse(any("deploy " in call for call in calls))
-
-    def test_infra_rejects_unrelated_iam_add(self):
-        result, calls = self.run_bootstrap(
-            self.google_infra_args(),
-            extra_env={"FAKE_INFRA_CHANGESET": "google_foreign"},
-            params_overrides=self.google_params())
-        self.assertNotEqual(result.returncode, 0)
-        combined = result.stdout + result.stderr
-        self.assertIn("FOREIGN_OtherPolicy", combined)
-        self.assertIn("preserved for inspection", combined)
-        self.assertFalse(any("execute-change-set" in call for call in calls))
-        self.assertFalse(any("delete-change-set" in call for call in calls))
-
-    def test_infra_rejects_policy_wildcard(self):
-        result, calls = self.run_bootstrap(
-            self.google_infra_args(),
-            extra_env={"FAKE_INFRA_CHANGESET": "google_wildcard"},
-            params_overrides=self.google_params())
-        self.assertNotEqual(result.returncode, 0)
-        combined = result.stdout + result.stderr
-        self.assertIn("WILDCARD_ApiGoogleAuthPolicy", combined)
-        self.assertFalse(any("execute-change-set" in call for call in calls))
-        self.assertFalse(any("delete-change-set" in call for call in calls))
-
-    def test_infra_rejects_policy_extra_details(self):
-        result, calls = self.run_bootstrap(
-            self.google_infra_args(),
-            extra_env={"FAKE_INFRA_CHANGESET": "google_details"},
-            params_overrides=self.google_params())
-        self.assertNotEqual(result.returncode, 0)
-        combined = result.stdout + result.stderr
-        self.assertIn("DETAILS_ApiGoogleAuthPolicy_UNEXPECTED", combined)
         self.assertFalse(any("execute-change-set" in call for call in calls))
 
-    def test_infra_rejects_policy_tags_scope(self):
-        result, calls = self.run_bootstrap(
-            self.google_infra_args(),
-            extra_env={"FAKE_INFRA_CHANGESET": "google_tags_scope"},
-            params_overrides=self.google_params())
-        self.assertNotEqual(result.returncode, 0)
-        combined = result.stdout + result.stderr
-        self.assertIn("SCOPE_ApiGoogleAuthPolicy_Tags", combined)
-        self.assertFalse(any("execute-change-set" in call for call in calls))
+    def test_public_template_refuses_enabled_signin_before_mutations(self):
+        for phase in ("images", "infra", "enable"):
+            with self.subTest(phase=phase):
+                result, calls = self.run_bootstrap(
+                    [*self.base_args(**{"--google-secret-arn": SECRET_GOOGLE}), "--phase", phase],
+                    params_overrides={"EnableGoogleAuth": "true", "GoogleOAuthSecretArn": SECRET_GOOGLE})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("public template disables sign-in", result.stdout + result.stderr)
+                self.assertFalse(any("execute-change-set" in call or "run-task" in call or "deploy " in call for call in calls))
 
-    def test_infra_rejects_policy_bad_replacement(self):
-        result, calls = self.run_bootstrap(
-            self.google_infra_args(),
-            extra_env={"FAKE_INFRA_CHANGESET": "google_bad_replacement"},
-            params_overrides=self.google_params())
-        self.assertNotEqual(result.returncode, 0)
-        combined = result.stdout + result.stderr
-        self.assertIn("REPLACEMENT_ApiGoogleAuthPolicy_True", combined)
-        self.assertFalse(any("execute-change-set" in call for call in calls))
-
-    def test_infra_rejects_policy_plus_extra_resource(self):
-        result, calls = self.run_bootstrap(
-            self.google_infra_args(),
-            extra_env={"FAKE_INFRA_CHANGESET": "google_extra"},
-            params_overrides=self.google_params())
-        self.assertNotEqual(result.returncode, 0)
-        combined = result.stdout + result.stderr
-        self.assertIn("FOREIGN_Database", combined)
-        self.assertFalse(any("execute-change-set" in call for call in calls))
-
-    def test_infra_google_missing_policy_after_execute_refused(self):
-        result, calls = self.run_bootstrap(
-            self.google_infra_args(),
-            extra_env={"FAKE_INFRA_CHANGESET": "google_exact",
-                       "FAKE_POLICY_ABSENT": "yes"},
-            params_overrides=self.google_params())
-        self.assertNotEqual(result.returncode, 0)
-        combined = result.stdout + result.stderr
-        self.assertIn("Google policy missing after update", combined)
-        self.assertTrue(any("execute-change-set" in call for call in calls))
-        self.assertNotIn("BOOTSTRAP COMPLETE", result.stdout)
-
-    def test_infra_unexpected_policy_while_disabled_refused(self):
-        result, calls = self.run_bootstrap(
-            [*self.base_args(), "--phase", "infra"],
-            extra_env={"FAKE_POLICY_PRESENT": "yes"},
-            params_overrides={"EnableGoogleAuth": "false"})
-        self.assertNotEqual(result.returncode, 0)
-        combined = result.stdout + result.stderr
-        self.assertIn("present while EnableGoogleAuth false", combined)
-        self.assertNotIn("BOOTSTRAP COMPLETE", result.stdout)
-
-    def test_enable_google_policy_stable_succeeds(self):
-        import tempfile as _tmp
-        with _tmp.TemporaryDirectory() as shared_tmp:
-            base = self.base_args(**{"--google-secret-arn": SECRET_GOOGLE})
-            release = "head008-testabc"
-            params = {"EnableGoogleAuth": "true",
-                      "GoogleOAuthSecretArn": SECRET_GOOGLE}
-            result_mat, _ = self.run_bootstrap(
-                [*base, "--phase", "material",
-                 "--release-generation", release],
-                params_overrides=params, shared_dir=shared_tmp)
-            self.assertEqual(result_mat.returncode, 0,
-                             msg=result_mat.stdout + result_mat.stderr)
-            result_roles, _ = self.run_bootstrap(
-                [*base, "--phase", "dbroles",
-                 "--release-generation", release],
-                params_overrides=params, shared_dir=shared_tmp)
-            self.assertEqual(result_roles.returncode, 0,
-                             msg=result_roles.stdout + result_roles.stderr)
-            result_mig, _ = self.run_bootstrap(
-                [*base, "--phase", "migrate",
-                 "--release-generation", release],
-                params_overrides=params, shared_dir=shared_tmp)
-            self.assertEqual(result_mig.returncode, 0,
-                             msg=result_mig.stdout + result_mig.stderr)
-            result, calls = self.run_bootstrap(
-                [*base, "--phase", "enable",
-                 "--release-generation", release],
-                params_overrides=params, shared_dir=shared_tmp)
-        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
-        combined = result.stdout + result.stderr
-        self.assertIn("Google plus Meta policies unchanged", combined)
-        self.assertIn("BOOTSTRAP COMPLETE", result.stdout)
-        self.assertTrue(any("EnableServices=true" in call for call in calls))
-        self.assertFalse(any("run-task" in call for call in calls))
-
-    def test_enable_refuses_when_own_deploy_moves_policy(self):
-        import tempfile as _tmp
-        with _tmp.TemporaryDirectory() as shared_tmp:
-            base = self.base_args(**{"--google-secret-arn": SECRET_GOOGLE})
-            release = "head008-testabc"
-            params = {"EnableGoogleAuth": "true",
-                      "GoogleOAuthSecretArn": SECRET_GOOGLE}
-            result_mat, _ = self.run_bootstrap(
-                [*base, "--phase", "material",
-                 "--release-generation", release],
-                params_overrides=params, shared_dir=shared_tmp)
-            self.assertEqual(result_mat.returncode, 0,
-                             msg=result_mat.stdout + result_mat.stderr)
-            result_roles, _ = self.run_bootstrap(
-                [*base, "--phase", "dbroles",
-                 "--release-generation", release],
-                params_overrides=params, shared_dir=shared_tmp)
-            self.assertEqual(result_roles.returncode, 0,
-                             msg=result_roles.stdout + result_roles.stderr)
-            result_mig, _ = self.run_bootstrap(
-                [*base, "--phase", "migrate",
-                 "--release-generation", release],
-                params_overrides=params, shared_dir=shared_tmp)
-            self.assertEqual(result_mig.returncode, 0,
-                             msg=result_mig.stdout + result_mig.stderr)
-            result, calls = self.run_bootstrap(
-                [*base, "--phase", "enable",
-                 "--release-generation", release],
-                params_overrides=params,
-                extra_env={"FAKE_POLICY_FLIP": "yes"},
-                shared_dir=shared_tmp)
-        self.assertNotEqual(result.returncode, 0)
-        combined = result.stdout + result.stderr
-        self.assertIn("changed during enable", combined)
-        self.assertIn("ApiGoogleAuthPolicy", combined)
-        self.assertTrue(any("EnableServices=true" in call for call in calls))
-        self.assertFalse(any("run-task" in call for call in calls))
-        self.assertNotIn("BOOTSTRAP COMPLETE", result.stdout)
 
 
 class QuiesceResumeTests(BootstrapHarness):
@@ -5027,17 +4875,15 @@ class GoogleAuthGateTests(BootstrapHarness):
         self.assertIn("keyless three secret path", combined)
         self.assertIn("ApiTaskDefinition", combined)
 
-    def test_google_five_secret_images_success(self):
+    def test_public_images_refuse_enabled_signin(self):
         args = self.base_args(**{"--google-secret-arn": SECRET_GOOGLE})
         result, calls = self.run_bootstrap(
             [*args, "--phase", "images"],
             params_overrides={"EnableGoogleAuth": "true",
                               "GoogleOAuthSecretArn": SECRET_GOOGLE})
-        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
-        combined = result.stdout + result.stderr
-        self.assertIn("EnableGoogleAuth true plus exact owned Google secret", combined)
-        self.assertTrue(any("describe-task""-definition" in call or "describe-task" in call for call in calls))
-        self.assertNotIn("apps.googleusercontent.com", combined)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("public template disables sign-in", result.stdout + result.stderr)
+        self.assertFalse(any("deploy " in call or "execute-change-set" in call or "run-task" in call for call in calls))
 
     def test_google_true_empty_refused_before_mutation(self):
         result, calls = self.run_bootstrap(
@@ -5192,8 +5038,8 @@ class GoogleAuthGateTests(BootstrapHarness):
             params_overrides={"EnableGoogleAuth": "true",
                               "GoogleOAuthSecretArn": SECRET_GOOGLE})
         self.assertNotEqual(result.returncode, 0)
-        combined = result.stdout + result.stderr
-        self.assertIn("MISSING", combined)
+        self.assertIn("public template disables sign-in", result.stdout + result.stderr)
+        self.assertFalse(any("deploy " in call or "execute-change-set" in call or "run-task" in call for call in calls))
 
     def test_google_taskdef_wrong_arn_refused(self):
         other = f"arn:aws:secretsmanager:{REGION}:{ACCOUNT}:secret:launchcrew-google-WrOnG99"
@@ -5204,8 +5050,8 @@ class GoogleAuthGateTests(BootstrapHarness):
             params_overrides={"EnableGoogleAuth": "true",
                               "GoogleOAuthSecretArn": SECRET_GOOGLE})
         self.assertNotEqual(result.returncode, 0)
-        combined = result.stdout + result.stderr
-        self.assertIn("SECRET_MISMATCH", combined)
+        self.assertIn("public template disables sign-in", result.stdout + result.stderr)
+        self.assertFalse(any("deploy " in call or "execute-change-set" in call or "run-task" in call for call in calls))
 
     def test_google_binding_refused_before_enable_deploy(self):
         args = self.base_args(**{"--google-secret-arn": SECRET_GOOGLE})
@@ -5215,9 +5061,8 @@ class GoogleAuthGateTests(BootstrapHarness):
             params_overrides={"EnableGoogleAuth": "true",
                               "GoogleOAuthSecretArn": SECRET_GOOGLE})
         self.assertNotEqual(result.returncode, 0)
-        combined = result.stdout + result.stderr
-        self.assertIn("MISSING", combined)
-        self.assertFalse(any("deploy " in call and "EnableServices=true" in call for call in calls))
+        self.assertIn("public template disables sign-in", result.stdout + result.stderr)
+        self.assertFalse(any("deploy " in call or "execute-change-set" in call or "run-task" in call for call in calls))
 
 
 class MetaKeyGateTests(BootstrapHarness):
@@ -5309,86 +5154,26 @@ class MetaKeyGateTests(BootstrapHarness):
 
 
 class DriveFacebookBindingTests(BootstrapHarness):
-    def full_args(self):
-        return self.base_args(**{"--google-secret-arn": SECRET_GOOGLE,
-                                 "--meta-secret-arn": SECRET_META,
-                                 "--drive-secret-arn": SECRET_DRIVE,
-                                 "--facebook-secret-arn": SECRET_FACEBOOK})
+    def test_public_drive_and_meta_bindings_remain_available(self):
+        args = self.base_args(**{"--meta-secret-arn": SECRET_META, "--drive-secret-arn": SECRET_DRIVE})
+        result, calls = self.run_bootstrap([*args, "--phase", "images"],
+            params_overrides={"MetaSecretArn": SECRET_META, "DriveSecretArn": SECRET_DRIVE})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Verified Drive gate", result.stdout)
 
-    def full_params(self):
-        return {"EnableGoogleAuth": "true",
-                "GoogleOAuthSecretArn": SECRET_GOOGLE,
-                "MetaSecretArn": SECRET_META,
-                "DriveSecretArn": SECRET_DRIVE,
-                "FacebookOAuthSecretArn": SECRET_FACEBOOK}
-
-    def test_drive_facebook_ten_secret_images_success(self):
-        result, calls = self.run_bootstrap(
-            [*self.full_args(), "--phase", "images"],
-            params_overrides=self.full_params())
-        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
-        combined = result.stdout + result.stderr
-        self.assertIn("Verified Drive gate", combined)
-        self.assertIn("Verified Facebook gate", combined)
-        self.assertIn("ApiTaskDefinition", combined)
-
-    def test_new_pairs_missing_from_deployed_refused(self):
-        # The deployed fixture without the new ARNs serves the old six-secret
-        # shape; the checker reports the first missing key in sorted order.
-        result, calls = self.run_bootstrap(
-            [*self.full_args(), "--phase", "images"],
-            extra_env={"FAKE_DRIVE_ARN": "", "FAKE_FACEBOOK_ARN": ""},
-            params_overrides=self.full_params())
+    def test_public_drive_missing_cli_refused(self):
+        result, calls = self.run_bootstrap([*self.base_args(), "--phase", "images"],
+            params_overrides={"DriveSecretArn": SECRET_DRIVE})
         self.assertNotEqual(result.returncode, 0)
-        combined = result.stdout + result.stderr
-        self.assertIn("MISSING:api.FACEBOOK_CLIENT_ID", combined)
+        self.assertIn("exact --drive-secret-arn is required", result.stdout + result.stderr)
 
-    def test_drive_missing_cli_refused_before_mutation(self):
-        args = self.base_args(**{"--google-secret-arn": SECRET_GOOGLE,
-                                 "--meta-secret-arn": SECRET_META,
-                                 "--facebook-secret-arn": SECRET_FACEBOOK})
-        result, calls = self.run_bootstrap(
-            [*args, "--phase", "images"],
-            params_overrides=self.full_params())
+    def test_public_facebook_signin_secret_refused(self):
+        result, calls = self.run_bootstrap([*self.base_args(), "--phase", "images"],
+            params_overrides={"FacebookOAuthSecretArn": SECRET_FACEBOOK})
         self.assertNotEqual(result.returncode, 0)
-        combined = result.stdout + result.stderr
-        self.assertIn("exact --drive-secret-arn is required", combined)
+        self.assertIn("no Facebook sign-in secret", result.stdout + result.stderr)
         self.assertFalse(any("run-task" in call for call in calls))
 
-    def test_facebook_missing_cli_refused_before_mutation(self):
-        args = self.base_args(**{"--google-secret-arn": SECRET_GOOGLE,
-                                 "--meta-secret-arn": SECRET_META,
-                                 "--drive-secret-arn": SECRET_DRIVE})
-        result, calls = self.run_bootstrap(
-            [*args, "--phase", "images"],
-            params_overrides=self.full_params())
-        self.assertNotEqual(result.returncode, 0)
-        combined = result.stdout + result.stderr
-        self.assertIn("exact --facebook-secret-arn is required", combined)
-        self.assertFalse(any("run-task" in call for call in calls))
-
-    def test_infra_drive_facebook_policies_succeed(self):
-        result, calls = self.run_bootstrap(
-            [*self.full_args(), "--phase", "infra"],
-            extra_env={"FAKE_INFRA_CHANGESET": "drive_facebook_exact"},
-            params_overrides=self.full_params())
-        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
-        combined = result.stdout + result.stderr
-        self.assertIn("Verified Drive policy least privilege", combined)
-        self.assertIn("Verified Facebook policy least privilege", combined)
-        self.assertIn("Verified infra Drive policy present: ApiDriveSecretPolicy", combined)
-        self.assertIn("Verified infra Facebook policy present: ApiFacebookSecretPolicy", combined)
-        self.assertEqual(len([call for call in calls if "execute-change-set" in call]), 1)
-        self.assertIn("BOOTSTRAP COMPLETE", result.stdout)
-
-    def test_infra_unexpected_drive_policy_while_empty_refused(self):
-        result, calls = self.run_bootstrap(
-            [*self.base_args(), "--phase", "infra"],
-            extra_env={"FAKE_DRIVE_POLICY_PRESENT": "yes"})
-        self.assertNotEqual(result.returncode, 0)
-        combined = result.stdout + result.stderr
-        self.assertIn("Drive policy present while DriveSecretArn empty", combined)
-        self.assertNotIn("BOOTSTRAP COMPLETE", result.stdout)
 
 
 class MetaInfraPolicyTests(BootstrapHarness):
@@ -10203,7 +9988,7 @@ class EnableEvidenceTests(BootstrapHarness):
                              msg=result.stdout + result.stderr)
             self.assertTrue(any("EnableServices=true" in c for c in calls))
 
-    def test_enable_succeeds_with_current_attestations(self):
+    def test_enable_refuses_migration_attestation_without_current_task(self):
         import hashlib as _hashlib
         import json as _json
         import tempfile as _tempfile
@@ -10285,9 +10070,9 @@ class EnableEvidenceTests(BootstrapHarness):
             result, calls = self.run_bootstrap(
                 enable_args, extra_env={"FAKE_AGED_INIT": "1"},
                 shared_dir=shared_tmp)
-            self.assertEqual(result.returncode, 0,
-                             msg=result.stdout + result.stderr)
-            self.assertTrue(any("EnableServices=true" in c for c in calls))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("current migration image needs its own STOPPED exit 0 task proof", result.stdout + result.stderr)
+            self.assertFalse(any("EnableServices=true" in c for c in calls))
             self.assertFalse(any("run-task" in c for c in calls))
 
     def _write_enable_priors(self, journals):
