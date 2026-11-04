@@ -8001,7 +8001,7 @@ class TypedRecoveryTests(BootstrapHarness):
                           doc.get("verifier_containers", ""))
             self.check_digest(doc)
 
-    def test_migration_head008_skips_with_no_migration_run(self):
+    def test_migration_head008_skip_cannot_complete_without_task_proof(self):
         import tempfile as _tempfile
         with _tempfile.TemporaryDirectory() as shared_tmp:
             _, journals = self.fresh_shared(shared_tmp)
@@ -8013,14 +8013,14 @@ class TypedRecoveryTests(BootstrapHarness):
                 self.migrate_args(),
                 extra_env={"FAKE_AGED_INIT": "1"},
                 shared_dir=shared_tmp)
-            self.assertEqual(result.returncode, 0,
-                             msg=result.stdout + result.stderr)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("current migration image needs its own STOPPED exit 0 task proof", result.stdout + result.stderr)
             runs = [c for c in calls if "run-task" in c]
             self.assertFalse(any("launchcrew-demo-migration" in c
                                  for c in runs))
             self.assertTrue(any("launchcrew-demo-rolestate" in c
                                 for c in runs))
-            self.assertTrue(any("launchcrew-demo-verify" in c
+            self.assertFalse(any("launchcrew-demo-verify" in c
                                 for c in runs))
             doc, _ = self.read_attestation(journals, prior.name)
             self.assertEqual(doc.get("kind"),
@@ -8094,8 +8094,8 @@ class TypedRecoveryTests(BootstrapHarness):
                 self.migrate_args(),
                 extra_env={"FAKE_AGED_INIT": "1"},
                 shared_dir=shared_tmp)
-            self.assertEqual(result.returncode, 0,
-                             msg=result.stdout + result.stderr)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("current migration image needs its own STOPPED exit 0 task proof", result.stdout + result.stderr)
             self.assertEqual(mig_prior.read_bytes(), mig_before)
             self.assertEqual(ver_prior.read_bytes(), ver_before)
             combined = result.stdout + result.stderr
@@ -8597,7 +8597,7 @@ class TypedRecoveryTests(BootstrapHarness):
             self.assertFalse(any("launchcrew-demo-migration" in c
                                  for c in runs))
 
-    def test_migration_historical_pinned_digest_cross_release_admits(self):
+    def test_migration_historical_image_cannot_prove_current_image_execution(self):
         import tempfile as _tempfile
         with _tempfile.TemporaryDirectory() as shared_tmp:
             _, journals = self.fresh_shared(shared_tmp)
@@ -8648,8 +8648,8 @@ class TypedRecoveryTests(BootstrapHarness):
                            "FAKE_MIGRATION_IMAGE": old_image,
                            "FAKE_ROLESTATE_EXIT": "10"},
                 shared_dir=shared_tmp)
-            self.assertEqual(result.returncode, 0,
-                             msg=result.stdout + result.stderr)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("current migration image needs its own STOPPED exit 0 task proof", result.stdout + result.stderr)
             combined = result.stdout + result.stderr
             self.assertIn("historical image", combined.lower())
             self.assertEqual(prior006.read_bytes(), before006)
@@ -10062,8 +10062,11 @@ class EnableEvidenceTests(BootstrapHarness):
                 result, _ = self.run_bootstrap(
                     args, extra_env={"FAKE_AGED_INIT": "1"},
                     shared_dir=shared_tmp)
-                self.assertEqual(result.returncode, 0,
-                                 msg=result.stdout + result.stderr)
+                if phase == "migrate":
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("current migration image needs its own STOPPED exit 0 task proof", result.stdout + result.stderr)
+                else:
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             enable_args = [*base, "--phase", "enable",
                            "--release-generation", self.RELEASE]
             result, calls = self.run_bootstrap(
@@ -10148,8 +10151,11 @@ class EnableEvidenceTests(BootstrapHarness):
             result, _ = self.run_bootstrap(
                 args, extra_env={"FAKE_AGED_INIT": "1"},
                 shared_dir=shared_tmp)
-            self.assertEqual(result.returncode, 0,
-                             msg=result.stdout + result.stderr)
+            if phase == "migrate":
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("current migration image needs its own STOPPED exit 0 task proof", result.stdout + result.stderr)
+            else:
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_enable_orphan_attestation_refuses_with_no_update(self):
         import tempfile as _tempfile
@@ -10244,9 +10250,9 @@ class EnableEvidenceTests(BootstrapHarness):
             result, calls = self.run_bootstrap(
                 enable_args, extra_env={"FAKE_AGED_INIT": "1"},
                 shared_dir=shared_tmp)
-            self.assertEqual(result.returncode, 0,
-                             msg=result.stdout + result.stderr)
-            self.assertTrue(any("EnableServices=true" in c for c in calls))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("current migration image needs its own STOPPED exit 0 task proof", result.stdout + result.stderr)
+            self.assertFalse(any("EnableServices=true" in c for c in calls))
             self.assertFalse(any("run-task" in c for c in calls))
             combined = result.stdout + result.stderr
             self.assertIn("exact original", combined.lower())
@@ -10301,8 +10307,11 @@ class EnableEvidenceTests(BootstrapHarness):
                     args, extra_env={"FAKE_AGED_INIT": "1",
                                      "FAKE_RT_VERSION": "rt-version-1"},
                     shared_dir=shared_tmp)
-                self.assertEqual(result.returncode, 0,
-                                 msg=result.stdout + result.stderr)
+                if phase == "migrate":
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("current migration image needs its own STOPPED exit 0 task proof", result.stdout + result.stderr)
+                else:
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             enable_args = [*base, "--phase", "enable",
                            "--release-generation", self.RELEASE]
             result, calls = self.run_bootstrap(
