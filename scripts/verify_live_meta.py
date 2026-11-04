@@ -1,5 +1,10 @@
 """Host wrapper for bounded live Meta proof plus ECS Spark controller.
 
+For a fresh host clone, run uv sync before the proof. Pillow is pinned in
+pyproject.toml and uv.lock, the same dependency set the API image installs.
+The delegated SAM entry point performs read-only dependency, approved photo,
+and migrated database preflight before it reserves the latch.
+
 Host SAM proof delegates in-process to backend.live_meta_proof with no port
 binding and no live HTTP without explicit --live. Host Spark live is refused
 by default; actual Spark proof runs as a private ECS one-off via --launch-ecs

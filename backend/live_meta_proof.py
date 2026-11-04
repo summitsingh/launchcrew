@@ -51,6 +51,8 @@ proof uses synthetic fictional rows in the existing migrated schema.
 import argparse
 import base64
 import hashlib
+import importlib
+import re
 import json
 import os
 import sys
@@ -174,7 +176,7 @@ def run_spark_proof(*, latch_path):
     try:
         spark_module.init_proof_latch(latch_path)
     except Exception as error:
-        print('Spark proof latch refused: ' + type(error).__name__)
+        print('Spark proof latch refused: ' + _exception_detail(error))
         return 1
     per_call = []
     real_call = spark_module._call
@@ -386,10 +388,10 @@ def run_spark_proof(*, latch_path):
             print('data_mode: standard_no_train provider: meta basis: v2')
             return 0
     except spark_module.ProofLatchError as error:
-        print('Spark proof latch error: ' + type(error).__name__)
+        print('Spark proof latch error: ' + _exception_detail(error))
         return 1
     except Exception as error:
-        print('Spark proof failed: ' + type(error).__name__)
+        print('Spark proof failed: ' + _exception_detail(error))
         try:
             spark_module.latch_proof_uncertain(latch_path)
         except Exception:
@@ -423,6 +425,61 @@ def _approved_digest_set():
     return {part.strip().lower() for part in raw.split(',') if part.strip()}
 
 
+def _exception_detail(error):
+    """Keep diagnostics useful without exposing configured credentials."""
+    message = str(error)
+    for name, value in os.environ.items():
+        if value and any(word in name.upper() for word in ('KEY', 'TOKEN', 'SECRET', 'PASSWORD', 'DATABASE_URL')):
+            message = message.replace(value, '[redacted]')
+    message = re.sub(r'(://)[^\s/@]+:[^\s/@]+@', r'\1[redacted]@', message)
+    return type(error).__name__ + ': ' + message
+
+
+def _sam_database_preflight():
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
+    from sqlalchemy import text
+    from backend import store
+    config = Config(str(Path(__file__).resolve().parents[1] / 'alembic.ini'))
+    config.set_main_option('script_location', str(Path(__file__).resolve().parent / 'migrations'))
+    expected = set(ScriptDirectory.from_config(config).get_heads())
+    with store.engine().connect() as connection:
+        connection.execute(text('SELECT 1'))
+        actual = set(connection.execute(text('SELECT version_num FROM alembic_version')).scalars())
+        if actual != expected:
+            raise ValueError('database migrations are not at the current heads; run alembic upgrade head')
+        connection.execute(text("SELECT remaining_images FROM sam_budget WHERE id='global'")).scalar_one()
+        connection.execute(text('SELECT run_id, revision, status FROM sam_calls LIMIT 0'))
+
+
+def sam_preflight():
+    """Read-only checks before reserving the one-shot latch or granting budget."""
+    ok, reason = _check_sam_env()
+    if not ok:
+        raise ValueError(reason)
+    for module in ('PIL', 'PIL.Image', 'PIL.ImageOps'):
+        try:
+            importlib.import_module(module)
+        except ImportError as error:
+            raise ImportError('photo dependency missing: ' + module + '; run uv sync') from error
+    try:
+        raw_bytes = Path(os.environ['LAUNCHCREW_PROOF_PHOTO_PATH']).read_bytes()
+    except OSError as error:
+        raise ValueError('proof photo file missing or unreadable') from error
+    if hashlib.sha256(raw_bytes).hexdigest().lower() not in _approved_digest_set():
+        raise ValueError('approved identity mismatch')
+    # Exercise the actual lazy photo decoder before spending the latch.
+    from backend.photo_input import parse_photo_data_uri
+    kind = 'png' if raw_bytes.startswith(b'\x89PNG\r\n\x1a\n') else 'jpeg'
+    data_uri = 'data:image/%s;base64,' % kind + base64.b64encode(raw_bytes).decode('ascii')
+    parse_photo_data_uri(data_uri)
+    try:
+        _sam_database_preflight()
+    except Exception as error:
+        raise RuntimeError('database unreachable or not migrated: ' + _exception_detail(error)) from error
+    return data_uri
+
+
 def _reserve_sam_latch(latch_path):
     target = Path(latch_path)
     try:
@@ -454,6 +511,12 @@ def _reserve_sam_latch(latch_path):
 
 
 def run_sam_proof(*, latch_path):
+    try:
+        data_uri = sam_preflight()
+    except Exception as error:
+        print('SAM proof preflight failed: ' + _exception_detail(error))
+        os.environ['LAUNCHCREW_PHOTO_SAM_ENABLED'] = 'false'
+        return 1
     from fastapi.testclient import TestClient
     from sqlalchemy import text
     from backend import sam as sam_module
@@ -476,32 +539,12 @@ def run_sam_proof(*, latch_path):
         if not _reserve_sam_latch(latch_path):
             print('SAM proof latch refused: reuse refused')
             return 1
-        photo_path = os.environ.get('LAUNCHCREW_PROOF_PHOTO_PATH', '').strip()
-        try:
-            raw_bytes = Path(photo_path).read_bytes()
-        except Exception:
-            print('SAM proof photo read failed')
-            return 1
-        digest = hashlib.sha256(raw_bytes).hexdigest().lower()
-        if digest not in _approved_digest_set():
-            print('SAM proof approved identity mismatch')
-            return 1
         print('SAM proof approved identity validated')
-        if raw_bytes.startswith(b'\x89PNG\r\n\x1a\n'):
-            mime = 'image/png'
-            kind = 'png'
-        elif raw_bytes.startswith(b'\xff\xd8\xff'):
-            mime = 'image/jpeg'
-            kind = 'jpeg'
-        else:
-            print('SAM proof photo is not PNG or JPEG')
-            return 1
-        data_uri = 'data:image/%s;base64,' % kind + base64.b64encode(raw_bytes).decode('ascii')
         try:
             with store_module.engine().begin() as connection:
                 connection.execute(text("UPDATE sam_budget SET remaining_images=1 WHERE id='global'"))
         except Exception as error:
-            print('SAM proof budget grant failed: ' + type(error).__name__)
+            print('SAM proof budget grant failed: ' + _exception_detail(error))
             return 1
 
         def proof_upload(raw, mime_arg, concept='product', timeout_s=30.0):
@@ -574,16 +617,16 @@ def run_sam_proof(*, latch_path):
                              'uploads': sam_counts['uploads'],
                              'segmentations': sam_counts['segmentations']}
         except sam_module.SamTransportError as error:
-            print('SAM proof transport failed: ' + type(error).__name__)
+            print('SAM proof transport failed: ' + _exception_detail(error))
             return 1
         except Exception as error:
-            print('SAM proof failed: ' + type(error).__name__)
+            print('SAM proof failed: ' + _exception_detail(error))
             return 1
     except sam_module.SamTransportError as error:
-        print('SAM proof transport failed: ' + type(error).__name__)
+        print('SAM proof transport failed: ' + _exception_detail(error))
         return 1
     except Exception as error:
-        print('SAM proof failed: ' + type(error).__name__)
+        print('SAM proof failed: ' + _exception_detail(error))
         return 1
     finally:
         try:
@@ -647,7 +690,7 @@ def main(argv=None):
         if code != 0 or args.mode == 'spark':
             return code
     if args.mode in ('sam', 'all'):
-        latch = default_latch_path('sam')
+        latch = Path(args.latch_file) if args.latch_file else default_latch_path('sam')
         return run_sam_proof(latch_path=latch)
     return 0
 

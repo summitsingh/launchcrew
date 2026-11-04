@@ -380,6 +380,7 @@ def test_synthetic_sam_ambiguous_grant_cleans_flag_and_zero_no_pass(monkeypatch,
     import hashlib
     import os
     from backend.live_meta_proof import run_sam_proof
+    monkeypatch.setattr('backend.live_meta_proof.sam_preflight', lambda: 'data:image/jpeg;base64,c3ludGhldGlj')
     photo = tmp_path / 'proof.jpg'
     raw = b'\xff\xd8\xffsynthetic-test-bytes'
     photo.write_bytes(raw)
@@ -507,7 +508,8 @@ def test_synthetic_sam_early_digest_fail_cleans_flag_and_zero_no_pass(monkeypatc
     assert 'SAM PROOF PASS' not in text_out
     assert os.environ.get('LAUNCHCREW_PHOTO_SAM_ENABLED') == 'false'
     assert state['grant'] == 0
-    assert state['zero'] >= 1
+    assert state['zero'] == 0
+    assert not (tmp_path / 'sam-latch.json').exists()
     assert state['provider'] == 0
 
 
@@ -515,6 +517,7 @@ def test_synthetic_sam_success_cleans_before_pass(monkeypatch, tmp_path, capsys)
     import hashlib
     import os
     from backend.live_meta_proof import run_sam_proof
+    monkeypatch.setattr('backend.live_meta_proof.sam_preflight', lambda: 'data:image/jpeg;base64,c3ludGhldGlj')
     photo = tmp_path / 'proof.jpg'
     raw = b'\xff\xd8\xffsynthetic-test-bytes'
     photo.write_bytes(raw)
@@ -789,3 +792,61 @@ def test_synthetic_spark_malformed_makes_single_http_call(monkeypatch):
         result = spark_module.call_spark_strict_json('s', 'u', {'claims': []}, admission=_FakeAdmission())
     assert result['mode'] == 'deterministic_fallback'
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize('module', ['PIL', 'PIL.Image', 'PIL.ImageOps'])
+def test_sam_missing_dependency_preserves_latch(monkeypatch, tmp_path, capsys, module):
+    from backend import live_meta_proof as proof
+    monkeypatch.setattr(proof, '_check_sam_env', lambda: (True, ''))
+    real_import = proof.importlib.import_module
+
+    def missing(name):
+        if name == module:
+            raise ModuleNotFoundError('synthetic missing module')
+        return real_import(name)
+
+    monkeypatch.setattr(proof.importlib, 'import_module', missing)
+    with patch.object(proof, '_reserve_sam_latch') as reserve:
+        latch = tmp_path / 'unused.json'
+        assert proof.run_sam_proof(latch_path=latch) == 1
+        assert not latch.exists()
+        reserve.assert_not_called()
+    assert module in capsys.readouterr().out
+
+
+def test_sam_cli_latch_wins_over_environment(monkeypatch, tmp_path):
+    from backend import live_meta_proof as proof
+    from scripts import verify_live_meta as wrapper
+    explicit = tmp_path / 'explicit.json'
+    environment = tmp_path / 'environment.json'
+    monkeypatch.setenv('LAUNCHCREW_PROOF_LATCH_FILE', str(environment))
+    with patch.object(proof, 'run_sam_proof', return_value=0) as run:
+        assert wrapper.main(['--live', '--mode', 'sam', '--latch-file', str(explicit)]) == 0
+        run.assert_called_once_with(latch_path=explicit)
+    with patch.object(proof, 'run_sam_proof', return_value=0) as run:
+        assert proof.main(['--live', '--mode', 'sam']) == 0
+        run.assert_called_once_with(latch_path=environment)
+
+
+def test_sam_database_preflight_failure_preserves_latch(monkeypatch, tmp_path, capsys):
+    import hashlib
+    from PIL import Image
+    from backend import live_meta_proof as proof
+    photo = tmp_path / 'photo.png'
+    Image.new('RGB', (2, 2)).save(photo)
+    monkeypatch.setenv('META_API_KEY', 'offline-fixture')
+    monkeypatch.setenv('LAUNCHCREW_PHOTO_SAM_ENABLED', 'true')
+    monkeypatch.setenv('LAUNCHCREW_PHOTO_APPROVED_DIGESTS', hashlib.sha256(photo.read_bytes()).hexdigest())
+    monkeypatch.setenv('LAUNCHCREW_PROOF_PHOTO_PATH', str(photo))
+    monkeypatch.delenv('META_API_BASE_URL', raising=False)
+    with patch.object(proof, '_sam_database_preflight', side_effect=RuntimeError('synthetic schema missing')):
+        latch = tmp_path / 'unused.json'
+        assert proof.run_sam_proof(latch_path=latch) == 1
+        assert not latch.exists()
+    assert 'database unreachable or not migrated' in capsys.readouterr().out
+
+
+def test_exception_detail_redacts_credentials(monkeypatch):
+    from backend.live_meta_proof import _exception_detail
+    monkeypatch.setenv('META_API_KEY', 'synthetic-private-value')
+    assert _exception_detail(ValueError('missing synthetic-private-value')) == 'ValueError: missing [redacted]'
