@@ -5171,24 +5171,36 @@ def _sync_provider_outcome(db, slot, workspace_id, channel, source_label,
 
 def _refresh_delivery_analytics(db, slot, workspace_id, channel, refresh_mode,
                                 provider_metrics, source_label, actor):
-    """Refresh provider metrics for one verified delivery (upsert per slot+channel)."""
+    """Refresh provider metrics for one verified delivery (upsert per slot+channel).
+
+    A refresh with a real provider payload stores its integers, labels
+    the pull with the provider source, and syncs into the outcome log.
+    A refresh with no payload stores NOT_REPORTED for every metric,
+    labels the pull with the simulation source, keeps no raw payload,
+    and never touches the outcome log, so no computed integer can
+    present as a provider measurement.
+    """
     from launchcrew import analytics_pull as analytics_mod
     key = _normalize_delivery_channel(channel)
     _verified_delivery_or_409(db, slot, workspace_id, key)
+    has_payload = isinstance(provider_metrics, dict) and len(provider_metrics) > 0
     try:
         mode = analytics_mod.normalize_refresh_mode(refresh_mode)
     except ValueError as error:
         raise HTTPException(422, str(error))
+    if has_payload:
+        try:
+            source = analytics_mod.normalize_source_label(source_label, key)
+        except ValueError as error:
+            raise HTTPException(422, str(error))
+    else:
+        source = analytics_mod.SIMULATION_SOURCE_LABEL
     try:
-        source = analytics_mod.normalize_source_label(source_label, key)
-    except ValueError as error:
-        raise HTTPException(422, str(error))
-    try:
-        built = analytics_mod.build_metrics(key, provider_metrics)
+        built = analytics_mod.build_metrics(key, provider_metrics if has_payload else None)
     except ValueError as error:
         raise HTTPException(422, str(error))
     fetched_at = analytics_mod.utc_now_iso()
-    raw = dict(provider_metrics) if isinstance(provider_metrics, dict) else analytics_mod.adapter_metrics(key)
+    raw = dict(provider_metrics) if has_payload else None
     existing = db.execute(text('SELECT ' + _ANALYTICS_PUBLIC_SELECT + ' FROM analytics_pulls'
                                ' WHERE slot_id=:slot AND channel=:channel AND workspace_id=:ws'),
                           {'slot': slot['id'], 'channel': key, 'ws': workspace_id}).mappings().first()
@@ -5220,8 +5232,12 @@ def _refresh_delivery_analytics(db, slot, workspace_id, channel, refresh_mode,
     if stored is None:
         raise HTTPException(500, 'Analytics pull was not stored')
     stored_fetched = _public_analytics_pull(dict(stored))['fetched_at']
-    outcome_id = _sync_provider_outcome(db, slot, workspace_id, key, source,
-                                        stored_fetched, built['metrics'], prior_outcome, actor)
+    if has_payload:
+        outcome_id = _sync_provider_outcome(db, slot, workspace_id, key, source,
+                                            stored_fetched, built['metrics'],
+                                            prior_outcome, actor)
+    else:
+        outcome_id = None
     db.execute(text('UPDATE analytics_pulls SET outcome_id=:outcome WHERE id=:id AND workspace_id=:ws'),
                {'outcome': outcome_id, 'id': pull_id, 'ws': workspace_id})
     store.audit(db, slot.get('run_id'), 'analytics_pull_refreshed', actor, workspace_id)
@@ -5264,10 +5280,11 @@ def refresh_delivery_analytics(slot_id: str, channel: str, body: AnalyticsRefres
     """Manually refresh provider metrics for one verified delivery.
 
     Refuses with 409 unless the delivery row is verified. Accepts an
-    optional explicit provider payload; otherwise a deterministic
-    platform adapter supplies the supported metrics. Unsupported or
-    omitted metrics store as "not reported", never as 0. The pull
-    syncs into the run outcome log with source and fetch time.
+    optional explicit provider payload; without one every metric
+    stores as "not reported", the pull is labeled simulation, and
+    nothing syncs into the outcome log. Unsupported or omitted
+    metrics store as "not reported", never as 0. A payload pull syncs
+    into the run outcome log with source and fetch time.
     """
     with store.connect() as db:
         workspace_id = store.ensure_workspace_seeded(db, actor)
@@ -5283,7 +5300,10 @@ def refresh_scheduled_analytics(body: AnalyticsScheduledIn,
 
     Refreshes every verified slot delivery in the workspace (or only
     the given slot ids) with refresh_mode "scheduled". Unverified
-    deliveries are skipped and named, never pulled.
+    deliveries are skipped and named, never pulled. Scheduled
+    refreshes carry no provider payload, so every metric records
+    "not reported" under the simulation source and no outcome row
+    is created.
     """
     from launchcrew import verification_board as board_mod
     with store.connect() as db:

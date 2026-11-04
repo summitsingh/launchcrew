@@ -1,11 +1,13 @@
 """SC3 analytics pull on Postgres.
 
 Deterministic fixtures only, no live model calls, no real provider
-calls (the platform adapter is deterministic). Only verified
-deliveries may pull provider metrics; every canonical metric stores
-either an integer or the exact string "not reported", never a fake
-0; pulls sync into the run outcome log with source and fetch time;
-manual and scheduled refresh both populate calendar outcome badges.
+calls (a refresh with no provider payload is quarantined as
+simulation). Only verified deliveries may pull provider metrics;
+every canonical metric stores either an integer or the exact string
+"not reported", never a fake 0; payload pulls sync into the run
+outcome log with source and fetch time; payload-free pulls record
+"not reported" under the simulation source and create no outcome;
+badges render the stored source and metrics exactly.
 """
 from unittest.mock import patch
 
@@ -196,19 +198,18 @@ def test_unsupported_or_omitted_metric_is_not_reported_never_zero(client, monkey
         assert pull['metrics']['shares'] == 7
     for value in pull['metrics'].values():
         assert value == 'not reported' or (type(value) is int and value >= 0)
-    adapter = client.post(
+    quarantined = client.post(
         f'/api/calendar/slots/{slot["id"]}/deliveries/{channel}/analytics/refresh',
         json={})
-    assert adapter.status_code == 200, adapter.text
-    adapted = adapter.json()
-    assert adapted['metrics'] == expected_metrics(channel, analytics_mod.adapter_metrics(channel))
+    assert quarantined.status_code == 200, quarantined.text
+    simulated = quarantined.json()
+    assert simulated['id'] == pull['id']
+    assert simulated['source_label'] == 'simulation'
+    assert simulated['outcome_id'] is None
     for metric in analytics_mod.CANONICAL_METRICS:
-        if metric in analytics_mod.supported_metrics_for(channel):
-            assert type(adapted['metrics'][metric]) is int
-        else:
-            assert adapted['metrics'][metric] == 'not reported'
-    assert adapted['id'] == pull['id']
-    assert adapted['outcome_id'] == pull['outcome_id']
+        assert simulated['metrics'][metric] == 'not reported'
+    assert simulated['reported_metrics'] == []
+    assert sorted(simulated['unreported_metrics']) == sorted(analytics_mod.CANONICAL_METRICS)
     outcomes = client.get(f'/api/runs/{run_id}/outcomes').json()
     assert len([row for row in outcomes if row['id'] == pull['outcome_id']]) == 1
 
@@ -240,7 +241,7 @@ def test_unverified_delivery_refuses_analytics_pull(client, monkeypatch):
                      'channel_badges': [], 'summary_text': ''}
 
 
-def test_manual_and_scheduled_refresh_populate_outcome_badges(client, monkeypatch):
+def test_manual_payload_syncs_outcome_scheduled_refresh_is_simulation(client, monkeypatch):
     sign_in(client, monkeypatch)
     receipt = new_run(client)
     run_id = receipt['run_id']
@@ -275,6 +276,15 @@ def test_manual_and_scheduled_refresh_populate_outcome_badges(client, monkeypatc
     assert sorted(entry['slot_id'] for entry in full.json()['refreshed']) == sorted(
         [slot_manual['id'], slot_scheduled['id']])
     assert slot_pending['id'] + ':' + channel in full.json()['skipped_unverified']
+    for entry in full.json()['refreshed']:
+        assert entry['source_label'] == 'simulation'
+        assert entry['outcome_id'] is None
+        for metric in analytics_mod.CANONICAL_METRICS:
+            assert entry['metrics'][metric] == 'not reported'
+    kept = client.get('/api/analytics/pulls',
+                      params={'slot_id': slot_manual['id']}).json()
+    assert len(kept) == 1 and kept[0]['source_label'] == 'simulation'
+    assert kept[0]['outcome_id'] is None
     slots = client.get('/api/calendar/slots',
                        params={'start_date': '2026-11-01',
                                'end_date': '2026-11-30'}).json()
@@ -282,8 +292,9 @@ def test_manual_and_scheduled_refresh_populate_outcome_badges(client, monkeypatc
     for slot_id in (slot_manual['id'], slot_scheduled['id']):
         badge = badges[slot_id]
         assert badge and badge['has_outcomes'] is True
-        assert badge['channel_badges'][0]['metrics'] == expected_metrics(
-            channel, analytics_mod.adapter_metrics(channel))
-        assert 'not reported' in badge['summary_text'] or channel in badge['summary_text']
+        assert badge['channel_badges'][0]['source_label'] == 'simulation'
+        for metric in analytics_mod.CANONICAL_METRICS:
+            assert badge['channel_badges'][0]['metrics'][metric] == 'not reported'
+        assert 'not reported' in badge['summary_text']
     pending_badge = client.get(f'/api/calendar/slots/{slot_pending["id"]}/analytics').json()
     assert pending_badge['has_outcomes'] is False

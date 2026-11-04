@@ -8,9 +8,9 @@ never coerced to a fake 0.
 
 Each platform declares which metrics it offers via
 PLATFORM_REPORTED_METRICS. When no explicit provider payload is
-passed, a deterministic adapter returns stable per-channel integers
-for supported metrics (no network, no clock dependence beyond the
-caller-supplied fetch time).
+passed, every metric records NOT_REPORTED and the pull is labeled
+with the simulation source: there is no synthetic fallback, and a
+payload-free pull never syncs into the outcome log.
 """
 
 from datetime import datetime, timezone
@@ -44,8 +44,7 @@ DEFAULT_SOURCE_LABELS = {
 _MAX_COUNT = 1000000
 _MAX_SOURCE_LABEL = 120
 
-_ADAPTER_BASE = {"reach": 800, "likes": 40, "comments": 5, "clicks": 20, "shares": 3}
-_ADAPTER_SPAN = {"reach": 900, "likes": 160, "comments": 45, "clicks": 120, "shares": 30}
+SIMULATION_SOURCE_LABEL = "simulation"
 
 
 def utc_now_iso():
@@ -94,8 +93,9 @@ def supported_metrics_for(channel):
 def normalize_provider_metrics(value):
     """Validate an explicit provider response payload.
 
-    Accepts None (meaning no override; the adapter supplies values)
-    or a dict mapping a subset of canonical metric names to integers
+    Accepts None (meaning no provider response; every metric records
+    NOT_REPORTED) or a dict mapping a subset of canonical metric
+    names to integers
     or None. Unknown metric names, booleans, negative values, floats,
     and other non-integer values fail closed with ValueError. Omitted
     keys and None values both mean "not reported by the provider".
@@ -118,21 +118,6 @@ def normalize_provider_metrics(value):
     return cleaned
 
 
-def adapter_metrics(channel):
-    """Deterministic per-platform pull used when no override is passed.
-
-    Returns integers for supported metrics only; unsupported metrics
-    are absent so the caller records them as NOT_REPORTED.
-    """
-    key = normalize_channel(channel)
-    seed = sum(ord(char) for char in key)
-    result = {}
-    for index, metric in enumerate(supported_metrics_for(key)):
-        span = _ADAPTER_SPAN[metric]
-        result[metric] = _ADAPTER_BASE[metric] + ((seed * (index + 7)) % span)
-    return result
-
-
 def build_metrics(channel, provider_metrics=None):
     """Build the honest canonical metrics dict for one channel.
 
@@ -140,14 +125,16 @@ def build_metrics(channel, provider_metrics=None):
     string NOT_REPORTED. A metric keeps its integer only when the
     platform supports it AND the provider response carries an
     integer for it. Anything else (unsupported, omitted, or null)
-    is NOT_REPORTED, never 0.
+    is NOT_REPORTED, never 0. With no provider response at all,
+    every metric is NOT_REPORTED: there is no synthetic fallback,
+    so no screen or record can present a computed integer as a
+    provider measurement.
     """
     supplied = normalize_provider_metrics(provider_metrics)
-    effective = dict(supplied) if supplied is not None else adapter_metrics(channel)
     supported = set(supported_metrics_for(channel))
     metrics = {}
     for metric in CANONICAL_METRICS:
-        value = effective.get(metric)
+        value = supplied.get(metric) if supplied is not None else None
         if metric in supported and type(value) is int and value >= 0:
             metrics[metric] = value
         else:
