@@ -2989,28 +2989,6 @@ PYEOF
       phase_failed infra
     fi
     INFRA_WAIT_TRY=0
-    while true; do
-      INFRA_WAIT_STATUS="$("$AWS_BIN" cloudformation describe-change-set --stack-name "$STACK_NAME" --change-set-name "$INFRA_CHANGESET" --region "$EXPECTED_REGION" --output json 2>/dev/null | python3 -c 'import json, sys
-try:
-    print(json.load(sys.stdin).get("Status", "") or "EMPTY")
-except Exception:
-    print("MALFORMED")')"
-      INFRA_WAIT_STATUS="$(printf '%s' "$INFRA_WAIT_STATUS" | tr -d '[:space:]')"
-      if [ "$INFRA_WAIT_STATUS" = "CREATE_COMPLETE" ] || [ "$INFRA_WAIT_STATUS" = "FAILED" ]; then
-        break
-      fi
-      if [ "$INFRA_WAIT_STATUS" != "CREATE_IN_PROGRESS" ] && [ "$INFRA_WAIT_STATUS" != "CREATE_PENDING" ]; then
-        break
-      fi
-      if [ "$INFRA_WAIT_TRY" -lt 18 ]; then
-        INFRA_WAIT_TRY=$((INFRA_WAIT_TRY + 1))
-        echo "Infra: change set $INFRA_CHANGESET status $INFRA_WAIT_STATUS, waiting bounded ($INFRA_WAIT_TRY/18) before review."
-        sleep 10 2>/dev/null || true
-        continue
-      fi
-      echo "refused: infra change set $INFRA_CHANGESET still $INFRA_WAIT_STATUS after bounded wait (18 tries), no execute made. Pending change set preserved for inspection, no delete made." >&2
-      phase_failed infra
-    done
     INFRA_PAGES_DIR="$(mktemp -d /tmp/launchcrew-infra-pages-XXXXXX)"
     INFRA_NEXT=""
     INFRA_PAGE_NUM=0
@@ -3040,6 +3018,37 @@ PYEOF
         phase_failed infra
       fi
       rm -f "$INFRA_INPUT"
+      if [ "$INFRA_PAGE_NUM" -eq 1 ]; then
+        INFRA_WAIT_STATUS="$(python3 - "$INFRA_PAGE_FILE" 2>/dev/null <<'PYEOF'
+import json, sys
+try:
+    doc = json.load(open(sys.argv[1]))
+except Exception:
+    print("MALFORMED")
+    sys.exit(0)
+if not isinstance(doc, dict):
+    print("MALFORMED")
+    sys.exit(0)
+print("%s" % (doc.get("Status", "") or "EMPTY"))
+PYEOF
+)" || INFRA_WAIT_STATUS="MALFORMED"
+        INFRA_WAIT_STATUS="$(printf '%s' "$INFRA_WAIT_STATUS" | tr -d '[:space:]')"
+        if [ "$INFRA_WAIT_STATUS" = "CREATE_IN_PROGRESS" ] || [ "$INFRA_WAIT_STATUS" = "CREATE_PENDING" ]; then
+          if [ "$INFRA_WAIT_TRY" -lt 18 ]; then
+            INFRA_WAIT_TRY=$((INFRA_WAIT_TRY + 1))
+            echo "Infra: change set $INFRA_CHANGESET status $INFRA_WAIT_STATUS, waiting bounded ($INFRA_WAIT_TRY/18) before review."
+            sleep 10 2>/dev/null || true
+            INFRA_PAGE_NUM=0
+            rm -f "$INFRA_PAGE_FILE"
+            INFRA_NEXT=""
+            continue
+          else
+            rm -rf "$INFRA_PAGES_DIR"
+            echo "refused: infra change set $INFRA_CHANGESET still $INFRA_WAIT_STATUS after bounded wait (18 tries), no execute made. Pending change set $INFRA_CHANGESET preserved for inspection, no delete made." >&2
+            phase_failed infra
+          fi
+        fi
+      fi
       INFRA_NEXT="$(python3 - "$INFRA_PAGE_FILE" 2>/dev/null <<'PYEOF'
 import json, sys
 try:
@@ -5428,7 +5437,7 @@ PYEOF
     else
       if [ "${PRIOR_JOURNAL_OUTCOME:-complete}" = "started" ]; then
         rm -f "$PRIOR_LIST"
-        echo "refused: $TASK_LABEL prior $PRIOR_GEN is STARTED with live STOPPED task, historical ambiguity requires separately reviewed repair, no automatic binder rerun and no relabel. Inspect $PRIOR_PATH." >&2
+        echo "refused: $TASK_LABEL prior $PRIOR_GEN is STARTED with live STOPPED task (UNRESOLVED), historical ambiguity requires separately reviewed repair, no bypass, no automatic binder rerun, no relabel. Inspect $PRIOR_PATH." >&2
         phase_failed "$TASK_PHASE"
       fi
       if [ "$PRIOR_GEN" = "$RELEASE_GEN" ]; then
@@ -10119,7 +10128,7 @@ PYEOF
     if [ "$TYPED_REQ_CHECK" = "OK" ]; then
       if [ "$TYPED_REQ_OUTCOME" = "started" ]; then
         rm -f "$TYPED_REQ_LIST"
-        echo "refused: $TYPED_REQ_LABEL desired-state prior $TYPED_REQ_BASE is STARTED with live STOPPED task, historical ambiguity requires separately reviewed repair, no automatic binder rerun and no relabel. Inspect $TYPED_REQ_PATH." >&2
+        echo "refused: $TYPED_REQ_LABEL desired-state prior $TYPED_REQ_BASE is STARTED with live STOPPED task (UNRESOLVED), historical ambiguity requires separately reviewed repair, no bypass, no automatic binder rerun, no relabel. Inspect $TYPED_REQ_PATH." >&2
         phase_failed "$TYPED_REQ_FAIL"
       fi
       echo "$TYPED_REQ_LABEL desired-state: $TYPED_REQ_BASE live-proven STOPPED exit allowed, no recovery needed."
@@ -11496,7 +11505,7 @@ PYEOF
       fi
     else
       if [ "$TASK_LABEL" = "bootstrap" ] && [ "$TASK_PHASE" = "dbroles" ] && [ "$LEGACY_OUTCOME" = "started" ]; then
-        echo "refused: $TASK_LABEL legacy predecessor is STARTED with live STOPPED task, historical ambiguity requires separately reviewed repair, no automatic binder rerun and no relabel. Inspect $LEGACY_ACTIVE_FILE." >&2
+        echo "refused: $TASK_LABEL legacy predecessor is STARTED with live STOPPED task (UNRESOLVED), historical ambiguity requires separately reviewed repair, no bypass, no automatic binder rerun, no relabel. Inspect $LEGACY_ACTIVE_FILE." >&2
         phase_failed "$TASK_PHASE"
       fi
       PREDECESSOR_TASK="$LEGACY_TASK"
