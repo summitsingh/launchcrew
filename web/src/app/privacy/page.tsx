@@ -79,8 +79,11 @@ export default function PrivacyPage() {
             <h2>Storage and security</h2>
             <p>
               Data lives in the app Postgres database and AWS infrastructure in us-east-1.
-              Connection tokens are encrypted at rest and are never returned in API responses,
-              logs, UI payloads, or receipts. Sign-in uses an opaque session cookie backed by
+              Social connection tokens are encrypted at rest and are never returned in API responses,
+              logs, UI payloads, or receipts. The Drive Picker token is different by design: it is a
+              short-lived, one-time token handed to your signed-in browser only to complete the file
+              pick you started. It lives in server memory only until claimed or expired and is never
+              written to the database, logs, or receipts. Sign-in uses an opaque session cookie backed by
               server-side sessions.
             </p>
           </section>

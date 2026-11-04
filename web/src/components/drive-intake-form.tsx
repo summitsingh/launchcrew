@@ -419,10 +419,11 @@ export function DriveIntakeForm({
     <div>
       <h3>Select a Drive file</h3>
       <p className="hint">
-        Optional Google Picker intake for one Google Doc or plain text file you select. Sign-in stays Google identity only.
+        Optional Google Picker intake for one Google Doc or plain text file you select. Consent uses the drive.file scope,
+        so the app can read only the files you pick. Sign-in stays Google identity only.
         Drive consent is a separate step that issues a short lived Picker token to this browser session only. Proposals stay
         unconfirmed suggestions with Drive file provenance. Nothing becomes evidence until you edit and
-        explicitly confirm each in the fact form. Live Drive proof has not been run.
+        explicitly confirm each in the fact form. End to end Drive import has not been verified with a live account.
       </p>
       {statusQuery.isPending && <p role="status">Checking Drive intake status...</p>}
       {statusQuery.isError && (

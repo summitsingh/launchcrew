@@ -36,7 +36,7 @@ describe('google and facebook auth UI', () => {
 
   it('keeps the verified badge honest and exposes providers from auth status', () => {
     const source = desk();
-    expect(source).toContain('Auth enabled, unverified');
+    expect(source).toContain('Auth enabled, demo only');
     expect(source).toContain('Auth enabled, verified');
     expect(source).toContain('authLiveVerified');
     expect(source).toContain("auth.data?.providers");

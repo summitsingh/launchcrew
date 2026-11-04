@@ -190,7 +190,8 @@ describe('drive intake UI flow', () => {
       'stay unconfirmed suggestions',
       'Drive file provenance',
       'explicitly confirm each',
-      'Live Drive proof has not been run',
+      'End to end Drive import has not been verified with a live account',
+      'drive.file scope',
       'Connect Drive and choose file',
       'separate step',
     ]) {
