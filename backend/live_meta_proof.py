@@ -353,7 +353,7 @@ def run_spark_proof(*, latch_path):
                     return 1
                 # A saved revision resets approval, so reapproval must name
                 # the edited revision it approves.
-                revised_number = revised.json().get('revision', revision + 1)
+                revised_number = revised.json().get('revision', seeded_receipt.get('revision', 0) + 1)
                 approved = client.post('/api/runs/%s/approve' % seeded_id,
                                        json={'expected_revision': revised_number})
                 if approved.status_code != 200:
