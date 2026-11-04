@@ -6,7 +6,17 @@ import { api, unwrap } from '@/lib/api';
 import type { components } from '@/lib/schema';
 
 export type Delivery = components['schemas']['DeliveryOut'];
-type Attempt = Record<string, string | number | null | undefined>;
+type Attempt = Record<string, string | number | boolean | null | undefined>;
+
+export function VerificationSource({ source }: { source: Attempt[string] }) {
+  if (source === 'fetched') {
+    return <span className="hint" title="The verifier fetched the live URL itself">via live fetch</span>;
+  }
+  if (source === 'supplied') {
+    return <span className="hint" title="The owner pasted the live text">via supplied text</span>;
+  }
+  return null;
+}
 
 export const DELIVERY_STATES = ['not_posted', 'posted', 'verified', 'failed'] as const;
 
@@ -25,6 +35,7 @@ export function DeliveryAttemptsList({ attempts }: { attempts: Delivery['attempt
       {' '}<span>{String(attempt.timestamp ?? '')}</span>
       {' '}<span>{String(attempt.state ?? '')}</span>
       {attempt.match_kind ? <span> ({String(attempt.match_kind)})</span> : null}
+      {' '}<VerificationSource source={attempt.source} />
       {attempt.reason ? <span>: {String(attempt.reason)}</span> : null}
     </li>)}
   </ol>;
@@ -100,6 +111,8 @@ export function DeliveryRow({ delivery }: { delivery: Delivery }) {
   const attempts = (delivery.attempts ?? []) as Attempt[];
   return <article className="panel queue-card" data-delivery-row={`${delivery.slot_id}:${delivery.channel}`}>
     <p><strong>{delivery.channel}</strong> <DeliveryStateBadge state={delivery.delivery_state} />
+      {delivery.simulated === true ? <span className="badge" data-testid="simulated-chip"
+        title="Posted by the simulated transport; no platform was contacted"> SIMULATED</span> : null}
       {delivery.match_kind ? <span className="hint"> match: {delivery.match_kind}</span> : null}</p>
     {delivery.differing_field ? <p role="alert">Mismatch on field: {delivery.differing_field}
       {delivery.failure_reason ? ` (${delivery.failure_reason})` : ''}</p> : null}

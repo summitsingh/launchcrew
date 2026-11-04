@@ -1619,6 +1619,11 @@
             ],
             "title": "Match Kind"
           },
+          "simulated": {
+            "default": false,
+            "title": "Simulated",
+            "type": "boolean"
+          },
           "slot_id": {
             "title": "Slot Id",
             "type": "string"
@@ -5704,6 +5709,11 @@
               }
             ],
             "title": "Platform Post Id"
+          },
+          "simulated": {
+            "default": false,
+            "title": "Simulated",
+            "type": "boolean"
           },
           "slot_id": {
             "default": "",

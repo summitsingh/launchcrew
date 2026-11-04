@@ -18,7 +18,7 @@ function provider(children: React.ReactNode) {
 function execution(partial: Partial<PublishExecution> & { id: string; slot_id: string; channel: string }): PublishExecution {
   return {
     idempotency_key: 'key_' + partial.id, status: 'pending', platform_post_id: null,
-    live_url: null, attempt_count: 0, max_auto_retries: 2, attempts: [], last_error: null,
+    live_url: null, simulated: false, attempt_count: 0, max_auto_retries: 2, attempts: [], last_error: null,
     ...partial,
   };
 }
@@ -130,5 +130,20 @@ describe('publish executor panel', () => {
     const html = provider(<CalendarView />);
     expect(html).toContain('data-testid="publish-executor-panel"');
     expect(html).toContain('data-testid="verification-board"');
+  });
+});
+
+describe('simulated execution badging', () => {
+  it('chips a simulated posted row but not a live one', () => {
+    const simulated = execution({
+      id: 'exe_sim', slot_id: 'slot_sim', channel: 'instagram', status: 'posted',
+      simulated: true, attempt_count: 1,
+      attempts: [{ attempt_number: 1, timestamp: '2026-11-04T10:00:00+00:00', channel: 'instagram', idempotency_key: 'key_exe_sim', backoff_seconds: 0, outcome: 'posted', platform_post_id: 'post_sim', live_url: 'https://instagram.example.com/posts/sim', failure_reason: null, simulated: true }],
+    });
+    const html = provider(<ExecutionRow execution={simulated} />);
+    expect(html).toContain('data-testid="simulated-chip"');
+    expect(html).toContain('SIMULATED');
+    const liveHtml = provider(<ExecutionRow execution={posted} />);
+    expect(liveHtml).not.toContain('data-testid="simulated-chip"');
   });
 });

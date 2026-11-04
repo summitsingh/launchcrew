@@ -17,7 +17,7 @@ function provider(children: React.ReactNode) {
 function delivery(partial: Partial<Delivery> & { id: string; slot_id: string; channel: string }): Delivery {
   return {
     delivery_state: 'not_posted', live_url: null, match_kind: null,
-    differing_field: null, failure_reason: null, attempts: [], ...partial,
+    differing_field: null, failure_reason: null, simulated: false, attempts: [], ...partial,
   };
 }
 
@@ -97,5 +97,33 @@ describe('verification board', () => {
   it('appears on the calendar view', () => {
     const html = provider(<CalendarView />);
     expect(html).toContain('data-testid="verification-board"');
+  });
+});
+
+describe('simulated delivery and verification source', () => {
+  it('chips a simulated delivery row but not a live one', () => {
+    const simulated = delivery({
+      id: 'del_sim', slot_id: 'slot_sim', channel: 'instagram', delivery_state: 'posted',
+      live_url: 'https://instagram.example.com/posts/sim', simulated: true,
+    });
+    const html = provider(<DeliveryRow delivery={simulated} />);
+    expect(html).toContain('data-testid="simulated-chip"');
+    expect(html).toContain('SIMULATED');
+    const liveHtml = provider(<DeliveryRow delivery={verified} />);
+    expect(liveHtml).not.toContain('data-testid="simulated-chip"');
+  });
+  it('names how each verification attempt obtained its content', () => {
+    const sourced = delivery({
+      id: 'del_src', slot_id: 'slot_src', channel: 'x', delivery_state: 'verified',
+      live_url: 'https://example.com/posts/9', match_kind: 'exact',
+      attempts: [
+        { attempt_number: 1, timestamp: '2026-11-04T10:00:00+00:00', state: 'posted', live_url: 'https://example.com/posts/9', match_kind: null, differing_field: null, reason: null, live_text_excerpt: '', source: null },
+        { attempt_number: 2, timestamp: '2026-11-04T10:01:00+00:00', state: 'verified', live_url: 'https://example.com/posts/9', match_kind: 'exact', differing_field: null, reason: null, live_text_excerpt: 'hello', source: 'fetched' },
+        { attempt_number: 3, timestamp: '2026-11-04T10:02:00+00:00', state: 'verified', live_url: 'https://example.com/posts/9', match_kind: 'exact', differing_field: null, reason: null, live_text_excerpt: 'hello', source: 'supplied' },
+      ],
+    });
+    const html = provider(<DeliveryAttemptsList attempts={sourced.attempts} />);
+    expect(html).toContain('via live fetch');
+    expect(html).toContain('via supplied text');
   });
 });

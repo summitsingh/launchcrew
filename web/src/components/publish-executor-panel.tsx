@@ -7,7 +7,12 @@ import type { components } from '@/lib/schema';
 
 export type PublishExecution = components['schemas']['PublishExecutionOut'];
 export type PublishDueSlot = components['schemas']['PublishDueSlotOut'];
-type Attempt = Record<string, string | number | null | undefined>;
+type Attempt = Record<string, string | number | boolean | null | undefined>;
+
+export function SimulatedChip() {
+  return <span className="badge" data-testid="simulated-chip"
+    title="Posted by the simulated transport; no platform was contacted">SIMULATED</span>;
+}
 
 export const EXECUTION_STATUSES = [
   'pending',
@@ -31,6 +36,7 @@ export function ExecutionAttemptsList({ attempts }: { attempts: PublishExecution
       <span>Attempt {String(attempt.attempt_number ?? '')}</span>
       {' '}<span>{String(attempt.timestamp ?? '')}</span>
       {' '}<span>{String(attempt.outcome ?? '')}</span>
+      {attempt.simulated === true ? <span> <SimulatedChip /></span> : null}
       {' '}<span>backoff {String(attempt.backoff_seconds ?? 0)}s</span>
       {attempt.failure_reason ? <span>: {String(attempt.failure_reason)}</span> : null}
     </li>)}
@@ -54,7 +60,8 @@ export function ExecutionRow({ execution }: { execution: PublishExecution }) {
   const attempts = (execution.attempts ?? []) as Attempt[];
   return <article className="panel queue-card"
     data-execution-row={`${execution.slot_id}:${execution.channel}`}>
-    <p><strong>{execution.channel}</strong> <ExecutionStatusBadge status={execution.status} /></p>
+    <p><strong>{execution.channel}</strong> <ExecutionStatusBadge status={execution.status} />
+      {execution.simulated === true ? <span> <SimulatedChip /></span> : null}</p>
     <p className="hint">Slot {execution.slot_id} · key {execution.idempotency_key}</p>
     {execution.status === 'skipped_needs_approval' && execution.last_error
       ? <p role="alert">Needs approval: {execution.last_error}</p> : null}

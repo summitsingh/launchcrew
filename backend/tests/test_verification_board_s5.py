@@ -332,3 +332,26 @@ def test_board_lists_one_row_per_channel_per_slot(client):
     per_slot = client.get(f'/api/calendar/slots/{slot["id"]}/deliveries')
     assert per_slot.status_code == 200, per_slot.text
     assert per_slot.json()[0]['channel'] == channel
+
+
+def test_verify_attempt_records_supplied_source_and_live_delivery(client):
+    from launchcrew import verification_board as board_mod
+    receipt = new_run(client)
+    run_id = receipt['run_id']
+    approve_export(client, run_id)
+    channel = valid_channel(client, run_id)
+    slot = ready_slot(client, run_id, channel)
+    posted = client.post(f'/api/calendar/slots/{slot["id"]}/deliveries/{channel}/mark-posted',
+                         json={'live_url': LIVE_URL})
+    assert posted.status_code == 200, posted.text
+    assert posted.json()['simulated'] is False
+    assert posted.json()['attempts'][-1]['source'] is None
+    text, subject = approved_text(client, run_id, channel)
+    good = {'live_text': text}
+    if subject:
+        good['live_subject'] = subject
+    fixed = verify(client, slot['id'], channel, **good)
+    assert fixed['delivery_state'] == 'verified'
+    assert fixed['attempts'][-1]['source'] == 'supplied'
+    with pytest.raises(ValueError):
+        board_mod.build_attempt('verified', source='owner-says-so')

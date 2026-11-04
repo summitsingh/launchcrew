@@ -3396,6 +3396,11 @@ export interface components {
             live_url?: string | null;
             /** Match Kind */
             match_kind?: ("exact" | "trimmed_by_rule" | "mismatch") | null;
+            /**
+             * Simulated
+             * @default false
+             */
+            simulated: boolean;
             /** Slot Id */
             slot_id: string;
         };
@@ -5363,6 +5368,11 @@ export interface components {
             max_auto_retries: number;
             /** Platform Post Id */
             platform_post_id?: string | null;
+            /**
+             * Simulated
+             * @default false
+             */
+            simulated: boolean;
             /**
              * Slot Id
              * @default
