@@ -27,6 +27,8 @@ def _live_opener(request, timeout=None):
     if 'fields=permalink' in request.full_url:
         return _response({'id': 'media_live_1',
                           'permalink': 'https://www.instagram.com/p/DbLiveOpener1/'})
+    if 'fields=status_code' in request.full_url:
+        return _response({'id': 'creation_live_1', 'status_code': 'FINISHED'})
     return _response({'id': 'media_live_1'})
 
 
@@ -110,6 +112,8 @@ def test_live_instagram_records_permalink_as_live_url(client, monkeypatch):
             return _response({'id': 'creation_live_9'})
         if 'fields=permalink' in request.full_url:
             return _response({'id': 'media_live_9', 'permalink': link})
+        if 'fields=status_code' in request.full_url:
+            return _response({'id': 'creation_live_9', 'status_code': 'FINISHED'})
         return _response({'id': 'media_live_9'})
 
     with patch.object(ig_mod, 'urlopen', side_effect=opener):
@@ -134,6 +138,8 @@ def test_live_instagram_permalink_failure_still_posts(client, monkeypatch):
         if 'fields=permalink' in request.full_url:
             return _response({'error': {'message': 'transient read failure',
                                         'type': 'OAuthException', 'code': 2}})
+        if 'fields=status_code' in request.full_url:
+            return _response({'id': 'creation_live_7', 'status_code': 'FINISHED'})
         return _response({'id': 'media_live_7'})
 
     with patch.object(ig_mod, 'urlopen', side_effect=opener):
