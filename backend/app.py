@@ -5811,6 +5811,12 @@ def _save_execution(db, workspace_id, slot_id, channel, key, status,
     from launchcrew import publish_executor as executor_mod
     attempts = list(attempts) if isinstance(attempts, list) else []
     existing = _load_execution_by_key(db, workspace_id, key)
+    if (existing is not None and existing.get('status') == 'posted'
+            and existing.get('platform_post_id') and status != 'posted'):
+        # A terminal posted result is immutable: a paused or skipped save
+        # under the same idempotency key must not replace it. Return the
+        # stored row untouched so the posted record and its trail survive.
+        return existing
     if existing is None:
         execution_id = 'exe_' + uuid4().hex
         db.execute(text('INSERT INTO publish_executions(id, workspace_id, slot_id, channel,'
@@ -5933,6 +5939,11 @@ def _execute_slot_channel(db, slot, channel, workspace_id, actor, simulate_failu
     except Exception:
         digest = None
     idem_key = executor_mod.idempotency_key(slot['id'], key, digest)
+    existing = _load_execution_by_key(db, workspace_id, idem_key)
+    if (existing is not None and existing.get('status') == 'posted'
+            and existing.get('platform_post_id')):
+        return {'status': 'already_posted', 'execution': _public_execution(existing),
+                'reason': 'Already posted; the existing result is returned with no re-post.'}
     kill = _publish_kill_switch(db, workspace_id)
     if kill['paused']:
         stored = _save_execution(db, workspace_id, slot['id'], key, idem_key,
@@ -5957,11 +5968,6 @@ def _execute_slot_channel(db, slot, channel, workspace_id, actor, simulate_failu
         store.audit(db, slot.get('run_id'), 'publish_skipped_needs_approval', actor, workspace_id)
         return {'status': 'skipped_needs_approval', 'execution': _public_execution(stored),
                 'reason': detail, 'failing_condition': condition}
-    existing = _load_execution_by_key(db, workspace_id, idem_key)
-    if (existing is not None and existing.get('status') == 'posted'
-            and existing.get('platform_post_id')):
-        return {'status': 'already_posted', 'execution': _public_execution(existing),
-                'reason': 'Already posted; the existing result is returned with no re-post.'}
     try:
         bundle = channel_mod.checked_channel_variants(receipt)
     except ValueError as error:

@@ -396,3 +396,48 @@ def test_kill_switch_pauses_leaving_slots_and_packs_untouched(client, monkeypatc
     retick = client.post('/api/publish/execute-due', json={'as_of': DUE_AS_OF})
     assert retick.status_code == 200, retick.text
     assert slot['id'] in retick.json()['executed_slots']
+
+
+def test_pause_resume_cycle_preserves_posted_result(client, monkeypatch):
+    from launchcrew import publish_executor as executor_mod
+    calls = []
+    real_transport = executor_mod.default_transport
+
+    def counting(*args, **kwargs):
+        calls.append(1)
+        return real_transport(*args, **kwargs)
+
+    monkeypatch.setattr(executor_mod, 'default_transport', counting)
+    receipt = new_run(client)
+    run_id = receipt['run_id']
+    approve(client, run_id)
+    channel = usable_channel(client, run_id)
+    slot = ready_slot(client, run_id, channel)
+    connect_brand(client, channel)
+    first = client.post(f'/api/publish/slots/{slot["id"]}/execute', json={})
+    assert first.status_code == 200, first.text
+    assert first.json()['executions'][0]['status'] == 'posted'
+    posted_id = first.json()['executions'][0]['platform_post_id']
+    assert posted_id
+    assert len(calls) == 1
+    paused = client.post('/api/publish/kill-switch',
+                         json={'paused': True, 'reason': 'owner hold'})
+    assert paused.status_code == 200, paused.text
+    second = client.post(f'/api/publish/slots/{slot["id"]}/execute', json={})
+    assert second.status_code == 200, second.text
+    assert second.json()['executed'] is True
+    assert second.json()['executions'][0]['status'] == 'posted'
+    assert second.json()['executions'][0]['platform_post_id'] == posted_id
+    resumed = client.post('/api/publish/kill-switch', json={'paused': False})
+    assert resumed.status_code == 200, resumed.text
+    third = client.post(f'/api/publish/slots/{slot["id"]}/execute', json={})
+    assert third.status_code == 200, third.text
+    assert third.json()['executions'][0]['status'] == 'posted'
+    assert third.json()['executions'][0]['platform_post_id'] == posted_id
+    assert len(calls) == 1
+    status = client.get('/api/publish/status').json()
+    rows = executions_for(status, slot['id'], channel)
+    assert len(rows) == 1
+    assert rows[0]['status'] == 'posted'
+    assert rows[0]['platform_post_id'] == posted_id
+    assert rows[0]['attempt_count'] == 1
