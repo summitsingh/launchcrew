@@ -331,18 +331,35 @@ def run_spark_proof(*, latch_path):
                     return 1
                 seeded_id = seeded_receipt.get('run_id', '')
                 revision = seeded_receipt.get('revision', 0)
+                # The revision must pass the same checker that just vetoed
+                # the seeded claim, so it is built from the run's own
+                # verified claims verbatim. Canned fiction fails the
+                # sentence check by design, which is what the veto proves.
+                verified_claims = [entry.get('claim', '').strip()
+                                   for entry in seeded_receipt.get('scout', {}).get('facts_used', [])
+                                   if entry.get('verified') and entry.get('claim', '').strip()]
+                if not verified_claims:
+                    print('Seeded veto missing verified claims for revision')
+                    return 1
+                claim_post = verified_claims[0]
+                claim_email = verified_claims[1] if len(verified_claims) > 1 else verified_claims[0]
                 revised = client.post('/api/runs/%s/revise' % seeded_id, json={
-                    'post': 'Proof fictional revised post for veto demo.',
-                    'email': 'Proof fictional revised email for veto demo.',
+                    'post': claim_post,
+                    'email': claim_email,
                     'base_revision': revision})
                 if revised.status_code != 200:
                     print('Revision failed: HTTP ' + str(revised.status_code))
                     return 1
-                approved = client.post('/api/runs/%s/approve' % seeded_id, json={})
+                # A saved revision resets approval, so reapproval must name
+                # the edited revision it approves.
+                revised_number = revised.json().get('revision', revision + 1)
+                approved = client.post('/api/runs/%s/approve' % seeded_id,
+                                       json={'expected_revision': revised_number})
                 if approved.status_code != 200:
                     print('Approval failed: HTTP ' + str(approved.status_code))
                     return 1
-                exported = client.post('/api/runs/%s/export' % seeded_id, json={})
+                exported = client.post('/api/runs/%s/export' % seeded_id,
+                                       json={'expected_revision': revised_number})
                 if exported.status_code != 200:
                     print('Export failed: HTTP ' + str(exported.status_code))
                     return 1
