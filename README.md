@@ -14,7 +14,7 @@ How it works, in five steps:
 
 Muse Spark (model ID `muse-spark-1.3`), called through the Meta Model API, powers the Scout, Maker, and Checker agents' candidates and the owner-gated Spark generation features. Scout has an optional Wonder synthesis path, but the current spend guard permits only `muse-spark-1.3`, so Wonder cannot make a live call and Scout falls back to Spark. Checker verdicts on factual claims are deterministic code, not model output: confirmed-facts checks run before any model call, the Checker rechecks every candidate against the approved claims, and no model output can approve, unblock, or verify a claim.
 
-SAM 3.1 runs photo checks on product images through segmentation via the explicit `POST /api/runs/{run_id}/photo-check` route when its configuration, budget, and allowlist permit. Live segmentation is not yet proven here. This line will record exactly what was proven, with receipt evidence and date, once the bounded Phase S proof runs.
+SAM 3.1 runs photo checks on product images through segmentation via the explicit `POST /api/runs/{run_id}/photo-check` route when its configuration, budget, and allowlist permit. SAM 3.1 live segmentation was proven on Nov 4, 2026 in a one-shot proof run (1 upload, 1 segmentation, label detected, method sam-3.1, exactly 1 ledger row, within its spend ceiling).
 
 Spark and SAM are the runtime Meta models used by the launch pipeline and photo-check route. The app also includes an optional, separately keyed image-generation route for OpenAI `gpt-image-1`, xAI `grok-2-image`, and Google `imagen-4.0-generate-001`. These optional providers require their own keys.
 
