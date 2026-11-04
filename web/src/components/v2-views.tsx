@@ -155,7 +155,7 @@ export function MemoryView() {
   const learn = useMutation({
     mutationFn: async () => {
       const result = await api.POST('/api/memory/from-run/{run_id}', { params: { path: { run_id: runId.trim() } }, body: { kind: learnKind } });
-      if (result.response.status === 409) throw new Error('Request failed (409). This run is not approved. Approve the run before learning from it.');
+      if (result.response.status === 409) throw new Error('This run is not approved yet. Approve the run before learning from it, then retry.');
       return unwrap(Promise.resolve(result));
     },
     onSuccess: () => { setNotice('Memory learned from the selected run.'); refresh(); }
@@ -194,7 +194,7 @@ export function MemoryView() {
  *  so tests can pass a fake. Throws on any non-OK response. */
 export async function executeMemoryDelete(client: { DELETE: (path: '/api/memory/{item_id}', options: { params: { path: { item_id: string } } }) => Promise<{ response: { ok: boolean; status: number } }> }, itemId: string): Promise<void> {
   const result = await client.DELETE('/api/memory/{item_id}', { params: { path: { item_id: itemId } } });
-  if (!result.response.ok) throw new Error(`Request failed (${result.response.status}). Could not delete memory.`);
+  if (!result.response.ok) throw new Error('Could not delete memory. Reload and try again.');
 }
 
 /** Success notice shown after a memory item is deleted. */
@@ -799,12 +799,23 @@ export function FailedRunNotice({ receipt }: { receipt: Receipt }) {
   return <Card appearance="workspace" asChild ><section className="panel" aria-label="Failed run"><p className="eyebrow">RUN STATUS</p><h2>Pipeline stopped safely.</h2><p>This run failed before a complete draft existed, so there is nothing to edit, approve, or export.</p><dl><div><dt>Status</dt><dd>failed</dd></div><div><dt>Failure stage</dt><dd>{String(failedAt)}</dd></div><div><dt>Error type</dt><dd>{(receipt as unknown as { error_type?: string }).error_type ?? 'unavailable'}</dd></div><div><dt>Completed steps</dt><dd>{((receipt as unknown as { completed_steps?: string[] }).completed_steps ?? []).join(', ') || 'none'}</dd></div></dl><p className="hint">No approval or export is offered on failed runs. The stored record is kept as evidence.</p></section></Card>;
 }
 
+function localTimelineTime(value: string | undefined): { text: string; raw: string } {
+  if (!value) return { text: 'timestamp unavailable', raw: '' };
+  try {
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return { text: 'timestamp unavailable', raw: value };
+    return { text: parsed.toLocaleString(), raw: value };
+  } catch {
+    return { text: 'timestamp unavailable', raw: value };
+  }
+}
+
 export function ReceiptTimeline({ receipt }: { receipt: Receipt }) {
   const audit = (receipt.audit ?? {}) as { event_log?: Array<{ step?: string; agent?: string; profile?: string; action?: string; timestamp?: string; revision?: number; exported_by?: string }> };
   const log = Array.isArray(audit.event_log) ? audit.event_log : [];
   const history = ((receipt as unknown as { revision_history?: Array<{ revision?: number; approved_revision?: number | null; superseded_by?: number; outcome?: string; revised_by?: string; revised_at?: string; photo_event?: string; photo_status?: { state?: string; label?: string | null; reason?: string } | null; approvals?: Array<{ approved_by?: string; revision?: number; timestamp?: string }> }> }).revision_history ?? []);
   const exports = ((receipt as unknown as { export_history?: Array<{ revision?: number; exported_by?: string; timestamp?: string }> }).export_history ?? []);
-  return <Card appearance="workspace" asChild ><section className="panel" aria-label="Receipt timeline"><p className="eyebrow">TIMELINE</p><h2>Recorded events</h2><p className="hint">Every entry below comes from the stored receipt. No times are invented and no live model activity is claimed.</p><ol>{log.map((entry, i) => <li key={i}><strong>{entry.step ?? 'event'}</strong><span> · {entry.agent ?? 'unknown'}{entry.profile ? ` (${presentationActor(entry.profile)})` : ''}</span><br /><small>{entry.action ?? ''}</small><br /><small className="run-id">{entry.timestamp ?? 'timestamp unavailable'}</small></li>)}</ol>{history.length > 0 && <div><h3>Superseded revisions</h3>{history.map((entry, i) => <p key={i} className="hint">Revision {entry.revision ?? '?'} superseded by revision {entry.superseded_by ?? '?'} · revised by {entry.revised_by ? PUBLIC_APPROVER_LABEL : 'unknown'}{entry.revised_at ? ` · ${entry.revised_at}` : ''}{entry.photo_event ? ` · photo event: ${entry.photo_event}${entry.photo_status?.state ? ` (prior photo: ${entry.photo_status.state}${entry.photo_status.label ? ` ${entry.photo_status.label}` : ''})` : ''}` : ''} · approvals kept as audit: {(entry.approvals ?? []).map(a => `${a.approved_by ? PUBLIC_APPROVER_LABEL : 'unknown'}${a.revision != null ? ` (rev ${a.revision})` : ''}`).join(', ') || 'none'}</p>)}</div>}{exports.length > 0 && <div><h3>Exports</h3>{exports.map((entry, i) => <p key={i} className="hint">Exported revision {entry.revision ?? '?'} by {entry.exported_by ? PUBLIC_APPROVER_LABEL : 'unknown'} · {entry.timestamp ?? 'timestamp unavailable'}</p>)}</div>}{receipt.approvals.map((approval, i) => <p key={i} className="hint">Approval {i + 1}: {approval.approved_by ? PUBLIC_APPROVER_LABEL : 'unknown'}{approval.revision != null ? ` · revision ${approval.revision}` : ''} · {approval.timestamp}</p>)}</section></Card>;
+  return <Card appearance="workspace" asChild ><section className="panel" aria-label="Receipt timeline"><p className="eyebrow">TIMELINE</p><h2>Recorded events</h2><p className="hint">Every entry below comes from the stored receipt. No times are invented and no live model activity is claimed.</p><ol>{log.map((entry, i) => { const when = localTimelineTime(entry.timestamp); return <li key={i}><strong>{entry.step ?? 'event'}</strong><span> · {entry.agent ?? 'unknown'}{entry.profile ? ` (${presentationActor(entry.profile)})` : ''}</span><br /><small>{entry.action ?? ''}</small><br /><small className="run-id" title={when.raw}>{when.text}</small></li>; })}</ol>{history.length > 0 && <div><h3>Superseded revisions</h3>{history.map((entry, i) => { const when = localTimelineTime(entry.revised_at); return <p key={i} className="hint">Revision {entry.revision ?? '?'} superseded by revision {entry.superseded_by ?? '?'} · revised by {entry.revised_by ? PUBLIC_APPROVER_LABEL : 'unknown'}{entry.revised_at ? <span title={when.raw}> · {when.text}</span> : ''}{entry.photo_event ? ` · photo event: ${entry.photo_event}${entry.photo_status?.state ? ` (prior photo: ${entry.photo_status.state}${entry.photo_status.label ? ` ${entry.photo_status.label}` : ''})` : ''}` : ''} · approvals kept as audit: {(entry.approvals ?? []).map(a => `${a.approved_by ? PUBLIC_APPROVER_LABEL : 'unknown'}${a.revision != null ? ` (rev ${a.revision})` : ''}`).join(', ') || 'none'}</p>; })}</div>}{exports.length > 0 && <div><h3>Exports</h3>{exports.map((entry, i) => { const when = localTimelineTime(entry.timestamp); return <p key={i} className="hint">Exported revision {entry.revision ?? '?'} by {entry.exported_by ? PUBLIC_APPROVER_LABEL : 'unknown'} · <span title={when.raw}>{when.text}</span></p>; })}</div>}{receipt.approvals.map((approval, i) => { const when = localTimelineTime(approval.timestamp); return <p key={i} className="hint">Approval {i + 1}: {approval.approved_by ? PUBLIC_APPROVER_LABEL : 'unknown'}{approval.revision != null ? ` · revision ${approval.revision}` : ''} · <span title={when.raw}>{when.text}</span></p>; })}</section></Card>;
 }
 
 export function HumanRevisionEditor({ receipt }: { receipt: Receipt }) {
@@ -824,7 +835,7 @@ export function HumanRevisionEditor({ receipt }: { receipt: Receipt }) {
         const blocked = detail && typeof detail === 'object' && Array.isArray((detail as { blocked_claims?: unknown[] }).blocked_claims)
           ? (detail as { blocked_claims: Array<{ claim?: string; reason?: string }> }).blocked_claims.map(entry => `${entry.claim ?? 'unsupported text'}: ${entry.reason ?? 'needs revision'}`).join('; ')
           : null;
-        throw new Error(blocked ? `Unsupported text rejected (${result.response.status}). ${blocked}` : `Request failed (${result.response.status}). Check the API and try again.`);
+        throw new Error(blocked ? `Unsupported text was not saved. ${blocked}` : 'That needs a fix before it can be saved. Correct the text and retry.');
       }
       return result.data;
     },

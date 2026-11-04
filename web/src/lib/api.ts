@@ -24,13 +24,24 @@ function detailText(detail: unknown): string {
   return '';
 }
 
+const PLAIN_STATUS_GUIDANCE: Record<number, string> = {
+  400: 'That request was not valid. Check the highlighted fields and try again.',
+  401: 'Authorization is unavailable. Reload and retry.',
+  403: 'That action is not allowed from here. Reload and retry from the current revision.',
+  404: 'That item was not found. Reload the list and pick the current item.',
+  409: 'That changed while you worked. Reload the latest revision and retry.',
+  422: 'That needs a fix before it can be saved. Read the reason below, correct the text, and retry.',
+  429: 'Too many tries. Wait a moment and retry once.',
+};
+
 export function errorMessage(error: unknown, status: number): string {
+  const guidance = PLAIN_STATUS_GUIDANCE[status] || 'Something went wrong. Reload and try again.';
   if (error && typeof error === 'object') {
     const detail = (error as { detail?: unknown }).detail;
     const text = detailText(detail);
-    if (text) return `Request failed (${status}): ${text}`;
+    if (text) return `${guidance} Detail: ${text}`;
   }
-  return `Request failed (${status}). Check the API and try again.`;
+  return guidance;
 }
 
 export async function unwrap<T>(request: Promise<{ data?: T; error?: unknown; response: Response }>): Promise<T> {
