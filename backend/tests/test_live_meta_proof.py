@@ -1000,3 +1000,23 @@ def test_spark_journal_closeout_refuses_ambiguous(monkeypatch, tmp_path, scenari
     assert wrapper.main(['--close-journal', '--journal-dir', str(tmp_path)]) == 1
     assert target.read_text() == before
     assert not any(command[:2] == ['ecs', 'run-task'] for command in calls)
+
+
+def test_spark_seeded_revision_real_checker_without_database(tmp_path, monkeypatch):
+    from backend import live_meta_proof as proof
+    from launchcrew.run import run_pipeline
+    from launchcrew.human_review import apply_revision, NeedsRevision
+    monkeypatch.delenv('META_API_KEY', raising=False)
+    receipt = run_pipeline(proof._SEEDED_IDEA, Path('facts/demo_facts.json'), Path('agents'),
+                           tmp_path / 'fixture.json', seed_unverified_claim=True,
+                           model_enabled=False, receipt_writer=lambda *_: None)
+    assert receipt['checker_v1']['blocked_count'] > 0
+    with pytest.raises(NeedsRevision) as rejected:
+        apply_revision(receipt, 'Proof fictional revised post for veto demo.',
+                       'Proof fictional revised email for veto demo.', 'fixture', 0)
+    assert rejected.value.check['blocked_count'] == 2
+    payload = proof.spark_revision_payload(receipt)
+    revised = apply_revision(receipt, payload['post'], payload['email'], 'fixture',
+                             payload['base_revision'])
+    assert revised['revision'] == 1
+    assert revised['checker_v2']['blocked_count'] == 0
