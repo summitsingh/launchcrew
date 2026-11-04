@@ -61,6 +61,8 @@ LaunchCrew runs locally with no sign-up. The hosted site (`launchcrew.summitsing
 
 Use demo data only. Never add credentials, tokens, or personal data to the repo, logs, or receipts. Never commit .venv, node_modules, .next, or .local.
 
+Prerequisites: uv, pnpm 10.20.0, and podman for the container path; host dev also needs a local Postgres.
+
 ```bash
 uv sync --frozen
 pnpm --dir web install --frozen-lockfile   # pnpm 10.20.0
