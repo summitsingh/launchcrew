@@ -1,4 +1,8 @@
 'use client';
+import { Card } from '@/components/ui/card';
+import { Badge as WorkspaceBadge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
+
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CONNECTIONS_LOCKED, useConnectionManagementLocked } from '@/lib/public-mode';
@@ -103,7 +107,7 @@ export function BrandAccountConnectionsPanel({
   const priorityPlatforms = platforms.filter(item => item.tier === PRIORITY_TIER || item.priority);
   const flaggedPlatforms = platforms.filter(item => !(item.tier === PRIORITY_TIER || item.priority));
   return (
-    <section className="panel" aria-label="Brand account connections" data-testid="brand-account-connections">
+    <Card appearance="workspace" asChild ><section className="panel" aria-label="Brand account connections" data-testid="brand-account-connections">
       <p className="eyebrow">BRAND CONNECTIONS</p>
       <h2>Brand account connections</h2>
       <p className="hint">
@@ -121,11 +125,11 @@ export function BrandAccountConnectionsPanel({
               <div className="scout-row">
                 <span>{item.platform}</span>
                 {connected ? (
-                  <span className="badge approved">connected</span>
+                  <WorkspaceBadge appearance="workspace" asChild ><span className="badge approved">connected</span></WorkspaceBadge>
                 ) : connection ? (
-                  <span className="badge pending">{connection.status}</span>
+                  <WorkspaceBadge appearance="workspace" asChild ><span className="badge pending">{connection.status}</span></WorkspaceBadge>
                 ) : (
-                  <span className="badge pending">not connected</span>
+                  <WorkspaceBadge appearance="workspace" asChild ><span className="badge pending">not connected</span></WorkspaceBadge>
                 )}
               </div>
               {!connected && item.limitation && <p className="hint">{item.limitation}</p>}
@@ -180,7 +184,7 @@ export function BrandAccountConnectionsPanel({
             <li key={item.platform} className="scout-fact" data-testid={`connection-${item.platform}`}>
               <div className="scout-row">
                 <span>{item.platform}</span>
-                <span className="badge pending">behind capability flag</span>
+                <WorkspaceBadge appearance="workspace" asChild ><span className="badge pending">behind capability flag</span></WorkspaceBadge>
               </div>
               <p className="hint" data-testid={`flag-${item.platform}`}>
                 {item.flag_name || 'capability flag'} pending platform review
@@ -220,7 +224,7 @@ export function BrandAccountConnectionsPanel({
           );
         })}
       </ul>
-    </section>
+    </section></Card>
   );
 }
 
@@ -356,7 +360,7 @@ export function ConnectionsView() {
           </p>
           <label className="hint" htmlFor="connect-token-input">
             Provider token
-            <input
+            <Input appearance="workspace"
               id="connect-token-input"
               data-testid="connect-token-input"
               type="password"
@@ -367,7 +371,7 @@ export function ConnectionsView() {
           </label>
           <label className="hint" htmlFor="connect-handle-input">
             Brand account handle
-            <input
+            <Input appearance="workspace"
               id="connect-handle-input"
               data-testid="connect-handle-input"
               type="text"

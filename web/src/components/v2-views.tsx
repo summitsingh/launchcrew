@@ -1,4 +1,8 @@
 'use client';
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
+import { NativeSelect } from '@/components/ui/native-select';
+import { Badge as WorkspaceBadge } from '@/components/ui/badge';
+
 import { useEffect, useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
@@ -160,21 +164,21 @@ export function MemoryView() {
     <p className="hint">Voice profiles hold 3 to 5 synthetic style examples plus banned terms. Samples are style references only and never become confirmed facts. Editing or deleting a selected voice invalidates dependent approvals until a new revision check passes. Samples stay in your actor workspace.</p>
     <p className="hint" data-testid="voice-eval-summary">Voice evaluation (Slice 3, evaluation/voice_edits_report.json): 12 products evaluated, 46 total edits without voice profile vs 0 edits with voice profile, mean 3.83 vs 0.0 edits per draft.</p>
     <div className="two-column equal">
-      <section className="panel"><h2>Create memory</h2><form onSubmit={e => { e.preventDefault(); setNotice(''); create.mutate(); }}>
-        <label htmlFor="memory-kind">Kind</label><select id="memory-kind" value={kind} onChange={e => setKind(e.target.value as MemoryItem['kind'])}>{memoryKinds.map(value => <option key={value}>{value}</option>)}</select>
-        <label htmlFor="memory-title">Title</label><input id="memory-title" required minLength={1} maxLength={200} value={title} onChange={e => setTitle(e.target.value)} />
-        <label htmlFor="memory-content">Content JSON object</label><textarea id="memory-content" required rows={5} value={content} onChange={e => setContent(e.target.value)} />
+      <Card appearance="workspace" asChild ><section className="panel"><h2>Create memory</h2><form onSubmit={e => { e.preventDefault(); setNotice(''); create.mutate(); }}>
+        <label htmlFor="memory-kind">Kind</label><NativeSelect appearance="workspace" id="memory-kind" value={kind} onChange={e => setKind(e.target.value as MemoryItem['kind'])}>{memoryKinds.map(value => <option key={value}>{value}</option>)}</NativeSelect>
+        <label htmlFor="memory-title">Title</label><Input appearance="workspace" id="memory-title" required minLength={1} maxLength={200} value={title} onChange={e => setTitle(e.target.value)} />
+        <label htmlFor="memory-content">Content JSON object</label><Textarea appearance="workspace" id="memory-content" required rows={5} value={content} onChange={e => setContent(e.target.value)} />
         {kind === 'voice_profile' && <p className="hint">Voice shape: {"{\"examples\": [{\"input\": \"...\", \"output\": \"...\"}], \"banned_terms\": [\"...\"]}"}. Use synthetic samples only, 3 to 5 pairs. Banned terms block drafts and revisions with concrete reasons. Channel helper is tested only, no live channel UI.</p>}
         {kind === 'voice_profile' && <BrandKitForm content={content} onContent={setContent} notify={setNotice} />}
         {create.error && <p role="alert">{create.error.message}</p>}
         <Button type="submit" disabled={create.isPending}>Create memory</Button>
-      </form></section>
-      <section className="panel"><h2>Learn from run</h2><p>Only approved runs can be learned from.</p><form onSubmit={e => { e.preventDefault(); setNotice(''); learn.mutate(); }}>
-        <label htmlFor="memory-run-id">Run id</label><input id="memory-run-id" required value={runId} onChange={e => setRunId(e.target.value)} />
-        <label htmlFor="memory-learn-kind">Learned kind</label><select id="memory-learn-kind" value={learnKind} onChange={e => setLearnKind(e.target.value as typeof learnKind)}><option>approval_example</option><option>blocked_rule</option></select>
+      </form></section></Card>
+      <Card appearance="workspace" asChild ><section className="panel"><h2>Learn from run</h2><p>Only approved runs can be learned from.</p><form onSubmit={e => { e.preventDefault(); setNotice(''); learn.mutate(); }}>
+        <label htmlFor="memory-run-id">Run id</label><Input appearance="workspace" id="memory-run-id" required value={runId} onChange={e => setRunId(e.target.value)} />
+        <label htmlFor="memory-learn-kind">Learned kind</label><NativeSelect appearance="workspace" id="memory-learn-kind" value={learnKind} onChange={e => setLearnKind(e.target.value as typeof learnKind)}><option>approval_example</option><option>blocked_rule</option></NativeSelect>
         {learn.error && <p role="alert">{learn.error.message}</p>}
         <Button type="submit" disabled={learn.isPending || !runId.trim()}>Learn from run</Button>
-      </form></section>
+      </form></section></Card>
     </div>
     {notice && <p role="status">{notice}</p>}
     <div className="section-row"><h2>Memory items</h2><span className="tiny">Refreshes every 3 seconds</span></div>
@@ -202,8 +206,8 @@ export function memoryDeletedNotice(title: string): string {
 export function MemoryDeleteDialog({ itemTitle, itemKind, pending, error, onConfirm, onCancel }: {
   itemTitle: string; itemKind: MemoryItem['kind']; pending: boolean; error: string | null; onConfirm: () => void; onCancel: () => void;
 }) {
-  return <div role="dialog" aria-modal="true" aria-label={`Delete memory "${itemTitle}"?`} className="panel queue-card">
-    <h3>Delete memory &quot;{itemTitle}&quot;?</h3>
+  return <Dialog open onOpenChange={open => { if (!open && !pending) onCancel(); }}><DialogContent inline aria-modal="true" aria-label={`Delete memory "${itemTitle}"?`} showCloseButton={false} aria-describedby={undefined} className="panel queue-card" onEscapeKeyDown={event => { if (pending) event.preventDefault(); }}>
+    <DialogTitle appearance="workspace" asChild><h3>Delete memory &quot;{itemTitle}&quot;?</h3></DialogTitle>
     <p>This permanently removes the memory item. Runs that selected it will no longer resolve it.</p>
     {itemKind === 'voice_profile' && <p className="hint">Deleting a selected voice marks dependent approvals stale until a new human revision check passes.</p>}
     {error && <p role="alert">{error}</p>}
@@ -211,7 +215,7 @@ export function MemoryDeleteDialog({ itemTitle, itemKind, pending, error, onConf
       <Button type="button" variant="outline" disabled={pending} onClick={onCancel}>Cancel</Button>
       <Button type="button" disabled={pending} onClick={onConfirm}>{pending ? 'Deleting...' : 'Confirm delete'}</Button>
     </div>
-  </div>;
+  </DialogContent></Dialog>;
 }
 
 export function MemoryItemCard({ item }: { item: MemoryItem }) {
@@ -231,12 +235,12 @@ export function MemoryItemCard({ item }: { item: MemoryItem }) {
     onSuccess: () => { setConfirming(false); setDeletedNotice(memoryDeletedNotice(item.title)); refresh(); }
   });
   const busy = save.isPending || remove.isPending;
-  return <article className="panel queue-card" aria-label={`Memory item: ${item.title}`}>
+  return <Card appearance="workspace" asChild ><article className="panel queue-card" aria-label={`Memory item: ${item.title}`}>
     <h3>{item.title}</h3><p>Kind (read-only): {item.kind}</p><p><RunRef id={item.id} /></p>
     {item.source_run_id && <p>Source run: <RunRef id={item.source_run_id} /></p>}
     {editing ? <form onSubmit={e => { e.preventDefault(); save.mutate(); }}>
-      <label htmlFor={`memory-title-${item.id}`}>Edit title</label><input id={`memory-title-${item.id}`} required minLength={1} maxLength={200} value={title} onChange={e => setTitle(e.target.value)} />
-      <label htmlFor={`memory-content-${item.id}`}>Edit content JSON object</label><textarea id={`memory-content-${item.id}`} required rows={5} value={content} onChange={e => setContent(e.target.value)} />
+      <label htmlFor={`memory-title-${item.id}`}>Edit title</label><Input appearance="workspace" id={`memory-title-${item.id}`} required minLength={1} maxLength={200} value={title} onChange={e => setTitle(e.target.value)} />
+      <label htmlFor={`memory-content-${item.id}`}>Edit content JSON object</label><Textarea appearance="workspace" id={`memory-content-${item.id}`} required rows={5} value={content} onChange={e => setContent(e.target.value)} />
       <div className="queue-actions"><Button type="submit" disabled={busy}>Save memory</Button><Button type="button" variant="outline" disabled={busy} onClick={() => setEditing(false)}>Cancel</Button></div>
     </form> : <><pre>{JSON.stringify(item.content, null, 2)}</pre><Button variant="outline" disabled={busy} onClick={() => { setTitle(item.title); setContent(JSON.stringify(item.content, null, 2)); save.reset(); setEditing(true); }}>Edit memory</Button></>}
     {save.error && <p role="alert">{save.error.message}</p>}
@@ -244,7 +248,7 @@ export function MemoryItemCard({ item }: { item: MemoryItem }) {
     {confirming
       ? <MemoryDeleteDialog itemTitle={item.title} itemKind={item.kind} pending={remove.isPending} error={remove.error?.message ?? null} onConfirm={() => remove.mutate()} onCancel={() => { remove.reset(); setConfirming(false); }} />
       : <Button variant="outline" disabled={busy} onClick={() => { remove.reset(); setDeletedNotice(''); setConfirming(true); }}>Delete memory</Button>}
-  </article>;
+  </article></Card>;
 }
 
 export function DiffResult({ diff }: { diff: Diff }) {
@@ -257,16 +261,16 @@ export function DiffResult({ diff }: { diff: Diff }) {
   const changed = (diff as unknown as { voice_changed?: boolean }).voice_changed;
   return <div>
     {!diff.same_idea && <p role="status" className="message">These runs have different ideas. The comparison still shows their recorded differences.</p>}
-    <section className="panel"><h2>Draft changes</h2><p>Idea from run A: {diff.idea}</p>
+    <Card appearance="workspace" asChild ><section className="panel"><h2>Draft changes</h2><p>Idea from run A: {diff.idea}</p>
       <p>First post changed: {String(diff.draft_v1_post_changed)} · First email changed: {String(diff.draft_v1_email_changed)}</p>
       <p>Final post changed: {String(diff.draft_v2_post_changed)} · Final email changed: {String(diff.draft_v2_email_changed)}</p>
       <div className="two-column equal">{(['a', 'b'] as const).map(side => <article key={side}><h3>Run {side.toUpperCase()}</h3><h4>First post</h4><p className="draft">{diff[`draft_v1_post_${side}`] ?? 'Unavailable'}</p><h4>Final post</h4><p className="draft">{diff[`draft_v2_post_${side}`] ?? 'Unavailable'}</p><h4>Final email</h4><p className="draft">{diff[`draft_v2_email_${side}`] ?? 'Unavailable'}</p></article>)}</div>
-    </section>
-    <section className="panel"><h2>Checker verdict changes</h2><p>First blocked count: {diff.checker_v1_blocked_count_a ?? 'unavailable'} / {diff.checker_v1_blocked_count_b ?? 'unavailable'}</p><p>Final blocked count: {diff.checker_v2_blocked_count_a ?? 'unavailable'} / {diff.checker_v2_blocked_count_b ?? 'unavailable'}</p>{(['a', 'b'] as const).map(side => <div key={side}><h3>Blocked claims only in {side.toUpperCase()}</h3>{diff[`blocked_claims_only_in_${side}`].map((claim, i) => <p key={i}>{claim.claim}: {claim.reason}</p>)}</div>)}</section>
-    <section className="panel"><h2>Checker profile changes</h2><p>Checker profile: {diff.checker_profile_a ?? 'unavailable'} / {diff.checker_profile_b ?? 'unavailable'}</p><p>Changed: {String(diff.checker_profile_changed)}</p><p>Scout: {diff.scout_name_a ?? 'unavailable'} / {diff.scout_name_b ?? 'unavailable'}</p><p>Maker: {diff.maker_name_a ?? 'unavailable'} / {diff.maker_name_b ?? 'unavailable'}</p><p>Checker: {diff.checker_name_a ?? 'unavailable'} / {diff.checker_name_b ?? 'unavailable'}</p><p>Stage bindings changed: {String(diff.stage_bindings_changed)}</p><p>Memory ids only in A: {diff.memory_ids_a.join(', ') || 'None'}</p><p>Memory ids only in B: {diff.memory_ids_b.join(', ') || 'None'}</p></section>
-    <section className="panel"><h2>Voice source changes</h2><p>Voice: {titleA || voiceA || 'none'} ({versionA || 'no version'}) / {titleB || voiceB || 'none'} ({versionB || 'no version'})</p><p>Changed: {String(changed ?? (voiceA !== voiceB || versionA !== versionB))}</p><p className="hint">Style references only. Samples never become confirmed facts. Banned terms block with concrete voice reasons.</p></section>
-    <section className="panel"><h2>Approval state changes</h2><p>{diff.approval_state_a} / {diff.approval_state_b}</p><p>Changed: {String(diff.approval_state_changed)}</p><p>Status: {diff.status_a} / {diff.status_b}</p></section>
-    <section className="panel"><h2>Receipt key diff</h2><p>Only in A: {diff.receipt_keys_only_in_a.join(', ') || 'None'}</p><p>Only in B: {diff.receipt_keys_only_in_b.join(', ') || 'None'}</p></section>
+    </section></Card>
+    <Card appearance="workspace" asChild ><section className="panel"><h2>Checker verdict changes</h2><p>First blocked count: {diff.checker_v1_blocked_count_a ?? 'unavailable'} / {diff.checker_v1_blocked_count_b ?? 'unavailable'}</p><p>Final blocked count: {diff.checker_v2_blocked_count_a ?? 'unavailable'} / {diff.checker_v2_blocked_count_b ?? 'unavailable'}</p>{(['a', 'b'] as const).map(side => <div key={side}><h3>Blocked claims only in {side.toUpperCase()}</h3>{diff[`blocked_claims_only_in_${side}`].map((claim, i) => <p key={i}>{claim.claim}: {claim.reason}</p>)}</div>)}</section></Card>
+    <Card appearance="workspace" asChild ><section className="panel"><h2>Checker profile changes</h2><p>Checker profile: {diff.checker_profile_a ?? 'unavailable'} / {diff.checker_profile_b ?? 'unavailable'}</p><p>Changed: {String(diff.checker_profile_changed)}</p><p>Scout: {diff.scout_name_a ?? 'unavailable'} / {diff.scout_name_b ?? 'unavailable'}</p><p>Maker: {diff.maker_name_a ?? 'unavailable'} / {diff.maker_name_b ?? 'unavailable'}</p><p>Checker: {diff.checker_name_a ?? 'unavailable'} / {diff.checker_name_b ?? 'unavailable'}</p><p>Stage bindings changed: {String(diff.stage_bindings_changed)}</p><p>Memory ids only in A: {diff.memory_ids_a.join(', ') || 'None'}</p><p>Memory ids only in B: {diff.memory_ids_b.join(', ') || 'None'}</p></section></Card>
+    <Card appearance="workspace" asChild ><section className="panel"><h2>Voice source changes</h2><p>Voice: {titleA || voiceA || 'none'} ({versionA || 'no version'}) / {titleB || voiceB || 'none'} ({versionB || 'no version'})</p><p>Changed: {String(changed ?? (voiceA !== voiceB || versionA !== versionB))}</p><p className="hint">Style references only. Samples never become confirmed facts. Banned terms block with concrete voice reasons.</p></section></Card>
+    <Card appearance="workspace" asChild ><section className="panel"><h2>Approval state changes</h2><p>{diff.approval_state_a} / {diff.approval_state_b}</p><p>Changed: {String(diff.approval_state_changed)}</p><p>Status: {diff.status_a} / {diff.status_b}</p></section></Card>
+    <Card appearance="workspace" asChild ><section className="panel"><h2>Receipt key diff</h2><p>Only in A: {diff.receipt_keys_only_in_a.join(', ') || 'None'}</p><p>Only in B: {diff.receipt_keys_only_in_b.join(', ') || 'None'}</p></section></Card>
   </div>;
 }
 
@@ -321,13 +325,13 @@ export function ConfirmedFactsBlock({ receipt }: { receipt: Receipt }) {
     )}
     <h4>Confirmed fields ({confirmedFields.length})</h4>
     {confirmedFields.length === 0 && <p className="hint">No confirmed owner fields on this receipt.</p>}
-    <ul className="scout-list">{confirmedFields.map((fact, i) => <li key={i} className="scout-fact"><div className="scout-row"><strong>{fact.label || fact.field || 'Confirmed fact'}: {fact.value || 'empty'}</strong><span className="badge approved">Confirmed</span></div><p className="hint">Source: {fact.source ? sourceLabel(fact.source) : 'unknown'}{fact.claim ? ` · Claim: ${fact.claim}` : ''}</p></li>)}</ul>
+    <ul className="scout-list">{confirmedFields.map((fact, i) => <li key={i} className="scout-fact"><div className="scout-row"><strong>{fact.label || fact.field || 'Confirmed fact'}: {fact.value || 'empty'}</strong><WorkspaceBadge appearance="workspace" asChild ><span className="badge approved">Confirmed</span></WorkspaceBadge></div><p className="hint">Source: {fact.source ? sourceLabel(fact.source) : 'unknown'}{fact.claim ? ` · Claim: ${fact.claim}` : ''}</p></li>)}</ul>
     <h4>Confirmed claims ({confirmedClaims.length})</h4>
     {confirmedClaims.length === 0 && <p className="hint">No confirmed claims on this receipt.</p>}
-    <ul className="scout-list">{confirmedClaims.map((claim, i) => <li key={i} className="scout-fact"><div className="scout-row"><span>{claim}</span><span className="badge approved">Confirmed</span></div></li>)}</ul>
+    <ul className="scout-list">{confirmedClaims.map((claim, i) => <li key={i} className="scout-fact"><div className="scout-row"><span>{claim}</span><WorkspaceBadge appearance="workspace" asChild ><span className="badge approved">Confirmed</span></WorkspaceBadge></div></li>)}</ul>
     <h4>Suggestions, not verified ({suggested.length})</h4>
     {suggested.length === 0 && <p className="hint">No unconfirmed suggestions on this receipt.</p>}
-    <ul className="scout-list">{suggested.map((entry, i) => <li key={i} className="scout-fact"><div className="scout-row"><span>{(entry.label || entry.field || 'Suggestion') + ': ' + (entry.value || 'empty')}</span><span className="badge pending">Suggestion</span></div><p className="hint">Source: {entry.source ? sourceLabel(entry.source) : 'unknown'}{entry.reason ? ` · ${entry.reason}` : ' · Suggested but not confirmed by the owner'}</p></li>)}</ul>
+    <ul className="scout-list">{suggested.map((entry, i) => <li key={i} className="scout-fact"><div className="scout-row"><span>{(entry.label || entry.field || 'Suggestion') + ': ' + (entry.value || 'empty')}</span><WorkspaceBadge appearance="workspace" asChild ><span className="badge pending">Suggestion</span></WorkspaceBadge></div><p className="hint">Source: {entry.source ? sourceLabel(entry.source) : 'unknown'}{entry.reason ? ` · ${entry.reason}` : ' · Suggested but not confirmed by the owner'}</p></li>)}</ul>
     {founder && typeof founder.value === 'string' && founder.value && <>
       <h4>Founder note, separate unverified material</h4>
       <p className="draft">{founder.value}</p>
@@ -354,7 +358,7 @@ export function ClaimResultsBlock({ check, title }: { check: Check | null | unde
       const verdict = typeof entry.verdict === 'string' ? entry.verdict : 'unsupported';
       const evidence = typeof entry.evidence === 'string' && entry.evidence ? entry.evidence : null;
       const evidenceClaims = Array.isArray(entry.evidence_claims) ? entry.evidence_claims.filter(c => typeof c === 'string' && c) : [];
-      return <li key={i} className="scout-fact"><div className="scout-row"><strong>{entry.claim || 'Unlabeled claim'}</strong><span className={`badge ${entry.verified ? 'approved' : 'pending'}`}>{verdict}</span></div><p className="hint">Reason: {entry.reason || 'none stored'}{entry.source ? ` · Source: ${entry.source}` : ''} · Blocked: {entry.blocked ? 'yes' : 'no'}</p>{evidence && <p className="hint">Evidence: &quot;{evidence}&quot;</p>}{evidenceClaims.length > 0 && <p className="hint">Evidence claims: {evidenceClaims.map(q => `"${q}"`).join(', ')}</p>}</li>;
+      return <li key={i} className="scout-fact"><div className="scout-row"><strong>{entry.claim || 'Unlabeled claim'}</strong><WorkspaceBadge appearance="workspace" asChild ><span className={`badge ${entry.verified ? 'approved' : 'pending'}`}>{verdict}</span></WorkspaceBadge></div><p className="hint">Reason: {entry.reason || 'none stored'}{entry.source ? ` · Source: ${entry.source}` : ''} · Blocked: {entry.blocked ? 'yes' : 'no'}</p>{evidence && <p className="hint">Evidence: &quot;{evidence}&quot;</p>}{evidenceClaims.length > 0 && <p className="hint">Evidence claims: {evidenceClaims.map(q => `"${q}"`).join(', ')}</p>}</li>;
     })}</ul>
   </>;
 }
@@ -407,7 +411,7 @@ export function ReceiptSummaryStrip({ receipt }: { receipt: Receipt }) {
     if (!digest) return;
     setCopied(await copyTextToClipboard(digest));
   };
-  return <section className="panel" aria-label="Receipt summary" data-testid="receipt-summary-strip">
+  return <Card appearance="workspace" asChild ><section className="panel" aria-label="Receipt summary" data-testid="receipt-summary-strip">
     <p className="eyebrow">DECISION SUMMARY</p>
     <dl>
       <div><dt>Approval state</dt><dd title={receipt.approval_state}>{humanStatusLabel(receipt.approval_state)}</dd></div>
@@ -424,7 +428,7 @@ export function ReceiptSummaryStrip({ receipt }: { receipt: Receipt }) {
         : 'Awaiting individual approval'}</dd></div>
       <div><dt>Approval time</dt><dd>{approval?.timestamp ?? 'not yet approved'}</dd></div>
     </dl>
-  </section>;
+  </section></Card>;
 }
 
 /** One check-evidence list with a first/final revision toggle, replacing
@@ -451,13 +455,13 @@ export function ScoutFactsSection({ receipt }: { receipt: Receipt }) {
   const productMode = (receipt.product_facts as ProductFactsSection | null | undefined)?.mode;
   const isOwner = productMode === 'owner_input';
   if (!scout || !Array.isArray(scout.facts_used)) {
-    return <section className="panel" aria-label="Scout facts and sources"><p className="eyebrow">SCOUT FACTS AND RISKS</p><h2>Sourced facts unavailable for this receipt.</h2><p className="hint">Historical or failed runs predate stored Scout facts. No facts are invented here; inspect the complete receipt JSON in the record below.</p><ConfirmedFactsBlock receipt={receipt} /><VoiceBlock receipt={receipt} /><ApprovalBindingBlock receipt={receipt} /></section>;
+    return <Card appearance="workspace" asChild ><section className="panel" aria-label="Scout facts and sources"><p className="eyebrow">SCOUT FACTS AND RISKS</p><h2>Sourced facts unavailable for this receipt.</h2><p className="hint">Historical or failed runs predate stored Scout facts. No facts are invented here; inspect the complete receipt JSON in the record below.</p><ConfirmedFactsBlock receipt={receipt} /><VoiceBlock receipt={receipt} /><ApprovalBindingBlock receipt={receipt} /></section></Card>;
   }
   const facts = scout.facts_used;
   const risks = Array.isArray(scout.risks) ? scout.risks : [];
   const sourceLabels = Array.isArray(scout.sources) ? scout.sources : [];
   const synthesized = scout.model_mode === 'spark';
-  return <section className="panel" aria-label="Scout facts and sources">
+  return <Card appearance="workspace" asChild ><section className="panel" aria-label="Scout facts and sources">
     <p className="eyebrow">SCOUT FACTS AND RISKS</p>
     <h2>What Scout sourced{scoutName && scoutName !== 'Scout' ? ` · ${scoutName}` : ''}.</h2>
     {isOwner
@@ -465,7 +469,7 @@ export function ScoutFactsSection({ receipt }: { receipt: Receipt }) {
       : <p className="hint">Scout stage{scoutName ? `: ${scoutName}` : ''}. Demo facts only, sourced from the local facts file and demo brand brief below. No external research was run and no live product verification is claimed. Only verified facts reach Maker drafts.</p>}
     <h3>Sourced facts ({facts.length})</h3>
     {facts.length === 0 && <p className="hint">No stored facts on this receipt.</p>}
-    <ul className="scout-list">{facts.map((fact, i) => <li key={i} className="scout-fact"><div className="scout-row"><strong>{fact.claim || 'Unlabeled fact'}</strong><span className={`badge ${fact.verified ? 'approved' : 'pending'}`}>{fact.verified ? 'Verified' : 'Unverified'}</span></div><p className="hint">Evidence: {fact.evidence || 'none stored'}{Array.isArray(fact.sources) && fact.sources.length > 0 ? ` · Sources: ${fact.sources.join(', ')}` : ' · No stored source: unverified model hypothesis, not external research.'}</p></li>)}</ul>
+    <ul className="scout-list">{facts.map((fact, i) => <li key={i} className="scout-fact"><div className="scout-row"><strong>{fact.claim || 'Unlabeled fact'}</strong><WorkspaceBadge appearance="workspace" asChild ><span className={`badge ${fact.verified ? 'approved' : 'pending'}`}>{fact.verified ? 'Verified' : 'Unverified'}</span></WorkspaceBadge></div><p className="hint">Evidence: {fact.evidence || 'none stored'}{Array.isArray(fact.sources) && fact.sources.length > 0 ? ` · Sources: ${fact.sources.join(', ')}` : ' · No stored source: unverified model hypothesis, not external research.'}</p></li>)}</ul>
     <ConfirmedFactsBlock receipt={receipt} />
     <VoiceBlock receipt={receipt} />
     <CheckEvidenceToggle first={receipt.checker_v1} final={currentCheckOf(receipt)} />
@@ -478,7 +482,7 @@ export function ScoutFactsSection({ receipt }: { receipt: Receipt }) {
     <ul className="scout-list">{risks.map((risk, i) => <li key={i} className="scout-risk"><div className="scout-row"><span>{risk}</span><span className="tag">{risk.startsWith('Unverified model risk:') ? 'Unverified model hypothesis' : isOwner ? 'Risk, unverified' : 'Demo risk, unverified'}</span></div></li>)}</ul>
     <p className="hint">Model synthesis: {synthesized ? 'spark (optional Scout synthesis received)' : 'none, deterministic fallback'}{scout.model_note ? ` · ${scout.model_note}` : ''}{usage ? ` · Stored usage: ${usage.mode}, ${usage.spark_calls} Spark calls, model ${usage.model_used}. Data: ${dataModeLabel(usage)} (${dataModeCopy(usage)}). ${dataModeNote(usage)}` : ' · Stored model usage unavailable on this receipt. Data: Unknown (unknown). No stored usage on this receipt.'}</p>
     {sourceLabels.length > 0 && <p className="hint">Fact sources on this receipt: {sourceLabels.join(', ')}.</p>}
-  </section>;
+  </section></Card>;
 }
 
 export function ReplayView({ queue }: { queue: Receipt[] }) {
@@ -507,13 +511,13 @@ export function ReplayView({ queue }: { queue: Receipt[] }) {
       ? (persistedDiff.diff as Diff)
       : null;
   const visibleDiff = compare.data ?? storedDiff;
-  return <section aria-label="Replay"><section className="panel"><h2>Replay</h2><form onSubmit={e => { e.preventDefault(); compare.mutate(); }}><label htmlFor="replay-a">Run A id</label><input id="replay-a" value={a} onChange={e => setA(e.target.value)} required /><label htmlFor="replay-b">Run B id</label><input id="replay-b" value={b} onChange={e => setB(e.target.value)} required /><Button type="submit" disabled={!a || !b || compare.isPending}>Compare</Button></form><h3>Pick from queue</h3><p className="hint">Queue refreshes every 3 seconds.</p>{queue.map(run => <div key={run.run_id} className="queue-card"><p><RunRef id={run.run_id} /></p><p>{run.idea}</p><div className="queue-actions"><Button variant="outline" onClick={() => setA(run.run_id)}>Use as A</Button><Button variant="outline" onClick={() => setB(run.run_id)}>Use as B</Button></div></div>)}</section>{compare.error && <p role="alert">{compare.error.message}</p>}{visibleDiff && <DiffResult diff={visibleDiff} />}{a && <RunOutcomesSection runId={a} label="Run A owner outcomes" />}{b && <RunOutcomesSection runId={b} label="Run B owner outcomes" />}</section>;
+  return <section aria-label="Replay"><Card appearance="workspace" asChild ><section className="panel"><h2>Replay</h2><form onSubmit={e => { e.preventDefault(); compare.mutate(); }}><label htmlFor="replay-a">Run A id</label><Input appearance="workspace" id="replay-a" value={a} onChange={e => setA(e.target.value)} required /><label htmlFor="replay-b">Run B id</label><Input appearance="workspace" id="replay-b" value={b} onChange={e => setB(e.target.value)} required /><Button type="submit" disabled={!a || !b || compare.isPending}>Compare</Button></form><h3>Pick from queue</h3><p className="hint">Queue refreshes every 3 seconds.</p>{queue.map(run => <div key={run.run_id} className="queue-card"><p><RunRef id={run.run_id} /></p><p>{run.idea}</p><div className="queue-actions"><Button variant="outline" onClick={() => setA(run.run_id)}>Use as A</Button><Button variant="outline" onClick={() => setB(run.run_id)}>Use as B</Button></div></div>)}</section></Card>{compare.error && <p role="alert">{compare.error.message}</p>}{visibleDiff && <DiffResult diff={visibleDiff} />}{a && <RunOutcomesSection runId={a} label="Run A owner outcomes" />}{b && <RunOutcomesSection runId={b} label="Run B owner outcomes" />}</section>;
 }
 
 export function CampaignDayCard({ day, busy, approve, download, markdown, copy }: { day: Day; busy: boolean; approve: () => void; download: () => void; markdown?: () => void; copy?: () => void }) {
   const trend = (day as unknown as { trend_guidance?: string; trend_source?: string }).trend_guidance;
   const trendSource = (day as unknown as { trend_source?: string }).trend_source;
-  return <article className="panel queue-card"><h3>Day {day.day}: {day.angle}</h3><p>{day.brief}</p>{typeof trend === 'string' && trend && <p className="hint" data-testid={`campaign-day-trend-${day.day}`}>Trend guidance: {trend} · Source: {trendSource || 'unavailable'} · Maker angle guidance only, never a fact source</p>}<p><RunRef id={day.run_id} /></p><p className="draft">{day.draft_v2_post ?? ''}</p><p><span title={day.approval_state}>{humanStatusLabel(day.approval_state)}</span> · Status: <span title={day.status}>{humanStatusLabel(displayRunStatus(day as unknown as Receipt))}</span> · Final blocked count: {day.checker_v2_blocked_count ?? 'unavailable'}</p><div className="queue-actions">{canApproveDay(day) && <Button onClick={approve} disabled={busy}>Approve for export</Button>}{canExportDay(day) && <><Button onClick={download} disabled={busy}>Export pack</Button>{markdown && <Button variant="outline" onClick={markdown} disabled={busy}>Export Markdown</Button>}{copy && <Button variant="outline" onClick={copy} disabled={busy}>Copy pack</Button>}</>}</div></article>;
+  return <Card appearance="workspace" asChild ><article className="panel queue-card"><h3>Day {day.day}: {day.angle}</h3><p>{day.brief}</p>{typeof trend === 'string' && trend && <p className="hint" data-testid={`campaign-day-trend-${day.day}`}>Trend guidance: {trend} · Source: {trendSource || 'unavailable'} · Maker angle guidance only, never a fact source</p>}<p><RunRef id={day.run_id} /></p><p className="draft">{day.draft_v2_post ?? ''}</p><p><span title={day.approval_state}>{humanStatusLabel(day.approval_state)}</span> · Status: <span title={day.status}>{humanStatusLabel(displayRunStatus(day as unknown as Receipt))}</span> · Final blocked count: {day.checker_v2_blocked_count ?? 'unavailable'}</p><div className="queue-actions">{canApproveDay(day) && <Button onClick={approve} disabled={busy}>Approve for export</Button>}{canExportDay(day) && <><Button onClick={download} disabled={busy}>Export pack</Button>{markdown && <Button variant="outline" onClick={markdown} disabled={busy}>Export Markdown</Button>}{copy && <Button variant="outline" onClick={copy} disabled={busy}>Copy pack</Button>}</>}</div></article></Card>;
 }
 
 /** Every selectable campaign angle. The last five are the added angles. */
@@ -603,7 +607,7 @@ export function CampaignView({ profiles, profilesPending, profilesError }: { pro
   });
   const error = create.error || campaign.error || weeks.error || approve.error || download.error || markdown.error || copy.error;
   const busyDay = approve.isPending || download.isPending || markdown.isPending || copy.isPending;
-  return <section aria-label="Campaign"><section className="panel"><h2>Campaign Week</h2><p>Nothing publishes automatically. Review and approve each day individually.</p><form onSubmit={e => { e.preventDefault(); if (createBlocked) return; create.mutate(); }}><label htmlFor="campaign-idea">Idea</label><textarea id="campaign-idea" required maxLength={2000} value={idea} onChange={e => setIdea(e.target.value)} />{profilesPending && <p role="status">Loading agents...</p>}{profilesError && <p role="alert">{profilesError}</p>}<label htmlFor="campaign-scout">Scout agent</label><select id="campaign-scout" value={scout} onChange={e => setScout(e.target.value)} disabled={!agentsReady}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</select><label htmlFor="campaign-maker">Maker agent</label><select id="campaign-maker" value={agent} onChange={e => setAgent(e.target.value)} disabled={!agentsReady}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</select><label htmlFor="campaign-checker-agent">Checker agent</label><select id="campaign-checker-agent" value={checkerAgent} onChange={e => setCheckerAgent(e.target.value)} disabled={!agentsReady}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</select><p className="hint">Each agent runs its own stage. Original names and rules are kept in each day receipt.</p><label htmlFor="campaign-checker">Checker profile</label><select id="campaign-checker" value={checkerProfile} onChange={e => setCheckerProfile(e.target.value)}><option>standard</option><option>strict</option></select><SupportedPoliciesHint /><label className="checkbox"><input type="checkbox" checked={seed} onChange={e => setSeed(e.target.checked)} />{SEED_CLAIM_LABEL}</label><p className="hint">Opt-in demo only. Seeds the unsupported claim “best in Texas” on every day so each receipt shows the block and revision. Leave unchecked for a normal week.</p><fieldset><legend>Product facts mode</legend><label className="checkbox"><input type="radio" name="campaign-facts-mode" value="demo" checked={factsMode === 'demo'} onChange={() => pickFactsMode('demo')} />Bundled fictional demo-template mode</label><p className="hint">Omit product_facts entirely. Uses the bundled fictional demo template for all seven days.</p><label className="checkbox"><input type="radio" name="campaign-facts-mode" value="owner" checked={factsMode === 'owner'} onChange={() => pickFactsMode('owner')} />Owner-input mode</label><p className="hint">Send your confirmed facts as the typed product_facts object. Every day brief is built from those confirmed facts. Nothing is confirmed from brief text.</p></fieldset>{factsMode === 'owner' && <FactLibrarySection state={ownerFacts} selection={librarySelection} onSelectionChange={setLibrarySelection} onLoad={(next, snapshot) => { setOwnerFacts(next); setLibrarySelection(snapshot); }} notify={setNotice} fail={(e) => setNotice(e.message)} />}{factsMode === 'owner' && <ProductFactsForm state={ownerFacts} onChange={setOwnerFacts} />}{factsMode === 'owner' && <MissingFactsPrompt missing={missingCore} waived={waiveMissing} onWaive={setWaiveMissing} />}{factsMode === 'owner' && ownerEmpty && <p role="status">Add at least one owner fact or founder note, or use demo-template mode.</p>}{factsMode === 'owner' && ownerErrors.length > 0 && <div role="alert" className="message error"><ul>{ownerErrors.map((text, i) => <li key={i}>{text}</li>)}</ul></div>}<TrendFormatPicker value={trendFormat} onChange={setTrendFormat} /><fieldset><legend>Campaign angles (choose exactly 7, one per day in order)</legend><p className="hint">Seven distinct angles are assigned to days 1 to 7 in the order checked here. In owner mode every day brief is built from your confirmed facts. Demo facts stay labeled as demo.</p>{CAMPAIGN_ANGLE_OPTIONS.map(angle => <label className="checkbox" key={angle} htmlFor={`campaign-angle-${angle}`}><input id={`campaign-angle-${angle}`} type="checkbox" checked={selectedAngles.includes(angle)} onChange={() => toggleAngle(angle)} />{angle}</label>)}</fieldset>{!anglesValid && <p role="alert">Select exactly 7 angles (currently {selectedAngles.length}).</p>}<Button type="submit" disabled={create.isPending || !agentsReady || createBlocked}>{create.isPending ? 'Creating week...' : 'Create week'}</Button></form><label htmlFor="campaign-select">Open a campaign</label><select id="campaign-select" value={id} onChange={e => setId(e.target.value)}><option value="">Select a week</option>{weeks.data?.map(week => <option key={week.id} value={week.id}>{week.idea} ({shortId(week.id)})</option>)}</select></section>{error && <p role="alert">{error.message}</p>}{notice && <p role="status">{notice}</p>}{campaign.isFetching && <p>Refreshing week...</p>}{campaign.data && <section><h2>{campaign.data.idea}</h2><p><RunRef id={campaign.data.id} /></p><PlaceCampaignOnCalendar campaignId={campaign.data.id} />{campaign.data.days.map(day => <CampaignDayCard key={day.day} day={day} busy={busyDay} approve={() => approve.mutate({ day: day.day, revision: day.revision ?? 0 })} download={() => download.mutate({ day: day.day, revision: day.revision ?? 0 })} markdown={() => markdown.mutate({ day: day.day, revision: day.revision ?? 0 })} copy={() => copy.mutate({ day: day.day, revision: day.revision ?? 0 })} />)}</section>}</section>;
+  return <section aria-label="Campaign"><Card appearance="workspace" asChild ><section className="panel"><h2>Campaign Week</h2><p>Nothing publishes automatically. Review and approve each day individually.</p><form onSubmit={e => { e.preventDefault(); if (createBlocked) return; create.mutate(); }}><label htmlFor="campaign-idea">Idea</label><Textarea appearance="workspace" id="campaign-idea" required maxLength={2000} value={idea} onChange={e => setIdea(e.target.value)} />{profilesPending && <p role="status">Loading agents...</p>}{profilesError && <p role="alert">{profilesError}</p>}<label htmlFor="campaign-scout">Scout agent</label><NativeSelect appearance="workspace" id="campaign-scout" value={scout} onChange={e => setScout(e.target.value)} disabled={!agentsReady}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</NativeSelect><label htmlFor="campaign-maker">Maker agent</label><NativeSelect appearance="workspace" id="campaign-maker" value={agent} onChange={e => setAgent(e.target.value)} disabled={!agentsReady}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</NativeSelect><label htmlFor="campaign-checker-agent">Checker agent</label><NativeSelect appearance="workspace" id="campaign-checker-agent" value={checkerAgent} onChange={e => setCheckerAgent(e.target.value)} disabled={!agentsReady}>{profiles.map(profile => <option key={profile.name}>{profile.name}</option>)}</NativeSelect><p className="hint">Each agent runs its own stage. Original names and rules are kept in each day receipt.</p><label htmlFor="campaign-checker">Checker profile</label><NativeSelect appearance="workspace" id="campaign-checker" value={checkerProfile} onChange={e => setCheckerProfile(e.target.value)}><option>standard</option><option>strict</option></NativeSelect><SupportedPoliciesHint /><label className="checkbox"><Input appearance="workspace" type="checkbox" checked={seed} onChange={e => setSeed(e.target.checked)} />{SEED_CLAIM_LABEL}</label><p className="hint">Opt-in demo only. Seeds the unsupported claim “best in Texas” on every day so each receipt shows the block and revision. Leave unchecked for a normal week.</p><fieldset><legend>Product facts mode</legend><label className="checkbox"><Input appearance="workspace" type="radio" name="campaign-facts-mode" value="demo" checked={factsMode === 'demo'} onChange={() => pickFactsMode('demo')} />Bundled fictional demo-template mode</label><p className="hint">Omit product_facts entirely. Uses the bundled fictional demo template for all seven days.</p><label className="checkbox"><Input appearance="workspace" type="radio" name="campaign-facts-mode" value="owner" checked={factsMode === 'owner'} onChange={() => pickFactsMode('owner')} />Owner-input mode</label><p className="hint">Send your confirmed facts as the typed product_facts object. Every day brief is built from those confirmed facts. Nothing is confirmed from brief text.</p></fieldset>{factsMode === 'owner' && <FactLibrarySection state={ownerFacts} selection={librarySelection} onSelectionChange={setLibrarySelection} onLoad={(next, snapshot) => { setOwnerFacts(next); setLibrarySelection(snapshot); }} notify={setNotice} fail={(e) => setNotice(e.message)} />}{factsMode === 'owner' && <ProductFactsForm state={ownerFacts} onChange={setOwnerFacts} />}{factsMode === 'owner' && <MissingFactsPrompt missing={missingCore} waived={waiveMissing} onWaive={setWaiveMissing} />}{factsMode === 'owner' && ownerEmpty && <p role="status">Add at least one owner fact or founder note, or use demo-template mode.</p>}{factsMode === 'owner' && ownerErrors.length > 0 && <div role="alert" className="message error"><ul>{ownerErrors.map((text, i) => <li key={i}>{text}</li>)}</ul></div>}<TrendFormatPicker value={trendFormat} onChange={setTrendFormat} /><fieldset><legend>Campaign angles (choose exactly 7, one per day in order)</legend><p className="hint">Seven distinct angles are assigned to days 1 to 7 in the order checked here. In owner mode every day brief is built from your confirmed facts. Demo facts stay labeled as demo.</p>{CAMPAIGN_ANGLE_OPTIONS.map(angle => <label className="checkbox" key={angle} htmlFor={`campaign-angle-${angle}`}><Input appearance="workspace" id={`campaign-angle-${angle}`} type="checkbox" checked={selectedAngles.includes(angle)} onChange={() => toggleAngle(angle)} />{angle}</label>)}</fieldset>{!anglesValid && <p role="alert">Select exactly 7 angles (currently {selectedAngles.length}).</p>}<Button type="submit" disabled={create.isPending || !agentsReady || createBlocked}>{create.isPending ? 'Creating week...' : 'Create week'}</Button></form><label htmlFor="campaign-select">Open a campaign</label><NativeSelect appearance="workspace" id="campaign-select" value={id} onChange={e => setId(e.target.value)}><option value="">Select a week</option>{weeks.data?.map(week => <option key={week.id} value={week.id}>{week.idea} ({shortId(week.id)})</option>)}</NativeSelect></section></Card>{error && <p role="alert">{error.message}</p>}{notice && <p role="status">{notice}</p>}{campaign.isFetching && <p>Refreshing week...</p>}{campaign.data && <section><h2>{campaign.data.idea}</h2><p><RunRef id={campaign.data.id} /></p><PlaceCampaignOnCalendar campaignId={campaign.data.id} />{campaign.data.days.map(day => <CampaignDayCard key={day.day} day={day} busy={busyDay} approve={() => approve.mutate({ day: day.day, revision: day.revision ?? 0 })} download={() => download.mutate({ day: day.day, revision: day.revision ?? 0 })} markdown={() => markdown.mutate({ day: day.day, revision: day.revision ?? 0 })} copy={() => copy.mutate({ day: day.day, revision: day.revision ?? 0 })} />)}</section>}</section>;
 }
 
 export function currentDraftOf(receipt: Receipt) {
@@ -637,7 +641,7 @@ export function RunRef({ id, className }: { id: string; className?: string }) {
   const [copied, setCopied] = useState(false);
   return <span className={`run-id compact${className ? ` ${className}` : ''}`} title={id} data-full-id={id}>
     {shortId(id)}
-    <button
+    <Button appearance="workspace"
       type="button"
       className="copy-id"
       title={`Copy full ID ${id}`}
@@ -646,7 +650,7 @@ export function RunRef({ id, className }: { id: string; className?: string }) {
         const ok = await copyTextToClipboard(id);
         setCopied(ok);
       }}
-    >{copied ? 'Copied ID' : 'Copy ID'}</button>
+    >{copied ? 'Copied ID' : 'Copy ID'}</Button>
   </span>;
 }
 
@@ -791,7 +795,7 @@ export function FailedRunNotice({ receipt }: { receipt: Receipt }) {
   const log = Array.isArray(audit.event_log) ? audit.event_log : [];
   const stopped = typeof audit.stopped_reason === 'string' ? audit.stopped_reason : 'unavailable';
   const failedAt = log.length > 0 ? (log[log.length - 1] as { step?: string }).step ?? stopped : stopped;
-  return <section className="panel" aria-label="Failed run"><p className="eyebrow">RUN STATUS</p><h2>Pipeline stopped safely.</h2><p>This run failed before a complete draft existed, so there is nothing to edit, approve, or export.</p><dl><div><dt>Status</dt><dd>failed</dd></div><div><dt>Failure stage</dt><dd>{String(failedAt)}</dd></div><div><dt>Error type</dt><dd>{(receipt as unknown as { error_type?: string }).error_type ?? 'unavailable'}</dd></div><div><dt>Completed steps</dt><dd>{((receipt as unknown as { completed_steps?: string[] }).completed_steps ?? []).join(', ') || 'none'}</dd></div></dl><p className="hint">No approval or export is offered on failed runs. The stored record is kept as evidence.</p></section>;
+  return <Card appearance="workspace" asChild ><section className="panel" aria-label="Failed run"><p className="eyebrow">RUN STATUS</p><h2>Pipeline stopped safely.</h2><p>This run failed before a complete draft existed, so there is nothing to edit, approve, or export.</p><dl><div><dt>Status</dt><dd>failed</dd></div><div><dt>Failure stage</dt><dd>{String(failedAt)}</dd></div><div><dt>Error type</dt><dd>{(receipt as unknown as { error_type?: string }).error_type ?? 'unavailable'}</dd></div><div><dt>Completed steps</dt><dd>{((receipt as unknown as { completed_steps?: string[] }).completed_steps ?? []).join(', ') || 'none'}</dd></div></dl><p className="hint">No approval or export is offered on failed runs. The stored record is kept as evidence.</p></section></Card>;
 }
 
 export function ReceiptTimeline({ receipt }: { receipt: Receipt }) {
@@ -799,7 +803,7 @@ export function ReceiptTimeline({ receipt }: { receipt: Receipt }) {
   const log = Array.isArray(audit.event_log) ? audit.event_log : [];
   const history = ((receipt as unknown as { revision_history?: Array<{ revision?: number; approved_revision?: number | null; superseded_by?: number; outcome?: string; revised_by?: string; revised_at?: string; photo_event?: string; photo_status?: { state?: string; label?: string | null; reason?: string } | null; approvals?: Array<{ approved_by?: string; revision?: number; timestamp?: string }> }> }).revision_history ?? []);
   const exports = ((receipt as unknown as { export_history?: Array<{ revision?: number; exported_by?: string; timestamp?: string }> }).export_history ?? []);
-  return <section className="panel" aria-label="Receipt timeline"><p className="eyebrow">TIMELINE</p><h2>Recorded events</h2><p className="hint">Every entry below comes from the stored receipt. No times are invented and no live model activity is claimed.</p><ol>{log.map((entry, i) => <li key={i}><strong>{entry.step ?? 'event'}</strong><span> · {entry.agent ?? 'unknown'}{entry.profile ? ` (${entry.profile})` : ''}</span><br /><small>{entry.action ?? ''}</small><br /><small className="run-id">{entry.timestamp ?? 'timestamp unavailable'}</small></li>)}</ol>{history.length > 0 && <div><h3>Superseded revisions</h3>{history.map((entry, i) => <p key={i} className="hint">Revision {entry.revision ?? '?'} superseded by revision {entry.superseded_by ?? '?'} · revised by {entry.revised_by ?? 'unknown'}{entry.revised_at ? ` · ${entry.revised_at}` : ''}{entry.photo_event ? ` · photo event: ${entry.photo_event}${entry.photo_status?.state ? ` (prior photo: ${entry.photo_status.state}${entry.photo_status.label ? ` ${entry.photo_status.label}` : ''})` : ''}` : ''} · approvals kept as audit: {(entry.approvals ?? []).map(a => `${a.approved_by ?? 'unknown'}${a.revision != null ? ` (rev ${a.revision})` : ''}`).join(', ') || 'none'}</p>)}</div>}{exports.length > 0 && <div><h3>Exports</h3>{exports.map((entry, i) => <p key={i} className="hint">Exported revision {entry.revision ?? '?'} by {entry.exported_by ?? 'unknown'} · {entry.timestamp ?? 'timestamp unavailable'}</p>)}</div>}{receipt.approvals.map((approval, i) => <p key={i} className="hint">Approval {i + 1}: {approval.approved_by}{approval.revision != null ? ` · revision ${approval.revision}` : ''} · {approval.timestamp}</p>)}</section>;
+  return <Card appearance="workspace" asChild ><section className="panel" aria-label="Receipt timeline"><p className="eyebrow">TIMELINE</p><h2>Recorded events</h2><p className="hint">Every entry below comes from the stored receipt. No times are invented and no live model activity is claimed.</p><ol>{log.map((entry, i) => <li key={i}><strong>{entry.step ?? 'event'}</strong><span> · {entry.agent ?? 'unknown'}{entry.profile ? ` (${entry.profile})` : ''}</span><br /><small>{entry.action ?? ''}</small><br /><small className="run-id">{entry.timestamp ?? 'timestamp unavailable'}</small></li>)}</ol>{history.length > 0 && <div><h3>Superseded revisions</h3>{history.map((entry, i) => <p key={i} className="hint">Revision {entry.revision ?? '?'} superseded by revision {entry.superseded_by ?? '?'} · revised by {entry.revised_by ?? 'unknown'}{entry.revised_at ? ` · ${entry.revised_at}` : ''}{entry.photo_event ? ` · photo event: ${entry.photo_event}${entry.photo_status?.state ? ` (prior photo: ${entry.photo_status.state}${entry.photo_status.label ? ` ${entry.photo_status.label}` : ''})` : ''}` : ''} · approvals kept as audit: {(entry.approvals ?? []).map(a => `${a.approved_by ?? 'unknown'}${a.revision != null ? ` (rev ${a.revision})` : ''}`).join(', ') || 'none'}</p>)}</div>}{exports.length > 0 && <div><h3>Exports</h3>{exports.map((entry, i) => <p key={i} className="hint">Exported revision {entry.revision ?? '?'} by {entry.exported_by ?? 'unknown'} · {entry.timestamp ?? 'timestamp unavailable'}</p>)}</div>}{receipt.approvals.map((approval, i) => <p key={i} className="hint">Approval {i + 1}: {approval.approved_by}{approval.revision != null ? ` · revision ${approval.revision}` : ''} · {approval.timestamp}</p>)}</section></Card>;
 }
 
 export function HumanRevisionEditor({ receipt }: { receipt: Receipt }) {
@@ -1198,13 +1202,13 @@ export function stageEvidenceCopy(stage: string, evidence: Record<string, unknow
 
 export function RunProgressList({ stages, workerLive, running }: { stages: StageProgress[]; workerLive: boolean; running: boolean }) {
   const unconfirmed = running && !workerLive && stages.some(stage => stage.state === 'completed' || stage.state === 'started');
-  return <section className="panel" aria-label="Run progress">
+  return <Card appearance="workspace" asChild ><section className="panel" aria-label="Run progress">
     <p className="eyebrow">LIVE STAGE RECEIPTS</p>
     <h2>{running ? 'Pack in progress.' : 'Pack finished.'}</h2>
     <p className="hint">Each row below was stored when the pipeline actually reached that stage, with the server time. Nothing here is predicted and no per-stage timing is estimated. Approval, editing, photo checks, and export unlock only after the final receipt lands.</p>
     {unconfirmed && <p role="alert">Pipeline worker not observed. Completed rows below are stored evidence, but the result is unconfirmed: nothing restarts automatically. Reload, or create a new pack.</p>}
     <ol>{stages.map(stage => <li key={stage.stage}><strong>{stage.label}</strong><span> · {stage.state === 'completed' ? 'completed' : stage.state === 'started' ? 'in progress' : stage.state === 'failed' ? 'failed' : 'pending'}</span>{stage.profile && <span> · {stage.profile}</span>}<br /><small>{stage.state === 'pending' ? 'not yet reached' : stageEvidenceCopy(stage.stage, stage.evidence)}</small>{stage.observedAt && <><br /><small className="run-id">{stage.observedAt}</small></>}</li>)}</ol>
-  </section>;
+  </section></Card>;
 }
 
 export function RunProgressSection({ runId, receipt }: { runId: string; receipt: Receipt }) {

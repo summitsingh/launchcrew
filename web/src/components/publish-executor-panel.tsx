@@ -1,4 +1,7 @@
 'use client';
+import { Badge as WorkspaceBadge } from '@/components/ui/badge';
+import { Card } from '@/components/ui/card';
+
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
@@ -10,8 +13,8 @@ export type PublishDueSlot = components['schemas']['PublishDueSlotOut'];
 type Attempt = Record<string, string | number | boolean | null | undefined>;
 
 export function SimulatedChip() {
-  return <span className="badge" data-testid="simulated-chip"
-    title="Posted by the simulated transport; no platform was contacted">SIMULATED</span>;
+  return <WorkspaceBadge appearance="workspace" asChild ><span className="badge" data-testid="simulated-chip"
+    title="Posted by the simulated transport; no platform was contacted">SIMULATED</span></WorkspaceBadge>;
 }
 
 export const EXECUTION_STATUSES = [
@@ -23,7 +26,7 @@ export const EXECUTION_STATUSES = [
 ] as const;
 
 export function ExecutionStatusBadge({ status }: { status: string }) {
-  return <span className="badge" data-execution-status={status} title={status}>{status}</span>;
+  return <WorkspaceBadge appearance="workspace" asChild ><span className="badge" data-execution-status={status} title={status}>{status}</span></WorkspaceBadge>;
 }
 
 export function ExecutionAttemptsList({ attempts }: { attempts: PublishExecution['attempts'] }) {
@@ -58,7 +61,7 @@ export function ExecutionRow({ execution }: { execution: PublishExecution }) {
     onError: (error: Error) => setNotice(error.message),
   });
   const attempts = (execution.attempts ?? []) as Attempt[];
-  return <article className="panel queue-card"
+  return <Card appearance="workspace" asChild ><article className="panel queue-card"
     data-execution-row={`${execution.slot_id}:${execution.channel}`}>
     <p><strong>{execution.channel}</strong> <ExecutionStatusBadge status={execution.status} />
       {execution.simulated === true ? <span> <SimulatedChip /></span> : null}</p>
@@ -79,7 +82,7 @@ export function ExecutionRow({ execution }: { execution: PublishExecution }) {
           {retry.isPending ? 'Retrying...' : 'Owner retry'}</Button>
       </div> : null}
     {notice && <p role="status">{notice}</p>}
-  </article>;
+  </article></Card>;
 }
 
 export function DueSlotsList({ slots }: { slots: PublishDueSlot[] }) {
@@ -126,7 +129,7 @@ export function PublishExecutorPanel() {
     },
     onError: (error: Error) => setNotice(error.message),
   });
-  return <section className="panel" data-testid="publish-executor-panel"
+  return <Card appearance="workspace" asChild ><section className="panel" data-testid="publish-executor-panel"
     aria-label="Autonomous publish executor">
     <h2>Autonomous publish executor</h2>
     <p className="hint">Ready slots post at their scheduled time with no per-post tap.
@@ -149,5 +152,5 @@ export function PublishExecutorPanel() {
     <DueSlotsList slots={dueSlots} />
     {executions.map(execution => <ExecutionRow key={execution.id} execution={execution} />)}
     {notice && <p role="status">{notice}</p>}
-  </section>;
+  </section></Card>;
 }

@@ -1,4 +1,9 @@
 'use client';
+import { Badge as WorkspaceBadge } from '@/components/ui/badge';
+import { Card } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { NativeSelect } from '@/components/ui/native-select';
+
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
@@ -90,17 +95,17 @@ export function slotsOfType(slots: Slot[], slotType: string): Slot[] {
 }
 
 function StatusBadge({ status }: { status: Slot['status'] }) {
-  return <span className="badge" title={status}>{status}</span>;
+  return <WorkspaceBadge appearance="workspace" asChild ><span className="badge" title={status}>{status}</span></WorkspaceBadge>;
 }
 
 function SlotCard({ slot }: { slot: Slot }) {
-  return <article className="panel queue-card" data-slot-id={slot.id}>
+  return <Card appearance="workspace" asChild ><article className="panel queue-card" data-slot-id={slot.id}>
     <p><strong>{slot.slot_type}</strong> <StatusBadge status={slot.status} /></p>
     <p className="hint">Pillar: {slot.pillar} · Format: {slot.format}</p>
     <p className="hint">{slot.run_id ? `Run ${slot.run_id}` : 'Unlinked slot'}{slot.campaign_id ? ` · Campaign ${slot.campaign_id} day ${slot.campaign_day ?? ''}`.trimEnd() : ''}</p>
     <SlotOutcomeBadge badge={slot.outcome_badge ?? null} slotId={slot.id} />
     <SlotScheduleCard slot={slot} />
-  </article>;
+  </article></Card>;
 }
 
 export function ScheduleDefaultsPanel() {
@@ -118,18 +123,18 @@ export function ScheduleDefaultsPanel() {
     onSuccess: () => { setNotice('Defaults saved.'); setTimes({}); client.invalidateQueries({ queryKey: ['schedule-defaults'] }); client.invalidateQueries({ queryKey: ['calendar-slots'] }); },
     onError: (error: Error) => setNotice(error.message),
   });
-  return <section className="panel" data-testid="schedule-defaults-panel" aria-label="Schedule defaults">
+  return <Card appearance="workspace" asChild ><section className="panel" data-testid="schedule-defaults-panel" aria-label="Schedule defaults">
     <h2>Daily default times</h2>
     <p className="hint">Planning only. New slots start at the daily default for their type.</p>
     {SLOT_TYPES.map(slotType => <p key={slotType}>
       <label htmlFor={`schedule-default-${slotType}`}>{slotType} default</label>
-      <input id={`schedule-default-${slotType}`} type="time" value={times[slotType] ?? saved[slotType] ?? ''} onChange={e => setTimes(prev => ({ ...prev, [slotType]: e.target.value }))} />
+      <Input appearance="workspace" id={`schedule-default-${slotType}`} type="time" value={times[slotType] ?? saved[slotType] ?? ''} onChange={e => setTimes(prev => ({ ...prev, [slotType]: e.target.value }))} />
     </p>)}
     <div className="queue-actions">
       <Button onClick={() => save.mutate()} disabled={save.isPending}>{save.isPending ? 'Saving...' : 'Save defaults'}</Button>
     </div>
     {notice && <p role="status">{notice}</p>}
-  </section>;
+  </section></Card>;
 }
 
 export function SlotScheduleCard({ slot }: { slot: Slot }) {
@@ -164,13 +169,13 @@ export function SlotScheduleCard({ slot }: { slot: Slot }) {
     <p className="hint">Planned at {slot.planned_time ?? '09:00'} · {slot.schedule_state ?? 'draft'}</p>
     <p>
       <label htmlFor={`slot-time-${slot.id}`}>Planned time</label>
-      <input id={`slot-time-${slot.id}`} type="time" value={plannedTime} onChange={e => setPlannedTime(e.target.value)} />
+      <Input appearance="workspace" id={`slot-time-${slot.id}`} type="time" value={plannedTime} onChange={e => setPlannedTime(e.target.value)} />
     </p>
     <fieldset>
       <legend>Channels</legend>
       {SCHEDULE_CHANNELS.map(channel => <p key={channel}>
         <label>
-          <input type="checkbox" checked={selected.includes(channel)} onChange={() => toggleChannel(channel)} />
+          <Input appearance="workspace" type="checkbox" checked={selected.includes(channel)} onChange={() => toggleChannel(channel)} />
           {channel}
         </label>
         <Button variant="outline" onClick={() => approveChannel.mutate(channel)} disabled={approveChannel.isPending}>Approve {channel}</Button>
@@ -203,7 +208,7 @@ export function ScheduleExportPanel() {
     onSuccess: (doc: { ready_slots?: unknown[] }) => { setDocument(doc); setNotice(`Exported ${(doc.ready_slots ?? []).length} ready slots. Nothing was published.`); },
     onError: (error: Error) => setNotice(error.message),
   });
-  return <section className="panel" aria-label="Schedule export">
+  return <Card appearance="workspace" asChild ><section className="panel" aria-label="Schedule export">
     <h2>Validated schedule export</h2>
     <p className="hint">Planning only. The JSON hand-off lists Ready slots; nothing is submitted anywhere.</p>
     <div className="queue-actions">
@@ -211,11 +216,11 @@ export function ScheduleExportPanel() {
     </div>
     {notice && <p role="status">{notice}</p>}
     <pre data-testid="calendar-schedule-export-json">{document ? JSON.stringify(document, null, 2) : 'No export yet.'}</pre>
-  </section>;
+  </section></Card>;
 }
 
 function EmptySlotGap({ slotType, slotDate }: { slotType: string; slotDate: string }) {
-  return <div className="panel empty" data-empty-slot={`${slotDate}:${slotType}`}><p className="hint">Empty {slotType} slot on {slotDate}. Nothing scheduled.</p></div>;
+  return <Card appearance="workspace" asChild ><div className="panel empty" data-empty-slot={`${slotDate}:${slotType}`}><p className="hint">Empty {slotType} slot on {slotDate}. Nothing scheduled.</p></div></Card>;
 }
 
 function DayCell({ slotDate, slots }: { slotDate: string; slots: Slot[] }) {
@@ -240,7 +245,7 @@ export function PlaceCampaignOnCalendar({ campaignId }: { campaignId: string }) 
   });
   return <div className="queue-actions">
     <label htmlFor={`place-calendar-${campaignId}`}>Start date</label>
-    <input id={`place-calendar-${campaignId}`} type="date" value={startDate} onChange={e => setStartDate(e.target.value)} />
+    <Input appearance="workspace" id={`place-calendar-${campaignId}`} type="date" value={startDate} onChange={e => setStartDate(e.target.value)} />
     <Button onClick={() => place.mutate(startDate)} disabled={place.isPending || !startDate}>{place.isPending ? 'Placing...' : 'Place on calendar'}</Button>
     {notice && <p role="status">{notice}</p>}
   </div>;
@@ -258,21 +263,21 @@ export function AddSlotFromRun() {
     onSuccess: () => { setNotice('Slot added.'); client.invalidateQueries({ queryKey: ['calendar-slots'] }); },
     onError: (error: Error) => setNotice(error.message),
   });
-  return <form className="panel" aria-label="Add calendar slot" onSubmit={e => { e.preventDefault(); create.mutate(); }}>
+  return <Card appearance="workspace" asChild ><form className="panel" aria-label="Add calendar slot" onSubmit={e => { e.preventDefault(); create.mutate(); }}>
     <h2>Add a slot from a run</h2>
     <label htmlFor="calendar-slot-date">Date</label>
-    <input id="calendar-slot-date" type="date" value={slotDate} onChange={e => setSlotDate(e.target.value)} />
+    <Input appearance="workspace" id="calendar-slot-date" type="date" value={slotDate} onChange={e => setSlotDate(e.target.value)} />
     <label htmlFor="calendar-slot-type">Slot type</label>
-    <select id="calendar-slot-type" value={slotType} onChange={e => setSlotType(e.target.value)}>
+    <NativeSelect appearance="workspace" id="calendar-slot-type" value={slotType} onChange={e => setSlotType(e.target.value)}>
       {SLOT_TYPES.map(entry => <option key={entry} value={entry}>{entry}</option>)}
-    </select>
+    </NativeSelect>
     <label htmlFor="calendar-slot-pillar">Pillar</label>
-    <input id="calendar-slot-pillar" value={pillar} maxLength={80} onChange={e => setPillar(e.target.value)} />
+    <Input appearance="workspace" id="calendar-slot-pillar" value={pillar} maxLength={80} onChange={e => setPillar(e.target.value)} />
     <label htmlFor="calendar-slot-run">Run id (optional)</label>
-    <input id="calendar-slot-run" value={runId} onChange={e => setRunId(e.target.value)} placeholder="run_..." />
+    <Input appearance="workspace" id="calendar-slot-run" value={runId} onChange={e => setRunId(e.target.value)} placeholder="run_..." />
     <Button type="submit" disabled={create.isPending}>{create.isPending ? 'Adding...' : 'Add slot'}</Button>
     {notice && <p role="status">{notice}</p>}
-  </form>;
+  </form></Card>;
 }
 
 export function CalendarView() {
@@ -286,18 +291,18 @@ export function CalendarView() {
   const capabilities = useQuery({ queryKey: ['channel-capabilities'], queryFn: () => unwrap(api.GET('/api/channel-capabilities')) });
   const grouped = groupSlotsByDate(slots.data ?? []);
   return <section aria-label="Calendar">
-    <section className="panel"><h2>Content Calendar</h2><p>Nothing publishes automatically. Empty daily slots stay visible as gaps.</p>
+    <Card appearance="workspace" asChild ><section className="panel"><h2>Content Calendar</h2><p>Nothing publishes automatically. Empty daily slots stay visible as gaps.</p>
       <div className="queue-actions" role="group" aria-label="Calendar mode">
         <Button variant={mode === 'week' ? undefined : 'outline'} onClick={() => setMode('week')} aria-pressed={mode === 'week'}>Week view</Button>
         <Button variant={mode === 'month' ? undefined : 'outline'} onClick={() => setMode('month')} aria-pressed={mode === 'month'}>Month view</Button>
       </div>
       <label htmlFor="calendar-anchor">Anchor date</label>
-      <input id="calendar-anchor" type="date" value={anchor} onChange={e => setAnchor(e.target.value)} />
+      <Input appearance="workspace" id="calendar-anchor" type="date" value={anchor} onChange={e => setAnchor(e.target.value)} />
       <div className="queue-actions">
         <Button variant="outline" onClick={() => setAnchor(addDaysISO(anchor, mode === 'week' ? -7 : -30))}>Previous</Button>
         <Button variant="outline" onClick={() => setAnchor(addDaysISO(anchor, mode === 'week' ? 7 : 30))}>Next</Button>
       </div>
-    </section>
+    </section></Card>
     {slots.isPending && <p>Loading slots...</p>}
     {slots.error && <p role="alert">{slots.error.message}</p>}
     {days.map(slotDate => <DayCell key={slotDate} slotDate={slotDate} slots={grouped.get(slotDate) ?? []} />)}

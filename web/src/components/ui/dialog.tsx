@@ -51,10 +51,15 @@ function DialogContent({
   className,
   children,
   showCloseButton = true,
+  inline = false,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
+  inline?: boolean
 }) {
+  // Inline confirmation keeps the workspace layout while using Radix focus
+  // handling, dismissal, title linkage, and accessible dialog semantics.
+  if (inline) return <DialogPrimitive.Content data-slot="dialog-content" className={className} {...props}>{children}</DialogPrimitive.Content>
   return (
     <DialogPortal data-slot="dialog-portal">
       <DialogOverlay />
@@ -98,6 +103,7 @@ function DialogFooter({
   ...props
 }: React.ComponentProps<"div"> & {
   showCloseButton?: boolean
+  inline?: boolean
 }) {
   return (
     <div
@@ -120,12 +126,13 @@ function DialogFooter({
 
 function DialogTitle({
   className,
+  appearance = "default",
   ...props
-}: React.ComponentProps<typeof DialogPrimitive.Title>) {
+}: React.ComponentProps<typeof DialogPrimitive.Title> & { appearance?: "default" | "workspace" }) {
   return (
     <DialogPrimitive.Title
       data-slot="dialog-title"
-      className={cn("text-lg leading-none font-semibold", className)}
+      className={cn(appearance === "workspace" ? "" : "text-lg leading-none font-semibold", className)}
       {...props}
     />
   )
