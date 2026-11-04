@@ -877,10 +877,15 @@ check_google_auth_gate() {
     [ -n "$GOOGLE_SECRET_ARN" ] || { echo "refused: EnableGoogleAuth true requires exact --google-secret-arn, missing CLI value refused before any mutation" >&2; phase_failed "$GATE_LABEL"; }
     [ "$GATE_FILE_GOOGLE" = "$GOOGLE_SECRET_ARN" ] || { echo "refused: parameters file GoogleOAuthSecretArn does not equal the validated CLI value, validating one set while deploying another is refused" >&2; phase_failed "$GATE_LABEL"; }
     check_secret_arn "$GOOGLE_SECRET_ARN" "google"
-    echo "Verified Google auth gate: EnableGoogleAuth true plus exact owned Google secret $GOOGLE_SECRET_ARN"
+    echo "refused: public template disables sign-in; set EnableGoogleAuth false and remove sign-in secrets" >&2
+    phase_failed "$GATE_LABEL"
   else
-    if [ -n "$GOOGLE_SECRET_ARN" ]; then
+    if [ -n "$GOOGLE_SECRET_ARN" ] || [ -n "$GATE_FILE_GOOGLE" ]; then
       echo "refused: --google-secret-arn requires EnableGoogleAuth true, keyless false must not ignore a validated secret" >&2
+      phase_failed "$GATE_LABEL"
+    fi
+    if [ -n "$FACEBOOK_SECRET_ARN" ] || [ -n "$(params_file_value FacebookOAuthSecretArn 2>/dev/null || true)" ]; then
+      echo "refused: public template requires no Facebook sign-in secret" >&2
       phase_failed "$GATE_LABEL"
     fi
     echo "Verified Google auth gate: EnableGoogleAuth false, keyless three secret path"
@@ -1419,6 +1424,11 @@ for entry in doc:
     if not isinstance(entry, dict) or "ParameterKey" not in entry:
         raise SystemExit("parameters file has a malformed entry")
     key = entry["ParameterKey"]
+    if key in {"EnableGoogleAuth", "GoogleOAuthSecretArn", "FacebookOAuthSecretArn"}:
+        expected = "false" if key == "EnableGoogleAuth" else ""
+        if entry.get("ParameterValue") != expected:
+            raise SystemExit("public template requires retired sign-in parameters disabled and empty")
+        continue
     if key == "EnableServices":
         continue
     if key in ("BudgetLimitUsd", "BudgetNotifyEmail"):
@@ -2959,6 +2969,11 @@ for entry in doc:
     if not isinstance(entry, dict) or "ParameterKey" not in entry:
         raise SystemExit("parameters file has a malformed entry")
     key = entry["ParameterKey"]
+    if key in {"EnableGoogleAuth", "GoogleOAuthSecretArn", "FacebookOAuthSecretArn"}:
+        expected = "false" if key == "EnableGoogleAuth" else ""
+        if entry.get("ParameterValue") != expected:
+            raise SystemExit("public template requires retired sign-in parameters disabled and empty")
+        continue
     if key == "EnableServices":
         continue
     if key in ("BudgetLimitUsd", "BudgetNotifyEmail"):
@@ -3177,6 +3192,15 @@ for entry in changes:
     action = rc.get("Action", "") or ""
     rtype = rc.get("ResourceType", "") or ""
     replacement = rc.get("Replacement", "False")
+    if logical in {"ApiGoogleAuthPolicy", "ApiFacebookSecretPolicy"} and action == "Remove":
+        if google_enable != "false" or google_arn or facebook_arn:
+            print("PUBLIC_AUTH_PARAMETERS_REQUIRED")
+            sys.exit(0)
+        if logical in seen or rtype != "AWS::IAM::Policy" or str(replacement) != "False":
+            print("INVALID_AUTH_POLICY_REMOVAL")
+            sys.exit(0)
+        seen.add(logical)
+        continue
     if logical == "ApiGoogleAuthPolicy":
         if google_enable != "true":
             print("GOOGLE_DISABLED")

@@ -73,8 +73,7 @@ def test_enable_refused_with_invalid_base_url(monkeypatch):
 
 
 def test_status_google_only_providers(client, monkeypatch):
-    assert client.get('/api/auth/status').json() == {
-        'enabled': False, 'user': '', 'display': '', 'live_verified': False, 'providers': []}
+    assert client.get('/api/auth/status').status_code == 404
     monkeypatch.setenv('AUTH_ENABLED', 'true')
     monkeypatch.delenv('GOOGLE_CLIENT_ID', raising=False)
     monkeypatch.delenv('GOOGLE_CLIENT_SECRET', raising=False)

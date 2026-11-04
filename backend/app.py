@@ -532,6 +532,8 @@ app.include_router(dropbox_import.router)
 @app.middleware('http')
 async def local_requests(request: Request, call_next):
     from urllib.parse import urlsplit
+    if not auth.enabled() and request.url.path.startswith('/api/auth/'):
+        return JSONResponse({'detail': 'Not found'}, status_code=404)
     origin = request.headers.get('origin')
     if request.method not in ('GET', 'HEAD', 'OPTIONS') and origin:
         # PUBLIC_BASE_URL is the trusted frontend origin behind the Next proxy.

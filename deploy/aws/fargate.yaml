@@ -54,15 +54,6 @@ Parameters:
   BootstrapImageUri:
     Type: String
     Description: ECR URI for the bootstrap database-role image, built from containers/bootstrap-db.Containerfile, used only by the isolated one-off bootstrap task. No default, no placeholder at apply time.
-  EnableGoogleAuth:
-    Type: String
-    Default: 'false'
-    AllowedValues: ['true', 'false']
-    Description: Google-only auth gate. Default false keeps the API keyless with AUTH_ENABLED false and no Google secret. Set to true plus GoogleOAuthSecretArn only for explicit Google sign-in wiring. Source-only until live provider proof. No Meta credential and no Facebook injection in Google-only mode.
-  GoogleOAuthSecretArn:
-    Type: String
-    Default: ''
-    Description: Secrets Manager ARN for the Google OAuth client, JSON keys google-client-id and google-client-secret, placeholder only, no value in this file. Used only when EnableGoogleAuth is true. The API task receives GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET only then, via ECS task secrets. Empty default means no secret and auth stays disabled.
   MetaSecretArn:
     Type: String
     Default: ''
@@ -71,22 +62,10 @@ Parameters:
     Type: String
     Default: ''
     Description: Secrets Manager ARN for the Google Drive picker pair, JSON keys google-drive-api-key and google-drive-app-id, placeholder only, no value in this file. Created outside this stack. The API task receives GOOGLE_DRIVE_API_KEY and GOOGLE_DRIVE_APP_ID only when this ARN is set, via ECS task secrets. Empty default leaves Drive unconfigured.
-  FacebookOAuthSecretArn:
-    Type: String
-    Default: ''
-    Description: Secrets Manager ARN for the Facebook OAuth client, JSON keys facebook-client-id and facebook-client-secret, placeholder only, no value in this file. Created outside this stack. The API task receives FACEBOOK_CLIENT_ID and FACEBOOK_CLIENT_SECRET only when this ARN is set, via ECS task secrets. Empty default keeps Facebook sign-in unavailable.
-Rules:
-  GoogleAuthRequiresSecret:
-    RuleCondition: !Equals ['true', !Ref EnableGoogleAuth]
-    Assertions:
-      - Assert: !Not [!Equals ['', !Ref GoogleOAuthSecretArn]]
-        AssertDescription: EnableGoogleAuth true requires exact GoogleOAuthSecretArn, empty refused before any mutation.
 Conditions:
   ServicesEnabled: !Equals ['true', !Ref EnableServices]
-  GoogleAuthEnabled: !And [!Equals ['true', !Ref EnableGoogleAuth], !Not [!Equals ['', !Ref GoogleOAuthSecretArn]]]
   MetaKeyEnabled: !Not [!Equals ['', !Ref MetaSecretArn]]
   DriveEnabled: !Not [!Equals ['', !Ref DriveSecretArn]]
-  FacebookEnabled: !Not [!Equals ['', !Ref FacebookOAuthSecretArn]]
 Resources:
   Vpc:
     Type: AWS::EC2::VPC
@@ -612,18 +591,6 @@ Resources:
                   - acm:ListTagsForCertificate
                   - acm:GetCertificate
                 Resource: [!Ref AcmCertificateArn]
-  ApiGoogleAuthPolicy:
-    Type: AWS::IAM::Policy
-    Condition: GoogleAuthEnabled
-    Properties:
-      PolicyName: api-google-auth-secret-only
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Action: [secretsmanager:GetSecretValue]
-            Resource: [!Ref GoogleOAuthSecretArn]
-      Roles: [!Ref ApiExecutionRole]
   ApiMetaSecretPolicy:
     Type: AWS::IAM::Policy
     Condition: MetaKeyEnabled
@@ -648,18 +615,6 @@ Resources:
             Action: [secretsmanager:GetSecretValue]
             Resource: [!Ref DriveSecretArn]
       Roles: [!Ref ApiExecutionRole]
-  ApiFacebookSecretPolicy:
-    Type: AWS::IAM::Policy
-    Condition: FacebookEnabled
-    Properties:
-      PolicyName: api-facebook-secret-only
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Action: [secretsmanager:GetSecretValue]
-            Resource: [!Ref FacebookOAuthSecretArn]
-      Roles: [!Ref ApiExecutionRole]
   ApiTaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
@@ -682,7 +637,8 @@ Resources:
             - { Name: LAUNCHCREW_DB_TLS_MODE, Value: verify-full }
             - { Name: DATABASE_SSL_ROOTCERT, Value: /app/rds-ca-bundle.pem }
             - { Name: PUBLIC_BASE_URL, Value: 'https://launchcrew.summitsingh.com' }
-            - { Name: AUTH_ENABLED, Value: !If [GoogleAuthEnabled, 'true', 'false'] }
+            # Public workspace stays available across rollouts; sign-in secrets are absent.
+            - { Name: AUTH_ENABLED, Value: 'false' }
             - { Name: META_MODEL, Value: muse-spark-1.3 }
             - { Name: META_API_BASE_URL, Value: https://api.meta.ai/v1 }
             - { Name: LAUNCHCREW_PHOTO_SAM_ENABLED, Value: 'true' }
@@ -691,14 +647,6 @@ Resources:
             - { Name: DATABASE_URL, ValueFrom: !Sub '${RuntimeDbUrlSecretArn}:database-url::' }
             - { Name: TLS_CERT_B64, ValueFrom: !Sub '${TlsSecretArn}:tls-cert-b64::' }
             - { Name: TLS_KEY_B64, ValueFrom: !Sub '${TlsSecretArn}:tls-key-b64::' }
-            - !If
-              - GoogleAuthEnabled
-              - { Name: GOOGLE_CLIENT_ID, ValueFrom: !Sub '${GoogleOAuthSecretArn}:google-client-id::' }
-              - !Ref 'AWS::NoValue'
-            - !If
-              - GoogleAuthEnabled
-              - { Name: GOOGLE_CLIENT_SECRET, ValueFrom: !Sub '${GoogleOAuthSecretArn}:google-client-secret::' }
-              - !Ref 'AWS::NoValue'
             - !If
               - MetaKeyEnabled
               - { Name: META_API_KEY, ValueFrom: !Sub '${MetaSecretArn}:meta-api-key::' }
@@ -710,14 +658,6 @@ Resources:
             - !If
               - DriveEnabled
               - { Name: GOOGLE_DRIVE_APP_ID, ValueFrom: !Sub '${DriveSecretArn}:google-drive-app-id::' }
-              - !Ref 'AWS::NoValue'
-            - !If
-              - FacebookEnabled
-              - { Name: FACEBOOK_CLIENT_ID, ValueFrom: !Sub '${FacebookOAuthSecretArn}:facebook-client-id::' }
-              - !Ref 'AWS::NoValue'
-            - !If
-              - FacebookEnabled
-              - { Name: FACEBOOK_CLIENT_SECRET, ValueFrom: !Sub '${FacebookOAuthSecretArn}:facebook-client-secret::' }
               - !Ref 'AWS::NoValue'
           LogConfiguration:
             LogDriver: awslogs

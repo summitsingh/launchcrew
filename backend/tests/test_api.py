@@ -148,7 +148,7 @@ def test_openapi_matches_committed_document(client):
 
 
 def test_auth_disabled(client):
-    assert client.get('/api/auth/status').json() == {'enabled': False, 'user': '', 'display': '', 'live_verified': False, 'providers': []}
+    assert client.get('/api/auth/status').status_code == 404
     assert client.get('/api/auth/google/login', follow_redirects=False).status_code == 404
 
 
