@@ -99,6 +99,17 @@ def test_flag_gated_connect_refused_naming_flag(client, test_engine):
         assert FLAG_BY_PLATFORM[platform] in completed.text
 
 
+def test_initiate_limitation_follows_connection_state(client):
+    from launchcrew import social_connections as social_mod
+    assert social_mod.limitation_for('instagram') is not None
+    assert 'connected yet' in (social_mod.limitation_for('instagram') or '')
+    assert social_mod.limitation_for('instagram', connected=True) is None
+    assert social_mod.describe_platform('instagram', connected=True)['limitation'] is None
+    listed = {entry['platform']: entry for entry in social_mod.list_platforms(['instagram'])}
+    assert listed['instagram']['limitation'] is None
+    assert listed['facebook']['limitation'] is not None
+
+
 def test_personal_account_refused(client, test_engine):
     initiated = client.post('/api/social/connections/instagram/connect', json={'account_type': 'personal'})
     assert initiated.status_code == 422, initiated.text

@@ -135,7 +135,14 @@ def oauth_configured(platform: str) -> bool:
     return bool(os.environ.get(env_name, "").strip())
 
 
-def limitation_for(platform: str) -> str | None:
+def limitation_for(platform: str, connected: bool = False) -> str | None:
+    """Owner-facing platform note, derived from connection state first.
+
+    A connected platform never renders not-connected copy: the connect
+    prompt describes a missing account, so it must not appear on a card
+    that already has one. Configuration-only callers keep passing the
+    default, which preserves the unconnected wording.
+    """
     if platform in FLAGGED_PLATFORMS and not flag_enabled(platform):
         flag = FLAG_ENV_BY_PLATFORM[platform]
         return (
@@ -143,6 +150,8 @@ def limitation_for(platform: str) -> str | None:
             "set %s=true to enable after review" % (flag, flag)
         )
     if not oauth_configured(platform):
+        if connected:
+            return None
         return (
             "No %s brand account connected yet; connect one with its account "
             "handle and access token by explicit owner action. The token is "
@@ -153,11 +162,11 @@ def limitation_for(platform: str) -> str | None:
     return None
 
 
-def describe_platform(platform: str) -> dict[str, Any]:
+def describe_platform(platform: str, connected: bool = False) -> dict[str, Any]:
     priority = platform in PRIORITY_PLATFORMS
     enabled = platform_enabled(platform)
     configured = oauth_configured(platform)
-    limitation = limitation_for(platform)
+    limitation = limitation_for(platform, connected=connected)
     status = "active" if enabled else "review_pending_flag"
     return {
         "platform": platform,
@@ -172,8 +181,10 @@ def describe_platform(platform: str) -> dict[str, Any]:
     }
 
 
-def list_platforms() -> list[dict[str, Any]]:
-    return [describe_platform(platform) for platform in ALL_PLATFORMS]
+def list_platforms(connected_platforms=()) -> list[dict[str, Any]]:
+    connected = set(connected_platforms or ())
+    return [describe_platform(platform, connected=(platform in connected))
+            for platform in ALL_PLATFORMS]
 
 
 def _encryption_key() -> bytes:

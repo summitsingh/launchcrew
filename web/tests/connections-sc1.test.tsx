@@ -124,6 +124,28 @@ describe('SC1 brand account connections panel', () => {
     expect(html).toContain('One-tap disconnect');
   });
 
+  it('never renders not-connected copy on a connected card', () => {
+    const connectedHtml = renderToStaticMarkup(
+      <BrandAccountConnectionsPanel
+        platforms={PLATFORMS}
+        connections={[connection('instagram')]}
+        onConnect={() => {}}
+        onDisconnect={() => {}}
+      />,
+    );
+    expect(connectedHtml).toContain('disconnect-instagram');
+    expect(connectedHtml).not.toContain('No instagram brand account connected yet');
+    const bareHtml = renderToStaticMarkup(
+      <BrandAccountConnectionsPanel
+        platforms={PLATFORMS}
+        connections={[]}
+        onConnect={() => {}}
+        onDisconnect={() => {}}
+      />,
+    );
+    expect(bareHtml).toContain('No instagram brand account connected yet');
+  });
+
   it('marks flag-gated platforms behind capability flags pending review', () => {
     const html = renderToStaticMarkup(
       <BrandAccountConnectionsPanel platforms={PLATFORMS} connections={[]} onConnect={() => {}} onDisconnect={() => {}} />,

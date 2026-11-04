@@ -124,7 +124,7 @@ export function BrandAccountConnectionsPanel({
                   <span className="badge pending">not connected</span>
                 )}
               </div>
-              {item.limitation && <p className="hint">{item.limitation}</p>}
+              {!connected && item.limitation && <p className="hint">{item.limitation}</p>}
               {connected && connection ? (
                 <>
                   <p className="hint" data-testid={`handle-${item.platform}`}>
@@ -180,7 +180,7 @@ export function BrandAccountConnectionsPanel({
               </div>
               <p className="hint" data-testid={`flag-${item.platform}`}>
                 {item.flag_name || 'capability flag'} pending platform review
-                {item.limitation ? ` · ${item.limitation}` : ''}
+                {!connected && item.limitation ? ` · ${item.limitation}` : ''}
               </p>
               {connected && connection ? (
                 <>

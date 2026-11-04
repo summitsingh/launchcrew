@@ -5453,11 +5453,17 @@ def initiate_social_connect(platform: str, body: SocialConnectIn | None = None,
         raise HTTPException(409, 'Platform %s is behind capability flag %s pending platform review' % (
             key, social_mod.flag_name_for(key)))
     with store.connect() as db:
-        store.ensure_workspace_seeded(db, actor)
+        workspace_id = store.ensure_workspace_seeded(db, actor)
+        connected_row = db.execute(text('SELECT status, encrypted_token FROM social_connections'
+                                        ' WHERE workspace_id=:ws AND platform=:platform'),
+                                   {'ws': workspace_id, 'platform': key}).mappings().first()
+    already_connected = bool(connected_row is not None
+                             and connected_row.get('status') == 'connected'
+                             and connected_row.get('encrypted_token'))
     state = secrets.token_urlsafe(24)
     client_env = social_mod.CLIENT_ENV_BY_PLATFORM.get(key, '')
     configured = social_mod.oauth_configured(key)
-    limitation = social_mod.limitation_for(key)
+    limitation = social_mod.limitation_for(key, connected=already_connected)
     authorize_url = ('https://connect.example.com/%s/authorize?state=%s' % (key, state))
     if configured:
         authorize_url += '&client_configured=true'
