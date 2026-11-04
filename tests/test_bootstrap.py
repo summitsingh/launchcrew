@@ -5076,7 +5076,7 @@ class MetaKeyGateTests(BootstrapHarness):
         self.assertIn("Verified Meta key gate", combined)
         self.assertIn("ApiTaskDefinition", combined)
 
-    def test_meta_google_six_secret_images_success(self):
+    def test_public_meta_configuration_cannot_enable_google_signin(self):
         base = self.base_args(**{"--google-secret-arn": SECRET_GOOGLE,
                                  "--meta-secret-arn": SECRET_META})
         result, calls = self.run_bootstrap(
@@ -5084,10 +5084,9 @@ class MetaKeyGateTests(BootstrapHarness):
             params_overrides={"EnableGoogleAuth": "true",
                               "GoogleOAuthSecretArn": SECRET_GOOGLE,
                               "MetaSecretArn": SECRET_META})
-        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
-        combined = result.stdout + result.stderr
-        self.assertIn("EnableGoogleAuth true plus exact owned Google secret", combined)
-        self.assertIn("Verified Meta key gate", combined)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("public template disables sign-in", result.stdout + result.stderr)
+        self.assertFalse(any("run-task" in call or "execute-change-set" in call for call in calls))
 
     def test_meta_placeholder_refused_before_mutation(self):
         args = self.base_args(**{"--meta-secret-arn": SECRET_META})
