@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from backend import adapter, store, auth, drive_intake, dropbox_import
+from backend import approver_presentation
 from launchcrew import agents, receipts
 from launchcrew.outcome_log import KNOWN_CHANNELS as OUTCOME_KNOWN_CHANNELS
 from launchcrew.outcome_log import MAX_COUNT as OUTCOME_MAX_COUNT
@@ -1221,7 +1222,8 @@ def save_run(db, receipt, agent_name, actor, workspace_id):
 def queue(actor: str = Depends(auth.actor)):
     with store.connect() as db:
         workspace_id = store.ensure_workspace_seeded(db, actor)
-        return [r[0] for r in db.execute(text("SELECT receipt FROM runs WHERE workspace_id=:ws ORDER BY (state='pending_approval') DESC, created_at, id"), {'ws': workspace_id})]
+        rows = [r[0] for r in db.execute(text("SELECT receipt FROM runs WHERE workspace_id=:ws ORDER BY (state='pending_approval') DESC, created_at, id"), {'ws': workspace_id})]
+        return [approver_presentation.sanitize_receipt_for_presentation(entry) for entry in rows]
 
 
 def get_receipt(db, run_id, workspace_id, lock=False):
@@ -1236,7 +1238,8 @@ def get_receipt(db, run_id, workspace_id, lock=False):
 def get_run(run_id: str, actor: str = Depends(auth.actor)):
     with store.connect() as db:
         workspace_id = store.ensure_workspace_seeded(db, actor)
-        return get_receipt(db, run_id, workspace_id)
+        receipt = get_receipt(db, run_id, workspace_id)
+        return approver_presentation.sanitize_receipt_for_presentation(receipt)
 
 
 def canonical_observed_at(value):
@@ -1371,7 +1374,7 @@ def revise(run_id: str, body: ReviseIn, actor: str = Depends(auth.actor)):
         db.execute(text('DELETE FROM approvals WHERE run_id=:id'), {'id': run_id})
         store.audit(db, run_id, 'human_revised', actor, workspace_id)
         _drop_ready_slots_for_run(db, run_id, workspace_id)
-    return revised
+    return approver_presentation.sanitize_receipt_for_presentation(revised)
 
 
 @app.post('/api/runs/{run_id}/approve', response_model=Receipt)
@@ -1405,7 +1408,7 @@ def approve(run_id: str, body: ApproveIn, actor: str = Depends(auth.actor)):
         db.execute(text('INSERT INTO approvals(run_id,approved_by) VALUES (:id,:actor)'), {'id': run_id, 'actor': actor})
         store.audit(db, run_id, 'approved_for_export', actor, workspace_id)
         _advance_calendar_slots(db, run_id, workspace_id, 'approved')
-    return receipt
+    return approver_presentation.sanitize_receipt_for_presentation(receipt)
 
 
 @app.post('/api/runs/{run_id}/export', response_model=Receipt)
@@ -1434,7 +1437,7 @@ def export(run_id: str, body: ExportIn, response: Response, actor: str = Depends
         store.audit(db, run_id, 'exported', actor, workspace_id)
         _advance_calendar_slots(db, run_id, workspace_id, 'exported')
     response.headers['Content-Disposition'] = 'attachment; filename="launchcrew-pack.json"'
-    return exported
+    return approver_presentation.sanitize_receipt_for_presentation(exported)
 
 
 
@@ -1463,7 +1466,7 @@ def channel_variants(run_id: str, actor: str = Depends(auth.actor)):
             bundle['capabilities'] = _overlay_live_capabilities(db, workspace_id, bundle.get('capabilities'))
         except Exception:
             pass
-    return bundle
+    return approver_presentation.sanitize_bundle_for_presentation(bundle)
 
 
 @app.post('/api/runs/{run_id}/channel-variants/{channel}/approve', response_model=Receipt)
@@ -1491,7 +1494,7 @@ def approve_channel_variant(run_id: str, channel: str, body: ExportIn, actor: st
         if result.rowcount == 0:
             raise HTTPException(404, 'Run not found')
         store.audit(db, run_id, 'channel_variant_approval', actor, workspace_id)
-    return revised
+    return approver_presentation.sanitize_receipt_for_presentation(revised)
 
 
 @app.post('/api/runs/{run_id}/channel-variants/{channel}/copy', response_model=ChannelCopyOut)
@@ -1533,7 +1536,7 @@ def copy_channel_variant(run_id: str, channel: str, body: ExportIn, actor: str =
         if result.rowcount == 0:
             raise HTTPException(404, 'Run not found')
         store.audit(db, run_id, 'channel_copy', actor, workspace_id)
-    return record
+    return approver_presentation.sanitize_copy_record_for_presentation(record)
 
 
 @app.post('/api/runs/{run_id}/copy', response_model=DraftCopyOut)
@@ -1581,7 +1584,7 @@ def copy_draft(run_id: str, body: DraftCopyIn, actor: str = Depends(auth.actor))
         if result.rowcount == 0:
             raise HTTPException(404, 'Run not found')
         store.audit(db, run_id, 'draft_copy', actor, workspace_id)
-    return record
+    return approver_presentation.sanitize_copy_record_for_presentation(record)
 
 
 @app.get('/api/runs/{run_id}/launch-matrix', response_model=LaunchMatrixOut)
@@ -1609,7 +1612,7 @@ def launch_matrix(run_id: str, actor: str = Depends(auth.actor)):
             bundle['capabilities'] = _overlay_live_capabilities(db, workspace_id, bundle.get('capabilities'))
         except Exception:
             pass
-    return bundle
+    return approver_presentation.sanitize_bundle_for_presentation(bundle)
 
 
 def _pack_filename(run_id):
@@ -1660,7 +1663,7 @@ def _build_launch_pack_markdown(receipt):
     lines.append('')
     lines.append('- Run ID: %s' % receipt.get('run_id', ''))
     lines.append('- Approved revision: %d' % current)
-    lines.append('- Approver: %s' % (approver or ''))
+    lines.append('- Approver: %s' % (approver_presentation.PUBLIC_APPROVER_LABEL if approver else ''))
     lines.append('- Binding version: %s' % binding['version'])
     lines.append('- Binding digest: %s' % binding['digest'])
     lines.append('- Approved at: %s' % (approved_at or ''))
@@ -1722,10 +1725,10 @@ def _build_launch_pack_markdown(receipt):
             lines.append('- Trim note: %s' % entry.get('trim_note'))
         if record is not None and current_ok:
             lines.append('- Channel approval: approved by %s at revision %s (current)' % (
-                record.get('approved_by', ''), record.get('revision', '')))
+                approver_presentation.PUBLIC_APPROVER_LABEL if record.get('approved_by') else '', record.get('revision', '')))
         elif record is not None:
             lines.append('- Channel approval: approved by %s at revision %s (stale: %s)' % (
-                record.get('approved_by', ''), record.get('revision', ''), reason))
+                approver_presentation.PUBLIC_APPROVER_LABEL if record.get('approved_by') else '', record.get('revision', ''), reason))
         else:
             lines.append('- Channel approval: none (%s)' % reason)
         if entry.get('text'):

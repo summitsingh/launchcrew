@@ -14,6 +14,7 @@ import { Label } from '@/components/ui/label';
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert';
 import { Separator } from '@/components/ui/separator';
 import { api, unwrap } from '@/lib/api';
+import { PUBLIC_APPROVER_LABEL, presentationActor } from '@/lib/approver-presentation';
 import { canApproveDay, canExportDay, memoryEditPayload } from '@/lib/v2';
 import { dataModeCopy, dataModeLabel, dataModeNote } from '@/components/model-status';
 import { loadReplayDiff, loadReplaySelection, saveReplayDiff, saveReplaySelection } from '@/lib/replay-state';
@@ -424,7 +425,7 @@ export function ReceiptSummaryStrip({ receipt }: { receipt: Receipt }) {
       <div><dt>Verified claims</dt><dd>{check?.verified_count ?? 'unavailable'}</dd></div>
       <div><dt>Blocked claims</dt><dd>{check?.blocked_count ?? 'unavailable'}</dd></div>
       <div><dt>Approved by</dt><dd>{approval?.approved_by
-        ? <span data-testid="summary-approver">{approval.approved_by}</span>
+        ? <span data-testid="summary-approver" title="Approval recorded">{PUBLIC_APPROVER_LABEL}</span>
         : 'Awaiting individual approval'}</dd></div>
       <div><dt>Approval time</dt><dd>{approval?.timestamp ?? 'not yet approved'}</dd></div>
     </dl>
@@ -756,7 +757,7 @@ export function exportReceiptToMarkdown(receipt: Receipt): string {
   const post = typeof exported?.post === 'string' ? exported.post : current.post;
   const email = typeof exported?.email === 'string' ? exported.email : current.email;
   const check = currentCheckOf(receipt);
-  const approvals = receipt.approvals.map(entry => `- ${entry.approved_by}${entry.revision != null ? `, revision ${entry.revision}` : ''}, ${entry.timestamp}`);
+  const approvals = receipt.approvals.map(entry => `- ${entry.approved_by ? PUBLIC_APPROVER_LABEL : ''}${entry.revision != null ? `, revision ${entry.revision}` : ''}, ${entry.timestamp}`);
   const blocked = (check?.blocked_claims ?? []).map(entry => `- ${(entry as { claim?: string }).claim ?? 'unsupported text'}: ${(entry as { reason?: string }).reason ?? 'needs revision'}`);
   const submitted = (receipt.summary as unknown as { submit_attempted?: unknown } | null)?.submit_attempted;
   const lines = [
@@ -803,7 +804,7 @@ export function ReceiptTimeline({ receipt }: { receipt: Receipt }) {
   const log = Array.isArray(audit.event_log) ? audit.event_log : [];
   const history = ((receipt as unknown as { revision_history?: Array<{ revision?: number; approved_revision?: number | null; superseded_by?: number; outcome?: string; revised_by?: string; revised_at?: string; photo_event?: string; photo_status?: { state?: string; label?: string | null; reason?: string } | null; approvals?: Array<{ approved_by?: string; revision?: number; timestamp?: string }> }> }).revision_history ?? []);
   const exports = ((receipt as unknown as { export_history?: Array<{ revision?: number; exported_by?: string; timestamp?: string }> }).export_history ?? []);
-  return <Card appearance="workspace" asChild ><section className="panel" aria-label="Receipt timeline"><p className="eyebrow">TIMELINE</p><h2>Recorded events</h2><p className="hint">Every entry below comes from the stored receipt. No times are invented and no live model activity is claimed.</p><ol>{log.map((entry, i) => <li key={i}><strong>{entry.step ?? 'event'}</strong><span> · {entry.agent ?? 'unknown'}{entry.profile ? ` (${entry.profile})` : ''}</span><br /><small>{entry.action ?? ''}</small><br /><small className="run-id">{entry.timestamp ?? 'timestamp unavailable'}</small></li>)}</ol>{history.length > 0 && <div><h3>Superseded revisions</h3>{history.map((entry, i) => <p key={i} className="hint">Revision {entry.revision ?? '?'} superseded by revision {entry.superseded_by ?? '?'} · revised by {entry.revised_by ?? 'unknown'}{entry.revised_at ? ` · ${entry.revised_at}` : ''}{entry.photo_event ? ` · photo event: ${entry.photo_event}${entry.photo_status?.state ? ` (prior photo: ${entry.photo_status.state}${entry.photo_status.label ? ` ${entry.photo_status.label}` : ''})` : ''}` : ''} · approvals kept as audit: {(entry.approvals ?? []).map(a => `${a.approved_by ?? 'unknown'}${a.revision != null ? ` (rev ${a.revision})` : ''}`).join(', ') || 'none'}</p>)}</div>}{exports.length > 0 && <div><h3>Exports</h3>{exports.map((entry, i) => <p key={i} className="hint">Exported revision {entry.revision ?? '?'} by {entry.exported_by ?? 'unknown'} · {entry.timestamp ?? 'timestamp unavailable'}</p>)}</div>}{receipt.approvals.map((approval, i) => <p key={i} className="hint">Approval {i + 1}: {approval.approved_by}{approval.revision != null ? ` · revision ${approval.revision}` : ''} · {approval.timestamp}</p>)}</section></Card>;
+  return <Card appearance="workspace" asChild ><section className="panel" aria-label="Receipt timeline"><p className="eyebrow">TIMELINE</p><h2>Recorded events</h2><p className="hint">Every entry below comes from the stored receipt. No times are invented and no live model activity is claimed.</p><ol>{log.map((entry, i) => <li key={i}><strong>{entry.step ?? 'event'}</strong><span> · {entry.agent ?? 'unknown'}{entry.profile ? ` (${presentationActor(entry.profile)})` : ''}</span><br /><small>{entry.action ?? ''}</small><br /><small className="run-id">{entry.timestamp ?? 'timestamp unavailable'}</small></li>)}</ol>{history.length > 0 && <div><h3>Superseded revisions</h3>{history.map((entry, i) => <p key={i} className="hint">Revision {entry.revision ?? '?'} superseded by revision {entry.superseded_by ?? '?'} · revised by {entry.revised_by ? PUBLIC_APPROVER_LABEL : 'unknown'}{entry.revised_at ? ` · ${entry.revised_at}` : ''}{entry.photo_event ? ` · photo event: ${entry.photo_event}${entry.photo_status?.state ? ` (prior photo: ${entry.photo_status.state}${entry.photo_status.label ? ` ${entry.photo_status.label}` : ''})` : ''}` : ''} · approvals kept as audit: {(entry.approvals ?? []).map(a => `${a.approved_by ? PUBLIC_APPROVER_LABEL : 'unknown'}${a.revision != null ? ` (rev ${a.revision})` : ''}`).join(', ') || 'none'}</p>)}</div>}{exports.length > 0 && <div><h3>Exports</h3>{exports.map((entry, i) => <p key={i} className="hint">Exported revision {entry.revision ?? '?'} by {entry.exported_by ? PUBLIC_APPROVER_LABEL : 'unknown'} · {entry.timestamp ?? 'timestamp unavailable'}</p>)}</div>}{receipt.approvals.map((approval, i) => <p key={i} className="hint">Approval {i + 1}: {approval.approved_by ? PUBLIC_APPROVER_LABEL : 'unknown'}{approval.revision != null ? ` · revision ${approval.revision}` : ''} · {approval.timestamp}</p>)}</section></Card>;
 }
 
 export function HumanRevisionEditor({ receipt }: { receipt: Receipt }) {
@@ -1010,7 +1011,7 @@ function ChannelVariantCard({ label, variant, approval, copied, busy, locked, on
   if (!variant) return null;
   const valid = variant.content_valid && !!variant.text;
   const approvedCurrent = valid && approval?.current === true;
-  const approvedBy = typeof approval?.approved_by === 'string' && approval.approved_by ? approval.approved_by : null;
+  const approvedBy = typeof approval?.approved_by === 'string' && approval.approved_by ? PUBLIC_APPROVER_LABEL : null;
   const busyOrLocked = busy || locked;
   const adPolicy = adPolicyOf(variant);
   const adFlagged = adPolicy.passed === false || adPolicy.hits.length > 0;
