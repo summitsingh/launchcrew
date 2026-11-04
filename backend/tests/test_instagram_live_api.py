@@ -96,7 +96,7 @@ def test_live_instagram_posts_real_id_when_fully_enabled(client, monkeypatch):
     assert execution['platform_post_id'] == 'media_live_1'
     assert execution['attempts'][-1]['simulated'] is False
     assert execution['live_url'] == 'https://www.instagram.com/p/DbLiveOpener1/'
-    assert transport.call_count == 3
+    assert transport.call_count == 4
 
 
 def test_live_instagram_records_permalink_as_live_url(client, monkeypatch):
