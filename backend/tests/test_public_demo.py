@@ -37,3 +37,16 @@ def test_public_connection_mutations_locked_before_validation(client, method, pa
 def test_public_publish_execution_is_available(client):
     # A missing slot reaches normal resource validation, not a public-mode refusal.
     assert client.post('/api/publish/slots/missing/execute', json={}).status_code == 404
+
+
+def test_roster_excludes_only_known_verification_agents(client, test_engine):
+    from sqlalchemy import text
+    profile = client.get('/api/agents/Maker').json()
+    for name in ['VerifyClone', 'VerifyScout', 'OwnerMaker']:
+        response = client.post('/api/agents', json={**profile, 'name': name})
+        assert response.status_code == 201
+    names = {item['name'] for item in client.get('/api/agents').json()}
+    assert {'Scout', 'Maker', 'Checker', 'OwnerMaker'} <= names
+    assert not {'VerifyClone', 'VerifyScout'} & names
+    with test_engine.connect() as db:
+        assert db.execute(text("SELECT count(*) FROM agents WHERE name IN ('verifyclone','verifyscout')")).scalar() == 2

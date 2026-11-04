@@ -148,3 +148,14 @@ describe('footer navigation', () => {
     expect(deskSource).toContain('href="/plans"');
   });
 });
+
+describe('Team roadmap copy', () => {
+  it('labels collaboration and shared memory as planned', () => {
+    const team = PLANS.find(plan => plan.tier === 'team')!;
+    expect(team.audience).toContain('(planned)');
+    for (const feature of team.features.filter(text => /seats|across the team|Per-seat/.test(text))) {
+      expect(feature).toContain('(planned)');
+    }
+    expect(team.features).toContain('Workspace-scoped runs, memory, and outcomes');
+  });
+});

@@ -880,7 +880,13 @@ def import_suggestions_structured(body: StructuredImportIn, actor: str = Depends
 def list_agents(actor: str = Depends(auth.actor)):
     with store.connect() as db:
         workspace_id = store.ensure_workspace_seeded(db, actor)
-        return [r[0] for r in db.execute(text('SELECT profile FROM agents WHERE workspace_id=:ws ORDER BY name'), {'ws': workspace_id})]
+        # Historical verification agents are production rows, not shipped presets.
+        # Filter only these known test names; retain every owner and default agent.
+        return [r[0] for r in db.execute(text(
+            "SELECT profile FROM agents WHERE workspace_id=:ws "
+            "AND lower(name) NOT IN ('verifyclone', 'verifyscout') "
+            "AND lower(profile->>'name') NOT IN ('verifyclone', 'verifyscout') ORDER BY name"),
+            {'ws': workspace_id})]
 
 
 def get_profile(db, name, workspace_id):
