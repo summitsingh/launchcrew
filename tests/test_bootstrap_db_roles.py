@@ -1294,6 +1294,13 @@ class VerifyJobTests(BindJobTests):
             self.assertEqual(code, 0, msg=out)
             self.assertIn("verify-model-budget-grant ok", out)
 
+    def test_verify_accepts_topup_ladder_model_budget(self):
+        for balance in (12000000, 8000000):
+            self.state.model_budget_remaining = balance
+            code, out = self.run_main("--verify")
+            self.assertEqual(code, 0, msg=out)
+            self.assertIn("verify-model-budget-grant ok", out)
+
     def test_verify_refuses_off_path_model_budget(self):
         self.state.model_budget_remaining = 7000000
         code, out = self.run_main("--verify")

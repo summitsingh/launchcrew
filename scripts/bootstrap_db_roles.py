@@ -181,16 +181,22 @@ EXPECTED_HEAD = _chain_head() or "008"
 MODEL_TABLES = ("model_budget", "model_calls")
 # Sanctioned USD 10 planning grant from migration 026, in micros. Verify
 # accepts zero (pre-grant) or any balance reachable by legitimate
-# bounded-spend steps from the grant: each Standard call decrements
-# exactly MODEL_SPEND_STEP_MICROS, so 10M admits 10M, 6M, 2M, and 0.
+# bounded-spend steps from a sanctioned grant: each Standard call decrements
+# exactly MODEL_SPEND_STEP_MICROS, so the 10M grant admits 10M, 6M, 2M,
+# and 0, and the WO-1 12M top-up admits 12M and 8M. Deeper remainders
+# still refuse, so a spent grant forces a fresh top-up instead of
+# drifting through unblessed balances.
 # Any off-path or phantom balance still refuses.
 MODEL_GRANT_MICROS = 10000000
+MODEL_TOPUP_MICROS = 12000000
 MODEL_SPEND_STEP_MICROS = 4000000
 MODEL_DESIGNED_BALANCES = frozenset((
     0,
     MODEL_GRANT_MICROS - 2 * MODEL_SPEND_STEP_MICROS,
     MODEL_GRANT_MICROS - MODEL_SPEND_STEP_MICROS,
     MODEL_GRANT_MICROS,
+    MODEL_TOPUP_MICROS - MODEL_SPEND_STEP_MICROS,
+    MODEL_TOPUP_MICROS,
 ))
 OUTCOME_TABLE = "run_outcomes"
 OUTCOME_CONSTRAINTS = (
