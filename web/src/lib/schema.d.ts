@@ -313,7 +313,10 @@ export interface paths {
          *
          *     Refreshes every verified slot delivery in the workspace (or only
          *     the given slot ids) with refresh_mode "scheduled". Unverified
-         *     deliveries are skipped and named, never pulled.
+         *     deliveries are skipped and named, never pulled. Scheduled
+         *     refreshes carry no provider payload, so every metric records
+         *     "not reported" under the simulation source and no outcome row
+         *     is created.
          */
         post: operations["refresh_scheduled_analytics_api_analytics_refresh_scheduled_post"];
         delete?: never;
@@ -570,10 +573,11 @@ export interface paths {
          * @description Manually refresh provider metrics for one verified delivery.
          *
          *     Refuses with 409 unless the delivery row is verified. Accepts an
-         *     optional explicit provider payload; otherwise a deterministic
-         *     platform adapter supplies the supported metrics. Unsupported or
-         *     omitted metrics store as "not reported", never as 0. The pull
-         *     syncs into the run outcome log with source and fetch time.
+         *     optional explicit provider payload; without one every metric
+         *     stores as "not reported", the pull is labeled simulation, and
+         *     nothing syncs into the outcome log. Unsupported or omitted
+         *     metrics store as "not reported", never as 0. A payload pull syncs
+         *     into the run outcome log with source and fetch time.
          */
         post: operations["refresh_delivery_analytics_api_calendar_slots__slot_id__deliveries__channel__analytics_refresh_post"];
         delete?: never;

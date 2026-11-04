@@ -9390,7 +9390,7 @@
     },
     "/api/analytics/refresh-scheduled": {
       "post": {
-        "description": "Batch-refresh provider metrics for verified deliveries on a schedule.\n\nRefreshes every verified slot delivery in the workspace (or only\nthe given slot ids) with refresh_mode \"scheduled\". Unverified\ndeliveries are skipped and named, never pulled.",
+        "description": "Batch-refresh provider metrics for verified deliveries on a schedule.\n\nRefreshes every verified slot delivery in the workspace (or only\nthe given slot ids) with refresh_mode \"scheduled\". Unverified\ndeliveries are skipped and named, never pulled. Scheduled\nrefreshes carry no provider payload, so every metric records\n\"not reported\" under the simulation source and no outcome row\nis created.",
         "operationId": "refresh_scheduled_analytics_api_analytics_refresh_scheduled_post",
         "requestBody": {
           "content": {
@@ -9954,7 +9954,7 @@
     },
     "/api/calendar/slots/{slot_id}/deliveries/{channel}/analytics/refresh": {
       "post": {
-        "description": "Manually refresh provider metrics for one verified delivery.\n\nRefuses with 409 unless the delivery row is verified. Accepts an\noptional explicit provider payload; otherwise a deterministic\nplatform adapter supplies the supported metrics. Unsupported or\nomitted metrics store as \"not reported\", never as 0. The pull\nsyncs into the run outcome log with source and fetch time.",
+        "description": "Manually refresh provider metrics for one verified delivery.\n\nRefuses with 409 unless the delivery row is verified. Accepts an\noptional explicit provider payload; without one every metric\nstores as \"not reported\", the pull is labeled simulation, and\nnothing syncs into the outcome log. Unsupported or omitted\nmetrics store as \"not reported\", never as 0. A payload pull syncs\ninto the run outcome log with source and fetch time.",
         "operationId": "refresh_delivery_analytics_api_calendar_slots__slot_id__deliveries__channel__analytics_refresh_post",
         "parameters": [
           {
