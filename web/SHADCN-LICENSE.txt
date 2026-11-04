@@ -19,3 +19,14 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+Components added via the shadcn CLI (shadcn/ui, MIT):
+calendar, collapsible, dialog, dropdown-menu, form, select, sheet, sidebar,
+skeleton, sonner, table, tooltip.
+Pre-existing local primitives kept as-is for the classic workspace:
+alert, badge, button, card, input, label, separator, tabs, textarea.
+Local adaptations: calendar day/nav buttons and the sidebar trigger render as
+plain buttons (no dependency on the classic Button styles); Radix primitives
+are imported from scoped @radix-ui/react-* packages.
