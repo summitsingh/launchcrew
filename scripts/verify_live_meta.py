@@ -178,6 +178,61 @@ def _read_task_log(region, stream):
     raise ValueError("CloudWatch log evidence exceeds page bound")
 
 
+def close_journal(args):
+    """Close only an expired ECS task with complete terminal failure logs."""
+    target = Path(args.journal_dir) / "meta-proof-launch.json"
+    original = target.read_text(encoding="utf-8")
+    record = json.loads(original)
+    if (record.get("label") != "meta-proof" or record.get("status") != "launched"
+            or not record.get("token")):
+        raise ValueError("journal is not an open Spark launch")
+    task = record.get("task_arn", "")
+    region = record.get("region", "")
+    account = record.get("account", "")
+    cluster = record.get("cluster", "")
+    task_id = _task_id_from_arn(task)
+    if (not task_id or not region or not account or not cluster
+            or not task.startswith("arn:aws:ecs:%s:%s:task/" % (region, account))):
+        raise ValueError("journal task identity is unknown; close-out refused")
+    caller = _run_aws(["sts", "get-caller-identity", "--region", region])
+    identity = json.loads(caller.stdout) if caller.returncode == 0 else {}
+    if identity.get("Account") != account or not identity.get("Arn"):
+        raise ValueError("close-out caller identity mismatch")
+    result = _run_aws(["ecs", "describe-tasks", "--cluster", cluster,
+                       "--tasks", task, "--region", region])
+    if result.returncode:
+        raise ValueError("task outcome unknown; close-out refused")
+    described = json.loads(result.stdout)
+    failures = described.get("failures")
+    if (described.get("tasks") != [] or not isinstance(failures, list)
+            or len(failures) != 1 or failures[0].get("arn") != task
+            or failures[0].get("reason") != "MISSING"):
+        raise ValueError("task is retained or outcome ambiguous; close-out refused")
+    stream = "meta-proof/meta-proof/" + task_id
+    group = "/launchcrew/demo/meta-proof"
+    if (record.get("log_stream", stream) != stream
+            or record.get("log_group", group) != group):
+        raise ValueError("journal log stream identity mismatch")
+    messages = _read_task_log(region, stream)
+    terminal = messages[-1] if messages else ""
+    legacy_failures = ("Revision failed: HTTP ", "Spark proof failed: ",
+                       "Spark proof latch error: ", "Spark proof latch refused: ",
+                       "Spark proof receipt invalid: ")
+    if (any(PASS_MARKER in message for message in messages)
+            or not (terminal == "SPARK PROOF FAIL" or terminal.startswith(legacy_failures))):
+        raise ValueError("no unambiguous terminal in-task failure; close-out refused")
+    # Refuse a concurrent journal change rather than overwrite its evidence.
+    if target.read_text(encoding="utf-8") != original:
+        raise ValueError("journal changed during close-out; refused")
+    record.update(status="closed", closed_by=identity["Arn"],
+                  closed_at=datetime.now(timezone.utc).isoformat(),
+                  log_group=group, log_stream=stream,
+                  close_reason="task missing and terminal in-task failure without PASS")
+    _write_journal(target, record)
+    print("meta-proof journal closed with terminal failure evidence; resend remains refused")
+    return 0
+
+
 def launch_ecs(args):
     journal_root = _journal_dir(args.journal_dir)
     journal_file = journal_root / "meta-proof-launch.json"
@@ -334,6 +389,9 @@ def launch_ecs(args):
         print("meta-proof run-task response empty; launch ambiguous, no resend",
               file=sys.stderr)
         return 1
+    record.update(task_arn=task_arn, log_group="/launchcrew/demo/meta-proof",
+                  log_stream="meta-proof/meta-proof/" + _task_id_from_arn(task_arn))
+    _write_journal(journal_file, record)
     deadline = time.monotonic() + 600
     stopped = None
     while time.monotonic() < deadline:
@@ -421,7 +479,10 @@ def _main(argv=None):
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--mode", choices=["spark", "sam", "all"], default="sam")
     parser.add_argument("--latch-file", default="")
-    parser.add_argument("--launch-ecs", action="store_true")
+    operation = parser.add_mutually_exclusive_group()
+    operation.add_argument("--launch-ecs", action="store_true")
+    operation.add_argument("--close-journal", action="store_true",
+                           help="Close a missing Spark task only with complete terminal failure logs")
     parser.add_argument("--cluster", default="")
     parser.add_argument("--task" "-def", default="")
     parser.add_argument("--subnet-a", default="")
@@ -438,6 +499,8 @@ def _main(argv=None):
     parser.add_argument("--log-stream", default="")
     parser.add_argument("--journal-dir", default=".local/meta-proof-launch")
     args = parser.parse_args(argv)
+    if args.close_journal:
+        return close_journal(args)
     if args.launch_ecs:
         return launch_ecs(args)
     if args.mode in ("spark", "all") and args.live:

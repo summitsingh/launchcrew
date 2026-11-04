@@ -930,3 +930,73 @@ def test_wrapper_surfaces_in_task_spark_failure(monkeypatch, capsys, tmp_path):
                            log_group='/launchcrew/demo/meta-proof', log_stream='')
     assert wrapper.launch_ecs(args) == 1
     assert 'ValueError: synthetic in-task failure' in capsys.readouterr().err
+
+
+def _closeout_fixture(monkeypatch, tmp_path, *, messages=None, tasks=None, failures=None):
+    from scripts import verify_live_meta as wrapper
+    from types import SimpleNamespace
+    task = 'arn:aws:ecs:us-east-1:111122223333:task/fixture-task'
+    record = {'label': 'meta-proof', 'status': 'launched', 'token': 'fixture-token',
+              'task_arn': task, 'account': '111122223333', 'region': 'us-east-1', 'cluster': 'fixture'}
+    target = tmp_path / 'meta-proof-launch.json'
+    target.write_text(json.dumps(record))
+    calls = []
+
+    def aws(command):
+        calls.append(command)
+        if command[:2] == ['sts', 'get-caller-identity']:
+            data = {'Account': record['account'], 'Arn': 'arn:aws:iam::111122223333:user/fixture'}
+        elif command[:2] == ['ecs', 'describe-tasks']:
+            data = {'tasks': tasks if tasks is not None else [],
+                    'failures': failures if failures is not None else [{'arn': task, 'reason': 'MISSING'}]}
+        else:
+            assert command[:2] == ['logs', 'get-log-events']
+            data = {'events': [] if '--next-token' in command else [
+                {'message': message} for message in (messages or ['Revision failed: HTTP 422'])],
+                'nextForwardToken': 'end'}
+        return SimpleNamespace(returncode=0, stdout=json.dumps(data))
+
+    monkeypatch.setattr(wrapper, '_run_aws', aws)
+    return wrapper, target, record, calls
+
+
+def test_spark_journal_closeout_terminal_failure(monkeypatch, tmp_path):
+    from datetime import datetime
+    wrapper, target, record, calls = _closeout_fixture(monkeypatch, tmp_path)
+    assert wrapper.main(['--close-journal', '--journal-dir', str(tmp_path)]) == 0
+    closed = json.loads(target.read_text())
+    assert closed['status'] == 'closed'
+    assert closed['closed_by'] == 'arn:aws:iam::111122223333:user/fixture'
+    assert datetime.fromisoformat(closed['closed_at']).utcoffset().total_seconds() == 0
+    assert closed['log_group'] == '/launchcrew/demo/meta-proof'
+    assert closed['log_stream'] == 'meta-proof/meta-proof/fixture-task'
+    assert closed['task_arn'] == record['task_arn']
+    assert sum(command[:2] == ['logs', 'get-log-events'] for command in calls) == 2
+    calls.clear()
+    assert wrapper.main(['--launch-ecs', '--journal-dir', str(tmp_path)]) == 1
+    assert calls == []
+
+
+@pytest.mark.parametrize('scenario', ['ambiguous_logs', 'pass', 'pass_before_failure',
+                                     'retained_task', 'unknown_task', 'missing_identity', 'incomplete_logs'])
+def test_spark_journal_closeout_refuses_ambiguous(monkeypatch, tmp_path, scenario):
+    options = {}
+    if scenario == 'ambiguous_logs':
+        options['messages'] = ['Task started']
+    if scenario in ('pass', 'pass_before_failure'):
+        options['messages'] = ['SPARK PROOF PASS spark_calls 3', 'SPARK PROOF FAIL']
+    if scenario == 'retained_task':
+        options['tasks'] = [{'lastStatus': 'STOPPED'}]
+    if scenario == 'unknown_task':
+        options['failures'] = []
+    wrapper, target, record, calls = _closeout_fixture(monkeypatch, tmp_path, **options)
+    if scenario == 'missing_identity':
+        record.pop('task_arn')
+        target.write_text(json.dumps(record))
+    if scenario == 'incomplete_logs':
+        monkeypatch.setattr(wrapper, '_read_task_log', lambda *_: (_ for _ in ()).throw(
+            ValueError('incomplete log evidence')))
+    before = target.read_text()
+    assert wrapper.main(['--close-journal', '--journal-dir', str(tmp_path)]) == 1
+    assert target.read_text() == before
+    assert not any(command[:2] == ['ecs', 'run-task'] for command in calls)
