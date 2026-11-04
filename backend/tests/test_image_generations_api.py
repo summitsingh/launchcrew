@@ -52,7 +52,7 @@ def test_no_key_refuses_503_with_zero_http(client, monkeypatch):
     assert response.status_code == 503, response.text
     assert 'OPENAI_API_KEY' in response.text
     assert client.get('/api/image-generations').json() == []
-    assert client.get('/api/media/assets').json() == []
+    assert [entry['id'] for entry in client.get('/api/media/assets').json()] == ['media_wallet_starter']
 
 
 def test_unknown_provider_and_bad_input_refuse_422(client):
@@ -117,7 +117,7 @@ def test_provider_refusal_stores_nothing(client, monkeypatch):
     assert 'Incorrect API key' in response.text
     assert 'fixture-key' not in response.text
     assert client.get('/api/image-generations').json() == []
-    assert client.get('/api/media/assets').json() == []
+    assert [entry['id'] for entry in client.get('/api/media/assets').json()] == ['media_wallet_starter']
 
 
 def test_character_snapshot_survives_character_delete(client, monkeypatch):
