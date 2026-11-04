@@ -16,7 +16,7 @@ Muse Spark (model ID `muse-spark-1.3`), called through the Meta Model API, power
 
 SAM 3.1 runs photo checks on product images through segmentation via the explicit `POST /api/runs/{run_id}/photo-check` route when its configuration, budget, and allowlist permit. SAM 3.1 live segmentation was proven on Nov 4, 2026 in a one-shot proof run (1 upload, 1 segmentation, label detected, method sam-3.1, exactly 1 ledger row, within its spend ceiling).
 
-Spark and SAM are the runtime Meta models used by the launch pipeline and photo-check route. The app also includes an optional, separately keyed image-generation route for OpenAI `gpt-image-1`, xAI `grok-2-image`, and Google `imagen-4.0-generate-001`. These optional providers require their own keys.
+Spark and SAM are the only AI models the launch pipeline and the photo-check route call, and both are Meta models reached through the Meta Model API. The codebase also contains an optional image-generation route for media experiments (OpenAI gpt-image-1, xAI grok-2-image, Google imagen-4.0-generate-001). That route is outside the launch pipeline: it runs only when an operator supplies that provider's own key, it is not used by the demo, by any proof run, or by the hosted site, and no output from it can enter a launch pack.
 
 The demo video narration uses Muse text-to-speech (Warm Pebble voice) for voice output only; it is not part of the app runtime. No speech-to-text is used anywhere in the app or the demo; voice-memo intake accepts owner-supplied transcript text only.
 
