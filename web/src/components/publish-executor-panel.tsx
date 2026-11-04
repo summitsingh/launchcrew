@@ -29,6 +29,16 @@ export function ExecutionStatusBadge({ status }: { status: string }) {
   return <WorkspaceBadge appearance="workspace" asChild ><span className="badge" data-execution-status={status} title={status}>{status}</span></WorkspaceBadge>;
 }
 
+export function plainExecutionExplanation(execution: PublishExecution): string {
+  const raw = typeof execution.last_error === 'string' ? execution.last_error.toLowerCase() : '';
+  if (execution.status === 'skipped_needs_approval') return 'Not posted: this slot still needs approval before anything can publish.';
+  if (execution.status === 'paused_by_kill_switch') return 'Not posted: execution is paused by the owner kill switch.';
+  if (raw.includes('photo') || raw.includes('media') || raw.includes('image')) return 'Delivery failed on the photo step. Reconnect the brand account or check the slot image, then retry.';
+  if (raw.includes('revoked') || raw.includes('token') || raw.includes('connect') || raw.includes('disconnect') || raw.includes('reconnect')) return 'Delivery failed: the brand account connection needs attention. Reconnect the brand account, then retry.';
+  if (raw.includes('ready') || raw.includes('approval')) return 'Delivery failed: the slot was not Ready with an approved pack. Approve the pack first, then retry.';
+  return 'Delivery failed on publication. Check the safe details below, then retry.';
+}
+
 export function ExecutionAttemptsList({ attempts }: { attempts: PublishExecution['attempts'] }) {
   const rows = ((attempts ?? []) as Attempt[]);
   const ordered = [...rows].sort(
@@ -46,9 +56,16 @@ export function ExecutionAttemptsList({ attempts }: { attempts: PublishExecution
   </ol>;
 }
 
+function SafeDetailValue({ value }: { value: unknown }) {
+  if (value === null || value === undefined) return <span>not recorded</span>;
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return <span>{String(value)}</span>;
+  return <span>not recorded</span>;
+}
+
 export function ExecutionRow({ execution }: { execution: PublishExecution }) {
   const client = useQueryClient();
   const [notice, setNotice] = useState('');
+  const [showDetails, setShowDetails] = useState(false);
   const retry = useMutation({
     mutationFn: () => unwrap(api.POST('/api/publish/slots/{slot_id}/retry', {
       params: { path: { slot_id: execution.slot_id } }, body: {},
@@ -66,14 +83,26 @@ export function ExecutionRow({ execution }: { execution: PublishExecution }) {
     <p><strong>{execution.channel}</strong> <ExecutionStatusBadge status={execution.status} />
       {execution.simulated === true ? <span> <SimulatedChip /></span> : null}</p>
     <p className="hint">Slot {execution.slot_id} · key {execution.idempotency_key}</p>
-    {execution.status === 'skipped_needs_approval' && execution.last_error
-      ? <p role="alert">Needs approval: {execution.last_error}</p> : null}
-    {execution.status === 'failed' && execution.last_error
-      ? <p role="alert">{execution.last_error}</p> : null}
-    {execution.live_url ? <p className="hint">Live URL: {execution.live_url}</p> : null}
-    {execution.platform_post_id
-      ? <p className="hint">Platform post: {execution.platform_post_id}</p> : null}
-    <ExecutionAttemptsList attempts={attempts} />
+    {(execution.status === 'skipped_needs_approval' || execution.status === 'failed')
+      ? <p role="status">{plainExecutionExplanation(execution)} No automatic retry runs; use Owner retry below only if you want one more attempt.</p> : null}
+    <div><Button variant="outline" onClick={() => setShowDetails(value => !value)} aria-expanded={showDetails}>{showDetails ? 'Hide details' : 'Show details'}</Button>
+      {showDetails && <dl>
+        <div><dt>Stored reason</dt><dd>{execution.last_error || 'not recorded'}</dd></div>
+        <div><dt>Idempotency key</dt><dd>{execution.idempotency_key || 'not recorded'}</dd></div>
+        {(attempts ?? []).map((attempt, i) => {
+          const details = (attempt as Record<string, unknown>).details;
+          const safe = details && typeof details === 'object' ? (details as Record<string, unknown>) : null;
+          return <div key={i}><dt>Attempt {String((attempt as Record<string, unknown>).attempt_number ?? i + 1)} safe detail</dt><dd>
+            {safe ? <ul>
+              {(['message', 'failed_call', 'status', 'code', 'subcode', 'type'] as const).map(key => <li key={key}>{key}: <SafeDetailValue value={safe[key]} /></li>)}
+            </ul> : <span>Legacy record: only the stored reason above is available.</span>}
+          </dd></div>;
+        })}
+      </dl>}</div>
+    {showDetails && <>{execution.live_url ? <p className="hint">Live URL: {execution.live_url}</p> : null}
+      {execution.platform_post_id
+        ? <p className="hint">Platform post: {execution.platform_post_id}</p> : null}
+      <ExecutionAttemptsList attempts={attempts} /></>}
     {execution.status === 'failed'
       ? <div className="queue-actions">
         <Button variant="outline"

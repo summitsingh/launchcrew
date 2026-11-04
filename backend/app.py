@@ -1859,7 +1859,9 @@ def photo_check(run_id: str, body: PhotoCheckIn, actor: str = Depends(auth.actor
         check = PhotoCheckOut(method='not_run', label=kept['label'], reason=kept['reason'],
                               policy_version=PHOTO_POLICY_VERSION,
                               revision=revised['revision'], photo_state=kept['state'])
-        return PhotoCheckResponse(check=check, receipt=revised, preview=None)
+        return PhotoCheckResponse(check=check,
+                                  receipt=approver_presentation.sanitize_receipt_for_presentation(revised),
+                                  preview=None)
     try:
         row, preview, receipt = photo_admission.run_photo_check(
             store.engine(), run_id, parsed['raw'], parsed['mime'],
@@ -1878,7 +1880,8 @@ def photo_check(run_id: str, body: PhotoCheckIn, actor: str = Depends(auth.actor
     check = PhotoCheckOut(method='sam-3.1', label=row['label'], reason=row['reason'] or kept['reason'],
                           policy_version=row['policy_version'] or PHOTO_POLICY_VERSION,
                           revision=receipt.get('revision', 0), photo_state=kept['state'])
-    return PhotoCheckResponse(check=check, receipt=receipt,
+    return PhotoCheckResponse(check=check,
+                              receipt=approver_presentation.sanitize_receipt_for_presentation(receipt),
                               preview=PhotoPreview(**preview) if preview else None)
 
 
@@ -4810,11 +4813,111 @@ def _sync_slot_verified(db, slot, workspace_id):
                    {'id': slot['id'], 'ws': workspace_id})
 
 
+def _run_instagram_server_readback(db, slot, delivery, workspace_id, channel,
+                                     approved_text, approved_subject, supplied_url):
+    """Verify an Instagram delivery from the live server readback only.
+
+    No supplied text is used here: the execution bound to this slot and
+    channel supplies the posted media id, the workspace brand token
+    decrypts server-side, and the fixed-origin Graph caption fetch
+    provides the only live content. Any missing binding or readback
+    fails closed with a safe reason. No post or retry calls are made.
+    """
+    from launchcrew import instagram_publish as ig_mod
+    from launchcrew import social_connections as social_mod
+    from launchcrew import verification_board as board_mod
+    rows = db.execute(text('SELECT ' + _EXECUTION_PUBLIC_SELECT + ' FROM publish_executions'
+                           ' WHERE workspace_id=:ws AND slot_id=:slot AND channel=:channel'
+                           " AND status='posted' ORDER BY updated_at DESC"),
+                      {'ws': workspace_id, 'slot': slot['id'], 'channel': channel}).mappings().all()
+    execution = None
+    for raw in rows:
+        candidate = dict(raw)
+        trail = candidate.get('attempts')
+        trail = list(trail) if isinstance(trail, list) else []
+        last = trail[-1] if trail else None
+        if isinstance(last, dict) and last.get('simulated'):
+            continue
+        if not candidate.get('platform_post_id'):
+            continue
+        execution = candidate
+        break
+    if execution is None:
+        updated = _save_delivery_attempt(db, delivery, workspace_id, 'failed',
+                                         live_url=supplied_url, match_kind='mismatch',
+                                         differing_field='text',
+                                         reason=('No posted live execution for this slot and channel; '
+                                                 'verify after a live post.'),
+                                         live_text_excerpt='', source='fetched')
+        return _public_delivery(updated)
+    execution_url = execution.get('live_url')
+    if (not isinstance(supplied_url, str) or not supplied_url.strip()
+            or not isinstance(execution_url, str) or not execution_url.strip()
+            or supplied_url.strip() != execution_url.strip()):
+        updated = _save_delivery_attempt(db, delivery, workspace_id, 'failed',
+                                         live_url=supplied_url, match_kind='mismatch',
+                                         differing_field='text',
+                                         reason=('The verification URL does not match the posted live execution URL.'),
+                                         live_text_excerpt='', source='fetched')
+        return _public_delivery(updated)
+    connection = db.execute(text('SELECT status, encrypted_token, external_account_id'
+                                 ' FROM social_connections'
+                                 ' WHERE workspace_id=:ws AND platform=:platform'),
+                            {'ws': workspace_id, 'platform': channel}).mappings().first()
+    connection = dict(connection) if connection is not None else None
+    plaintext = ''
+    if isinstance(connection, dict) and connection.get('status') == 'connected':
+        try:
+            plaintext = social_mod.decrypt_token(connection.get('encrypted_token'))
+        except ValueError:
+            plaintext = ''
+    if not plaintext:
+        updated = _save_delivery_attempt(db, delivery, workspace_id, 'failed',
+                                         live_url=supplied_url, match_kind='mismatch',
+                                         differing_field='text',
+                                         reason=('The brand account is not connected; reconnect, then verify.'),
+                                         live_text_excerpt='', source='fetched')
+        return _public_delivery(updated)
+    try:
+        readback = ig_mod.fetch_media_caption(str(execution['platform_post_id']), plaintext)
+    except Exception:
+        updated = _save_delivery_attempt(db, delivery, workspace_id, 'failed',
+                                         live_url=supplied_url, match_kind='mismatch',
+                                         differing_field='text',
+                                         reason='Live readback is unavailable right now; retry the verification.',
+                                         live_text_excerpt='', source='fetched')
+        return _public_delivery(updated)
+    permalink = readback.get('permalink')
+    if (isinstance(permalink, str) and permalink.strip()
+            and permalink.strip() != execution_url.strip()):
+        updated = _save_delivery_attempt(db, delivery, workspace_id, 'failed',
+                                         live_url=supplied_url, match_kind='mismatch',
+                                         differing_field='text',
+                                         reason=('The live permalink does not match the posted live execution URL.'),
+                                         live_text_excerpt='', source='fetched')
+        return _public_delivery(updated)
+    live_content = readback.get('caption')
+    live_content = live_content if isinstance(live_content, str) else ''
+    outcome = board_mod.compare_live_post_to_variant(
+        approved_text, live_content, approved_subject=approved_subject,
+        live_subject='', channel=channel)
+    updated = _save_delivery_attempt(
+        db, delivery, workspace_id, outcome['delivery_state'], live_url=supplied_url,
+        match_kind=outcome['match_kind'], differing_field=outcome['differing_field'],
+        reason=outcome['failure_reason'],
+        live_text_excerpt=board_mod.excerpt(live_content), source='fetched')
+    _sync_slot_verified(db, slot, workspace_id)
+    return _public_delivery(updated)
+
+
 def _run_delivery_verification(db, slot, delivery, workspace_id, channel,
                                live_url=None, live_text=None, live_subject=None):
     from launchcrew import verification_board as board_mod
     approved_text, approved_subject = _approved_variant_for_slot(db, slot, workspace_id, channel)
     supplied_url = live_url if live_url is not None else delivery.get('live_url')
+    if channel == 'instagram' and live_text is None and live_subject is None:
+        return _run_instagram_server_readback(db, slot, delivery, workspace_id, channel,
+                                              approved_text, approved_subject, supplied_url)
     supplied_text = live_text
     supplied_subject = live_subject
     if supplied_text is None and supplied_url is None:
@@ -5923,7 +6026,8 @@ def _run_publish_transport(channel, variant_text, subject, connection, key,
                                                   variant_text, plaintext)
             except ig_mod.InstagramTransportError as error:
                 live_error = executor_mod.PublishTransportError(
-                    'Instagram live publish failed: ' + error.reason)
+                    'Instagram live publish failed: ' + error.reason,
+                    details=ig_mod.safe_transport_details(error))
                 live_error.simulated = False
                 raise live_error
     try:
@@ -6025,6 +6129,13 @@ def _execute_slot_channel(db, slot, channel, workspace_id, actor, simulate_failu
             attempt['outcome'] = 'failed'
             attempt['failure_reason'] = error.reason
             attempt['simulated'] = bool(getattr(error, 'simulated', False))
+            raw_details = getattr(error, 'details', None)
+            if isinstance(raw_details, dict):
+                safe_details = {k: raw_details.get(k) for k in
+                                ('message', 'failed_call', 'status', 'code', 'subcode', 'type')}
+                attempt['details'] = safe_details
+            else:
+                attempt['details'] = None
             attempts = executor_mod.append_attempt(attempts, attempt)
             stored = _save_execution(db, workspace_id, slot['id'], key, idem_key, 'failed',
                                      attempt_count=len(attempts),

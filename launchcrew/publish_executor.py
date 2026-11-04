@@ -44,10 +44,11 @@ _REVOKED_TEST_TOKEN = 'revoked_test_token'
 class PublishTransportError(ValueError):
     """A publish attempt failed with a plain-language owner-facing reason."""
 
-    def __init__(self, reason):
+    def __init__(self, reason, details=None):
         super().__init__(reason)
         self.reason = reason
         self.simulated = False
+        self.details = details if isinstance(details, dict) else None
 
 
 def utc_now_iso():
