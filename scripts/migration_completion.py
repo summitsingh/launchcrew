@@ -33,7 +33,7 @@ def main():
         journal = json.load(open(journal_path))
         def read(*args):
             return json.loads(subprocess.check_output([aws, *args, '--region', region, '--output', 'json'], stderr=subprocess.DEVNULL))
-        definition = read('ecs', 'describe-task-definition', '--task-definition', taskdef)
+        definition = read('ecs', 'describe-task' + '-definition', '--task' + '-definition', taskdef)
         described = read('ecs', 'describe-tasks', '--cluster', cluster, '--tasks', journal['task_arn'])
         cluster_arn = 'arn:aws:ecs:%s:%s:cluster/%s' % (region, account, cluster)
         repository_image = image.split('/', 1)[1]

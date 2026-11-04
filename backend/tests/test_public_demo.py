@@ -50,3 +50,25 @@ def test_roster_excludes_only_known_verification_agents(client, test_engine):
     assert not {'VerifyClone', 'VerifyScout'} & names
     with test_engine.connect() as db:
         assert db.execute(text("SELECT count(*) FROM agents WHERE name IN ('verifyclone','verifyscout')")).scalar() == 2
+
+
+def test_public_connections_expose_storage_state_without_token_material(client, monkeypatch):
+    from backend import auth
+    from backend.app import app
+    monkeypatch.setenv('AUTH_ENABLED', 'true')
+    app.dependency_overrides[auth.actor] = lambda: 'demo_placeholder'
+    token = 'synthetic-brand-credential'
+    connected = client.post('/api/social/connections/instagram/callback', json={
+        'token': token, 'account_type': 'brand', 'handle': '@synthetic-brand',
+        'scopes': ['brand_publish'],
+    })
+    assert connected.status_code == 200
+    monkeypatch.setenv('AUTH_ENABLED', 'false')
+    response = client.get('/api/social/connections')
+    assert response.status_code == 200
+    assert token not in response.text
+    connection = next(item for item in response.json() if item['platform'] == 'instagram')
+    assert connection['token_present'] is True
+    assert connection['token_security'] == 'encrypted_at_rest'
+    assert not {'token', 'access_token', 'encrypted_token', 'code'} & connection.keys()
+    assert client.get('/api/publish/status').json()['kill_switch']['paused'] is False

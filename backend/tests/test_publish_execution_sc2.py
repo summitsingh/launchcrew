@@ -98,13 +98,14 @@ def executions_for(status_body, slot_id, channel):
             if entry['slot_id'] == slot_id and entry['channel'] == channel]
 
 
-def test_ready_slot_posts_at_scheduled_time_and_hands_off_to_s5(client):
+def test_ready_slot_posts_at_scheduled_time_and_hands_off_to_s5(client, monkeypatch):
     receipt = new_run(client)
     run_id = receipt['run_id']
     approve(client, run_id)
     channel = usable_channel(client, run_id)
     slot = ready_slot(client, run_id, channel)
     connect_brand(client, channel)
+    monkeypatch.setenv('AUTH_ENABLED', 'false')
     tick = client.post('/api/publish/execute-due', json={'as_of': DUE_AS_OF})
     assert tick.status_code == 200, tick.text
     body = tick.json()
