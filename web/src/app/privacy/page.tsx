@@ -136,7 +136,7 @@ export default function PrivacyPage() {
 
           <footer className="page-footer">
             <span>LaunchCrew</span>
-            <span><a href="/privacy" aria-current="page">Privacy</a> · <a href="/terms">Terms</a> · <a href="/plans">Plans</a> · <a href="/demo">Demo</a></span>
+            <span><a href="/privacy" aria-current="page">Privacy</a> · <a href="/terms">Terms</a> · <a href="/plans">Plans</a></span>
             <a href="https://github.com/summitsingh/launchcrew">Public GitHub repo</a>
           </footer>
         </main>
