@@ -355,3 +355,19 @@ def test_verify_attempt_records_supplied_source_and_live_delivery(client):
     assert fixed['attempts'][-1]['source'] == 'supplied'
     with pytest.raises(ValueError):
         board_mod.build_attempt('verified', source='owner-says-so')
+
+
+def test_redirect_targets_face_the_same_fetch_rules():
+    import urllib.request
+    from launchcrew import verification_board as board_mod
+    handler = board_mod._GuardedRedirectHandler()
+    req = urllib.request.Request('https://example.com/start')
+    for target in ('http://127.0.0.1/private-post',
+                   'http://169.254.169.254/latest/meta-data/',
+                   '\\\\169.254.169.254\\x',
+                   'ftp://example.com/file',
+                   'https://nonexistent.invalid/posts/x'):
+        with pytest.raises(ValueError):
+            handler.redirect_request(req, None, 302, 'Found', {}, target)
+    follow = handler.redirect_request(req, None, 302, 'Found', {}, '/posts/next')
+    assert follow.get_full_url() == 'https://example.com/posts/next'

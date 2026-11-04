@@ -19,8 +19,9 @@ import html as html_mod
 import ipaddress
 import re
 import socket
+import urllib.request
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 DELIVERY_STATES = ('not_posted', 'posted', 'verified', 'failed')
 MATCH_KINDS = ('exact', 'trimmed_by_rule', 'mismatch')
@@ -53,7 +54,7 @@ def normalize_live_url(value):
     """
     if not isinstance(value, str) or not value.strip():
         raise ValueError('live_url must be a nonempty string')
-    cleaned = value.strip()
+    cleaned = value.strip().replace('\\', '/')
     if len(cleaned) > 2000:
         raise ValueError('live_url must be 2000 characters or fewer')
     for char in cleaned:
@@ -273,14 +274,32 @@ def extract_live_text(html_text):
     return '', ''
 
 
+class _GuardedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Follow redirects only to targets passing the same fetch rules.
+
+    Every Location is joined against the request URL, then validated
+    with normalize_live_url and assert_fetchable_host before the
+    follow, so a redirect can never smuggle in a private host, an
+    unresolvable name, or a non-http(s) scheme. A refused target
+    raises ValueError, which the verify path records as a failed
+    attempt, never a silent pass.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        joined = urljoin(req.get_full_url(), str(newurl).replace('\\', '/'))
+        cleaned = normalize_live_url(joined)
+        assert_fetchable_host(urlparse(cleaned).hostname or '')
+        return super().redirect_request(req, fp, code, msg, headers, cleaned)
+
+
 def fetch_live_html(live_url, timeout_seconds=10):
     """Fetch a live URL with an SSRF guard; returns (html, fetched_url)."""
-    import urllib.request
     cleaned = normalize_live_url(live_url)
     assert_fetchable_host(urlparse(cleaned).hostname or '')
     request = urllib.request.Request(
         cleaned, headers={'User-Agent': 'LaunchCrew verification check (owner-marked URL)'})
-    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:  # noqa: S310
+    opener = urllib.request.build_opener(_GuardedRedirectHandler)
+    with opener.open(request, timeout=timeout_seconds) as response:  # noqa: S310
         content_type = ''
         try:
             content_type = response.headers.get('Content-Type', '')
