@@ -441,3 +441,12 @@ def test_pause_resume_cycle_preserves_posted_result(client, monkeypatch):
     assert rows[0]['status'] == 'posted'
     assert rows[0]['platform_post_id'] == posted_id
     assert rows[0]['attempt_count'] == 1
+
+
+@pytest.fixture(autouse=True)
+def authenticated_connection_owner(client, monkeypatch):
+    from backend import auth
+    from backend.app import app
+    monkeypatch.setenv('AUTH_ENABLED', 'true')
+    app.dependency_overrides[auth.actor] = lambda: 'demo_placeholder'
+    yield

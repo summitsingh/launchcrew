@@ -184,16 +184,8 @@ describe('drive intake UI flow', () => {
       </QueryClientProvider>,
     );
     for (const text of [
-      'Select a Drive file',
-      'Optional Google Picker intake',
-      'Google Doc or plain text file',
-      'stay unconfirmed suggestions',
-      'Drive file provenance',
-      'explicitly confirm each',
-      'End to end Drive import has not been verified with a live account',
-      'drive.file scope',
-      'Connect Drive and choose file',
-      'separate step',
+      'Drive intake:',
+      'Connection management is locked in public demo mode.',
     ]) {
       expect(html).toContain(text);
     }
@@ -320,13 +312,8 @@ describe('drive photo intake foundation', () => {
       </QueryClientProvider>,
     );
     for (const text of [
-      'Select a Drive photo',
-      'JPEG or PNG photo you select',
-      'stays unconfirmed',
-      'explicit approval before any photo check',
-      'Original pixels only',
-      'Live Drive proof has not been run',
-      'Connect Drive and choose photo',
+      'Drive intake:',
+      'Connection management is locked in public demo mode.',
     ]) {
       expect(html).toContain(text);
     }

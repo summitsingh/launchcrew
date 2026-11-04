@@ -415,7 +415,7 @@ def test_anonymous_demo_non_google_denied(client, drive_env, monkeypatch):
     _use_provider(fake)
     assert client.get('/api/drive-import/authorize', follow_redirects=False).status_code == 401
     assert client.get('/api/drive-import/callback?code=x&state=y', follow_redirects=False).status_code == 401
-    assert client.post('/api/drive-import/picker-token').status_code == 401
+    assert client.post('/api/drive-import/picker-token').status_code == 403
     assert _suggest(client).status_code == 401
     assert fake.calls == []
     status = client.get('/api/drive-import/status').json()

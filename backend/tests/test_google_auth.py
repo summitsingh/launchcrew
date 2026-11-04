@@ -89,7 +89,7 @@ def test_status_google_only_providers(client, monkeypatch):
     monkeypatch.setenv('FACEBOOK_CLIENT_SECRET', 'demo-provider')
     assert client.get('/api/auth/status').json()['providers'] == ['google', 'facebook']
     monkeypatch.setenv('AUTH_ENABLED', 'false')
-    assert client.get('/api/auth/status').json()['providers'] == []
+    assert client.get('/api/auth/status').status_code == 404
 
 
 def test_facebook_login_unavailable_google_only(client, monkeypatch):
@@ -188,7 +188,7 @@ def test_anonymous_refused_when_enabled(client, monkeypatch):
 
 
 def test_live_verified_false_until_proof(client, monkeypatch):
-    assert client.get('/api/auth/status').json()['live_verified'] is False
+    assert client.get('/api/auth/status').status_code == 404
     monkeypatch.setenv('AUTH_ENABLED', 'true')
     assert client.get('/api/auth/status').json()['live_verified'] is False
     _sign_in(client, monkeypatch, SYN_A)

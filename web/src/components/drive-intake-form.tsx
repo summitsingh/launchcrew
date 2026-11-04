@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
+import { CONNECTIONS_LOCKED, useConnectionManagementLocked } from '@/lib/public-mode';
 import { Button } from '@/components/ui/button';
 import { api, unwrap } from '@/lib/api';
 import { PendingReplaceBanner, StructuredProposalFields } from '@/components/import-suggestions-form';
@@ -158,7 +159,7 @@ export function DriveSuggestionsList({
   );
 }
 
-export function DriveIntakeForm({
+function UnlockedDriveIntakeForm({
   onApplyState,
   disabled,
 }: {
@@ -559,7 +560,7 @@ export function DrivePhotoProposalView({
   );
 }
 
-export function DrivePhotoIntakeForm({
+function UnlockedDrivePhotoIntakeForm({
   onAddPhoto,
   disabled,
 }: {
@@ -808,4 +809,16 @@ export function DrivePhotoIntakeForm({
       {pickerToken && <p className="hint">Drive session is active for this selection only.</p>}
     </div>
   );
+}
+
+export function DriveIntakeForm(props: Parameters<typeof UnlockedDriveIntakeForm>[0]) {
+  const locked = useConnectionManagementLocked();
+  if (locked) return <p role="status" className="hint">Drive intake: {CONNECTIONS_LOCKED}</p>;
+  return <UnlockedDriveIntakeForm {...props} />;
+}
+
+export function DrivePhotoIntakeForm(props: Parameters<typeof UnlockedDrivePhotoIntakeForm>[0]) {
+  const locked = useConnectionManagementLocked();
+  if (locked) return <p role="status" className="hint">Drive intake: {CONNECTIONS_LOCKED}</p>;
+  return <UnlockedDrivePhotoIntakeForm {...props} />;
 }

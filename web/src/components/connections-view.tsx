@@ -1,6 +1,7 @@
 'use client';
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { CONNECTIONS_LOCKED, useConnectionManagementLocked } from '@/lib/public-mode';
 import { Button } from '@/components/ui/button';
 import { api, unwrap } from '@/lib/api';
 
@@ -88,6 +89,7 @@ export function BrandAccountConnectionsPanel({
   onDisconnect,
   pending,
   confirming,
+  locked = false,
 }: {
   platforms: SocialPlatform[];
   connections: SocialConnection[];
@@ -95,6 +97,7 @@ export function BrandAccountConnectionsPanel({
   onDisconnect: (platform: string) => void;
   pending?: string | null;
   confirming?: string | null;
+  locked?: boolean;
 }) {
   const byPlatform = new Map(connections.map(item => [item.platform, item]));
   const priorityPlatforms = platforms.filter(item => item.tier === PRIORITY_TIER || item.priority);
@@ -106,6 +109,7 @@ export function BrandAccountConnectionsPanel({
       <p className="hint">
         Only brand accounts are connected by explicit owner action. Personal accounts are never connected.
       </p>
+      {locked && <p className="hint">{CONNECTIONS_LOCKED}</p>}
       <h3>Priority platforms</h3>
       {priorityPlatforms.length === 0 && <p className="hint">No priority platforms listed.</p>}
       <ul className="scout-list">
@@ -137,7 +141,7 @@ export function BrandAccountConnectionsPanel({
                   <p className="hint" data-testid={`token-security-${item.platform}`}>
                     Token: {connection.token_security || 'encrypted_at_rest'}
                   </p>
-                  <div className="queue-actions">
+                  {!locked && <div className="queue-actions">
                     <Button
                       type="button"
                       variant="outline"
@@ -147,9 +151,9 @@ export function BrandAccountConnectionsPanel({
                     >
                       {pending === item.platform ? 'Disconnecting...' : confirming === item.platform ? 'Confirm disconnect' : 'One-tap disconnect'}
                     </Button>
-                  </div>
+                  </div>}
                 </>
-              ) : (
+              ) : (!locked && (
                 <div className="queue-actions">
                   <Button
                     type="button"
@@ -161,7 +165,7 @@ export function BrandAccountConnectionsPanel({
                     {pending === item.platform ? 'Connecting...' : 'Connect brand account'}
                   </Button>
                 </div>
-              )}
+              ))}
             </li>
           );
         })}
@@ -186,7 +190,7 @@ export function BrandAccountConnectionsPanel({
                 <>
                   <p className="hint">Handle: {connection.account_handle || connection.account_name || 'brand account'}</p>
                   <p className="hint">Scopes: {(connection.scopes_plain || []).join(' · ') || 'none'}</p>
-                  <div className="queue-actions">
+                  {!locked && <div className="queue-actions">
                     <Button
                       type="button"
                       variant="outline"
@@ -196,9 +200,9 @@ export function BrandAccountConnectionsPanel({
                     >
                       {pending === item.platform ? 'Disconnecting...' : confirming === item.platform ? 'Confirm disconnect' : 'One-tap disconnect'}
                     </Button>
-                  </div>
+                  </div>}
                 </>
-              ) : (
+              ) : (!locked && (
                 <div className="queue-actions">
                   <Button
                     type="button"
@@ -211,7 +215,7 @@ export function BrandAccountConnectionsPanel({
                     Connect brand account
                   </Button>
                 </div>
-              )}
+              ))}
             </li>
           );
         })}
@@ -221,6 +225,7 @@ export function BrandAccountConnectionsPanel({
 }
 
 export function ConnectionsView() {
+  const locked = useConnectionManagementLocked();
   const client = useQueryClient();
   const [active, setActive] = useState<string | null>(null);
   const [message, setMessage] = useState('');
@@ -330,11 +335,12 @@ export function ConnectionsView() {
           connections={connections.data as unknown as SocialConnection[]}
           onConnect={openConnectForm}
           onDisconnect={platform => disconnect.mutate({ platform, confirm: confirming === platform })}
+          locked={locked}
           pending={active}
           confirming={confirming}
         />
       )}
-      {formFor && (
+      {!locked && formFor && (
         <form
           aria-label={`Connect ${formFor} brand account`}
           data-testid="connect-credentials-form"

@@ -534,6 +534,13 @@ async def local_requests(request: Request, call_next):
     from urllib.parse import urlsplit
     if not auth.enabled() and request.url.path.startswith('/api/auth/'):
         return JSONResponse({'detail': 'Not found'}, status_code=404)
+    if not auth.enabled():
+        path = request.url.path.rstrip('/')
+        social_mutation = (path.startswith('/api/social/connections/')
+                           and (request.method not in ('GET', 'HEAD', 'OPTIONS')
+                                or path.endswith(('/connect', '/callback', '/complete'))))
+        if social_mutation or (path == '/api/drive-import/picker-token' and request.method == 'POST'):
+            return JSONResponse({'detail': 'Connection management is locked in public demo mode.'}, status_code=403)
     origin = request.headers.get('origin')
     if request.method not in ('GET', 'HEAD', 'OPTIONS') and origin:
         # PUBLIC_BASE_URL is the trusted frontend origin behind the Next proxy.

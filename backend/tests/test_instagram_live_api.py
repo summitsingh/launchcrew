@@ -6,6 +6,7 @@ real network on any path.
 """
 import io
 import json
+import pytest
 from unittest.mock import patch
 
 from launchcrew import instagram_publish as ig_mod
@@ -190,3 +191,12 @@ def test_live_provider_error_records_failed_attempt(client, monkeypatch):
     assert execution['status'] == 'failed'
     assert 'Invalid OAuth' in (execution['last_error'] or '')
     assert TOKEN not in (execution['last_error'] or '')
+
+
+@pytest.fixture(autouse=True)
+def authenticated_connection_owner(client, monkeypatch):
+    from backend import auth
+    from backend.app import app
+    monkeypatch.setenv('AUTH_ENABLED', 'true')
+    app.dependency_overrides[auth.actor] = lambda: 'demo_placeholder'
+    yield

@@ -220,3 +220,12 @@ def test_disconnect_wipes_token_but_keeps_receipts(client, test_engine):
     assert bundle.status_code == 200, bundle.text
     markdown = client.get(f'/api/runs/{run_id}/export/markdown')
     assert markdown.status_code == 200, markdown.text
+
+
+@pytest.fixture(autouse=True)
+def authenticated_connection_owner(client, monkeypatch):
+    from backend import auth
+    from backend.app import app
+    monkeypatch.setenv('AUTH_ENABLED', 'true')
+    app.dependency_overrides[auth.actor] = lambda: 'demo_placeholder'
+    yield
