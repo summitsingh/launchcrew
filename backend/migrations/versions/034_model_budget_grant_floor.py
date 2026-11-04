@@ -1,0 +1,39 @@
+"""Restore the planning grant even when an earlier rollout skipped the top-up.
+
+One-way, idempotent minimum balance. Higher balances are never reduced.
+This local reservation counter is not an external provider billing cap.
+"""
+from alembic import op
+
+revision = '034'
+down_revision = '033'
+branch_labels = None
+depends_on = None
+
+GRANT_MICROS = 12000000
+
+
+def upgrade():
+    op.execute("INSERT INTO model_budget(id, remaining_micros) VALUES ('global', 0) "
+               "ON CONFLICT (id) DO NOTHING")
+    op.execute(
+        "UPDATE model_budget SET remaining_micros = %d, updated_at = now() "
+        "WHERE id = 'global' AND remaining_micros < %d"
+        % (GRANT_MICROS, GRANT_MICROS)
+    )
+    op.execute(
+        "DO $$ BEGIN "
+        "IF NOT EXISTS (SELECT 1 FROM model_budget WHERE id = 'global' "
+        "AND remaining_micros >= %d) THEN "
+        "RAISE EXCEPTION 'Top-up refused: global model budget is below "
+        "12000000 micros after grant.' USING ERRCODE = 'P0001'; "
+        "END IF; END $$;" % GRANT_MICROS
+    )
+
+
+def downgrade():
+    op.execute(
+        "DO $$ BEGIN RAISE EXCEPTION 'Downgrade refused: the public demo grant "
+        "is one-way; the pre-grant remainder was not recorded.' "
+        "USING ERRCODE = 'P0001'; END $$;"
+    )

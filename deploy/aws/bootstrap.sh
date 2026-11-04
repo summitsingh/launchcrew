@@ -12347,6 +12347,15 @@ if wants_phase dbroles; then
   echo "Phase dbroles complete: exact owned roles bound, privilege split applied"
 fi
 
+# Attestation can preserve history but cannot prove this image ran Alembic.
+require_current_migration_completion() {
+  CURRENT_MIGRATION_JOURNAL="$LAUNCH_JOURNAL_DIR/launchcrew-$STACK_NAME-migrate-migration-$RELEASE_GEN-active.json"
+  CURRENT_MIGRATION_DEF="$(stack_resource MigrationTaskDefinition)" || phase_failed "$1"
+  python3 "$SCRIPT_DIR/../../scripts/migration_completion.py" "$AWS_BIN" "$EXPECTED_REGION" \
+    "$CLUSTER_NAME" "$CURRENT_MIGRATION_JOURNAL" "$CURRENT_MIGRATION_DEF" \
+    "$MIGRATION_IMAGE" "$RELEASE_GEN" "$EXPECTED_ACCOUNT" || phase_failed "$1"
+}
+
 if wants_phase migrate; then
   echo "Phase migrate: single one-off migration task, the only schema change path"
   [ "$STACK_EXISTS" -eq 1 ] || { echo "refused: no stack owns the migration task; run --phase infra first" >&2; phase_failed migrate; }
@@ -12358,6 +12367,7 @@ if wants_phase migrate; then
   check_taskdef_binding VerifyTaskDefinition VerifyExecutionRole VerifyTaskRole \
     "bootstrap-db-roles.RUNTIME_DB_URL=$RUNTIME_SECRET_ARN:database-url::"
   run_one_off_task MigrationTaskDefinition migration migrate
+  require_current_migration_completion migrate
   echo "Phase migrate task STOPPED exit 0; running verify-mode schema and runtime-identity proof"
   # Verify runs as its own task definition that injects only the runtime URL:
   # the master and migration secrets are never present in verify task memory.
@@ -13270,6 +13280,7 @@ if wants_phase enable; then
   reprove_prior_one_off_readonly SdkMaterialTaskDefinition sdk-material material
   reprove_prior_one_off_readonly BootstrapTaskDefinition bootstrap dbroles
   reprove_prior_one_off_readonly MigrationTaskDefinition migration migrate
+  require_current_migration_completion enable
   reprove_prior_one_off_readonly VerifyTaskDefinition verify migrate
   echo "Enable proof: material, roles, migration008 and runtime re-proved via current attestations or fresh journals with no new mutating run-task."
   ENABLE_OLD_API_TASKDEF=""
