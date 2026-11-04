@@ -64,6 +64,8 @@ class RequestShapeTests(unittest.TestCase):
             calls.append(request)
             if request.full_url.endswith("/media"):
                 return _response({"id": "creation_1"})
+            if "fields=status_code" in request.full_url:
+                return _response({"status_code": "FINISHED"})
             if "fields=permalink" in request.full_url:
                 return _response({"id": "media_9",
                                   "permalink": "https://www.instagram.com/p/DbSeq9/"})
@@ -71,7 +73,7 @@ class RequestShapeTests(unittest.TestCase):
 
         with patch.object(ig, "urlopen", side_effect=fake_opener):
             result = ig.instagram_transport(USER, MEDIA, CAPTION, TOKEN)
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), 4)
         first = calls[0]
         self.assertEqual(first.get_method(), "POST")
         self.assertTrue(first.full_url.startswith(ig.GRAPH_ORIGIN + "/v21.0/123456789/media"))
@@ -80,17 +82,80 @@ class RequestShapeTests(unittest.TestCase):
         self.assertEqual(body["caption"], CAPTION)
         self.assertEqual(body["access_token"], TOKEN)
         second = calls[1]
-        self.assertTrue(second.full_url.endswith("/media_publish"))
-        body = json.loads(second.data.decode())
-        self.assertEqual(body["creation_id"], "creation_1")
+        self.assertEqual(second.get_method(), "GET")
+        self.assertTrue(second.full_url.endswith("/creation_1?fields=status_code"))
+        self.assertEqual(second.get_header("Authorization"), "Bearer " + TOKEN)
+        self.assertNotIn(TOKEN, second.full_url)
         third = calls[2]
-        self.assertEqual(third.get_method(), "GET")
-        self.assertIn("fields=permalink", third.full_url)
-        self.assertEqual(third.get_header("Authorization"), "Bearer " + TOKEN)
-        self.assertNotIn(TOKEN, third.full_url)
+        self.assertTrue(third.full_url.endswith("/media_publish"))
+        body = json.loads(third.data.decode())
+        self.assertEqual(body["creation_id"], "creation_1")
+        fourth = calls[3]
+        self.assertEqual(fourth.get_method(), "GET")
+        self.assertIn("fields=permalink", fourth.full_url)
+        self.assertEqual(fourth.get_header("Authorization"), "Bearer " + TOKEN)
+        self.assertNotIn(TOKEN, fourth.full_url)
         self.assertEqual(result, {"platform_post_id": "media_9",
                                   "live_url": "https://www.instagram.com/p/DbSeq9/",
                                   "simulated": False})
+
+    def test_waits_for_container_before_publish(self):
+        responses = [{"id": "creation_1"}, {"status_code": "IN_PROGRESS"},
+                     {"status_code": "FINISHED"}, {"id": "media_9"},
+                     {"permalink": "https://www.instagram.com/p/DbSeq9/"}]
+        with patch.object(ig, "urlopen", side_effect=[_response(p) for p in responses]) as opener:
+            with patch.object(ig, "_sleep") as sleep:
+                result = ig.instagram_transport(USER, MEDIA, CAPTION, TOKEN, timeout=7.5)
+        self.assertEqual(result["platform_post_id"], "media_9")
+        sleep.assert_called_once_with(3)
+        self.assertEqual(
+            [call.args[0].full_url for call in opener.call_args_list],
+            [ig.GRAPH_ORIGIN + "/" + ig.GRAPH_VERSION + path for path in (
+                "/123456789/media", "/creation_1?fields=status_code",
+                "/creation_1?fields=status_code", "/123456789/media_publish",
+                "/media_9?fields=permalink")])
+        self.assertTrue(all(call.kwargs["timeout"] == 7.5
+                            for call in opener.call_args_list))
+
+    def test_fatal_container_status_prevents_publish(self):
+        for status in ("ERROR", "EXPIRED"):
+            with self.subTest(status=status):
+                responses = [_response({"id": "creation_1"}),
+                             _response({"status_code": status})]
+                with patch.object(ig, "urlopen", side_effect=responses) as opener:
+                    with patch.object(ig, "_sleep") as sleep:
+                        with self.assertRaisesRegex(ig.InstagramTransportError, status):
+                            ig.instagram_transport(USER, MEDIA, CAPTION, TOKEN)
+                self.assertEqual(opener.call_count, 2)
+                self.assertFalse(any(call.args[0].full_url.endswith("/media_publish")
+                                     for call in opener.call_args_list))
+                sleep.assert_not_called()
+
+    def test_container_readiness_budget_prevents_publish(self):
+        responses = [_response({"id": "creation_1"})] + [
+            _response({"status_code": "IN_PROGRESS"}) for _ in range(20)]
+        with patch.object(ig, "urlopen", side_effect=responses) as opener:
+            with patch.object(ig, "_sleep") as sleep:
+                with self.assertRaisesRegex(ig.InstagramTransportError,
+                                            "media container was not ready in time"):
+                    ig.instagram_transport(USER, MEDIA, CAPTION, TOKEN)
+        self.assertEqual(opener.call_count, 21)
+        self.assertTrue(all(call.args[0].full_url.endswith("/creation_1?fields=status_code")
+                            for call in opener.call_args_list[1:]))
+        self.assertEqual(sleep.call_count, 19)
+        self.assertTrue(all(call.args == (3,) for call in sleep.call_args_list))
+
+    def test_unusable_status_keeps_polling(self):
+        for payload in ({}, {"status_code": None}, {"status_code": ""},
+                        {"status_code": []}, {"status_code": "UNKNOWN"}):
+            with self.subTest(payload=payload):
+                responses = [{"id": "creation_1"}, payload,
+                             {"status_code": "FINISHED"}, {"id": "media_9"}, {}]
+                with patch.object(ig, "urlopen", side_effect=[_response(p) for p in responses]):
+                    with patch.object(ig, "_sleep") as sleep:
+                        result = ig.instagram_transport(USER, MEDIA, CAPTION, TOKEN)
+                self.assertEqual(result["platform_post_id"], "media_9")
+                sleep.assert_called_once_with(3)
 
     def test_token_never_leaks_into_errors(self):
         def bad_token_opener(request, timeout=None):

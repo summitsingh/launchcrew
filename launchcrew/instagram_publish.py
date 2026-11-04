@@ -1,7 +1,7 @@
 """Instagram live transport: real Graph API single-image publish path.
 
-Three-step flow against a fixed Graph API version: create a media
-container from a public image URL plus caption, publish the
+Flow against a fixed Graph API version: create a media
+container from a public image URL plus caption, wait until ready, publish the
 container, then read back the public permalink for verification.
 Used only when every live prerequisite holds: the
 LAUNCHCREW_INSTAGRAM_LIVE flag is true, the stored brand connection
@@ -64,6 +64,12 @@ def urlopen(request, timeout=None):
     """Single indirection so tests can patch the HTTP seam."""
     from urllib.request import urlopen as _real_urlopen
     return _real_urlopen(request, timeout=timeout)
+
+
+def _sleep(seconds):
+    """Single indirection so tests can patch the polling delay."""
+    from time import sleep
+    sleep(seconds)
 
 
 def instagram_live_enabled() -> bool:
@@ -263,6 +269,20 @@ def instagram_transport(ig_user_id: str, media_url: str, caption: str,
     published, and recording a failure would risk a duplicate on retry.
     """
     creation_id = create_container(ig_user_id, media_url, caption, token, timeout)
+    key = normalize_token(token)
+    for poll in range(20):
+        data = _get("/%s?fields=status_code" % creation_id, key, timeout)
+        status = data.get("status_code")
+        if status == "FINISHED":
+            break
+        if status in ("ERROR", "EXPIRED"):
+            raise InstagramTransportError(
+                "instagram media container status: %s" % status)
+        if poll < 19:
+            _sleep(3)
+    else:
+        raise InstagramTransportError(
+            "instagram media container was not ready in time")
     media_id = publish_container(ig_user_id, creation_id, token, timeout)
     try:
         live_url = media_permalink(media_id, token, timeout)
