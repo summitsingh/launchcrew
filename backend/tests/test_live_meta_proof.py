@@ -890,3 +890,43 @@ def test_spark_revision_requires_sourced_verified_claims():
     receipt['scout']['facts_used'].pop()
     with pytest.raises(ValueError, match='sourced verified claims'):
         spark_revision_payload(receipt)
+
+
+def test_wrapper_reports_spark_exception_class_and_message(monkeypatch, capsys, tmp_path):
+    from backend import live_meta_proof as proof
+    from scripts import verify_live_meta as wrapper
+    monkeypatch.setenv('LAUNCHCREW_ALLOW_HOST_SPARK_LIVE', '1')
+    with patch.object(proof, 'run_spark_proof', side_effect=RuntimeError('synthetic task failure')):
+        assert wrapper.main(['--live', '--mode', 'spark', '--latch-file', str(tmp_path / 'latch')]) == 1
+    assert 'RuntimeError: synthetic task failure' in capsys.readouterr().err
+
+
+def test_spark_terminal_failure_marker(monkeypatch, capsys, tmp_path):
+    from backend import live_meta_proof as proof
+    with patch.object(proof, 'run_spark_proof', return_value=1):
+        assert proof.main(['--live', '--mode', 'spark', '--latch-file', str(tmp_path / 'latch')]) == 1
+    assert capsys.readouterr().out.rstrip().endswith('SPARK PROOF FAIL')
+
+
+def test_wrapper_surfaces_in_task_spark_failure(monkeypatch, capsys, tmp_path):
+    from scripts import verify_live_meta as wrapper
+    from types import SimpleNamespace
+    # Reuse the controller fixture so the real launch wrapper reaches a failed task.
+    from tests.test_meta_proof import FAKE_AWS
+    fake = tmp_path / 'aws'
+    fake.write_text(FAKE_AWS)
+    fake.chmod(0o700)
+    monkeypatch.setenv('AWS_BIN', str(fake))
+    monkeypatch.setenv('FAKE_STATE_DIR', str(tmp_path))
+    monkeypatch.setenv('FAKE_MODE', 'exit_nonzero')
+    monkeypatch.setattr(wrapper, '_read_task_log', lambda *_: [
+        'Spark proof failed: ValueError: synthetic in-task failure', 'SPARK PROOF FAIL'])
+    from tests.test_meta_proof import ACCOUNT, REGION, API_IMAGE, EXEC_ROLE, TASK_ROLE, RUNTIME_ARN, META_ARN
+    args = SimpleNamespace(journal_dir=tmp_path / 'journal', cluster='test', task_def='test',
+                           subnet_a='subnet-a', subnet_b='subnet-b', job_sg='sg-test',
+                           expected_account=ACCOUNT, expected_region=REGION, api_image=API_IMAGE,
+                           execution_role=EXEC_ROLE, task_role=TASK_ROLE,
+                           runtime_secret_arn=RUNTIME_ARN, meta_secret_arn=META_ARN,
+                           log_group='/launchcrew/demo/meta-proof', log_stream='')
+    assert wrapper.launch_ecs(args) == 1
+    assert 'ValueError: synthetic in-task failure' in capsys.readouterr().err

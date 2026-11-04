@@ -209,6 +209,7 @@ def run_spark_proof(*, latch_path):
             try:
                 return self._inner.read(*args, **kwargs)
             except Exception as error:
+                print('Spark proof transport failed: ' + _exception_detail(error))
                 name = type(error).__name__
                 if name in ('TimeoutError', 'URLError', 'HTTPError', 'ConnectionError',
                             'RemoteDisconnected', 'SSLError', 'SocketTimeout',
@@ -224,6 +225,7 @@ def run_spark_proof(*, latch_path):
                 for chunk in self._inner:
                     yield chunk
             except Exception as error:
+                print('Spark proof transport failed: ' + _exception_detail(error))
                 name = type(error).__name__
                 if name in ('TimeoutError', 'URLError', 'HTTPError', 'ConnectionError',
                             'RemoteDisconnected', 'SSLError', 'SocketTimeout',
@@ -244,6 +246,7 @@ def run_spark_proof(*, latch_path):
         try:
             inner = spark_module._spark_opener().open(request, timeout=timeout)
         except Exception as error:
+            print('Spark proof transport failed: ' + _exception_detail(error))
             name = type(error).__name__
             if name in ('TimeoutError', 'URLError', 'HTTPError', 'ConnectionError',
                         'RemoteDisconnected', 'SSLError', 'SocketTimeout',
@@ -633,7 +636,8 @@ def run_sam_proof(*, latch_path):
         try:
             with store_module.engine().begin() as connection:
                 connection.execute(text("UPDATE sam_budget SET remaining_images=0 WHERE id='global'"))
-        except Exception:
+        except Exception as error:
+            print('SAM proof cleanup failed: ' + _exception_detail(error))
             cleanup_status['budget_zero_failed'] = True
         if saved_key and not os.environ.get('META_API_KEY', ''):
             os.environ['META_API_KEY'] = saved_key
@@ -652,8 +656,8 @@ def run_sam_proof(*, latch_path):
             final_row = connection.execute(
                 text('SELECT status, label FROM sam_calls WHERE run_id=:id AND revision=0'),
                 {'id': candidate['run_id']}).mappings().first()
-    except Exception:
-        print('SAM proof readback failed; no PASS')
+    except Exception as error:
+        print('SAM proof readback failed; no PASS: ' + _exception_detail(error))
         return 1
     if final_budget != 0:
         print('SAM proof budget readback not zero; no PASS')
@@ -683,6 +687,8 @@ def main(argv=None):
     if args.mode in ('spark', 'all'):
         latch = Path(args.latch_file) if args.latch_file else default_latch_path('spark')
         code = run_spark_proof(latch_path=latch)
+        if code != 0:
+            print('SPARK PROOF FAIL')
         if code != 0 or args.mode == 'spark':
             return code
     if args.mode in ('sam', 'all'):

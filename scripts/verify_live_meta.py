@@ -30,6 +30,8 @@ import time
 import uuid
 from pathlib import Path
 
+from datetime import datetime, timezone
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 EXPECTED_COMMAND = ["/opt/venv/bin/python", "-m", "backend.live_meta_proof",
@@ -44,6 +46,10 @@ def _aws_bin():
 def _run_aws(args, timeout=60):
     completed = subprocess.run(
         [_aws_bin(), *args], capture_output=True, text=True, timeout=timeout)
+    if completed.returncode and "ExpiredToken" in completed.stderr:
+        completed = subprocess.run(
+            [_aws_bin(), *args], capture_output=True, text=True, timeout=timeout,
+            env={**os.environ, "AWS_PROFILE": "launchcrew"})
     return completed
 
 
@@ -137,6 +143,39 @@ def _task_id_from_arn(task_arn):
     if not task_id or "/" in task_id or " " in task_id:
         return ""
     return task_id
+
+
+def _read_task_log(region, stream):
+    """Read every page, refusing incomplete or looping pagination evidence."""
+    messages = []
+    token = None
+    seen = set()
+    for _ in range(1000):
+        command = ["logs", "get-log-events", "--log-group-name", "/launchcrew/demo/meta-proof",
+                   "--log-stream-name", stream, "--start-from-head", "--no-paginate",
+                   "--region", region]
+        if token:
+            command += ["--next-token", token]
+        result = _run_aws(command)
+        if result.returncode:
+            raise RuntimeError("CloudWatch log read failed")
+        page = json.loads(result.stdout)
+        events = page.get("events")
+        forward = page.get("nextForwardToken")
+        if not isinstance(events, list) or not isinstance(forward, str) or not forward:
+            raise ValueError("incomplete CloudWatch log evidence")
+        for event in events:
+            message = event.get("message")
+            if not isinstance(message, str):
+                raise ValueError("invalid CloudWatch log event")
+            messages.extend(line for line in message.splitlines() if line.strip())
+        if forward == token:
+            return messages
+        if forward in seen:
+            raise ValueError("CloudWatch log pagination loop")
+        seen.add(forward)
+        token = forward
+    raise ValueError("CloudWatch log evidence exceeds page bound")
 
 
 def launch_ecs(args):
@@ -327,6 +366,19 @@ def launch_ecs(args):
         return 1
     containers = stopped.get("containers", [])
     if len(containers) != 1 or containers[0].get("exitCode") != 0:
+        task_id = _task_id_from_arn(task_arn)
+        if task_id:
+            try:
+                messages = _read_task_log(args.expected_region, "meta-proof/meta-proof/" + task_id)
+                from backend.live_meta_proof import _exception_detail
+                for message in messages:
+                    if message.startswith(("Spark proof failed: ", "Spark proof transport failed: ",
+                                           "Spark proof latch error: ", "Spark proof latch refused: ")):
+                        # In-task errors already carry class and message. Reapply host redaction.
+                        print(_exception_detail(RuntimeError(message)), file=sys.stderr)
+            except Exception as error:
+                from backend.live_meta_proof import _exception_detail
+                print("meta-proof failure log read failed: " + _exception_detail(error), file=sys.stderr)
         print("meta-proof container exit was not 0; proof refused", file=sys.stderr)
         return 1
     if containers[0].get("name", "meta-proof") != "meta-proof":
@@ -364,7 +416,7 @@ def launch_ecs(args):
     return 0
 
 
-def main(argv=None):
+def _main(argv=None):
     parser = argparse.ArgumentParser(description="Host live proof wrapper and ECS controller.")
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--mode", choices=["spark", "sam", "all"], default="sam")
@@ -400,6 +452,15 @@ def main(argv=None):
     if args.latch_file:
         forward += ["--latch-file", args.latch_file]
     return live_meta_proof.main(forward)
+
+
+def main(argv=None):
+    from backend.live_meta_proof import _exception_detail
+    try:
+        return _main(argv)
+    except Exception as error:
+        print("Meta proof failed: " + _exception_detail(error), file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
