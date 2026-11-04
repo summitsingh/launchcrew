@@ -122,6 +122,7 @@ PHASE="all"
 TEMPLATE_FILE=""
 PARAMETERS_FILE=""
 API_IMAGE=""
+META_PROOF_STACK_NAME=""
 WEB_IMAGE=""
 WEB_PROXY_IMAGE=""
 MIGRATION_IMAGE=""
@@ -186,6 +187,8 @@ while [ $# -gt 0 ]; do
     --template-file=*) TEMPLATE_FILE="${1#--template-file=}"; shift ;;
     --parameters-file) PARAMETERS_FILE="${2:-}"; shift 2 ;;
     --parameters-file=*) PARAMETERS_FILE="${1#--parameters-file=}"; shift ;;
+    --meta-proof-stack-name) META_PROOF_STACK_NAME="${2:-}"; shift 2 ;;
+    --meta-proof-stack-name=*) META_PROOF_STACK_NAME="${1#--meta-proof-stack-name=}"; shift ;;
     --api-image) API_IMAGE="${2:-}"; shift 2 ;;
     --api-image=*) API_IMAGE="${1#--api-image=}"; shift ;;
     --web-image) WEB_IMAGE="${2:-}"; shift 2 ;;
@@ -263,6 +266,8 @@ phase_plan() {
   echo "  3. images: all five ECR image URIs verified by digest with no failures, each equal"
   echo "     to its owned stack task definition image, explicit tag required, no latest fallback;"
   echo "     task definitions must inject exactly the validated secrets under the owned roles"
+  echo "     images also syncs the proof task to the verified API digest in --meta-proof-stack-name"
+  echo "     (default STACK_NAME-meta-proof), preserving its deployed template and other parameters"
   echo "  4. init: isolated SDK populate task on the verified bootstrap image with explicit"
   echo "     EntryPoint to populate_prereqs.py and Command --populate, STOPPED exit 0,"
   echo "     after the SDK task definition image, env, roles, and zero secret injection proof"
@@ -4463,6 +4468,7 @@ if wants_phase images; then
   [ "$STACK_EXISTS" -eq 1 ] || { echo "refused: no stack to own task definitions; run --phase infra first" >&2; phase_failed images; }
   require_stack_complete images
   verify_image "$API_IMAGE" launchcrew-api ApiTaskDefinition api api
+  META_PROOF_API_IMAGE="${API_IMAGE%%@*}@$IMAGE_DIGEST"
   verify_image "$WEB_IMAGE" launchcrew-web WebTaskDefinition web-app web
   verify_image "$WEB_PROXY_IMAGE" launchcrew-web-proxy WebTaskDefinition web-proxy web-proxy
   verify_image "$MIGRATION_IMAGE" launchcrew-migration MigrationTaskDefinition migration migration
@@ -4474,6 +4480,12 @@ if wants_phase images; then
   check_taskdef_binding WebTaskDefinition WebExecutionRole WebTaskRole \
     "web-proxy.TLS_CERT_B64=$TLS_SECRET_ARN:tls-cert-b64::" \
     "web-proxy.TLS_KEY_B64=$TLS_SECRET_ARN:tls-key-b64::"
+  # Keep the separate proof definition current during every image rollout.
+  # Publication alone never deploys. This hook runs only in confirmed images.
+  python3 "$SCRIPT_DIR/sync_meta_proof_image.py" --confirm \
+    --stack "${META_PROOF_STACK_NAME:-$STACK_NAME-meta-proof}" \
+    --api-image "$META_PROOF_API_IMAGE" --expected-account "$EXPECTED_ACCOUNT" \
+    --expected-region "$EXPECTED_REGION" || phase_failed images
   mark_done images
   echo "Phase images complete: five verified images, no placeholder running"
 fi
