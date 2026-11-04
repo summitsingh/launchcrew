@@ -120,6 +120,17 @@ def test_upload_records_format_facts_and_nondestructive_derivatives(client):
     assert intact['sha256_digest'] == asset['sha256_digest']
 
 
+def test_upload_digest_is_the_file_sha256(client):
+    import base64
+    import hashlib
+    raw = b'fake-image-bytes-for-digest-proof'
+    response = client.post('/api/media/assets',
+                           json={'filename': 'proof.png', 'width': 640, 'height': 480,
+                                 'data_b64': base64.b64encode(raw).decode('ascii')})
+    assert response.status_code == 201, response.text
+    assert response.json()['sha256_digest'] == hashlib.sha256(raw).hexdigest()
+
+
 def test_attach_two_channels_resolves_each_derivative_without_reupload(client):
     asset = upload_image(client, width=1080, height=1350)
     slot = new_slot(client)

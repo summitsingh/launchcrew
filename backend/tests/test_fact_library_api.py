@@ -246,6 +246,7 @@ def test_save_current_run_facts_to_library_and_reuse(client):
 
 
 def test_starter_wallet_seed_is_idempotent_and_honest(client):
+    import hashlib
     from pathlib import Path
     from launchcrew.facts import parse_product_facts
     first = client.get('/api/fact-products').json()
@@ -261,7 +262,7 @@ def test_starter_wallet_seed_is_idempotent_and_honest(client):
     assets = client.get('/api/media/assets').json()
     wallet = [entry for entry in assets if entry['id'] == 'media_wallet_starter']
     assert len(wallet) == 1
-    assert len(wallet[0]['sha256_digest']) == 64
+    assert wallet[0]['sha256_digest'] == hashlib.sha256(photo.read_bytes()).hexdigest()
     assert wallet[0]['derivatives']
     again = client.get('/api/fact-products').json()
     assert [item['id'] for item in again].count('fprod_wallet_starter') == 1

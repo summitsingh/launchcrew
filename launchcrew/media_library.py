@@ -171,22 +171,17 @@ def decode_data_b64(data_b64: str | None) -> bytes | None:
         return None
 
 
-def original_digest(data_b64: str | None, filename: str, width: int,
-                    height: int, media_type: str) -> str:
-    """Digest the immutable original bytes and metadata.
+def original_digest(data_b64: str | None) -> str:
+    """Digest the immutable original file bytes.
 
-    The digest covers the uploaded payload plus the recorded format
-    facts, so any overwrite of the original would change it.
+    The digest is exactly the SHA-256 of the decoded upload payload,
+    so the stored sha256_digest field is the file's real SHA-256 and
+    any overwrite of the original bytes would change it. Format facts
+    (filename, dimensions, media type) live in their own columns and
+    are not mixed into the digest.
     """
     payload = decode_data_b64(data_b64) or b""
-    material = b"|".join([
-        payload,
-        str(filename or "").encode("utf-8"),
-        str(width).encode("utf-8"),
-        str(height).encode("utf-8"),
-        str(media_type or "").encode("utf-8"),
-    ])
-    return hashlib.sha256(material).hexdigest()
+    return hashlib.sha256(payload).hexdigest()
 
 
 def derivative_digest(source_digest: str, derivative_key: str) -> str:
@@ -389,9 +384,7 @@ def validate_upload(filename: Any, mime_type: Any, width: Any,
         duration = float(duration_seconds)
     media_type = infer_media_type(name, mime, duration)
     aspect = canonical_aspect_ratio(width, height)
-    digest = original_digest(
-        data_b64 if isinstance(data_b64, str) else None,
-        name, width, height, media_type)
+    digest = original_digest(data_b64 if isinstance(data_b64, str) else None)
     return {"filename": name, "mime_type": mime, "media_type": media_type,
             "width": width, "height": height, "aspect_ratio": aspect,
             "duration_seconds": duration, "sha256_digest": digest}
