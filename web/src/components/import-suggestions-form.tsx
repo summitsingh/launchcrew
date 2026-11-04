@@ -1,4 +1,9 @@
 'use client';
+import { Badge as WorkspaceBadge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { NativeSelect } from '@/components/ui/native-select';
+
 import { useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
@@ -52,10 +57,10 @@ export function ImportSuggestionsList({
             <li key={item.index} className="scout-fact">
               <div className="scout-row">
                 <span>Suggestion {item.index + 1}</span>
-                <span className="badge pending">Unconfirmed</span>
+                <WorkspaceBadge appearance="workspace" asChild ><span className="badge pending">Unconfirmed</span></WorkspaceBadge>
               </div>
               <label htmlFor={`intake-suggestion-${item.index}`}>Edit suggestion {item.index + 1}</label>
-              <input
+              <Input appearance="workspace"
                 id={`intake-suggestion-${item.index}`}
                 value={current}
                 onChange={e => onEdit(item.index, e.target.value)}
@@ -132,10 +137,10 @@ export function StructuredProposalFields({
             <li key={item.index} className="scout-fact">
               <div className="scout-row">
                 <span>Suggested {structuredFieldLabel(item.field)} {item.index + 1}</span>
-                <span className="badge pending">Unconfirmed</span>
+                <WorkspaceBadge appearance="workspace" asChild ><span className="badge pending">Unconfirmed</span></WorkspaceBadge>
               </div>
               <label htmlFor={`${idPrefix}-field-${item.index}`}>Edit suggested {structuredFieldLabel(item.field).toLowerCase()} {item.index + 1}</label>
-              <input
+              <Input appearance="workspace"
                 id={`${idPrefix}-field-${item.index}`}
                 value={current}
                 onChange={e => edit(item.index, e.target.value)}
@@ -144,7 +149,7 @@ export function StructuredProposalFields({
                 Suggested field: {structuredFieldLabel(item.field)} · Status: unconfirmed · Confirmed: no
               </p>
               <label className="checkbox" htmlFor={`${idPrefix}-select-${item.index}`}>
-                <input
+                <Input appearance="workspace"
                   id={`${idPrefix}-select-${item.index}`}
                   type="checkbox"
                   checked={selected[item.index] === true}
@@ -282,7 +287,7 @@ export function ImportSuggestionsForm({
         and explicitly confirm each in the fact form.
       </p>
       <label htmlFor="intake-text">Paste product listing or social bio/caption text</label>
-      <textarea
+      <Textarea appearance="workspace"
         id="intake-text"
         rows={4}
         maxLength={IMPORT_TEXT_MAX}
@@ -290,7 +295,7 @@ export function ImportSuggestionsForm({
         onChange={e => setText(e.target.value)}
       />
       <label htmlFor="intake-source">Source for pasted text</label>
-      <select
+      <NativeSelect appearance="workspace"
         id="intake-source"
         value={source}
         onChange={e => setSource(e.target.value as ImportSource)}
@@ -298,7 +303,7 @@ export function ImportSuggestionsForm({
         {IMPORT_SOURCES.map(value => (
           <option key={value} value={value}>{importSourceLabel(value)}</option>
         ))}
-      </select>
+      </NativeSelect>
       {localErrors.length > 0 && (
         <div role="alert" className="message error">
           <ul>{localErrors.map((message, i) => <li key={i}>{message}</li>)}</ul>

@@ -1,4 +1,7 @@
 'use client';
+import { Card } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
@@ -113,18 +116,18 @@ export function AnalyticsPullPanel({ slotId = '', channel = '', pulls }: { slotI
     onError: (error: Error) => setNotice(error.message),
   });
   const manualTarget = slotInput.trim() && channelInput.trim();
-  return <section className="panel" data-testid="analytics-pull-panel" aria-label="Analytics pull">
+  return <Card appearance="workspace" asChild ><section className="panel" data-testid="analytics-pull-panel" aria-label="Analytics pull">
     <h2>Provider metrics pull</h2>
     <p className="hint">Verified posts only. A refresh with a provider payload records its numbers under the
       provider source; a refresh without one records every metric as not reported under the
       simulation source and creates no outcome. Unsupported metrics read as not reported, never zero.</p>
     <p>
       <label htmlFor="analytics-slot-id">Slot id</label>
-      <input id="analytics-slot-id" value={slotInput} onChange={e => setSlotInput(e.target.value)} placeholder="slot_..." />
+      <Input appearance="workspace" id="analytics-slot-id" value={slotInput} onChange={e => setSlotInput(e.target.value)} placeholder="slot_..." />
     </p>
     <p>
       <label htmlFor="analytics-channel">Channel</label>
-      <input id="analytics-channel" value={channelInput} onChange={e => setChannelInput(e.target.value)} placeholder="instagram" />
+      <Input appearance="workspace" id="analytics-channel" value={channelInput} onChange={e => setChannelInput(e.target.value)} placeholder="instagram" />
     </p>
     <div className="queue-actions">
       <Button data-testid="analytics-manual-refresh-btn"
@@ -146,5 +149,5 @@ export function AnalyticsPullPanel({ slotId = '', channel = '', pulls }: { slotI
         </li>)}
       </ul>}
     {notice && <p role="status">{notice}</p>}
-  </section>;
+  </section></Card>;
 }

@@ -1,4 +1,8 @@
 'use client';
+import { Textarea } from '@/components/ui/textarea';
+import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+
 
 export interface TrendFormatInput {
   label: string;
@@ -48,7 +52,7 @@ export function TrendFormatPicker({
         before the Maker sees them.
       </p>
       <label htmlFor="trend-format-label">Trend Format Description</label>
-      <textarea
+      <Textarea appearance="workspace"
         id="trend-format-label"
         data-testid="trend-format-label-input"
         rows={2}
@@ -58,7 +62,7 @@ export function TrendFormatPicker({
         maxLength={280}
       />
       <label htmlFor="trend-format-source">Required Source Label</label>
-      <input
+      <Input appearance="workspace"
         id="trend-format-source"
         data-testid="trend-format-source-input"
         value={value.source}
@@ -68,9 +72,9 @@ export function TrendFormatPicker({
       />
       <div className="queue-actions" aria-label="Trend source presets">
         {TREND_SOURCE_PRESETS.map(preset => (
-          <button key={preset} type="button" className="chip" onClick={() => set({ source: preset })}>
+          <Button appearance="workspace" key={preset} type="button" className="chip" onClick={() => set({ source: preset })}>
             {preset}
-          </button>
+          </Button>
         ))}
       </div>
       {missing && (

@@ -1,4 +1,10 @@
 'use client';
+import { Card } from '@/components/ui/card';
+import { Badge as WorkspaceBadge } from '@/components/ui/badge';
+import { NativeSelect } from '@/components/ui/native-select';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 
@@ -103,7 +109,7 @@ export function FormatLibraryPanel({
   capabilities: ChannelCapability[];
 }) {
   return (
-    <section className="panel" aria-label="Format library and channel capabilities">
+    <Card appearance="workspace" asChild ><section className="panel" aria-label="Format library and channel capabilities">
       <p className="eyebrow">FORMAT LIBRARY</p>
       <h2>Formats and channel capabilities</h2>
       <p className="hint">
@@ -116,7 +122,7 @@ export function FormatLibraryPanel({
           <li key={item.format} className="scout-fact">
             <div className="scout-row">
               <span>{item.label}</span>
-              <span className="badge pending">{item.format}</span>
+              <WorkspaceBadge appearance="workspace" asChild ><span className="badge pending">{item.format}</span></WorkspaceBadge>
             </div>
             <p className="hint">{item.rule}</p>
           </li>
@@ -129,7 +135,7 @@ export function FormatLibraryPanel({
           <li key={row.channel} className="scout-fact">
             <div className="scout-row">
               <span>{row.channel}</span>
-              <span className="badge pending">limit {row.caption_limit}</span>
+              <WorkspaceBadge appearance="workspace" asChild ><span className="badge pending">limit {row.caption_limit}</span></WorkspaceBadge>
             </div>
             <p className="hint">
               Formats: {row.allowed_formats.join(', ') || 'none'} · Caption limit: {row.caption_limit} · Ratios:{' '}
@@ -139,7 +145,7 @@ export function FormatLibraryPanel({
           </li>
         ))}
       </ul>
-    </section>
+    </section></Card>
   );
 }
 
@@ -159,44 +165,44 @@ export function FormatSpecPicker({
         Pick a format to enforce its Checker rule on this run. A failed format check blocks approval with a plain reason.
       </p>
       <label htmlFor="format-kind">Format</label>
-      <select id="format-kind" value={value.format_kind} onChange={e => set({ format_kind: e.target.value as FormatKind | '' })}>
+      <NativeSelect appearance="workspace" id="format-kind" value={value.format_kind} onChange={e => set({ format_kind: e.target.value as FormatKind | '' })}>
         <option value="">No format check</option>
         <option value="feed_carousel">Feed carousel (5 to 10 frames at 4:5)</option>
         <option value="reel_script">Reel script (hook under 140 characters, 1 or more shots)</option>
         <option value="story_sequence">Story sequence (3 to 6 frames, one idea per frame)</option>
         <option value="single_image">Single image (stories and ads drafts, never feed posts)</option>
-      </select>
+      </NativeSelect>
       {value.format_kind === 'feed_carousel' && (
         <>
           <label htmlFor="format-frames">Frame count</label>
-          <input id="format-frames" inputMode="numeric" value={value.frame_count} onChange={e => set({ frame_count: e.target.value })} />
+          <Input appearance="workspace" id="format-frames" inputMode="numeric" value={value.frame_count} onChange={e => set({ frame_count: e.target.value })} />
           <label htmlFor="format-aspect">Aspect ratio</label>
-          <input id="format-aspect" value={value.aspect_ratio} onChange={e => set({ aspect_ratio: e.target.value })} placeholder="4:5" />
+          <Input appearance="workspace" id="format-aspect" value={value.aspect_ratio} onChange={e => set({ aspect_ratio: e.target.value })} placeholder="4:5" />
         </>
       )}
       {value.format_kind === 'reel_script' && (
         <>
           <label htmlFor="format-hook">Reel hook (under 140 characters)</label>
-          <textarea id="format-hook" rows={2} value={value.hook_text} onChange={e => set({ hook_text: e.target.value })} />
+          <Textarea appearance="workspace" id="format-hook" rows={2} value={value.hook_text} onChange={e => set({ hook_text: e.target.value })} />
           <label htmlFor="format-shots">Shots (one per line)</label>
-          <textarea id="format-shots" rows={3} value={value.shots} onChange={e => set({ shots: e.target.value })} />
+          <Textarea appearance="workspace" id="format-shots" rows={3} value={value.shots} onChange={e => set({ shots: e.target.value })} />
         </>
       )}
       {value.format_kind === 'story_sequence' && (
         <>
           <label htmlFor="format-ideas">Frame ideas (one per line, 3 to 6)</label>
-          <textarea id="format-ideas" rows={4} value={value.frame_ideas} onChange={e => set({ frame_ideas: e.target.value })} />
+          <Textarea appearance="workspace" id="format-ideas" rows={4} value={value.frame_ideas} onChange={e => set({ frame_ideas: e.target.value })} />
         </>
       )}
       {value.format_kind === 'single_image' && (
         <>
           <label htmlFor="format-surface">Target surface</label>
-          <select id="format-surface" value={value.target_surface} onChange={e => set({ target_surface: e.target.value })}>
+          <NativeSelect appearance="workspace" id="format-surface" value={value.target_surface} onChange={e => set({ target_surface: e.target.value })}>
             <option value="">Choose a surface</option>
             <option value="stories">Stories</option>
             <option value="ads">Ads drafts</option>
             <option value="feed">Feed posts (blocked)</option>
-          </select>
+          </NativeSelect>
         </>
       )}
     </fieldset>
@@ -225,13 +231,13 @@ export function BrandKitForm({
         the computed kit version and digest, so any change alters the version.
       </p>
       <label htmlFor="brand-colors">Brand colors</label>
-      <input id="brand-colors" value={colors} onChange={e => setColors(e.target.value)} placeholder="#ff0000, ink" />
+      <Input appearance="workspace" id="brand-colors" value={colors} onChange={e => setColors(e.target.value)} placeholder="#ff0000, ink" />
       <label htmlFor="brand-fonts">Fonts</label>
-      <input id="brand-fonts" value={fonts} onChange={e => setFonts(e.target.value)} placeholder="Inter, Grotesk" />
+      <Input appearance="workspace" id="brand-fonts" value={fonts} onChange={e => setFonts(e.target.value)} placeholder="Inter, Grotesk" />
       <label htmlFor="brand-logo">Logo reference</label>
-      <input id="brand-logo" value={logo} onChange={e => setLogo(e.target.value)} placeholder="assets/logo.png" />
+      <Input appearance="workspace" id="brand-logo" value={logo} onChange={e => setLogo(e.target.value)} placeholder="assets/logo.png" />
       <label htmlFor="brand-rules">Banned rules</label>
-      <input id="brand-rules" value={rules} onChange={e => setRules(e.target.value)} placeholder="hype, superlative" />
+      <Input appearance="workspace" id="brand-rules" value={rules} onChange={e => setRules(e.target.value)} placeholder="hype, superlative" />
       <div className="queue-actions">
         <Button
           type="button"

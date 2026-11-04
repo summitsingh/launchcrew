@@ -174,3 +174,17 @@ describe('SC1 brand account connections panel', () => {
     expect(html).toContain('Disconnecting...');
   });
 });
+
+describe('public connection controls', () => {
+  it('shows connected metadata and lock copy without mutation controls', () => {
+    const html = renderToStaticMarkup(
+      <BrandAccountConnectionsPanel locked platforms={PLATFORMS} connections={[connection('instagram')]}
+        onConnect={() => {}} onDisconnect={() => {}} />,
+    );
+    expect(html).toContain('Connection management is locked in public demo mode.');
+    expect(html).toContain('encrypted_at_rest');
+    expect(html).toContain('Scopes:');
+    expect(html).not.toContain('data-testid="connect-');
+    expect(html).not.toContain('data-testid="disconnect-');
+  });
+});

@@ -1,4 +1,8 @@
 'use client';
+import { Input } from '@/components/ui/input';
+import { Card } from '@/components/ui/card';
+import { NativeSelect } from '@/components/ui/native-select';
+
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
@@ -39,7 +43,7 @@ export function MissingFactsPrompt({
         or record an explicit owner waiver to draft without them.
       </p>
       <label className="checkbox" htmlFor="waive-missing-core">
-        <input
+        <Input appearance="workspace"
           id="waive-missing-core"
           data-testid="waive-missing-core"
           type="checkbox"
@@ -151,7 +155,7 @@ export function FactLibrarySection({
   const selectedVariant = variants.data?.find((v: FactVariant) => v.id === variantId) ?? null;
 
   return (
-    <div data-testid="fact-library" className="panel">
+    <Card appearance="workspace" asChild ><div data-testid="fact-library" className="panel">
       <p className="eyebrow">FACTS LIBRARY</p>
       <h3>Reuse a saved product</h3>
       <p className="hint">
@@ -161,7 +165,7 @@ export function FactLibrarySection({
       {products.isPending && <p role="status">Loading saved products...</p>}
       {products.error && <p role="alert">Saved products are unavailable.</p>}
       <label htmlFor="fact-product-select">Saved product</label>
-      <select
+      <NativeSelect appearance="workspace"
         id="fact-product-select"
         data-testid="fact-product-select"
         value={productId}
@@ -176,9 +180,9 @@ export function FactLibrarySection({
             {p.name} ({p.variant_count} variant{p.variant_count === 1 ? '' : 's'})
           </option>
         ))}
-      </select>
+      </NativeSelect>
       <div className="queue-actions">
-        <input
+        <Input appearance="workspace"
           id="fact-product-name"
           data-testid="fact-product-name"
           value={newProductName}
@@ -199,7 +203,7 @@ export function FactLibrarySection({
       {productId && (
         <>
           <label htmlFor="fact-variant-select">Saved variant</label>
-          <select
+          <NativeSelect appearance="workspace"
             id="fact-variant-select"
             data-testid="fact-variant-select"
             value={variantId}
@@ -212,7 +216,7 @@ export function FactLibrarySection({
                 {v.name}{v.confirmed ? '' : ' (unconfirmed)'}
               </option>
             ))}
-          </select>
+          </NativeSelect>
           <div className="queue-actions">
             <Button
               type="button"
@@ -249,7 +253,7 @@ export function FactLibrarySection({
       <h3>Save current facts</h3>
       <p className="hint">Save the current form as a new unconfirmed variant under the selected product.</p>
       <div className="queue-actions">
-        <input
+        <Input appearance="workspace"
           id="fact-variant-name"
           data-testid="fact-variant-name"
           value={newVariantName}
@@ -267,6 +271,6 @@ export function FactLibrarySection({
           Save current facts
         </Button>
       </div>
-    </div>
+    </div></Card>
   );
 }

@@ -1,4 +1,8 @@
 'use client';
+import { Card } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { NativeSelect } from '@/components/ui/native-select';
+
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
@@ -71,18 +75,18 @@ export function AgentSurfacesPanel() {
     onError: (error: Error) => setNotice(error.message),
   });
 
-  return <section className="panel" aria-label="Agent surfaces" data-testid="agent-surfaces-panel">
+  return <Card appearance="workspace" asChild ><section className="panel" aria-label="Agent surfaces" data-testid="agent-surfaces-panel">
     <h2>Agent surfaces</h2>
     <p className="hint">One backend serves four surfaces over the same workspace state: Web UI, REST API, hosted MCP server, and CLI. Keys are scoped to this workspace.</p>
 
     <h3>Workspace API keys</h3>
     <div className="queue-actions">
       <label htmlFor="agent-key-label">Key label</label>
-      <input id="agent-key-label" value={label} maxLength={120} onChange={e => setLabel(e.target.value)} />
+      <Input appearance="workspace" id="agent-key-label" value={label} maxLength={120} onChange={e => setLabel(e.target.value)} />
       <label htmlFor="agent-key-role">Seat role</label>
-      <select id="agent-key-role" value={role} onChange={e => setRole(e.target.value)}>
+      <NativeSelect appearance="workspace" id="agent-key-role" value={role} onChange={e => setRole(e.target.value)}>
         {SEAT_ROLES.map(name => <option key={name} value={name}>{name}{name === 'viewer' ? ' (read-only)' : ''}</option>)}
-      </select>
+      </NativeSelect>
       <Button data-testid="agent-create-key-btn" onClick={() => createKey.mutate()} disabled={createKey.isPending || !label.trim()}>
         {createKey.isPending ? 'Creating...' : 'Create workspace key'}
       </Button>
@@ -122,5 +126,5 @@ export function AgentSurfacesPanel() {
       <p className="hint">{skill.data.name} v{skill.data.version} · Tools: {(skill.data.tools ?? []).join(', ')}</p>
       <pre data-testid="agent-skill-preview">{skill.data.content_markdown ?? ''}</pre>
     </>}
-  </section>;
+  </section></Card>;
 }

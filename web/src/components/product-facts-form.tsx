@@ -1,4 +1,9 @@
 'use client';
+import { Input } from '@/components/ui/input';
+import { NativeSelect } from '@/components/ui/native-select';
+import { Button } from '@/components/ui/button';
+import { Textarea } from '@/components/ui/textarea';
+
 import type { OwnerFactsState, OwnerFactState, ProductFactSource } from '@/lib/product-facts';
 import { ALLOWED_CLAIMS_MAX, FOUNDER_NOTE_MAX, PRODUCT_FACT_FIELDS, PRODUCT_FACT_SOURCES, PRODUCT_FACT_VALUE_MAX } from '@/lib/product-facts';
 
@@ -20,7 +25,7 @@ function FactRow({
   return (
     <div>
       <label htmlFor={id}>{label}</label>
-      <input
+      <Input appearance="workspace"
         id={id}
         value={fact.value}
         maxLength={max}
@@ -28,7 +33,7 @@ function FactRow({
       />
       <p className="hint">{help} Max {max} characters.</p>
       <label className="checkbox" htmlFor={`${id}-confirmed`}>
-        <input
+        <Input appearance="workspace"
           id={`${id}-confirmed`}
           type="checkbox"
           checked={fact.confirmed}
@@ -37,7 +42,7 @@ function FactRow({
         I confirm this fact is correct
       </label>
       <label htmlFor={`${id}-source`}>Source for {label.toLowerCase()}</label>
-      <select
+      <NativeSelect appearance="workspace"
         id={`${id}-source`}
         value={fact.source}
         onChange={e => onChange({ ...fact, source: e.target.value as ProductFactSource })}
@@ -45,7 +50,7 @@ function FactRow({
         {PRODUCT_FACT_SOURCES.map(s => (
           <option key={s} value={s}>{s}</option>
         ))}
-      </select>
+      </NativeSelect>
     </div>
   );
 }
@@ -100,24 +105,24 @@ export function ProductFactsForm({
             max={PRODUCT_FACT_VALUE_MAX}
             help="Optional allowed claim."
           />
-          <button type="button" className="button outline" onClick={() => removeClaim(i)}>
+          <Button appearance="workspace" type="button" className="button outline" onClick={() => removeClaim(i)}>
             Remove claim {i + 1}
-          </button>
+          </Button>
         </div>
       ))}
       <div className="queue-actions">
-        <button
+        <Button appearance="workspace"
           type="button"
           className="button outline"
           onClick={addClaim}
           disabled={state.allowed_claims.length >= ALLOWED_CLAIMS_MAX}
         >
           Add allowed claim
-        </button>
+        </Button>
       </div>
       <div>
         <label htmlFor="owner-founder-note">Founder note, optional</label>
-        <textarea
+        <Textarea appearance="workspace"
           id="owner-founder-note"
           rows={2}
           maxLength={FOUNDER_NOTE_MAX}
@@ -129,7 +134,7 @@ export function ProductFactsForm({
           factual claim. Max {FOUNDER_NOTE_MAX} characters.
         </p>
         <label className="checkbox" htmlFor="owner-founder-note-confirmed">
-          <input
+          <Input appearance="workspace"
             id="owner-founder-note-confirmed"
             type="checkbox"
             checked={state.founder_note.confirmed}
@@ -138,7 +143,7 @@ export function ProductFactsForm({
           I confirm this note is mine to show as unverified color
         </label>
         <label htmlFor="owner-founder-note-source">Source for founder note</label>
-        <select
+        <NativeSelect appearance="workspace"
           id="owner-founder-note-source"
           value={state.founder_note.source}
           onChange={e => onChange({ ...state, founder_note: { ...state.founder_note, source: e.target.value as ProductFactSource } })}
@@ -146,7 +151,7 @@ export function ProductFactsForm({
           {PRODUCT_FACT_SOURCES.map(s => (
             <option key={s} value={s}>{s}</option>
           ))}
-        </select>
+        </NativeSelect>
       </div>
     </div>
   );

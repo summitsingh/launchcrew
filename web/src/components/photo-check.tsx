@@ -1,4 +1,7 @@
 'use client';
+import { Card } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+
 import { useEffect, useRef, useState, type RefObject } from 'react';
 import { Button } from '@/components/ui/button';
 import { api } from '@/lib/api';
@@ -342,7 +345,7 @@ export function PhotoCheckPanel(props: PhotoPanelProps) {
   const attached = !!props.stored && props.stored.state !== 'no_photo';
   const showCropOffer = !!props.preview && props.preview.label === 'detected' && props.preview.crop !== null;
   return (
-    <section className="panel" aria-label="Photo check">
+    <Card appearance="workspace" asChild ><section className="panel" aria-label="Photo check">
       <p className="eyebrow">OPTIONAL PHOTO CHECK</p>
       <h2>Photo visibility check</h2>
       <p className="hint">
@@ -367,7 +370,7 @@ export function PhotoCheckPanel(props: PhotoPanelProps) {
           )}
           <div>
             <label htmlFor={`photo-file-${props.runId}`}>Select photo (PNG or JPEG, max 1 MiB, max 8 megapixels)</label>
-            <input
+            <Input appearance="workspace"
               id={`photo-file-${props.runId}`}
               type="file"
               accept="image/png,image/jpeg"
@@ -443,7 +446,7 @@ export function PhotoCheckPanel(props: PhotoPanelProps) {
           )}
         </>
       )}
-    </section>
+    </section></Card>
   );
 }
 
