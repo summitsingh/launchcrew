@@ -24,9 +24,9 @@ The demo video narration uses Muse text-to-speech (Warm Pebble voice) for voice 
 
 Launch-pipeline model calls flow through the pipeline adapter to the Meta Model API for Spark text candidates, and photo checks flow through the explicit photo-check route to SAM. Owner-gated Spark generation and the separately keyed image-generation route are additional explicit model-call paths. Deterministic checks run before every launch-pipeline model call. Every launch-pipeline text output is a candidate that is rechecked against confirmed facts; only checked sentences survive. No model output approves, unblocks, or verifies anything. Approval binds a human approver to an exact version digest. Publishing requires the Ready gate plus the slot idempotency key. No model call is made to render progress, poll status, or run tests.
 
-## Current live proof, Nov 3
+## Current live proof, Nov 4
 
-Live site https://launchcrew.summitsingh.com serves the published main. All endpoints return 200 and the running image digests equal the publish manifest. Google sign-in is live on the demo site. Instagram is connected for the brand account, and one real post was published through the Ready gate on Nov 3: https://www.instagram.com/p/DfSbBrYDadb/. Only Instagram is a real connection; other platforms are unconnected. Google Drive import is built but not yet proven live. The demo post is a proof artifact and can be archived from the Instagram app at any time.
+Live site: https://launchcrew.summitsingh.com, served from a single EC2 instance since Nov 4, 2026, in public demo mode with no login. Instagram is connected for the brand account. Real posts published through the Ready gate: Nov 3, https://www.instagram.com/p/DfSbBrYDadb/, plus the Nov 4 demo and verification posts linked from the publish board. Spark live proof passed on Nov 4, 2026 (3 live calls, receipt verified, seeded veto blocked, SPARK PROOF PASS). SAM live proof is recorded in the Meta models section above. Only Instagram is a real connection; other platforms are unconnected. Google Drive import is built but not yet proven live. The demo posts are proof artifacts and can be archived from the Instagram app at any time.
 
 ## Demo product images
 
