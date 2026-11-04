@@ -12,10 +12,10 @@ def evidence():
 
 
 def test_current_migration_stopped_zero_proves_completion():
-    assert verify(*evidence(), 'current', 'release', 'cluster')
+    assert verify(*evidence(), 'current', 'release', 'cluster', 'digest')
 
 
-@pytest.mark.parametrize('change', ['missing', 'failed', 'running', 'image', 'definition', 'release', 'attestation'])
+@pytest.mark.parametrize('change', ['missing', 'failed', 'running', 'image', 'definition', 'release', 'digest', 'attestation'])
 def test_incomplete_or_unbound_execution_refused(change):
     journal, definition, described = deepcopy(evidence())
     if change == 'missing':
@@ -28,8 +28,10 @@ def test_incomplete_or_unbound_execution_refused(change):
         described['tasks'][0]['containers'][0]['image'] = 'old'
     elif change == 'definition':
         described['tasks'][0]['taskDefinitionArn'] = 'old'
+    elif change == 'digest':
+        described['tasks'][0]['containers'][0]['imageDigest'] = 'old'
     elif change == 'release':
         journal['release_generation'] = 'old'
     else:
         journal = {'kind': 'migration-recovery-attestation', 'outcome': 'complete', 'observed_head': '008'}
-    assert not verify(journal, definition, described, 'current', 'release', 'cluster')
+    assert not verify(journal, definition, described, 'current', 'release', 'cluster', 'digest')

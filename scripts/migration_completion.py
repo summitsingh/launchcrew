@@ -4,7 +4,7 @@ import subprocess
 import sys
 
 
-def verify(journal, definition, described, image, release, cluster):
+def verify(journal, definition, described, image, release, cluster, digest):
     taskdef = definition.get('taskDefinition', {})
     tasks = described.get('tasks', [])
     if journal.get('outcome') != 'complete' or journal.get('release_generation') != release:
@@ -24,7 +24,7 @@ def verify(journal, definition, described, image, release, cluster):
             and task.get('clusterArn') == cluster
             and task.get('lastStatus') == containers[0].get('lastStatus') == 'STOPPED'
             and containers[0].get('exitCode') == 0
-            and bool(containers[0].get('imageDigest')))
+            and containers[0].get('imageDigest') == digest and bool(digest))
 
 
 def main():
@@ -36,7 +36,14 @@ def main():
         definition = read('ecs', 'describe-task-definition', '--task-definition', taskdef)
         described = read('ecs', 'describe-tasks', '--cluster', cluster, '--tasks', journal['task_arn'])
         cluster_arn = 'arn:aws:ecs:%s:%s:cluster/%s' % (region, account, cluster)
-        valid = verify(journal, definition, described, image, release, cluster_arn)
+        repository_image = image.split('/', 1)[1]
+        if '@sha256:' in repository_image:
+            digest = repository_image.split('@', 1)[1]
+        else:
+            repository, tag = repository_image.rsplit(':', 1)
+            metadata = read('ecr', 'describe-images', '--repository-name', repository, '--image-ids', 'imageTag=' + tag)
+            digest = metadata['imageDetails'][0]['imageDigest']
+        valid = verify(journal, definition, described, image, release, cluster_arn, digest)
     except Exception:
         valid = False
     if not valid:
