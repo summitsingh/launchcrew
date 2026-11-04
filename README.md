@@ -51,4 +51,6 @@ pnpm --dir web test && pnpm --dir web typecheck && pnpm --dir web build
 python3 scripts/scan_repo.py && python3 scripts/check-repo-text.py
 ```
 
-Sole source author on this main line: Muse Code CLI. Third-party dependencies keep their own licenses; the shadcn/ui Button pattern is MIT, notice in web/SHADCN-LICENSE.txt. Superseded statuses, dated milestone walls, and long model API notes moved to docs/history.md.
+Muse Code CLI authored the original product implementation. Codex contributed the UI overhaul, beginning with the Step 2 design system and app shell. Third-party dependencies keep their own licenses; shadcn/ui components are MIT, notice in web/SHADCN-LICENSE.txt. Superseded statuses, dated milestone walls, and long model API notes moved to docs/history.md.
+
+The new shell is enabled by default. Set the server environment variable `LAUNCHCREW_NEW_UI=false` to use Classic throughout the workspace. Settings > Advanced > Classic workspace also opens `/classic` while the flag is enabled. Step 2 adds shell navigation and route adapters to existing screens; the Review, Launches, New launch, Schedule, and full Settings redesigns remain later work. See [the Step 2 report](docs/ui-step-2-2026-11-04.md) for scope and verification limits.

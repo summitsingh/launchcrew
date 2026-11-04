@@ -24,9 +24,19 @@ SOFTWARE.
 
 Components added via the shadcn CLI (shadcn/ui, MIT):
 calendar, collapsible, dialog, dropdown-menu, form, select, sheet, sidebar,
-skeleton, sonner, table, tooltip.
+skeleton, sonner, table, tooltip, command, checkbox, switch, avatar,
+breadcrumb, scroll-area.
 Pre-existing local primitives kept as-is for the classic workspace:
 alert, badge, button, card, input, label, separator, tabs, textarea.
 Local adaptations: calendar day/nav buttons and the sidebar trigger render as
 plain buttons (no dependency on the classic Button styles); Radix primitives
 are imported from scoped @radix-ui/react-* packages.
+
+Step 2, Nov 4, 2026: the six additional components were installed with
+shadcn CLI 4.23.0 from local registry items containing the official
+new-york-v4 component sources. Registry DNS was unavailable in the shell;
+the official sources and color metadata were retrieved through the browser
+tool and supplied as an offline cache. Component imports use the existing
+local cn helper and scoped Radix packages. The command dialog keeps its
+accessible title and description inside the dialog content.
+Source: https://github.com/shadcn-ui/ui/tree/main/apps/v4/registry/new-york-v4/ui

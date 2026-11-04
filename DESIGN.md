@@ -23,3 +23,11 @@ There are no decorative animations or motion effects. The reduced-motion media q
 ## Visual review notes
 
 Design choices avoided generic hero artwork, large summary counters, and redundant queue actions. Source inspection also changed fixed-width content columns to shrinkable grids, made action groups wrap, and made long receipt content wrap. Screenshot review results and any further fixes are recorded in docs/verification.md. These are implementation observations, not user research.
+
+## Step 2 shell, Nov 4, 2026
+
+The default-on `LAUNCHCREW_NEW_UI` flag introduces a shadcn Sidebar with Launches, New launch, Schedule, Settings, and command search. Public demo mode enters the workspace at Launches without an account menu. When auth is enabled, the account menu uses a generic avatar and a keyboard-accessible theme action. It does not consume display names or require new permission fields. The sticky sidebar uses a Sheet below 768 pixels; its navigation closes after selection. Settings > Advanced links to the preserved Classic workspace.
+
+The shell uses neutral light and dark tokens, Geist Sans, and Geist Mono for existing identifier styles. Light is the default unless the visitor saved a preference. Blue is reserved for primary controls. Status text and icons use the shared `web/src/lib/ui-status.ts` vocabulary. Unknown states remain unavailable; presentation does not grant permission, and scheduling or publishing is never inferred from a completed receipt.
+
+New routes adapt existing screen bodies while the later screen redesigns remain out of scope. The adapters suppress the old chrome inside the new shell. The Classic route keeps the original navigation and screen bodies. The queue and shell share the same query result, with no archive metadata or guessed test classification. Desktop content is bounded at 1100 pixels. Keyboard focus, a skip link, accessible command dialog labels, and reduced-motion overrides are retained. These are source-level design decisions, not verified visual or accessibility results. The owner's suite stop remains in effect; no build, typecheck, scans, suites, or screenshot checks ran for this step.
