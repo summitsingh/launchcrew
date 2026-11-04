@@ -63,26 +63,69 @@ export function MediaAssetCard({ asset }: { asset: MediaAsset }) {
   </article>;
 }
 
+export function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ''));
+    reader.onerror = () => reject(new Error('Could not read the selected file.'));
+    reader.readAsDataURL(file);
+  });
+}
+
 export function MediaUploadForm() {
   const client = useQueryClient();
   const [filename, setFilename] = useState('');
   const [width, setWidth] = useState('1080');
   const [height, setHeight] = useState('1350');
+  const [fileDataUrl, setFileDataUrl] = useState('');
+  const [fileMime, setFileMime] = useState('');
   const [notice, setNotice] = useState('');
+  const pickFile = async (file: File | undefined) => {
+    setNotice('');
+    if (!file) {
+      setFileDataUrl('');
+      setFileMime('');
+      return;
+    }
+    try {
+      setFileDataUrl(await readFileAsDataUrl(file));
+    } catch (error) {
+      setFileDataUrl('');
+      setFileMime('');
+      setNotice(error instanceof Error ? error.message : 'Could not read the selected file.');
+      return;
+    }
+    setFileMime(file.type || '');
+    if (!filename.trim()) setFilename(file.name);
+  };
   const upload = useMutation({
-    mutationFn: () => unwrap(api.POST('/api/media/assets', {
-      body: { filename: filename.trim(), width: Number(width), height: Number(height) },
-    })),
+    mutationFn: () => {
+      const dataB64 = fileDataUrl.includes(',') ? fileDataUrl.split(',')[1] : '';
+      return unwrap(api.POST('/api/media/assets', {
+        body: {
+          filename: filename.trim(), width: Number(width), height: Number(height),
+          ...(fileMime ? { mime_type: fileMime } : {}),
+          ...(dataB64 ? { data_b64: dataB64 } : {}),
+        },
+      }));
+    },
     onSuccess: asset => {
       setNotice(`Uploaded ${asset.id} with ${Object.keys(asset.derivatives ?? {}).length} derivatives.`);
       setFilename('');
+      setFileDataUrl('');
+      setFileMime('');
       client.invalidateQueries({ queryKey: ['media-assets'] });
     },
     onError: (error: Error) => setNotice(error.message),
   });
   return <form className="queue-card" aria-label="Upload media asset" onSubmit={e => { e.preventDefault(); upload.mutate(); }}>
     <h3>Upload once</h3>
-    <p className="hint">One upload is reused across channels; crops are stored alongside the original.</p>
+    <p className="hint">One upload is reused across channels; crops are stored alongside the original. Choose a real file to preserve its bytes; dimensions are read from the file.</p>
+    <p>
+      <label htmlFor="media-file">File</label>
+      <input id="media-file" type="file" accept="image/*,video/*" data-testid="media-file-input"
+        onChange={e => void pickFile(e.target.files?.[0])} />
+    </p>
     <p>
       <label htmlFor="media-filename">Filename</label>
       <input id="media-filename" value={filename} onChange={e => setFilename(e.target.value)} placeholder="hero-4x5.png" />

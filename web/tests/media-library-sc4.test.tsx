@@ -6,6 +6,7 @@ import {
   MediaAssetCard,
   MediaDerivativeList,
   MediaLibraryPanel,
+  MediaUploadForm,
   SlotMediaSection,
   derivativeForChannel,
   mediaWarning,
@@ -72,6 +73,13 @@ describe('media library panel', () => {
     expect(html).toContain('data-testid="media-upload-btn"');
     expect(html).toContain('Upload media asset');
     expect(html).toContain('Upload once');
+  });
+  it('offers a real file input so uploads preserve bytes', () => {
+    const html = provider(<MediaUploadForm />);
+    expect(html).toContain('data-testid="media-file-input"');
+    expect(html).toContain('type="file"');
+    expect(html).toContain('image/*');
+    expect(html).toContain('preserve its bytes');
   });
   it('shows recorded dimensions, aspect, and the preserved original digest', () => {
     const html = provider(<MediaAssetCard asset={asset({ id: 'media_1', derivatives })} />);
