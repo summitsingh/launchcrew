@@ -314,7 +314,7 @@ def iparams():
         doc = doc["Parameters"]
     out = []
     for item in doc:
-        if item.get("ParameterKey") == "EnableServices":
+        if item.get("ParameterKey") in {"EnableServices", "EnableGoogleAuth", "GoogleOAuthSecretArn", "FacebookOAuthSecretArn"}:
             continue
         out.append({"ParameterKey": item["ParameterKey"],
                     "ParameterValue": item["ParameterValue"], "UsePreviousValue": False})
@@ -3660,7 +3660,8 @@ class InfraDiffGuardTests(BootstrapHarness):
 class InfraGooglePolicyTests(BootstrapHarness):
     def test_public_infra_removes_only_retired_signin_policies(self):
         result, calls = self.run_bootstrap([*self.base_args(), "--phase", "infra"],
-            extra_env={"FAKE_INFRA_CHANGESET": "public_auth_remove"})
+            extra_env={"FAKE_INFRA_CHANGESET": "public_auth_remove"},
+            params_overrides={"EnableGoogleAuth": "false", "GoogleOAuthSecretArn": "", "FacebookOAuthSecretArn": ""})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(sum("execute-change-set" in call for call in calls), 1)
 

@@ -3492,6 +3492,12 @@ for item in doc:
         print("PARAMS_FILE")
         sys.exit(0)
     key = item["ParameterKey"]
+    if key in {"EnableGoogleAuth", "GoogleOAuthSecretArn", "FacebookOAuthSecretArn"}:
+        wanted = "false" if key == "EnableGoogleAuth" else ""
+        if item.get("ParameterValue") != wanted:
+            print("PARAMS_RETIRED_SIGNIN")
+            sys.exit(0)
+        continue
     if key == "EnableServices":
         continue
     if key in ("BudgetLimitUsd", "BudgetNotifyEmail"):
