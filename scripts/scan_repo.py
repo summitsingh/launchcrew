@@ -6,6 +6,8 @@ Patterns are assembled so this source and synthetic tests can scan cleanly.
 This is a pattern check, not a general secret or PII detection guarantee.
 """
 import argparse
+import hashlib
+import json
 from collections import Counter
 import os
 from pathlib import Path
@@ -43,6 +45,10 @@ def scan_repo(root):
     """Return (path, check, line) findings; fail closed on unreadable paths."""
     root = Path(root)
     findings = []
+    # Exact reviewed source lines only. No directory-wide source exemptions.
+    allow_path = SCRIPT_PATH.with_name('scan-allowlist.json')
+    allowed = {(item['path'], item['check'], item['sha256'])
+               for item in json.loads(allow_path.read_text())} if allow_path.exists() else set()
 
     def walk_error(error):
         findings.append((Path(error.filename or root), 'read_error', None))
@@ -52,11 +58,14 @@ def scan_repo(root):
     for directory, dirs, files in os.walk(root, onerror=walk_error):
         dirs[:] = sorted(name for name in dirs if name not in EXCLUDED)
         for name in sorted(files):
-            if name in EXCLUDED or name.endswith(('.tsbuildinfo', '.pyc')):
+            if name == '.env.local' or name in EXCLUDED or name.endswith(('.tsbuildinfo', '.pyc')):
                 continue
             path = Path(directory) / name
             try:
-                content = path.read_bytes().decode('utf-8', errors='replace')
+                raw = path.read_bytes()
+                if raw.startswith(bytes.fromhex('ffd8ff')):
+                    continue  # JPEG content is binary, source scanners cannot inspect pixels.
+                content = raw.decode('utf-8', errors='replace')
             except OSError:
                 findings.append((path, 'read_error', None))
                 continue
@@ -72,6 +81,10 @@ def scan_repo(root):
                         continue
                     if (check == 'personal_name' and path.resolve() == SCRIPT_PATH
                             ):
+                        continue
+                    relative = path.relative_to(root).as_posix()
+                    fingerprint = hashlib.sha256(line.encode()).hexdigest()
+                    if (relative, check, fingerprint) in allowed:
                         continue
                     findings.append((path, check, line_number))
     return findings

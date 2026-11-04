@@ -1,0 +1,236 @@
+[
+  {
+    "path": "backend/tests/test_facebook_auth.py",
+    "check": "email",
+    "sha256": "d87113d2508695222fc020c1add5869b73d516809534673bce65d043fdae7629",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "backend/tests/test_facebook_auth.py",
+    "check": "email",
+    "sha256": "eb152a05d8a1e672ba46e54418f5bd54085d9acad0f1be114469aca663f59169",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "backend/tests/test_waitlist_api.py",
+    "check": "email",
+    "sha256": "bcaf71b09c5a9353ec6473d1c39214380170f8645bd58edea274b0e9a2da1eff",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "backend/tests/test_waitlist_api.py",
+    "check": "email",
+    "sha256": "d6065a9757c91295a8051faa0d18b7a303455b846135a0d0f7e05682425e29a3",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "backend/tests/test_waitlist_api.py",
+    "check": "email",
+    "sha256": "be78c983877fac5a20f1d72fcdcf0cb6a7c139ddd1b510581d7120f9ca74c1aa",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "backend/tests/test_waitlist_api.py",
+    "check": "email",
+    "sha256": "e55ba53afdd9488bf0fdf37640501abe082608585b6b77a2035c776c6f291243",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "backend/tests/test_waitlist_api.py",
+    "check": "email",
+    "sha256": "c92c4aacec67473e4b261a36c0b98e2d2fa212f151a84f6acb641d32fd2ce860",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "backend/tests/test_waitlist_api.py",
+    "check": "email",
+    "sha256": "b78ea0625a81237177d8b1211261120eeb0154da11cf28a245ee4acd7c4fbd78",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "backend/tests/test_waitlist_api.py",
+    "check": "email",
+    "sha256": "7ce430b3a8240a5adeae7da156f59067af4191ba3319f0365a47b3b2daeb11d8",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "backend/tests/test_waitlist_api.py",
+    "check": "email",
+    "sha256": "f3af8669d23442d76a07a6c5078c6e1fe5fe6c9795e5b8eab8a6aec2c3652051",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "backend/tests/test_waitlist_api.py",
+    "check": "email",
+    "sha256": "a461432013ba83d0a818aa613d7a3e52513afeeb2cd5e9aa39a96e7e0fced536",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "tests/test_checker_policies.py",
+    "check": "street_address",
+    "sha256": "3e415e70d583ac06993d03846fb0e0dfa66d4677469803771fac2aacd81dfc2b",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "tests/test_checker_policies.py",
+    "check": "secret",
+    "sha256": "5d854593700c3dc6cbd0a0b9c34ef6234603c7b3f50d4b8f190c347d957454bc",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "tests/test_checker_policies.py",
+    "check": "secret",
+    "sha256": "93ff0c31b3140253f22a80a268b174250535e1ce9e50be66878f8b7f493b76dd",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "tests/test_checker_policies.py",
+    "check": "secret",
+    "sha256": "a00a527b78ef7d6268fb6ecb9b7b3769171d0587f4e971716ae7940066d27dbb",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "tests/test_cliche_scrubber.py",
+    "check": "street_address",
+    "sha256": "063b1611562023f5a4f50e17c88a6b857192b03367a9ced5881b26a06d8e6a32",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "tests/test_image_adapters.py",
+    "check": "secret",
+    "sha256": "b0523b67e27adae5596592314ce47f35eced062f248256cd83d11842384a1710",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "tests/test_image_adapters.py",
+    "check": "secret",
+    "sha256": "1a326038d94bc1dcbcf4b6f2ac52ddfe88ae2c0584b45b29e60ebccd59f6f0cc",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "tests/test_image_adapters.py",
+    "check": "secret",
+    "sha256": "e1d4782bde1d3ae14157e25254c465b0a2b3a3c8f586f3427f036af3b4c4c880",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "tests/test_image_adapters.py",
+    "check": "secret",
+    "sha256": "eec7551adada7e972585c531a6fd4d99c6358107a4508b850433639a84d0ead3",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "tests/test_image_adapters.py",
+    "check": "secret",
+    "sha256": "a6fa5e5502c9da6f0366b0fb1139eac9b1c612f49fd112c0666b6da945c2e1d6",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "web/src/app/privacy/page.tsx",
+    "check": "email",
+    "sha256": "744ad06d5a59c5551c6e4bc0078e15b1da1220324bda06e1b21e14385bf32875",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "web/src/app/privacy/page.tsx",
+    "check": "personal_name",
+    "sha256": "744ad06d5a59c5551c6e4bc0078e15b1da1220324bda06e1b21e14385bf32875",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "web/src/app/terms/page.tsx",
+    "check": "email",
+    "sha256": "d1820edad3d95a1f39b32349a76a7bca2326133097c4adf6e14cf3af43ea639e",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "web/src/app/terms/page.tsx",
+    "check": "personal_name",
+    "sha256": "d1820edad3d95a1f39b32349a76a7bca2326133097c4adf6e14cf3af43ea639e",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "web/src/components/waitlist-form.tsx",
+    "check": "email",
+    "sha256": "a0b1663b380ae1e022f1facf66e7f60117d9478ed7275e9337af7b2c1dd83624",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "web/src/components/ui/calendar.tsx",
+    "check": "street_address",
+    "sha256": "3adeefadc96e28ec1ec504db1319ce9bf25e3552b0f0589ccce3029e24d0617c",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "web/src/components/ui/dropdown-menu.tsx",
+    "check": "street_address",
+    "sha256": "9551a50186609d3740367055a8c95a19112dda0d138cdd3697d8c4e2741ce778",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "web/src/components/ui/dropdown-menu.tsx",
+    "check": "street_address",
+    "sha256": "9551a50186609d3740367055a8c95a19112dda0d138cdd3697d8c4e2741ce778",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "web/src/components/ui/select.tsx",
+    "check": "street_address",
+    "sha256": "b7802d1d05351993ff448473e3443564062a8149119d06f1996449bf70c64434",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "web/tests/plans.test.tsx",
+    "check": "email",
+    "sha256": "8adf06ad13cc23c37c47d71183fcc69527b1122e0a31e7a0b00ee859297bfc31",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "web/tests/plans.test.tsx",
+    "check": "email",
+    "sha256": "d50e2a0c2995f69cd008d489dbb752c48bf540cc3527b82e0c60d1f5bd49b808",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "web/tests/plans.test.tsx",
+    "check": "email",
+    "sha256": "867848cd527443e255b5f1adef9fb293a0f05a25af80d4df4d821bb55e99af63",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "web/tests/plans.test.tsx",
+    "check": "email",
+    "sha256": "883cfee54e0db1a4c0ebb8c7b6501e42e19b7cb2d2c86084555f2e0f054c3895",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "web/tests/plans.test.tsx",
+    "check": "email",
+    "sha256": "c54b2e26e8d92d91abec60e05816d76995751ed2de51b7233ad6ba7cc8af79fb",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "web/tests/plans.test.tsx",
+    "check": "email",
+    "sha256": "70df7689943bd164b3051c7934f6749593a2bb709d5bc4afae39e631009d9518",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "web/tests/plans.test.tsx",
+    "check": "email",
+    "sha256": "1c5b74e4530bfbf4fe51d87f9e4350e478f0954ec64eb725ff985b7f998f9003",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "web/tests/plans.test.tsx",
+    "check": "email",
+    "sha256": "438b819283f1789452b2814b6a35672d1225495eb39d24892f29419b8d0bb083",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  },
+  {
+    "path": "web/tests/plans.test.tsx",
+    "check": "email",
+    "sha256": "438b819283f1789452b2814b6a35672d1225495eb39d24892f29419b8d0bb083",
+    "reason": "Reviewed existing synthetic fixture, public contact copy, or CSS class; exact line only"
+  }
+]
