@@ -8,6 +8,7 @@ import io
 import json
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError, URLError
 
 from launchcrew import instagram_publish as ig
 
@@ -107,6 +108,45 @@ class RequestShapeTests(unittest.TestCase):
             with self.assertRaises(ig.InstagramTransportError) as raised:
                 ig.instagram_transport(USER, MEDIA, CAPTION, TOKEN)
         self.assertNotIn(TOKEN, str(raised.exception))
+
+    def test_http_error_surfaces_provider_message(self):
+        message = "The app is not authorized to publish for this account"
+        error = HTTPError(ig.GRAPH_ORIGIN, 403, "Forbidden", {},
+                          io.BytesIO(json.dumps({"error": {"message": message}}).encode()))
+        with patch.object(ig, "urlopen", side_effect=error):
+            with self.assertRaises(ig.InstagramTransportError) as raised:
+                ig.instagram_transport(USER, MEDIA, CAPTION, TOKEN)
+        self.assertEqual(raised.exception.reason, ig.PROVIDER_MESSAGE % message)
+        self.assertNotIn(TOKEN, raised.exception.reason)
+
+    def test_http_error_truncates_provider_message(self):
+        message = "Provider refusal " + "x" * 400
+        error = HTTPError(ig.GRAPH_ORIGIN, 400, "Bad Request", {},
+                          io.BytesIO(json.dumps({"error": {"message": message}}).encode()))
+        with patch.object(ig, "urlopen", side_effect=error):
+            with self.assertRaises(ig.InstagramTransportError) as raised:
+                ig.instagram_transport(USER, MEDIA, CAPTION, TOKEN)
+        self.assertEqual(raised.exception.reason, ig.PROVIDER_MESSAGE % message[:300])
+
+    def test_http_error_without_provider_message_includes_status(self):
+        bodies = [b"not json", b"\xff", b"[]", b"{}", b'{"error": {}}',
+                  b'{"error": {"message": ""}}',
+                  b'{"error": {"message": 123}}', TOKEN.encode()]
+        for body in bodies:
+            with self.subTest(body_type=type(body).__name__):
+                error = HTTPError(ig.GRAPH_ORIGIN, 403, "Forbidden", {}, io.BytesIO(body))
+                with patch.object(ig, "urlopen", side_effect=error):
+                    with self.assertRaises(ig.InstagramTransportError) as raised:
+                        ig.instagram_transport(USER, MEDIA, CAPTION, TOKEN)
+                self.assertEqual(raised.exception.reason, ig.PROVIDER_MESSAGE % "HTTP 403")
+                self.assertNotIn(TOKEN, raised.exception.reason)
+
+    def test_url_error_keeps_network_failure_mapping(self):
+        with patch.object(ig, "urlopen", side_effect=URLError("unreachable")):
+            with self.assertRaises(ig.InstagramTransportError) as raised:
+                ig.instagram_transport(USER, MEDIA, CAPTION, TOKEN)
+        self.assertEqual(raised.exception.reason,
+                         ig.PROVIDER_MESSAGE % "network or HTTP failure: URLError")
 
     def test_garbage_response_refuses(self):
         with patch.object(ig, "urlopen", return_value=io.BytesIO(b"not json")):

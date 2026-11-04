@@ -22,6 +22,7 @@ import os
 import re
 import urllib.request
 from typing import Any
+from urllib.error import HTTPError
 from urllib.parse import urlparse
 
 MODULE_VERSION = "instagram-publish/v1"
@@ -117,6 +118,18 @@ def _read_json(request: urllib.request.Request, timeout: float) -> dict[str, Any
     try:
         with urlopen(request, timeout=timeout) as response:
             raw = response.read()
+    except HTTPError as error:
+        message = None
+        try:
+            data = json.loads(error.read().decode("utf-8"))
+            provider_error = data.get("error") if isinstance(data, dict) else None
+            if isinstance(provider_error, dict):
+                message = provider_error.get("message")
+        except Exception:
+            pass
+        if not isinstance(message, str) or not message.strip():
+            message = "HTTP %d" % error.code
+        raise InstagramTransportError(PROVIDER_MESSAGE % message[:300]) from None
     except Exception as error:
         raise InstagramTransportError(
             PROVIDER_MESSAGE % ("network or HTTP failure: %s" % type(error).__name__))
