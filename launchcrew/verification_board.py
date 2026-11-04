@@ -24,6 +24,7 @@ from urllib.parse import urlparse
 
 DELIVERY_STATES = ('not_posted', 'posted', 'verified', 'failed')
 MATCH_KINDS = ('exact', 'trimmed_by_rule', 'mismatch')
+SOURCE_KINDS = ('fetched', 'supplied')
 
 MODULE_VERSION = 'verification-board/v1'
 
@@ -115,11 +116,13 @@ def excerpt(text, limit=_EXCERPT_CHARS):
 
 def build_attempt(state, live_url=None, match_kind=None, differing_field=None,
                   reason=None, live_text_excerpt='', timestamp=None,
-                  attempt_number=None):
+                  attempt_number=None, source=None):
     if state not in DELIVERY_STATES:
         raise ValueError('attempt state must be one of ' + ', '.join(DELIVERY_STATES))
     if match_kind is not None and match_kind not in MATCH_KINDS:
         raise ValueError('match_kind must be one of ' + ', '.join(MATCH_KINDS))
+    if source is not None and source not in SOURCE_KINDS:
+        raise ValueError('source must be one of ' + ', '.join(SOURCE_KINDS))
     return {
         'attempt_number': attempt_number,
         'timestamp': timestamp or utc_now_iso(),
@@ -129,6 +132,7 @@ def build_attempt(state, live_url=None, match_kind=None, differing_field=None,
         'differing_field': differing_field,
         'reason': reason,
         'live_text_excerpt': live_text_excerpt or '',
+        'source': source,
     }
 
 

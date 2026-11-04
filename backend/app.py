@@ -4635,6 +4635,7 @@ class DeliveryOut(Strict):
     match_kind: DeliveryMatchKind | None = None
     differing_field: str | None = None
     failure_reason: str | None = None
+    simulated: bool = False
     attempts: list[dict[str, Any]] = Field(default_factory=list)
 
 
@@ -4666,7 +4667,8 @@ class DeliveryOutcomeIn(Strict):
 
 
 _DELIVERY_PUBLIC_SELECT = ('id, slot_id, channel, delivery_state, live_url, '
-                           'match_kind, differing_field, failure_reason, attempts')
+                           'match_kind, differing_field, failure_reason, simulated, '
+                           'attempts')
 
 
 def _public_delivery(row):
@@ -4683,6 +4685,7 @@ def _public_delivery(row):
             'match_kind': row.get('match_kind'),
             'differing_field': row.get('differing_field'),
             'failure_reason': row.get('failure_reason'),
+            'simulated': bool(row.get('simulated')),
             'attempts': list(attempts) if isinstance(attempts, list) else []}
 
 
@@ -4716,20 +4719,22 @@ def _load_or_init_delivery(db, slot, workspace_id, channel):
 
 def _save_delivery_attempt(db, delivery, workspace_id, state, live_url=None,
                            match_kind=None, differing_field=None, reason=None,
-                           live_text_excerpt=''):
+                           live_text_excerpt='', source=None, simulated=None):
     from launchcrew import verification_board as board_mod
     trail = delivery.get('attempts')
     trail = list(trail) if isinstance(trail, list) else []
     entry = board_mod.build_attempt(state, live_url=live_url, match_kind=match_kind,
                                     differing_field=differing_field, reason=reason,
-                                    live_text_excerpt=live_text_excerpt or '')
+                                    live_text_excerpt=live_text_excerpt or '',
+                                    source=source)
     updated_trail = board_mod.append_attempt(trail, entry)
     db.execute(text('UPDATE calendar_slot_deliveries SET delivery_state=:state, live_url=:url,'
                     ' match_kind=:match, differing_field=:field, failure_reason=:reason,'
+                    ' simulated=COALESCE(:simulated, simulated),'
                     ' attempts=CAST(:attempts AS jsonb), updated_at=now()'
                     ' WHERE id=:id AND workspace_id=:ws'),
                {'state': state, 'url': live_url, 'match': match_kind, 'field': differing_field,
-                'reason': reason, 'attempts': json.dumps(updated_trail),
+                'reason': reason, 'simulated': simulated, 'attempts': json.dumps(updated_trail),
                 'id': delivery['id'], 'ws': workspace_id})
     row = db.execute(text('SELECT ' + _DELIVERY_PUBLIC_SELECT + ' FROM calendar_slot_deliveries'
                           ' WHERE id=:id AND workspace_id=:ws'),
@@ -4801,6 +4806,7 @@ def _run_delivery_verification(db, slot, delivery, workspace_id, channel,
             board_mod.normalize_live_url(supplied_url)
         except ValueError as error:
             raise HTTPException(422, str(error))
+    source = 'fetched' if supplied_text is None and supplied_url is not None else 'supplied'
     try:
         live_content, live_sub, _ = board_mod.resolve_live_content(
             live_url=supplied_url, live_text=supplied_text, live_subject=supplied_subject)
@@ -4808,7 +4814,7 @@ def _run_delivery_verification(db, slot, delivery, workspace_id, channel,
         updated = _save_delivery_attempt(db, delivery, workspace_id, 'failed',
                                          live_url=supplied_url, match_kind='mismatch',
                                          differing_field='text', reason=str(error),
-                                         live_text_excerpt='')
+                                         live_text_excerpt='', source=source)
         return _public_delivery(updated)
     outcome = board_mod.compare_live_post_to_variant(
         approved_text, live_content, approved_subject=approved_subject,
@@ -4817,7 +4823,7 @@ def _run_delivery_verification(db, slot, delivery, workspace_id, channel,
         db, delivery, workspace_id, outcome['delivery_state'], live_url=supplied_url,
         match_kind=outcome['match_kind'], differing_field=outcome['differing_field'],
         reason=outcome['failure_reason'],
-        live_text_excerpt=board_mod.excerpt(live_content))
+        live_text_excerpt=board_mod.excerpt(live_content), source=source)
     _sync_slot_verified(db, slot, workspace_id)
     return _public_delivery(updated)
 
@@ -4902,7 +4908,8 @@ def mark_delivery_posted(slot_id: str, channel: str, body: DeliveryMarkPostedIn,
         posted = _save_delivery_attempt(
             db, delivery, workspace_id, 'posted',
             live_url=live_url if live_url != stored_url or delivery.get('delivery_state') != 'posted' else stored_url,
-            live_text_excerpt=board_mod.excerpt(live_text or ''))
+            live_text_excerpt=board_mod.excerpt(live_text or ''),
+            simulated=False)
         if body.verify_now and (live_text is not None or live_url):
             return _run_delivery_verification(db, slot, posted, workspace_id, key,
                                               live_url=live_url, live_text=live_text,
@@ -5621,6 +5628,7 @@ class PublishExecutionAttemptOut(BaseModel):
     platform_post_id: str | None = None
     live_url: str | None = None
     failure_reason: str | None = None
+    simulated: bool = False
 
 
 class PublishExecutionOut(BaseModel):
@@ -5632,6 +5640,7 @@ class PublishExecutionOut(BaseModel):
     status: str = 'pending'
     platform_post_id: str | None = None
     live_url: str | None = None
+    simulated: bool = False
     attempt_count: int = 0
     max_auto_retries: int = 2
     attempts: list[dict[str, Any]] = Field(default_factory=list)
@@ -5750,14 +5759,18 @@ def _public_execution(row):
         except Exception:
             row = {}
     attempts = row.get('attempts')
+    trail = list(attempts) if isinstance(attempts, list) else []
+    last = trail[-1] if trail else None
+    simulated = bool(isinstance(last, dict) and last.get('simulated'))
     return {'id': row.get('id'), 'slot_id': row.get('slot_id'),
             'channel': row.get('channel'), 'idempotency_key': row.get('idempotency_key'),
             'status': row.get('status', 'pending'),
             'platform_post_id': row.get('platform_post_id'),
             'live_url': row.get('live_url'),
+            'simulated': simulated,
             'attempt_count': int(row.get('attempt_count') or 0),
             'max_auto_retries': int(row.get('max_auto_retries') or 2),
-            'attempts': list(attempts) if isinstance(attempts, list) else [],
+            'attempts': trail,
             'last_error': row.get('last_error')}
 
 
@@ -5865,10 +5878,16 @@ def _run_publish_transport(channel, variant_text, subject, connection, key,
                 return ig_mod.instagram_transport(str(external_id).strip(), media_url,
                                                   variant_text, plaintext)
             except ig_mod.InstagramTransportError as error:
-                raise executor_mod.PublishTransportError(
+                live_error = executor_mod.PublishTransportError(
                     'Instagram live publish failed: ' + error.reason)
-    return executor_mod.default_transport(channel, variant_text, subject, connection,
-                                          key, simulate_failure=simulate_failure)
+                live_error.simulated = False
+                raise live_error
+    try:
+        return executor_mod.default_transport(channel, variant_text, subject, connection,
+                                              key, simulate_failure=simulate_failure)
+    except executor_mod.PublishTransportError as error:
+        error.simulated = True
+        raise
 
 
 def _execute_slot_channel(db, slot, channel, workspace_id, actor, simulate_failure=None,
@@ -5961,6 +5980,7 @@ def _execute_slot_channel(db, slot, channel, workspace_id, actor, simulate_failu
             attempt = dict(attempt)
             attempt['outcome'] = 'failed'
             attempt['failure_reason'] = error.reason
+            attempt['simulated'] = bool(getattr(error, 'simulated', False))
             attempts = executor_mod.append_attempt(attempts, attempt)
             stored = _save_execution(db, workspace_id, slot['id'], key, idem_key, 'failed',
                                      attempt_count=len(attempts),
@@ -5969,7 +5989,8 @@ def _execute_slot_channel(db, slot, channel, workspace_id, actor, simulate_failu
             delivery = _load_or_init_delivery(db, slot, workspace_id, key)
             _save_delivery_attempt(db, delivery, workspace_id, 'failed',
                                    live_url=delivery.get('live_url'), reason=last_error,
-                                   live_text_excerpt='')
+                                   live_text_excerpt='',
+                                   simulated=bool(getattr(error, 'simulated', False)))
             if executor_mod.attempts_exhausted(len(attempts)):
                 break
             continue
@@ -5988,7 +6009,8 @@ def _execute_slot_channel(db, slot, channel, workspace_id, actor, simulate_failu
                                  attempts=attempts, last_error=None)
         delivery = _load_or_init_delivery(db, slot, workspace_id, key)
         _save_delivery_attempt(db, delivery, workspace_id, 'posted', live_url=live_url,
-                               live_text_excerpt='')
+                               live_text_excerpt='',
+                               simulated=bool(result.get('simulated')))
         if slot.get('run_id'):
             _advance_calendar_slots(db, slot['run_id'], workspace_id, 'exported')
         store.audit(db, slot.get('run_id'), 'publish_posted', actor, workspace_id)
