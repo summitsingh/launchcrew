@@ -105,7 +105,7 @@ def test_upload_records_format_facts_and_nondestructive_derivatives(client):
 
     listed = client.get('/api/media/assets')
     assert listed.status_code == 200, listed.text
-    assert [entry['id'] for entry in listed.json()] == [asset['id']]
+    assert sorted(entry['id'] for entry in listed.json()) == sorted(['media_wallet_starter', asset['id']])
 
     crop = client.post(f'/api/media/assets/{asset["id"]}/derivatives',
                        json={'derivative_key': '4:5'})
@@ -138,7 +138,7 @@ def test_attach_two_channels_resolves_each_derivative_without_reupload(client):
     assert body['use_original_without_derivative'] is False
 
     listed = client.get('/api/media/assets').json()
-    assert [entry['id'] for entry in listed] == [asset['id']]
+    assert sorted(entry['id'] for entry in listed) == sorted(['media_wallet_starter', asset['id']])
 
     state = client.get(f'/api/calendar/slots/{slot["id"]}/media')
     assert state.status_code == 200, state.text

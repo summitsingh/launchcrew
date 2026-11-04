@@ -71,7 +71,7 @@ def test_product_crud_and_name_conflicts(client):
     assert product['confirmed_variants'] == 0
 
     listed = client.get('/api/fact-products').json()
-    assert [item['name'] for item in listed] == ['Trail Wallet']
+    assert [item['name'] for item in listed] == ['Trail Wallet', 'Vegan leather wallet']
 
     assert client.post('/api/fact-products', json={'name': 'trail wallet'}).status_code == 409
 
@@ -83,7 +83,8 @@ def test_product_crud_and_name_conflicts(client):
 
     assert client.get('/api/fact-products/nope').status_code == 404
     assert client.delete('/api/fact-products/' + product['id']).status_code == 204
-    assert client.get('/api/fact-products').json() == []
+    remaining = client.get('/api/fact-products').json()
+    assert [item['name'] for item in remaining] == ['Vegan leather wallet']
 
 
 def test_variant_lifecycle_confirm_and_edit_reset(client):
@@ -242,3 +243,26 @@ def test_save_current_run_facts_to_library_and_reuse(client):
     assert reused.status_code == 201, reused.text
     assert reused.json()['product_facts']['confirmed_claims'] == [
         'Full-grain leather', 'Six card slots', 'Bifold compact', '$129']
+
+
+def test_starter_wallet_seed_is_idempotent_and_honest(client):
+    from pathlib import Path
+    from launchcrew.facts import parse_product_facts
+    first = client.get('/api/fact-products').json()
+    starter = [item for item in first if item['id'] == 'fprod_wallet_starter']
+    assert len(starter) == 1
+    assert starter[0]['name'] == 'Vegan leather wallet'
+    variants = client.get('/api/fact-products/fprod_wallet_starter/variants').json()
+    assert [item['id'] for item in variants] == ['fvar_wallet_starter']
+    assert variants[0]['confirmed'] is True
+    assert parse_product_facts(variants[0]['product_facts']) is not None
+    photo = sorted((Path(__file__).resolve().parents[2] / 'facts' / 'demo_photos').glob('*.jpg'))[0]
+    assert photo.exists()
+    assets = client.get('/api/media/assets').json()
+    wallet = [entry for entry in assets if entry['id'] == 'media_wallet_starter']
+    assert len(wallet) == 1
+    assert len(wallet[0]['sha256_digest']) == 64
+    assert wallet[0]['derivatives']
+    again = client.get('/api/fact-products').json()
+    assert [item['id'] for item in again].count('fprod_wallet_starter') == 1
+    assert [entry['id'] for entry in client.get('/api/media/assets').json()].count('media_wallet_starter') == 1

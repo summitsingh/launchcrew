@@ -191,11 +191,70 @@ def ensure_default_profiles(db, workspace_id):
                        {'ws': workspace_id, 'name': profile['name'].lower(), 'profile': json.dumps(profile)})
 
 
+def ensure_default_fact_library(db, workspace_id):
+    """Seed the starter wallet product, variant, and demo photo asset.
+
+    Idempotent: a fixed starter product id is checked first and every
+    insert uses ON CONFLICT DO NOTHING, so reruns never duplicate or
+    overwrite owner edits. The wallet facts mirror the confirmed
+    product facts of the real launch run; the photo is a real repo
+    demo file registered with its true digest and bytes through the
+    same validation the upload route uses.
+    """
+    import base64
+    import json
+    existing = db.execute(text('SELECT 1 FROM fact_products WHERE id=:id AND workspace_id=:ws'),
+                          {'id': 'fprod_wallet_starter', 'ws': workspace_id}).fetchone()
+    if existing is not None:
+        return
+    facts = {
+        'material': {'value': '100% vegan PU leather', 'confirmed': True, 'source': 'owner'},
+        'price': {'value': '$49', 'confirmed': True, 'source': 'owner'},
+        'allowed_claims': [
+            {'value': 'Vegan leather wallet', 'confirmed': True, 'source': 'owner'},
+            {'value': 'For Austin commuters', 'confirmed': True, 'source': 'owner'},
+            {'value': 'Designed in Texas', 'confirmed': True, 'source': 'owner'},
+        ],
+    }
+    db.execute(text('INSERT INTO fact_products(id, workspace_id, name)'
+                    ' VALUES (:id,:ws,:name) ON CONFLICT DO NOTHING'),
+               {'id': 'fprod_wallet_starter', 'ws': workspace_id,
+                'name': 'Vegan leather wallet'})
+    db.execute(text('INSERT INTO fact_variants(id, product_id, workspace_id, name, facts, confirmed)'
+                    ' VALUES (:id,:prod,:ws,:name,CAST(:facts AS jsonb),:confirmed)'
+                    ' ON CONFLICT DO NOTHING'),
+               {'id': 'fvar_wallet_starter', 'prod': 'fprod_wallet_starter',
+                'ws': workspace_id, 'name': 'Launch',
+                'facts': json.dumps(facts), 'confirmed': True})
+    from launchcrew import media_library as media_mod
+    photos = sorted((ROOT / 'facts' / 'demo_photos').glob('*.jpg'))
+    if photos:
+        raw = photos[0].read_bytes()
+        data_b64 = base64.b64encode(raw).decode('ascii')
+        validated = media_mod.validate_upload(photos[0].name, 'image/jpeg', None, None,
+                                              None, data_b64)
+        stored = media_mod.build_asset('media_wallet_starter', validated, data_b64)
+        db.execute(text('INSERT INTO media_assets(id, workspace_id, filename, media_type, mime_type,'
+                        ' width, height, aspect_ratio, duration_seconds, sha256_digest,'
+                        ' original_data_b64, derivatives)'
+                        ' VALUES (:id,:ws,:filename,:media_type,:mime,:width,:height,'
+                        ':aspect,:duration,:digest,:data,CAST(:derivatives AS jsonb))'
+                        ' ON CONFLICT DO NOTHING'),
+                   {'id': 'media_wallet_starter', 'ws': workspace_id,
+                    'filename': stored['filename'], 'media_type': stored['media_type'],
+                    'mime': stored['mime_type'], 'width': stored['width'],
+                    'height': stored['height'], 'aspect': stored['aspect_ratio'],
+                    'duration': stored['duration_seconds'], 'digest': stored['sha256_digest'],
+                    'data': stored['original_data_b64'],
+                    'derivatives': json.dumps(stored['derivatives'])})
+
+
 def ensure_workspace_seeded(db, actor):
     workspace_id = workspace_for_actor(actor)
     owner = 'demo' if workspace_id == DEMO_WORKSPACE else str(actor)
     ensure_workspace(db, workspace_id, owner)
     ensure_default_profiles(db, workspace_id)
+    ensure_default_fact_library(db, workspace_id)
     return workspace_id
 
 
