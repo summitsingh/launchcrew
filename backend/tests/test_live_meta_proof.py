@@ -850,3 +850,43 @@ def test_exception_detail_redacts_credentials(monkeypatch):
     from backend.live_meta_proof import _exception_detail
     monkeypatch.setenv('META_API_KEY', 'synthetic-private-value')
     assert _exception_detail(ValueError('missing synthetic-private-value')) == 'ValueError: missing [redacted]'
+
+
+def test_spark_seeded_revision_real_route_contract(client, monkeypatch):
+    from backend import live_meta_proof as proof
+    monkeypatch.delenv('META_API_KEY', raising=False)
+    created = client.post('/api/runs', json={
+        'idea': proof._SEEDED_IDEA, 'agent_name': 'Maker',
+        'seed_unverified_claim': True, 'checker_profile': 'standard'})
+    assert created.status_code == 201
+    receipt = created.json()
+    assert receipt['checker_v1']['blocked_count'] > 0
+    path = '/api/runs/%s' % receipt['run_id']
+    # Oct 30 request, reproduced against the actual route and Checker.
+    old = client.post(path + '/revise', json={
+        'post': 'Proof fictional revised post for veto demo.',
+        'email': 'Proof fictional revised email for veto demo.',
+        'base_revision': receipt['revision']})
+    assert old.status_code == 422
+    assert old.json()['detail']['blocked_count'] > 0
+    revised = client.post(path + '/revise', json=proof.spark_revision_payload(receipt))
+    assert revised.status_code == 200, revised.text
+    revision = revised.json()['revision']
+    assert revision == receipt['revision'] + 1
+    for action in ('approve', 'export'):
+        result = client.post(path + '/' + action, json={'expected_revision': revision})
+        assert result.status_code == 200, result.text
+
+
+def test_spark_revision_requires_sourced_verified_claims():
+    from backend.live_meta_proof import spark_revision_payload
+    receipt = {'revision': 4, 'scout': {'facts_used': [
+        {'claim': 'Unsourced synthetic claim.', 'verified': True},
+        {'claim': 'Vetoed synthetic claim.', 'verified': False, 'sources': ['fixture']},
+        {'claim': 'Sourced synthetic claim.', 'verified': True, 'sources': ['fixture']}]}}
+    assert spark_revision_payload(receipt) == {
+        'post': 'Sourced synthetic claim.', 'email': 'Sourced synthetic claim.',
+        'base_revision': 4}
+    receipt['scout']['facts_used'].pop()
+    with pytest.raises(ValueError, match='sourced verified claims'):
+        spark_revision_payload(receipt)

@@ -165,6 +165,17 @@ def _validate_spark_receipt(receipt, per_call):
     return True, ''
 
 
+def spark_revision_payload(receipt):
+    """Use sourced, verified claims from this run, subject to the same veto."""
+    from launchcrew.human_review import snapshot_allowlist
+    claims = snapshot_allowlist(receipt)
+    if not claims:
+        raise ValueError('Seeded veto missing sourced verified claims for revision')
+    return {'post': claims[0].strip(),
+            'email': claims[1].strip() if len(claims) > 1 else claims[0].strip(),
+            'base_revision': receipt.get('revision', 0)}
+
+
 def run_spark_proof(*, latch_path):
     from fastapi.testclient import TestClient
     from launchcrew import spark as spark_module
@@ -332,23 +343,8 @@ def run_spark_proof(*, latch_path):
                     print('Seeded phase must use zero model HTTP')
                     return 1
                 seeded_id = seeded_receipt.get('run_id', '')
-                revision = seeded_receipt.get('revision', 0)
-                # The revision must pass the same checker that just vetoed
-                # the seeded claim, so it is built from the run's own
-                # verified claims verbatim. Canned fiction fails the
-                # sentence check by design, which is what the veto proves.
-                verified_claims = [entry.get('claim', '').strip()
-                                   for entry in seeded_receipt.get('scout', {}).get('facts_used', [])
-                                   if entry.get('verified') and entry.get('claim', '').strip()]
-                if not verified_claims:
-                    print('Seeded veto missing verified claims for revision')
-                    return 1
-                claim_post = verified_claims[0]
-                claim_email = verified_claims[1] if len(verified_claims) > 1 else verified_claims[0]
-                revised = client.post('/api/runs/%s/revise' % seeded_id, json={
-                    'post': claim_post,
-                    'email': claim_email,
-                    'base_revision': revision})
+                revised = client.post('/api/runs/%s/revise' % seeded_id,
+                                      json=spark_revision_payload(seeded_receipt))
                 if revised.status_code != 200:
                     print('Revision failed: HTTP ' + str(revised.status_code))
                     return 1
