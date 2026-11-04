@@ -390,6 +390,60 @@ export function ApprovalBindingBlock({ receipt }: { receipt: Receipt }) {
   </>;
 }
 
+/** One-line decision summary opening run review. It reuses the receipt
+ *  DECISION RECORD fields (approval state, revision, binding digest,
+ *  verified and blocked counts, approver, approval time) so the owner
+ *  sees the decision before the evidence scroll. The digest shows
+ *  shortened with a copy affordance for the full value. */
+export function ReceiptSummaryStrip({ receipt }: { receipt: Receipt }) {
+  const [copied, setCopied] = useState(false);
+  const revision = (receipt as unknown as { revision?: number }).revision ?? 0;
+  const approvedRevision = (receipt as unknown as { approved_revision?: number | null }).approved_revision ?? null;
+  const binding = receipt.approval_binding ?? null;
+  const digest = typeof binding?.digest === 'string' && binding.digest ? binding.digest : null;
+  const check = currentCheckOf(receipt);
+  const approval = receipt.approvals[0] ?? null;
+  const copyDigest = async () => {
+    if (!digest) return;
+    setCopied(await copyTextToClipboard(digest));
+  };
+  return <section className="panel" aria-label="Receipt summary" data-testid="receipt-summary-strip">
+    <p className="eyebrow">DECISION SUMMARY</p>
+    <dl>
+      <div><dt>Approval state</dt><dd title={receipt.approval_state}>{humanStatusLabel(receipt.approval_state)}</dd></div>
+      <div><dt>Revision</dt><dd>{revision}{approvedRevision != null ? ` · approved revision ${approvedRevision}` : ''}</dd></div>
+      <div><dt>Binding digest</dt><dd>{digest
+        ? <><span title={digest} data-testid="binding-digest-short">{shortId(digest)}</span>
+          <Button variant="outline" data-testid="copy-binding-digest" onClick={() => void copyDigest()}>
+            {copied ? 'Copied' : 'Copy'}</Button></>
+        : 'unavailable'}</dd></div>
+      <div><dt>Verified claims</dt><dd>{check?.verified_count ?? 'unavailable'}</dd></div>
+      <div><dt>Blocked claims</dt><dd>{check?.blocked_count ?? 'unavailable'}</dd></div>
+      <div><dt>Approved by</dt><dd>{approval?.approved_by
+        ? <span data-testid="summary-approver">{approval.approved_by}</span>
+        : 'Awaiting individual approval'}</dd></div>
+      <div><dt>Approval time</dt><dd>{approval?.timestamp ?? 'not yet approved'}</dd></div>
+    </dl>
+  </section>;
+}
+
+/** One check-evidence list with a first/final revision toggle, replacing
+ *  the duplicated side-by-side first-check and final-check lists. */
+export function CheckEvidenceToggle({ first, final }: { first: Check | null | undefined; final: Check | null | undefined }) {
+  const [view, setView] = useState<'first' | 'final'>(final ? 'final' : 'first');
+  return <div>
+    <div className="queue-actions" role="group" aria-label="Check evidence revision">
+      <Button variant={view === 'first' ? undefined : 'outline'} onClick={() => setView('first')}
+        disabled={!first} data-testid="check-evidence-first">First check</Button>
+      <Button variant={view === 'final' ? undefined : 'outline'} onClick={() => setView('final')}
+        disabled={!final} data-testid="check-evidence-final">Final check</Button>
+    </div>
+    {view === 'first'
+      ? <ClaimResultsBlock check={first} title="First check evidence" />
+      : <ClaimResultsBlock check={final} title="Final check evidence" />}
+  </div>;
+}
+
 export function ScoutFactsSection({ receipt }: { receipt: Receipt }) {
   const scout = (receipt.scout ?? null) as ScoutSection | null;
   const scoutName = receipt.stage_bindings?.scout ?? 'Scout';
@@ -414,8 +468,7 @@ export function ScoutFactsSection({ receipt }: { receipt: Receipt }) {
     <ul className="scout-list">{facts.map((fact, i) => <li key={i} className="scout-fact"><div className="scout-row"><strong>{fact.claim || 'Unlabeled fact'}</strong><span className={`badge ${fact.verified ? 'approved' : 'pending'}`}>{fact.verified ? 'Verified' : 'Unverified'}</span></div><p className="hint">Evidence: {fact.evidence || 'none stored'}{Array.isArray(fact.sources) && fact.sources.length > 0 ? ` · Sources: ${fact.sources.join(', ')}` : ' · No stored source: unverified model hypothesis, not external research.'}</p></li>)}</ul>
     <ConfirmedFactsBlock receipt={receipt} />
     <VoiceBlock receipt={receipt} />
-    <ClaimResultsBlock check={receipt.checker_v1} title="First check evidence" />
-    <ClaimResultsBlock check={currentCheckOf(receipt)} title="Final check evidence" />
+    <CheckEvidenceToggle first={receipt.checker_v1} final={currentCheckOf(receipt)} />
     <ApprovalBindingBlock receipt={receipt} />
     <h3>Risks for review ({risks.length})</h3>
     {isOwner

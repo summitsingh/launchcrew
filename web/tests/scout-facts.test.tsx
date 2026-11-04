@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ScoutFactsSection } from '../src/components/v2-views';
+import { CheckEvidenceToggle, ReceiptSummaryStrip, ScoutFactsSection } from '../src/components/v2-views';
 import type { components } from '../src/lib/schema';
 
 type Receipt = components['schemas']['Receipt'];
@@ -122,5 +122,80 @@ describe('Scout facts and risks section', () => {
     }
     expect(countClass(html, 'fact')).toBe(0);
     expect(countClass(html, 'risk')).toBe(0);
+  });
+});
+
+const FIRST_CHECK = {
+  blocked_claims: [{ claim: 'best in Texas', reason: 'unsupported' }],
+  blocked_count: 1,
+  claim_results: [{ claim: 'best in Texas', verdict: 'unsupported', reason: 'unsupported', source: 'demo', blocked: true, verified: false }],
+  revision_instructions: [],
+  supported_count: 4,
+  unsupported_count: 1,
+  verified_count: 4,
+};
+
+const FINAL_CHECK = {
+  blocked_claims: [],
+  blocked_count: 0,
+  claim_results: [{ claim: '$49', verdict: 'supported', reason: 'fact', source: 'demo', blocked: false, verified: true }],
+  revision_instructions: [],
+  supported_count: 5,
+  unsupported_count: 0,
+  verified_count: 5,
+};
+
+function approvedRun() {
+  return receipt({
+    approval_state: 'approved_for_export',
+    revision: 2,
+    approved_revision: 2,
+    approvals: [{ approved_by: 'google:owner', revision: 2, timestamp: '2026-11-04T10:00:00+00:00' }],
+    approval_binding: { digest: 'abcdef1234567890abcdef1234567890', version: 'v1' },
+    checker_v1: FIRST_CHECK,
+    checker_v2: FINAL_CHECK,
+  });
+}
+
+describe('receipt summary strip', () => {
+  it('renders the decision fields against an approved run', () => {
+    const html = renderToStaticMarkup(<ReceiptSummaryStrip receipt={approvedRun()} />);
+    expect(html).toContain('data-testid="receipt-summary-strip"');
+    expect(html).toContain('Approved for export');
+    expect(html).toContain('approved revision 2');
+    expect(html).toContain('data-testid="binding-digest-short"');
+    expect(html).toContain('abcdef12...');
+    expect(html).toContain('data-testid="copy-binding-digest"');
+    expect(html).toContain('Verified claims');
+    expect(html).toContain('Blocked claims');
+    expect(html).toContain('data-testid="summary-approver"');
+    expect(html).toContain('google:owner');
+    expect(html).toContain('2026-11-04T10:00:00+00:00');
+  });
+  it('marks unavailable fields without inventing them', () => {
+    const html = renderToStaticMarkup(<ReceiptSummaryStrip receipt={receipt()} />);
+    expect(html).toContain('Awaiting individual approval');
+    expect(html).toContain('not yet approved');
+    expect(html).toContain('unavailable');
+    expect(html).not.toContain('data-testid="copy-binding-digest"');
+  });
+});
+
+describe('check evidence toggle', () => {
+  it('shows one list with a first/final toggle defaulting to final', () => {
+    const html = renderToStaticMarkup(<CheckEvidenceToggle first={FIRST_CHECK} final={FINAL_CHECK} />);
+    expect(html).toContain('data-testid="check-evidence-first"');
+    expect(html).toContain('data-testid="check-evidence-final"');
+    expect(html).toContain('Final check evidence');
+    expect(html).not.toContain('First check evidence');
+    expect(html).not.toContain('best in Texas');
+  });
+  it('collapses scout check evidence into one toggled list', () => {
+    const html = renderToStaticMarkup(<ScoutFactsSection receipt={approvedRun()} />);
+    expect(html).toContain('data-testid="check-evidence-first"');
+    expect(html).toContain('data-testid="check-evidence-final"');
+    expect(html).toContain('Final check evidence');
+    expect(html).not.toContain('First check evidence');
+    expect(html).not.toContain('best in Texas');
   });
 });
