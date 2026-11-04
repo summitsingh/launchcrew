@@ -53,7 +53,7 @@ The Instagram Graph API is a non-AI service used for publishing approved posts a
 
 ## Release evidence
 
-The Verify workflow is disabled for the final stretch by owner decision. Release evidence is local suites plus live checks. Last full local run, Nov 1 at af97783: 717 pytest passed, 1777 unittest passed, 352 Vitest passed across 40 test files, tsc 0 errors, production web build 0 errors. Suites are suspended after that by owner decision. Live checks Nov 3 at 83fb497: health, auth status, plans, sitemap, icon, and demo facts all 200, both services 1/1, digests match the manifest.
+Release evidence is local suites plus live checks; the Verify workflow is disabled for the final stretch by owner decision. Nov 4, 2026, at the Step 2 deploy (commit d66c449): web build passed, scripts/check-repo-text.py passed, scripts/scan_repo.py passed with zero findings, and the live site verified through its public name (health, queue, connections, publish board). The last full test-suite run remains the Nov 1 run recorded in docs/history.md.
 
 ## Setup
 
