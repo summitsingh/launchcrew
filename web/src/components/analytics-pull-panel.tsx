@@ -115,8 +115,9 @@ export function AnalyticsPullPanel({ slotId = '', channel = '', pulls }: { slotI
   const manualTarget = slotInput.trim() && channelInput.trim();
   return <section className="panel" data-testid="analytics-pull-panel" aria-label="Analytics pull">
     <h2>Provider metrics pull</h2>
-    <p className="hint">Verified posts only. Reach, likes, comments, clicks, and shares come from the provider
-      with source and fetch time; unsupported metrics read as not reported, never zero.</p>
+    <p className="hint">Verified posts only. A refresh with a provider payload records its numbers under the
+      provider source; a refresh without one records every metric as not reported under the
+      simulation source and creates no outcome. Unsupported metrics read as not reported, never zero.</p>
     <p>
       <label htmlFor="analytics-slot-id">Slot id</label>
       <input id="analytics-slot-id" value={slotInput} onChange={e => setSlotInput(e.target.value)} placeholder="slot_..." />

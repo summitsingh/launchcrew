@@ -97,6 +97,16 @@ describe('analytics pull panel', () => {
     expect(html).toContain('2026-11-04T09:00:00+00:00');
     expect(html).toContain('clicks: not reported');
   });
+  it('labels a payload-free pull as simulation with every metric not reported', () => {
+    const html = provider(<AnalyticsPullPanel slotId="slot_1" channel="instagram" pulls={[pull({
+      id: 'apull_sim', outcome_id: null, source_label: 'simulation', refresh_mode: 'scheduled',
+      metrics: { reach: 'not reported', likes: 'not reported', comments: 'not reported', clicks: 'not reported', shares: 'not reported' },
+      reported_metrics: [], unreported_metrics: ['reach', 'likes', 'comments', 'clicks', 'shares'],
+    })]} />);
+    expect(html).toContain('simulation');
+    expect(html).toContain('reach: not reported');
+    expect(html).toContain('shares: not reported');
+  });
   it('notes the empty state before any pull', () => {
     const html = provider(<AnalyticsPullPanel slotId="slot_1" channel="instagram" pulls={[]} />);
     expect(html).toContain('No provider pulls yet');
