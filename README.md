@@ -2,7 +2,7 @@
 
 LaunchCrew is the trust layer for AI launch content for solo founders. Built new for the Meta Global AI Hackathon, Oct 26 to Nov 4, 2026. No code was reused, copied, or ported from any prior codebase. Solo project. Indie track, theme: Build for Your World.
 
-Demo video: https://www.youtube.com/watch?v=17A0uiV-adQ
+Demo video: https://www.youtube.com/watch?v=h29VpjarvQs
 
 How it works, in five steps:
 
