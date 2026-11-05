@@ -984,8 +984,8 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
             raw_claims_p02 = _clean_model_lines(maker.get('claims'))
             raw_post_p02 = _clean_model_lines(maker.get('post_lines'))
             raw_email_p02 = _clean_model_lines(maker.get('email_lines'))
-            if raw_post_p02 or raw_email_p02 or raw_claims_p02:
-                post_p02 = '\n'.join(raw_post_p02) if raw_post_p02 else '. '.join(raw_claims_p02) + '.'
+            if raw_post_p02 or raw_email_p02:
+                post_p02 = ' '.join(raw_post_p02) if raw_post_p02 else '. '.join(raw_claims_p02) + '.'
                 email_p02 = '\n'.join(raw_email_p02) if raw_email_p02 else '. '.join(raw_claims_p02) + '.'
                 v1_claims_p02 = list(raw_claims_p02) if raw_claims_p02 else list(claims)
                 if seed_unverified_claim and SEED_CLAIM not in v1_claims_p02 and SEED_CLAIM not in (post_p02 + '\n' + email_p02):
@@ -1033,7 +1033,7 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
                 # deterministic reformatting is never labelled model-written.
                 # Any failure rejects to fallback below.
                 if raw_post and raw_email:
-                    post_text = '\n'.join(raw_post)
+                    post_text = ' '.join(raw_post)
                     email_text = '\n'.join(raw_email)
                     proposed = {'post': post_text, 'email': email_text, 'claims': list(safe)}
                     if (raw_post != raw_email and post_text != email_text
@@ -1126,7 +1126,8 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
         revision_result = None
         rev_start = len(attempts)
         if (P02_REVISION_ENABLED and c1.get('blocked_count') and model_enabled
-                and not _p02_billing_failed(attempts)):
+                and not _p02_billing_failed(attempts)
+                and any(r.get('mode') == 'spark' for _, r in attempts)):
             try:
                 revision_prompt = json.dumps({
                     'confirmed_facts': list(claims),
@@ -1198,7 +1199,7 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
                                 and not _voice_blocks_claim(c, effective_voice, normalized_voice_ref)
                                 and not _context_blocks_claim(c, facts, effective_context_policy,
                                                               effective_context_scope)]
-            rev_post = '\n'.join(revision_post_lines)
+            rev_post = ' '.join(revision_post_lines)
             rev_email = '\n'.join(revision_email_lines)
             proposed_rev2 = {'post': rev_post, 'email': rev_email, 'claims': list(rev_filtered)}
             if (revision_post_lines != revision_email_lines and rev_post != rev_email
@@ -1223,7 +1224,7 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
                              and not _voice_blocks_claim(c, effective_voice, normalized_voice_ref)
                              and not _context_blocks_claim(c, facts, effective_context_policy,
                                                            effective_context_scope)]
-            post_v2 = '\n'.join(v1_safe_post_lines)
+            post_v2 = ' '.join(v1_safe_post_lines)
             email_v2 = '\n'.join(v1_safe_email_lines)
             proposed_v2 = {'post': post_v2, 'email': email_v2, 'claims': list(safe_filtered)}
             if (v1_safe_post_lines != v1_safe_email_lines and post_v2 != email_v2
@@ -1250,7 +1251,7 @@ def run_pipeline(idea, facts_path, agents_path, out, approve=False, seed_unverif
             # the deterministic formatter, honestly labelled fallback with
             # model_written False and model_used none. Legacy identical copy
             # stays behind the flag.
-            if P02_DISTINCT_FALLBACK:
+            if P02_DISTINCT_FALLBACK and any(r.get('mode') == 'spark' for _, r in attempts):
                 v2 = make_distinct_draft(v2_claims)
             else:
                 v2 = make_draft(v2_claims)
