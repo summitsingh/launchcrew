@@ -357,9 +357,22 @@ def test_verify_attempt_records_supplied_source_and_live_delivery(client):
         board_mod.build_attempt('verified', source='owner-says-so')
 
 
-def test_redirect_targets_face_the_same_fetch_rules():
+def test_redirect_targets_face_the_same_fetch_rules(monkeypatch):
+    import ipaddress
+    import socket
     import urllib.request
     from launchcrew import verification_board as board_mod
+    # Exercise the guard against stubbed DNS so the verdict does not depend on the host network.
+    def fake_getaddrinfo(host, *args, **kwargs):
+        try:
+            ipaddress.ip_address(host)
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', (host, 0))]
+        except ValueError:
+            pass
+        if host == 'example.com':
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('93.184.216.34', 0))]
+        raise socket.gaierror
+    monkeypatch.setattr(socket, 'getaddrinfo', fake_getaddrinfo)
     handler = board_mod._GuardedRedirectHandler()
     req = urllib.request.Request('https://example.com/start')
     for target in ('http://127.0.0.1/private-post',
