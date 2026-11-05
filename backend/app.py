@@ -5206,6 +5206,8 @@ def _public_analytics_pull(row):
     fetched = row.get('fetched_at')
     if hasattr(fetched, 'isoformat'):
         fetched = fetched.isoformat()
+    if isinstance(fetched, str) and fetched.endswith('+00:00'):
+        fetched = fetched[:-6] + 'Z'
     reported = row.get('reported_metrics')
     unreported = row.get('unreported_metrics')
     return {'id': row.get('id'), 'slot_id': row.get('slot_id'),
