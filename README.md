@@ -73,7 +73,7 @@ scripts/podman-local.sh check   # keyless runs, approval gate, export pass
 scripts/podman-local.sh down    # removes the pod, keeps volume and images
 ```
 
-Host dev: Postgres on 127.0.0.1:54329 with DATABASE_URL set, AUTH_ENABLED=false, PUBLIC_BASE_URL=http://127.0.0.1:3000, `alembic upgrade head`, then uvicorn on 8000 and `pnpm --dir web dev`. Keyed runs read META_API_KEY from private `.local/.env.local` (mode 600); adding the file alone makes no model call, and SAM stays off unless its own flag, budget, and allowlist are all set.
+Host dev: Postgres on 127.0.0.1:54329 with DATABASE_URL set, AUTH_ENABLED=false, PUBLIC_BASE_URL=http://127.0.0.1:3000, `alembic upgrade head`, then uvicorn on 8000 and `pnpm --dir web dev`. Keyed runs read META_API_KEY from the backend process environment; keep the key in private `.local/.env.local` (mode 600) and export it into the backend's environment before starting the backend, because the app reads the process environment only and does not load the file itself. Adding the file alone makes no model call, and SAM stays off unless its own flag, budget, and allowlist are all set.
 
 ## Run it locally (for judges)
 
