@@ -33,3 +33,4 @@ facts/**/*.webp
 !facts/demo_facts.json
 !web/public/demo-products/
 !web/public/demo-products/**
+!web/public/og-image.png
