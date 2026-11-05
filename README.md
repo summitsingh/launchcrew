@@ -55,7 +55,7 @@ The Instagram Graph API is a non-AI service used for publishing approved posts a
 
 ## Release evidence
 
-Release evidence is local suites plus live checks; the Verify workflow is disabled for the final stretch by owner decision. Nov 4, 2026, at the Step 2 deploy (commit d66c449): web build passed, scripts/check-repo-text.py passed, scripts/scan_repo.py passed with zero findings, and the live site verified through its public name (health, queue, connections, publish board). The last full test-suite run remains the Nov 1 run recorded in docs/history.md.
+Release evidence is local suites plus live checks; the Verify workflow is disabled for the final stretch by owner decision. Nov 4, 2026, at the Step 2 deploy (commit d66c449): web build passed, scripts/check-repo-text.py passed, scripts/scan_repo.py passed with zero findings, and the live site verified through its public name (health, queue, connections, publish board). The most recent full test-suite run is the Nov 4, 2026 run: backend 787 passed, 0 failed, and web Vitest 353 passed, 14 failed (11 of the 14 are stale tests asserting behavior the Nov 4 fixes intentionally changed; 3 fail on main as well). The previous recorded full run is the Oct 31, 2026 status line in docs/history.md.
 
 ## Setup
 
