@@ -1,5 +1,6 @@
 """Real Postgres integration tests isolated in a temporary schema."""
 import os
+from pathlib import Path
 from uuid import uuid4
 import pytest
 from alembic.config import Config
@@ -8,6 +9,36 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from backend import store
 from backend.app import app
+
+
+@pytest.fixture(scope='session', autouse=True)
+def demo_photo_seed():
+    """Supply the operator-placed runtime photo the media seed reads.
+
+    The starter-asset seed reads a runtime photo under facts/demo_photos/
+    that is never committed. This fixture supplies that precondition
+    hermetically for fresh clones, and is a no-op when a real photo is
+    already present.
+    """
+    from PIL import Image
+
+    photos_dir = Path(__file__).resolve().parents[2] / 'facts' / 'demo_photos'
+    if photos_dir.is_dir() and list(photos_dir.glob('*.jpg')):
+        yield
+        return
+    created_dir = not photos_dir.is_dir()
+    photos_dir.mkdir(parents=True, exist_ok=True)
+    seed = photos_dir / 'test-seed.jpg'
+    Image.new('RGB', (64, 48), (64, 72, 80)).save(seed, 'JPEG')
+    try:
+        yield
+    finally:
+        seed.unlink(missing_ok=True)
+        if created_dir and photos_dir.is_dir():
+            try:
+                photos_dir.rmdir()
+            except OSError:
+                pass
 
 
 @pytest.fixture(scope='session')
