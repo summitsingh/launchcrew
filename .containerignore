@@ -31,3 +31,5 @@ facts/**/*.webp
 **/*.heic
 **/*.webp
 !facts/demo_facts.json
+!web/public/demo-products/
+!web/public/demo-products/**
