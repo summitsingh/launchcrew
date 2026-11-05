@@ -75,6 +75,60 @@ scripts/podman-local.sh down    # removes the pod, keeps volume and images
 
 Host dev: Postgres on 127.0.0.1:54329 with DATABASE_URL set, AUTH_ENABLED=false, PUBLIC_BASE_URL=http://127.0.0.1:3000, `alembic upgrade head`, then uvicorn on 8000 and `pnpm --dir web dev`. Keyed runs read META_API_KEY from private `.local/.env.local` (mode 600); adding the file alone makes no model call, and SAM stays off unless its own flag, budget, and allowlist are all set.
 
+## Run it locally (for judges)
+
+No account, no sign-up, and no API key are needed. Everything below runs keyless: without `META_API_KEY`, launch runs use the deterministic fallback path. The confirmed-facts checks and the Checker verdicts are identical; only the draft text comes from the rules-based path instead of live Muse Spark calls, and the run receipt records that no model call was made.
+
+Prerequisites: git, uv, Node.js, pnpm 10.20.0 (web/package.json pins it in `packageManager`; install it with `npm install -g pnpm@10.20.0`), and a local PostgreSQL for the host path below. The container path needs podman instead of a local PostgreSQL.
+
+```bash
+git clone https://github.com/summitsingh/launchcrew
+cd launchcrew
+uv sync --frozen
+pnpm --dir web install --frozen-lockfile   # pnpm 10.20.0
+```
+
+Environment: leave the key out entirely for the keyless path. `.env.example` lists the variables; `META_API_KEY` is optional, and the SAM flag defaults to `false`. If you do have a key, keep it in `.local/.env.local` (mode 600, git-ignored) and export it into the backend's environment before starting the backend; the app reads the process environment only, it does not load the file itself.
+
+Database and migrations (host path): create a database on a local PostgreSQL listening on 127.0.0.1:54329, then:
+
+```bash
+createdb launchcrew
+export DATABASE_URL="postgresql+psycopg://postgres@127.0.0.1:54329/launchcrew"
+export AUTH_ENABLED=false
+export PUBLIC_BASE_URL=http://127.0.0.1:3000
+uv run alembic upgrade head
+```
+
+Use your own local Postgres user and password in the URL; the verification walkthrough used trust authentication on a disposable UTF-8 cluster.
+
+Start the backend and the web app (two terminals):
+
+```bash
+uv run uvicorn backend.app:app --host 127.0.0.1 --port 8000
+pnpm --dir web dev
+```
+
+Open http://127.0.0.1:3000. The web app proxies `/api` to the backend on port 8000, so no other configuration is needed.
+
+Container alternative: `scripts/podman-local.sh build && scripts/podman-local.sh up`, then `scripts/podman-local.sh check`; per that script, the stack serves the web app at http://127.0.0.1:3001 in that path. This is the documented alternative; the host path above is the one verified step by step for this section.
+
+The demo loop, in five steps:
+
+1. Start a New launch and enter an idea: a sentence, a price, an audience.
+2. Confirm the facts with sources. Only confirmed facts can appear in the pack. To see the guardrail fire, tick "Include the unsupported claim demo", which seeds one claim no confirmed fact supports.
+3. Create the draft. Scout, Maker, and Checker run in sequence. With the seeded claim, the Checker blocks the run; without it, the run lands in pending approval.
+4. Open the run from the queue and read the receipt: every verdict, and whether any model call happened, is recorded. Export is refused before approval. Approve the exact reviewed version; any edit clears the approval and forces a full recheck.
+5. Export the approved pack. To see the publishing gate, put the approved run on the calendar and mark the slot Ready: execution re-checks the approval binding before anything can publish. Live publishing uses the hosted demo's Instagram connection, so export is the end of the local loop.
+
+Tests:
+
+```bash
+uv run pytest -q   # needs DATABASE_URL to a local Postgres, as above
+pnpm --dir web test && pnpm --dir web typecheck && pnpm --dir web build
+python3 scripts/scan_repo.py && python3 scripts/check-repo-text.py
+```
+
 ## Tests
 
 ```bash
